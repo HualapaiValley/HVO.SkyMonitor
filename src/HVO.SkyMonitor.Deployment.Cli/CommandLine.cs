@@ -62,8 +62,9 @@ internal static class CommandLine
 
     private static readonly CommandDefinition HostSetProductRoot =
         new(["host", "set-product-root"], "<absolute-path>",
-            "Set the folder this host installs instances under, before any instance exists.",
-            [], ["--json"]);
+            "Set the folder this host installs instances under, or repair its recorded mount.",
+            [], ["--json", "--repair"],
+            "With --repair, re-record the current mount of the same existing product root under the host-policy lock. Verify the backing filesystem first.");
 
     /// <summary>
     /// Every command the parser accepts, in the order help lists them. Each parser reads its options from its command's
@@ -160,6 +161,7 @@ internal static class CommandLine
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
         ["--json"] = (null, "Write the result, or the error, as JSON."),
+        ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
         ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
         ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
@@ -364,6 +366,13 @@ internal static class CommandLine
 
     private static DeploymentCommand ParseOperation(string[] args, CommandLineContext context)
     {
+        // Repair must reach the privileged lock before reading stale mount metadata. The requested root is only
+        // an expectation: the helper re-reads the trusted policy under that lock and refuses any different root.
+        if (args.Length >= 3 && args[0] == "host" && args[1] == "set-product-root" &&
+            args.Skip(2).Contains("--repair", StringComparer.Ordinal))
+        {
+            return ParseHost(args, context, args[2]);
+        }
         string production;
         try
         {
@@ -680,7 +689,8 @@ internal static class CommandLine
         {
             AllowTestProductRoot = context.AllowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
-            PolicyLocation = context.HostPolicy
+            PolicyLocation = context.HostPolicy,
+            RepairMount = flags.Contains("--repair")
         };
         request.Validate();
         return request;

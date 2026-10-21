@@ -14,8 +14,7 @@ internal static class PrivilegedPathInstaller
             Path.GetFileName(paths.InstanceRoot), remove ? "remove" : "install", sha256, previousSha256 ?? "none"
         };
         var result = await PathPrograms.PrivilegedRunner.RunAsync("sudo", arguments, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-            throw new InstallerException($"Machine installer publication failed: {Redaction.SafeDiagnostic(result.StandardError)}");
+        PrivilegedHelperErrors.ThrowIfFailed(result, "Machine installer publication failed");
     }
 
     internal static bool ValidArguments(string[] args)
@@ -58,7 +57,7 @@ internal static class PrivilegedPathInstaller
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 

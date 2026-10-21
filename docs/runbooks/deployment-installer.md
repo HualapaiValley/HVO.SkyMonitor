@@ -1497,46 +1497,55 @@ backup unit.
 
 #### Repairing the host policy
 
-Every command refuses a policy that does not validate, including
-`host set-product-root`, which validates the existing policy before it writes a
-new one. A recorded `mountPoint` that is no longer a mount, or a hand edit that
-broke the file, therefore needs a privileged repair, which no `hvo-sky-install`
-command performs.
+Use `hvo-sky-install host set-product-root <the same productRoot> --repair` to
+re-record a stale `mountPoint`. The narrow privileged helper takes
+`/run/hvo-sky-host-policy.lock` before it reads the trusted policy, requires
+the requested root to equal its existing `productRoot`, authenticates that
+existing root, and atomically records the mount that currently holds it.
+It never moves the root, creates a missing root, or deletes the policy.
+Normal commands, including the setter without `--repair`, still refuse stale
+mount metadata.
 
-A manual edit of `/etc/hvo-sky/host.json` does **not** take the
-host-policy lock (`/run/hvo-sky-host-policy.lock`) that
-`host set-product-root` and the privileged preparation hold. A command started
-while the file is being changed can therefore resolve a different production
-root, for example create a new instance under `/var/lib/hvo-sky` while
-the policy is briefly absent, and that instance would then block restoring the
-real root. Repair only inside a maintenance window:
+A manual edit of `/etc/hvo-sky/host.json` does **not** take the host-policy
+lock. A command can then resolve a different production root, for example
+create an instance under `/var/lib/hvo-sky` while the policy is absent, and
+block restoring the real root. Do not hand-edit or unlink the policy to bypass
+validation. Process-name checks do not establish quiescence: apphost, `dotnet`
+and privileged helper invocations can have different names. The repair uses
+the same lock as policy changes, privileged preparation and namespace work,
+regardless of invocation form.
 
-1. **Open the window.** Stop or hold every automation that runs
-   `hvo-sky-install`, and run no `hvo-sky-install` command by hand: no
-   `cameraagent install`, `upgrade`, `rollback`, `reinstall`, `uninstall`,
-   `purge`, `reset-state`, `recover-owner`, `preflight`, no `catalog` command, no
-   `host` command, and no `status`, until step 5 is done. Confirm that nothing is
-   running: `pgrep -af hvo-sky-install` must print nothing. Running CameraAgent
-   containers are unaffected and keep running.
-2. **Repair in place, preferring storage over the file.** If the intended
-   filesystem can be mounted, mount it at the recorded `mountPoint`, confirm it
-   with `findmnt -no SOURCE,UUID <mountPoint>`, and change nothing in the file.
-3. **Otherwise edit only the mount field.** Run
-   `sudo editor /etc/hvo-sky/host.json` and either correct `mountPoint`
-   or delete just the `mountPoint` member so the setter records it again. Keep
-   `productRoot` exactly as it was: it is the root the instances live under.
-   Keep the file `root:root 0644`.
-4. **Never delete the file while instances exist under its `productRoot`.**
-   Without the file every command falls back to `/var/lib/hvo-sky`, so the
-   instances under the policy root become unreachable: `status` and every
-   lifecycle command look only in the root in force. Remove `host.json` only when
-   that root is empty, after every instance under it has been uninstalled and
-   purged.
-5. **Re-establish and verify, then close the window.** Run
-   `hvo-sky-install host set-product-root <the same productRoot>`, which validates
-   the repaired policy and records the mount point that currently holds the
-   root, then `hvo-sky-install status`, and confirm that every expected instance ID
-   is listed. Only then resume automation and other `hvo-sky-install` commands.
+1. **Open the window.** Hold automation and avoid starting installer/lifecycle
+   commands until verification is complete. Existing policy critical sections
+   finish before repair acquires the lock; if the lock is busy, retry after the
+   other operation completes. Running CameraAgent containers can keep running
+   during the policy metadata repair.
+2. **Verify the intended storage first.** Prefer mounting the intended filesystem
+   at the recorded `mountPoint` and changing nothing in the policy. Confirm its
+   source and UUID with `findmnt -no SOURCE,UUID <mountPoint>`. If the intended
+   filesystem now legitimately holds the same root through a different mount,
+   inspect `findmnt --target <productRoot> --output TARGET,SOURCE,UUID` before
+   repair. Mount-path validation does not authenticate a filesystem UUID; never
+   bless an empty mount-point directory on the parent filesystem.
+3. **Repair the mount metadata under the lock.** Run
+   `hvo-sky-install host set-product-root <the same productRoot> --repair`
+   (add `--json` for the structured result). Keep `productRoot` exactly as it
+   was. The helper re-reads it under the lock, refuses a different root, and
+   publishes `host.json` as `root:root 0644`. A missing, malformed or untrusted
+   policy, or an absent/unsafe root, is refused without replacing the policy;
+   repair does not guess the root or recover malformed JSON.
+4. **Never delete the policy while any entry exists beneath `cameraagents/` or
+   `logichosts/` in its root**, including tombstones and unrecognized entries.
+   Without the file commands fall back to `/var/lib/hvo-sky` and cannot find
+   the policy-root instances. The repair works in place with existing entries.
+   Remove the policy only when the root is empty after all instances have been
+   uninstalled and purged.
+5. **Verify, then close the window.** Run
+   `hvo-sky-install host set-product-root <the same productRoot>` without
+   `--repair`, then `hvo-sky-install status` and confirm every expected instance
+   ID is listed. Resume automation only after both succeed. If a policy or root
+   cannot be authenticated, stop and diagnose storage/protected backups; do not
+   hand-edit or delete it to force a repair.
 
 The installer records owner-only files beneath the UUID instance root:
 

@@ -24,10 +24,12 @@ internal sealed class DerivedProductReconciler(
     private readonly DerivedProductLifecycleOptions _options = options ?? new();
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
-    internal async ValueTask<DerivedProductReconciliationSummary> RunAsync(CancellationToken cancellationToken)
+    internal async ValueTask<DerivedProductReconciliationSummary> RunAsync(CancellationToken cancellationToken, CancellationToken interruptionToken = default)
     {
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var passToken = interruption.Token;
         var gate = StorageLifecycleLock.ForRoot(_root);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await gate.WaitAsync(passToken).ConfigureAwait(false);
         try
         {
             await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -42,6 +44,7 @@ internal sealed class DerivedProductReconciler(
             string? reclaimedCursor = null;
             do
             {
+                passToken.ThrowIfCancellationRequested();
                 var orphanPage = await store.ReadOrphanLifecyclePageAsync(
                     reclaimedCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
                 _ = await store.DeleteReclaimedOrphanPageAsync(
@@ -53,10 +56,14 @@ internal sealed class DerivedProductReconciler(
             string? actionableCursor = null;
             do
             {
+                passToken.ThrowIfCancellationRequested();
                 var actionable = await store.ReadActionableLifecyclePageAsync(
                     actionableCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
                 foreach (var operation in actionable.Items)
+                {
+                    passToken.ThrowIfCancellationRequested();
                     await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                }
                 actionableCursor = actionable.NextOperationId;
             }
             while (actionableCursor is not null);
@@ -65,6 +72,7 @@ internal sealed class DerivedProductReconciler(
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, _derivedRoot);
             foreach (var temporary in EnumeratePage("*.tmp"))
             {
+                passToken.ThrowIfCancellationRequested();
                 File.Delete(temporary);
                 RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(temporary)!);
                 cleaned++;
@@ -75,6 +83,7 @@ internal sealed class DerivedProductReconciler(
                 cursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
             foreach (var row in page.Items)
             {
+                passToken.ThrowIfCancellationRequested();
                 inspected++;
                 if (row.AvailabilityState == "Quarantined")
                 {
@@ -128,6 +137,7 @@ internal sealed class DerivedProductReconciler(
             var modernPage = EnumeratePage("*.json", modernCursor).ToArray();
             foreach (var sidecar in modernPage)
             {
+                passToken.ThrowIfCancellationRequested();
                 var sidecarRelative = Relative(sidecar);
                 if (!sidecar.EndsWith(".manifest.json", StringComparison.Ordinal))
                 {
@@ -191,6 +201,7 @@ internal sealed class DerivedProductReconciler(
             var payloadPage = EnumeratePage("*", payloadCursor).ToArray();
             foreach (var payload in payloadPage)
             {
+                passToken.ThrowIfCancellationRequested();
                 var relative = Relative(payload);
                 if (payload.EndsWith(".manifest.json", StringComparison.Ordinal) || payload.EndsWith(".tmp", StringComparison.Ordinal) ||
                     claimedPaths.Contains(payload) || await store.IsProcessingPathClaimedAsync(relative, cancellationToken).ConfigureAwait(false)) continue;

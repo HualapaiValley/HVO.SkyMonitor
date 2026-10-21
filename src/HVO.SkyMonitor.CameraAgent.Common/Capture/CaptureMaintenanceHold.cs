@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 /// <para>
 /// A pass that is admitted holds a maintenance lease for everything it might delete. The pause waits for every such
 /// lease before it is acknowledged and grants none after its gate closes, so no deletion follows an acknowledged pause.
+/// A pending pause interrupts admitted passes between complete deletions; interruption never releases the lease itself.
 /// </para>
 /// </remarks>
 internal static class CaptureMaintenanceHold
@@ -45,6 +46,9 @@ internal readonly record struct CaptureMaintenanceEntry(
     CaptureAdmissionState? HeldBy) : IDisposable
 {
     public bool Held => HeldBy is not null;
+
+    // Use for lock waits and between operations, never inside a journaled deletion.
+    public CancellationToken InterruptionToken => Lease?.InterruptionToken ?? CancellationToken.None;
 
     public void Dispose() => Lease?.Dispose();
 }
