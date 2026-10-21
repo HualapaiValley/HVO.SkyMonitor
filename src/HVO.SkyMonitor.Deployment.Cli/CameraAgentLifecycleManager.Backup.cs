@@ -309,7 +309,7 @@ internal sealed partial class CameraAgentLifecycleManager
             await FailAsync(paths, operation, exception, CancellationToken.None).ConfigureAwait(false);
             if (exception is OperationCanceledException) throw;
             throw InstallerException.Formatted(
-                $"The backup failed, and nothing was kept; the instance is as it was. {SafeMessage(exception)}".TrimEnd(), exception);
+                $"The backup failed, and nothing was kept; the instance is as it was. {CameraAgentStateDiagnostics.InstallerFailure(exception)}".TrimEnd(), exception);
         }
     }
 

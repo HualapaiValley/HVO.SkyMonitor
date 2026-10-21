@@ -100,7 +100,7 @@ internal static class RestoredCredentials
             authority += Execute(restored, transaction,
                 "DELETE FROM AspNetUserClaims WHERE UserId = $user AND ClaimType IS $type AND ClaimValue IS $value;",
                 ("$user", userId), ("$type", type), ("$value", value));
-            changes.Add($"claim {CameraAgentStateDiagnostics.Field(type)}={CameraAgentStateDiagnostics.Field(value)} of account {CameraAgentStateDiagnostics.Field(userId)} removed again");
+            changes.Add($"claim {CameraAgentStateDiagnostics.Assignment(type, value)} of account {CameraAgentStateDiagnostics.Field(userId)} removed again");
         }
         transaction.Commit();
         return new Outcome(keys, reset, authority, changes);

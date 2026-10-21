@@ -126,7 +126,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
-- Deployment CLI backup, restore, snapshot and archive diagnostics redact decorated quoted credentials, including escaped quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings preserve explanatory wording and backup recovery preserves already escaped identities. (#1476)
+- Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
 
 - `hvo-sky` reaches a loopback address (`127.0.0.1`, `localhost`, `[::1]`) directly, never through an HTTP proxy.
   With `http_proxy` set and no `no_proxy` entry for it, the owner API key went to the proxy unencrypted, without the

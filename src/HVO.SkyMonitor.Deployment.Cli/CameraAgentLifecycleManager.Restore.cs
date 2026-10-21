@@ -131,7 +131,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
             if (exception is OperationCanceledException) throw;
             throw InstallerException.Formatted(
-                $"The restore failed before it replaced anything, and the instance is as it was. {SafeMessage(exception)}".TrimEnd(), exception);
+                $"The restore failed before it replaced anything, and the instance is as it was. {CameraAgentStateDiagnostics.InstallerFailure(exception)}".TrimEnd(), exception);
         }
 
         try
@@ -200,7 +200,7 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             // The swap has begun, so the restore can only go forward; the staged copy and what it replaced are kept.
             throw InstallerException.Formatted(
-                $"The restore stopped after it began replacing the instance: {SafeMessage(exception)} Rerun the same command with --resume to finish it.",
+                $"The restore stopped after it began replacing the instance: {CameraAgentStateDiagnostics.InstallerFailure(exception)} Rerun the same command with --resume to finish it.",
                 exception);
         }
     }

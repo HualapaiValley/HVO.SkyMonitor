@@ -81,7 +81,9 @@ public sealed partial class LifecycleContractTests
     {
         if ((expression.StartsWith("CameraAgentStateDiagnostics.Reason(", StringComparison.Ordinal) ||
              expression.StartsWith("CameraAgentStateDiagnostics.Field(", StringComparison.Ordinal) ||
-             expression.StartsWith("CameraAgentStateDiagnostics.Failure(", StringComparison.Ordinal)) &&
+             expression.StartsWith("CameraAgentStateDiagnostics.Failure(", StringComparison.Ordinal) ||
+             expression.StartsWith("CameraAgentStateDiagnostics.InstallerFailure(", StringComparison.Ordinal) ||
+             expression.StartsWith("CameraAgentStateDiagnostics.Assignment(", StringComparison.Ordinal)) &&
             Diagnostic1476WholeCall(expression))
             return CameraAgentStateDiagnostics.Reason(HostileDiagnostic1476Name);
         if (expression.StartsWith("Redaction.SafeDiagnostic(", StringComparison.Ordinal) &&
@@ -93,7 +95,8 @@ public sealed partial class LifecycleContractTests
 
         // These are compositions of already formatted fragments; formatting them again would corrupt Describe keys.
         // Their constituent message templates are included above; CarryFailures/Describe have real-path assertions.
-        if (expression is "string.Join(\"; \", parts)" or "string.Join(\"; \", lowered)" or "SafeMessage(exception)" or "reason" or "unread" or "list")
+        // A forwarded exception message is not one of them: an unmarked typed message is raw (PR-1487-R2 F6).
+        if (expression is "string.Join(\"; \", parts)" or "string.Join(\"; \", lowered)" or "reason" or "unread" or "list")
             return CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2));
         if (expression.StartsWith("CameraAgentStateDiagnostics.CarryFailures(", StringComparison.Ordinal) &&
             Diagnostic1476WholeCall(expression))
