@@ -34,6 +34,17 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent can refresh NOAA SWPC space-weather alerts, scales, Kp forecast and 3-day forecast locally. Refresh is
+  off by default. Turn it on with `CameraAgent:SpaceWeather:Enabled` and a reserved `space-weather-refresh` automation
+  definition with a 60 to 120 second tick; per-product cadence, spacing, backoff and halts stay with the provider policy,
+  and no credential is needed. Owners can read status and notices, queue a refresh, resume a halt and acknowledge a
+  notice at `/api/v1/operations/space-weather` (antiforgery or a read-write API key, plus an `Idempotency-Key`). There
+  is a `space-weather` health entry, capped at Degraded, and metrics are on the
+  `HVO.SkyMonitor.CameraAgent.SpaceWeather` meter. The image's `io.hvo.skymonitor.state-contracts` label, and so
+  `release.json`, now declares the `spaceWeather` store (writes 1, reads 1 to 1); installer snapshots exclude it, so
+  provider floors and halts survive a rollback. Operation, recovery and downgrade limits are in
+  `docs/runbooks/space-weather-refresh.md`. (#1398)
+
 - Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
 
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
