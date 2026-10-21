@@ -141,6 +141,8 @@ The errata scenarios use entirely synthetic records and bodies:
   unread fraction-valued field, literal UTF-8 and a Unicode escape spelling,
   retaining both original records through restart and unchanged refetch.
 
+- s28 supplies synthetic WARK04 extension chains for orphan joins, restart and retention.
+
 `rounding-vectors.json` is a separate manifest-listed golden vectors file,
 checked by both `check` and `write`. These are pure numerical probes, so a
 vectors file keeps them independent of fetch timing and notice lifecycle.
