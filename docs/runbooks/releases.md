@@ -20,6 +20,9 @@ unchanged. The opt-in requires the existing `HVO_CREATED` release input as a UTC
 `scripts/cameraagent-release.targets` is imported only by that path and only acts on CameraAgent: before the SDK
 generates publish manifests, its `UpdateStaticWebAssetEndpoints` task sets `Last-Modified` from that immutable release
 time. This avoids wall-clock timestamps from compressed/scoped assets; the generated manifest is hashed intact.
+The two CameraAgent store partial types keep each type's logging declarations in one source file: the pinned modern
+logging generator sorts by namespace/type, and split declaration sites otherwise leave unstable ties. Logging attributes,
+method contracts and runtime behavior remain unchanged; the default analyzer is retained.
 ReplayRunner and the other executables keep their existing publish settings.
 
 Before producing each image, the native job exports the CameraAgent payload twice with `--no-cache` and identical

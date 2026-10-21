@@ -216,6 +216,14 @@ class CameraAgentR2R(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'immutable release time'):
             checker['check'](self.root, 'linux-x64', '2026-10-21T09:54:16Z')
 
+    def test_store_logging_declarations_have_one_source_site(self):
+        common = ROOT / 'src/HVO.SkyMonitor.CameraAgent.Common'
+        for folder, name in [('Orbital', 'SqliteOrbitalElementsStore'),
+                             ('SpaceWeather/Storage', 'SqliteSwpcStore')]:
+            sites = [path.name for path in (common / folder).glob(name + '*.cs')
+                     if '[LoggerMessage(' in path.read_text()]
+            self.assertEqual(sites, [name + '.Logging.cs'])
+
     def test_release_job_checks_two_clean_native_publishes(self):
         workflow = (ROOT / '.github/workflows/release-image.yml').read_text()
         self.assertIn('for trial in 1 2', workflow)

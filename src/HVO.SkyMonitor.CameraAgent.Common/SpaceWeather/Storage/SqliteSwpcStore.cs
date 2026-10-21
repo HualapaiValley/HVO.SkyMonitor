@@ -128,6 +128,4 @@ public sealed partial class SqliteSwpcStore : ISwpcStore
     private static object? Scalar(SqliteConnection db, SqliteTransaction? tx, string sql, params (string Name, object? Value)[] parameters)
     { using var command = Command(db, tx, sql, parameters); var result = command.ExecuteScalar(); return result is DBNull ? null : result; }
     private static long Count(SqliteConnection db, SqliteTransaction tx, string sql) => Convert.ToInt64(Scalar(db, tx, sql), CultureInfo.InvariantCulture);
-    [LoggerMessage(EventId = 7810, Level = LogLevel.Information, Message = "Space-weather SQLite store initialized at schema {SchemaVersion}.")]
-    private static partial void StoreInitialized(ILogger logger, int schemaVersion);
 }
