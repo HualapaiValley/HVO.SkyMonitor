@@ -9,8 +9,9 @@
           Condition="'$(MSBuildProjectName)' == 'HVO.SkyMonitor.CameraAgent'">
     <Error Condition="'$(HvoReleaseCreatedUtc)' == ''" Text="A release publish requires HvoReleaseCreatedUtc." />
     <Error Condition="'@(StaticWebAssetEndpoint)' == ''" Text="CameraAgent release static endpoints were not generated." />
+    <!-- The standard RFC1123 R format uses the invariant culture by definition. -->
     <PropertyGroup>
-      <_HvoReleaseLastModified>$([System.DateTime]::Parse('$(HvoReleaseCreatedUtc)').ToUniversalTime().ToString('R', $([System.Globalization.CultureInfo]::InvariantCulture)))</_HvoReleaseLastModified>
+      <_HvoReleaseLastModified>$([System.DateTime]::Parse('$(HvoReleaseCreatedUtc)').ToUniversalTime().ToString('R'))</_HvoReleaseLastModified>
     </PropertyGroup>
     <ItemGroup>
       <_HvoReleaseAssetHeader Include="Replace">
