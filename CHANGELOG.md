@@ -9,6 +9,8 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. Refresh between releases is not available yet. (#1474)
+
 - Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
 
 - Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)

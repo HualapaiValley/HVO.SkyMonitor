@@ -36,7 +36,9 @@ without treating the request as invalid or claiming global absence.
 CameraAgent host composes the planner and authenticated UI adapter after
 `AddCameraAgentInfrastructure`. That infrastructure supplies the singleton
 `IOrbitalSnapshotReader` from the local verified orbital store; it supplies
-neither EOP nor leap-second data. Refresh and planning have independent enabled
+neither EOP nor leap-second data. The planning registration resolves those from
+the pair bundled with each release, or from an explicit override (see
+[Bundled time data](bundled-time-data-v1.md)). Refresh and planning have independent enabled
 options: disabled or halted refresh still leaves the same validated
 last-known-good snapshot usable for explicitly enabled planning.
 
@@ -47,21 +49,37 @@ default:
 | --- | --- | --- |
 | `Enabled` | `false` | Permit explicit local planning requests. |
 | `AllowStaleDiagnostics` | `false` | Allow explicitly qualified stale diagnostic records under the selection policy. |
-| `EarthOrientationPath` | absent | Fully qualified path to retained, approved finals2000A bytes. |
-| `EarthOrientationSha256` | absent | Expected SHA-256 of those exact bytes. |
-| `LeapSecondsPath` | absent | Fully qualified path to retained leap-second bytes. |
-| `LeapSecondsSha256` | absent | Expected SHA-256 of those exact bytes. |
+| `EarthOrientationPath` | absent | Override: fully qualified path to retained, approved finals2000A bytes. |
+| `EarthOrientationSha256` | absent | Override: expected SHA-256 of those exact bytes. |
+| `LeapSecondsPath` | absent | Override: fully qualified path to retained leap-second bytes. |
+| `LeapSecondsSha256` | absent | Override: expected SHA-256 of those exact bytes. |
+
+With none of the four override settings present, planning uses the pair bundled
+with the release in `time-data/` beside the application (`/app/time-data/` in the
+image): `finals2000A.daily.extended`, `leap-seconds.list` and their
+`provenance.json`. Each adoption verifies both files against the SHA-256 values in
+that record and parses them; a mismatch or malformed record leaves the bundled
+pair unavailable. Setting any of the four selects the override, which must then
+be complete and valid. An incomplete or invalid override makes planning
+unavailable with a reason; it never falls back to the bundled pair, and CameraAgent
+never writes the configured files. Only an options change or a new release adopts
+another pair.
 
 The file source reads at most 8 MiB of EOP and 64 KiB of leap data. An embedding
-host may instead provide `ICameraAgentOrbitalTimeSource` to return already
-resolved immutable `OrbitalTimeData`. Neither route downloads or refreshes time
-data. Repository fixtures are never default installed runtime inputs.
+host may instead provide `ICameraAgentOrbitalTimeSource` to return an already
+resolved immutable `OrbitalTimeData` and its source. No route downloads or
+refreshes time data; refresh between releases is #1474 slice B2. Repository test
+fixtures are never default installed runtime inputs.
 
 Absent, malformed, mismatched, expired or uncovered inputs remain unavailable.
 The original query interval is checked before loading the orbital snapshot or
 projecting the sky; selected element epochs are checked after record selection.
 The existing time model rejects unsupported leap crossings and missing daily
-EOP brackets. Geometry-free pass arcs require actual retained EOP; nominal-zero
+EOP brackets. Bulletin A rapid observed-only rows are gaps, so the weeks between
+the last final (Bulletin B) value and the first prediction are unsupported.
+Planning is supported up to the earlier of the last EOP row and the leap-second
+list's expiry; past it, the planner returns `TimeInputsUnavailable` with that
+coverage end rather than an approximation. Geometry-free pass arcs require actual retained EOP; nominal-zero
 diagnostics are not a fallback. Final/predicted EOP quality, coverage and hashes
 remain in the producer's model facts. Returned messages omit local paths.
 
@@ -84,19 +102,23 @@ and `config/secrets` override the file; the web UI and CLI show the source and
 refuse ineffective writes. Use `satellitePlanning.enabled=false` to turn planning
 off without changing retained snapshots or capture.
 
-**Managed time-data acquisition is not available yet** (#1474 part B). Configure
-the four time-file paths/hashes in the options table by hand, using absolute
-paths readable inside CameraAgent. The setup panel displays these fields
-read-only, with resolution/hash status, parsed EOP coverage and exclusive
-leap-second expiry. It makes no download request and never substitutes nominal
-zero EOP. The panel checks the default six-hour window from the selected scene
+Turning planning on is enough: the bundled time data needs no hand-placed files.
+To use other approved files, configure all four override paths/hashes in the
+options table, using absolute paths readable inside CameraAgent. The setup panel
+displays the active source (bundled or override), each file's status, path,
+SHA-256 and bundled provenance, the final and predicted EOP spans, whether the
+checked window uses final or predicted values, and the exclusive leap-second
+expiry. It makes no download request and never substitutes nominal zero EOP.
+**Refresh between releases is not available yet** (#1474 slice B2): the bundled
+pair ages with the release, and an upgrade brings a newer one. The panel checks the default six-hour window from the selected scene
 instant; an explicit search still validates its actual window and selected
 element epochs. Read-only paths are visible only through the authenticated setup
 surface; planner responses continue to omit local paths.
 
 The panel explains disabled planning, no validated orbital snapshot, missing or
-invalid time data, a configured SHA-256 mismatch, and expired/outside time
-coverage. Each reason links to the switch, Software & Catalog refresh setup, or
+invalid time data (an incomplete or invalid override, or a bundled pair that failed
+verification), a configured SHA-256 mismatch, and expired/outside time coverage.
+Expired coverage names the source and the date coverage ends. Each reason links to the switch, Software & Catalog refresh setup, or
 the read-only time-data setup instructions. A hash match by itself does not mean
 the file parsed or its coverage is usable. After replacing hand-configured bytes,
 update their pinned hashes to adopt the pair explicitly, then reload setup status.
