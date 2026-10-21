@@ -12,6 +12,11 @@ import sys
 # CoreCLR v10.0.0 pedecoder.h: native-image machine = PE machine XOR Linux (0x7b79).
 # https://github.com/dotnet/runtime/blob/v10.0.0/src/coreclr/inc/pedecoder.h
 MACHINES = {'linux-x64': 0x8664 ^ 0x7B79, 'linux-arm64': 0xAA64 ^ 0x7B79}
+# CoreCLR v10.0.13 pal.h: x64 has BeginAddress/EndAddress/UnwindData DWORDs;
+# arm64 has BeginAddress/UnwindData. The producer excludes its 4-byte sentinel.
+# https://github.com/dotnet/runtime/blob/v10.0.13/src/coreclr/pal/inc/pal.h
+# https://github.com/dotnet/runtime/blob/v10.0.13/src/coreclr/tools/aot/ILCompiler.ReadyToRun/Compiler/DependencyAnalysis/ReadyToRun/RuntimeFunctionsTableNode.cs
+RUNTIME_FUNCTION_SIZES = {'linux-x64': 12, 'linux-arm64': 8}
 
 
 def inspect_r2r(path, rid):
@@ -69,6 +74,8 @@ def inspect_r2r(path, rid):
     section_types = []
     for i in range(count):
         section_type, address, size = unpack('<III', native + 16 + i * 12)
+        if section_type == 102 and (not size or size % RUNTIME_FUNCTION_SIZES[rid]):
+            raise ValueError(f'{path.name}: invalid ReadyToRun runtime functions size for {rid}')
         rva_offset(address, size)
         section_types.append(section_type)
     if 115 in section_types or 116 in section_types:

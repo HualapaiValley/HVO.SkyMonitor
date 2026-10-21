@@ -88,7 +88,7 @@ class CameraAgentR2R(unittest.TestCase):
         self.assertIsNone(target.find('Exec'))
         self.assertIsNone(target.find('WriteLinesToFile'))
 
-    def pe(self, machine=0xFD1D, flags=0x4b, native=True):
+    def pe(self, machine=0xFD1D, flags=0x4b, native=True, runtime_functions=1):
         data = bytearray(1024)
         data[:2] = b'MZ'
         struct.pack_into('<I', data, 0x3c, 0x80)
@@ -105,7 +105,14 @@ class CameraAgentR2R(unittest.TestCase):
         if native:
             struct.pack_into('<II', data, 512 + 64, 0x2080, 28)
             struct.pack_into('<IHHII', data, 640, 0x00525452, 16, 0, flags, 1)
-            struct.pack_into('<III', data, 656, 102, 0x2100, 8)
+            # .NET 10 RuntimeFunctions records: x64 has three DWORDs, arm64 two.
+            record_format = '<II' if machine == 0xD11D else '<III'
+            record_size = struct.calcsize(record_format)
+            struct.pack_into('<III', data, 656, 102, 0x2100, record_size * runtime_functions)
+            for i in range(runtime_functions):
+                fields = (0x2140 + i * 16, 0x2160) if machine == 0xD11D else (
+                    0x2140 + i * 16, 0x2150 + i * 16, 0x2160)
+                struct.pack_into(record_format, data, 768 + i * record_size, *fields)
         path = self.root / 'HVO.SkyMonitor.CameraAgent.dll'
         path.write_bytes(data)
         return path
@@ -115,7 +122,35 @@ class CameraAgentR2R(unittest.TestCase):
 
     def test_accepts_both_linux_machines(self):
         for machine, rid in [(0xFD1D, 'linux-x64'), (0xD11D, 'linux-arm64')]:
-            self.assertEqual(self.probe(self.pe(machine), rid)['rid'], rid)
+            for count in (1, 2):
+                with self.subTest(rid=rid, runtime_functions=count):
+                    self.assertEqual(self.probe(self.pe(machine, runtime_functions=count), rid)['rid'], rid)
+
+    def test_rejects_empty_and_incomplete_runtime_function_records(self):
+        for machine, rid, record_size, other_size in [(0xFD1D, 'linux-x64', 12, 8),
+                                                     (0xD11D, 'linux-arm64', 8, 12)]:
+            for size in (0, record_size - 1, record_size + 1, other_size):
+                path = self.pe(machine)
+                data = bytearray(path.read_bytes())
+                struct.pack_into('<I', data, 664, size)
+                path.write_bytes(data)
+                with self.subTest(rid=rid, size=size), self.assertRaisesRegex(
+                        ValueError, 'invalid ReadyToRun runtime functions size'):
+                    self.probe(path, rid)
+
+    def test_rejects_runtime_function_tables_outside_section_or_truncated_file(self):
+        for machine, rid, record_size in [(0xFD1D, 'linux-x64', 12), (0xD11D, 'linux-arm64', 8)]:
+            for truncate_file in (False, True):
+                path = self.pe(machine)
+                data = bytearray(path.read_bytes())
+                if truncate_file:
+                    data = data[:768 + record_size - 1]
+                else:
+                    struct.pack_into('<I', data, 660, 0x21fc)
+                path.write_bytes(data)
+                with self.subTest(rid=rid, truncate_file=truncate_file), self.assertRaisesRegex(
+                        ValueError, 'RVA outside file sections'):
+                    self.probe(path, rid)
 
     def test_rejects_il_wrong_architecture_windows_and_composite(self):
         for path_args in [dict(native=False), dict(machine=0xD11D), dict(machine=0x8664),
