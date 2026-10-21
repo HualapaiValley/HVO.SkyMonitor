@@ -30,7 +30,7 @@ public sealed class UnixAccountEnumerationTests
 
     [TestMethod]
     [DataRow("passwd: files\ngroup: files", true)]
-    [DataRow("# local accounts\n passwd : files # comment\ngroup:\tfiles\ninitgroups: files\nhosts: files [NOTFOUND=return] dns", true)]
+    [DataRow("# local accounts\n passwd : files # comment\ngroup:\tfiles\ninitgroups: files\nhosts: files [NOTFOUND=return] dns", false)]
     [DataRow("passwd: files systemd\ngroup: files systemd", false)]
     [DataRow("passwd: files sss\ngroup: files sss", false)]
     [DataRow("passwd: files\ngroup: files sss", false)]
@@ -56,6 +56,28 @@ public sealed class UnixAccountEnumerationTests
         var database = UnixAccountDatabase.FromFileSources(() => configuration.Split('\n'),
             () => ["installer:x:1000:"], () => ["installer:x:1000:1000::/:/bin/sh"]);
         Assert.AreEqual(expected, database.IsPrivateGroup(1000, 1000, 1000));
+    }
+
+    [TestMethod]
+    [DataRow("passwd:\u00a0files\ngroup: files")]
+    [DataRow("passwd: files\u00a0\ngroup: files")]
+    [DataRow("\u00a0passwd: files\ngroup: files")]
+    [DataRow("passwd: files\ngroup:\u2003files")]
+    [DataRow("passwd: files\ngroup: files\ninitgroups:\u00a0files")]
+    public void PrivateGroup_NonAsciiConfigurationTokens_AreRefused(string configuration)
+    {
+        var database = UnixAccountDatabase.FromFileSources(() => configuration.Split('\n'),
+            () => ["installer:x:1000:"], () => ["installer:x:1000:1000::/:/bin/sh"]);
+        Assert.IsFalse(database.IsPrivateGroup(1000, 1000, 1000));
+    }
+
+    [TestMethod]
+    public void PrivateGroup_FullLineComment_AllowsUnicodeCommentText()
+    {
+        var database = UnixAccountDatabase.FromFileSources(
+            () => [" \t# \u00a0sss comment", "passwd: files", "group: files"],
+            () => ["installer:x:1000:"], () => ["installer:x:1000:1000::/:/bin/sh"]);
+        Assert.IsTrue(database.IsPrivateGroup(1000, 1000, 1000));
     }
 
     [TestMethod]
@@ -113,6 +135,9 @@ public sealed class UnixAccountEnumerationTests
     [DataRow("utf8", true)]
     [DataRow("utf16", false)]
     [DataRow("invalid-utf8", false)]
+    [DataRow("bare-cr", false)]
+    [DataRow("inline-comment", false)]
+    [DataRow("crlf", true)]
     public void PrivateGroup_FileConfiguration_RequiresCompleteUtf8(string encoding, bool expected)
     {
         const string configuration = "passwd: files\ngroup: files\n";
@@ -120,6 +145,9 @@ public sealed class UnixAccountEnumerationTests
         {
             "utf16" => [0xff, 0xfe, .. Encoding.Unicode.GetBytes(configuration)],
             "invalid-utf8" => [.. Encoding.UTF8.GetBytes(configuration), 0xff],
+            "bare-cr" => Encoding.UTF8.GetBytes("passwd: files\rhosts: sss\ngroup: files\n"),
+            "inline-comment" => Encoding.UTF8.GetBytes("passwd: files # sss\ngroup: files\n"),
+            "crlf" => Encoding.UTF8.GetBytes(configuration.Replace("\n", "\r\n", StringComparison.Ordinal)),
             _ => Encoding.UTF8.GetBytes(configuration)
         };
         var file = Path.GetTempFileName();

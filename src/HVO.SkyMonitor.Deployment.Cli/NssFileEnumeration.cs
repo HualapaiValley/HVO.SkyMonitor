@@ -8,8 +8,10 @@ internal static class NssFileEnumeration
         var databases = new HashSet<string>(StringComparer.Ordinal);
         foreach (var rawLine in configuration)
         {
-            var line = rawLine.Split('#', 2)[0].Trim();
-            if (line.Length == 0) continue;
+            // NSS scans byte whitespace, not Unicode whitespace, and does not strip inline # source tokens.
+            var line = rawLine.Trim(' ', '\t', '\r', '\n', '\v', '\f');
+            if (line.Length == 0 || line[0] == '#') continue;
+            if (line.Any(character => !char.IsAscii(character))) return false;
             var separator = line.IndexOf(':', StringComparison.Ordinal);
             if (separator <= 0 || line.Contains('\\', StringComparison.Ordinal)) return false;
             var database = line[..separator].Trim();

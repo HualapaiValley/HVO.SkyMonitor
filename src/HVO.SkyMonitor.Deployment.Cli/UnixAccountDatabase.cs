@@ -67,9 +67,11 @@ internal sealed class UnixAccountDatabase(Func<IEnumerable<string>> groups, Func
 
     private static uint Id(string value) => uint.Parse(value, NumberStyles.None, CultureInfo.InvariantCulture);
 
-    internal static IEnumerable<string> ReadFile(string path)
+    internal static string[] ReadFile(string path)
     {
         using var reader = new StreamReader(path, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
-        while (reader.ReadLine() is { } line) yield return line;
+        // NSS reads physical LF-delimited lines. ReadLine would turn a bare CR into a separate entry.
+        var lines = reader.ReadToEnd().Split('\n');
+        return lines[^1].Length == 0 ? lines[..^1] : lines;
     }
 }
