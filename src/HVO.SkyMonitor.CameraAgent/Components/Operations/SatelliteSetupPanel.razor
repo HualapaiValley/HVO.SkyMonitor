@@ -33,13 +33,17 @@
         </div>
         <details id="satellite-time-data">
             <summary>Read-only time-data configuration and resolved status</summary>
-            <p>Managed time data is not available yet (#1474 part B). Configure <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. Environment variables and <code>config/secrets</code> override that file.</p>
+            <p>Each CameraAgent release bundles one verified finals2000A Earth-orientation file and one <code>leap-seconds.list</code>, and planning uses that pair by default. To override it, set all four of <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. While any of them is set, the bundled pair is not used: an incomplete or invalid override stops planning. Environment variables and <code>config/secrets</code> override that file. Automatic refresh between releases is not available yet.</p>
             <dl class="ops-facts">
+                <div class="full"><dt>Active source</dt><dd>@(view.ActiveSource ?? "Not resolved")</dd></div>
                 @foreach (var file in view.Files)
                 {
-                    <div class="full"><dt>@file.Title</dt><dd>@file.Status<small>Path: @(file.Path ?? "Not configured")</small><small>SHA-256: @(file.Sha256 ?? "Not configured")</small></dd></div>
+                    <div class="full"><dt>@file.Title</dt><dd>@file.Status<small>Path: @(file.Path ?? "Not configured")</small><small>SHA-256: @(file.Sha256 ?? "Not configured")</small>@if (file.Origin is { } origin) { <small>Provenance: @origin</small> }</dd></div>
                 }
-                <div class="full"><dt>Earth-orientation coverage</dt><dd>@(view.EarthOrientationCoverage is { } coverage ? $"{coverage.StartUtc:O} to {coverage.EndUtc:O}" : "Not resolved")</dd></div>
+                <div class="full"><dt>Earth-orientation coverage</dt><dd>@Interval(view.EarthOrientationCoverage)</dd></div>
+                <div class="full"><dt>Final (Bulletin B)</dt><dd>@Interval(view.FinalCoverage)</dd></div>
+                <div class="full"><dt>Predicted (Bulletin A)</dt><dd>@Interval(view.PredictedCoverage)<small>Rapid observed-only days between the final and predicted spans are not used.</small></dd></div>
+                <div class="full"><dt>Checked window</dt><dd>@Window(view.WindowEarthOrientation)</dd></div>
                 <div class="full"><dt>Leap-second expiry (exclusive)</dt><dd>@(view.LeapSecondsExpireUtc?.ToString("O") ?? "Not resolved")</dd></div>
             </dl>
             <p><a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/astronomy/satellite-planning-v1.md#enable-local-planning">Time-data setup instructions</a>. Capture-time predicted tracks remain unavailable pending #529/#1393; astrometry remains unavailable pending #526/#1187/#523.</p>
