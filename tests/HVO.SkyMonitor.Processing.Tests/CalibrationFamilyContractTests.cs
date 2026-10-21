@@ -376,6 +376,41 @@ public sealed class CalibrationFamilyContractTests
     }
 
     [TestMethod]
+    public void ValidationRejectsABiasDarkOrFlatSharedAcrossInputLayouts()
+    {
+        var otherLayout = Layout() with { SampleDepthBits = 14, WhiteLevel = 16_383 };
+        foreach (var kind in new[] { CalibrationReferenceKinds.Bias, CalibrationReferenceKinds.Dark, CalibrationReferenceKinds.Flat })
+        {
+            var shared = Masters(100).Single(master => master.Kind == kind);
+            var sharing = Masters(101).Select(master => master.Kind == kind ? shared : master).ToArray();
+
+            AssertInvalid(
+                Family(Member(100), Member(100, "gain-100-14-bit") with { InputLayout = otherLayout, Masters = sharing }),
+                CalibrationFamilyReasonCodes.InvalidContract,
+                "members.masters");
+        }
+
+        var defect = Masters(100).Single(master => master.Kind == CalibrationReferenceKinds.Defect);
+        Assert.IsTrue(CalibrationFamilyContract.Validate(Family(
+            Member(100),
+            Member(100, "gain-100-14-bit") with
+            {
+                InputLayout = otherLayout,
+                Masters = [.. Masters(101).Select(master => master.Kind == CalibrationReferenceKinds.Defect ? defect : master)]
+            })).IsValid);
+    }
+
+    [TestMethod]
+    public void ValidationReportsADuplicateMemberIdBeforeAnyMemberField()
+    {
+        var invalidLayout = Member(100, "duplicate") with { InputLayout = Layout() with { Readout = null } };
+        var invalidTemperature = Member(100, "duplicate") with { MinimumTemperatureC = double.NaN };
+
+        AssertInvalid(Family(invalidLayout, invalidTemperature), CalibrationFamilyReasonCodes.DuplicateMember, "members.memberId");
+        AssertInvalid(Family(invalidTemperature, invalidLayout), CalibrationFamilyReasonCodes.DuplicateMember, "members.memberId");
+    }
+
+    [TestMethod]
     public void ValidationRejectsInconsistentMaskFamilies()
     {
         AssertInvalid(
