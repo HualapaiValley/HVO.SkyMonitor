@@ -328,6 +328,8 @@ public class Program
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
         builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
+        builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
+        builder.Services.AddSingleton<SpaceWeatherUiProjectionSource>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
