@@ -64,6 +64,7 @@ public sealed partial class OrbitalElementsRefreshJob
     internal const string UnchangedPayloadReasonCode = "orbital.unchanged-payload";
 
     private readonly IOrbitalElementsStore _store;
+    private readonly OrbitalSnapshotReader? _reader;
     private readonly IOrbitalElementsProviderClient _client;
     private readonly IOptions<CameraAgentHostOptions> _options;
     private readonly TimeProvider _timeProvider;
@@ -81,7 +82,8 @@ public sealed partial class OrbitalElementsRefreshJob
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         OrbitalElementsTelemetry? telemetry,
-        ILogger<OrbitalElementsRefreshJob> logger)
+        ILogger<OrbitalElementsRefreshJob> logger,
+        OrbitalSnapshotReader? reader = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(client);
@@ -89,6 +91,7 @@ public sealed partial class OrbitalElementsRefreshJob
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
+        _reader = reader;
         _client = client;
         _options = options;
         _timeProvider = timeProvider;
@@ -413,6 +416,10 @@ public sealed partial class OrbitalElementsRefreshJob
             string.Create(CultureInfo.InvariantCulture,
                 $"manifest={publication.ManifestSha256} payload={publication.PayloadSha256} records={publication.RecordCount} objects={publication.ObjectCount}")));
         await ApplyRetentionBestEffortAsync(cancellationToken).ConfigureAwait(false);
+        if (_reader is not null && !await _reader.PrepareCurrentAsync(cancellationToken).ConfigureAwait(false))
+        {
+            execution = execution with { Detail = string.Concat(execution.Detail, "; orbital.preparation-unavailable: durable activation succeeded") };
+        }
         return execution;
     }
 

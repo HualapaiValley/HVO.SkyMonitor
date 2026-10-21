@@ -61,10 +61,11 @@ internal static class OrbitalElementsServiceCollectionExtensions
         services.AddSingleton<OrbitalElementsHealthEvaluator>();
 
         // Storage is always configured, so last-known-good stays readable while refresh is disabled or halted.
-        services.AddSingleton<IOrbitalSnapshotReader>(static provider => new OrbitalSnapshotReader(
+        services.AddSingleton<OrbitalSnapshotReader>(static provider => new OrbitalSnapshotReader(
             provider.GetRequiredService<SqliteOrbitalElementsStore>(), configured: true,
             provider.GetRequiredService<ILogger<OrbitalSnapshotReader>>()));
 
+        services.AddSingleton<IOrbitalSnapshotReader>(static provider => provider.GetRequiredService<OrbitalSnapshotReader>());
         services.AddHostedService<OrbitalElementsInitializationService>();
         return services;
     }

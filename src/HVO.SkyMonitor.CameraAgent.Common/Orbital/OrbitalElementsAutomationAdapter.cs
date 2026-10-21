@@ -50,6 +50,8 @@ public sealed class OrbitalElementsAutomationAdapter : ILocalAutomationPeriodicT
 
     public bool SupportsRunNow => true;
 
+    public bool RunsOffSweep => true;
+
     public LocalAutomationTaskDescriptor Describe() => Descriptor;
 
     /// <summary>Fast and I/O-free: it is called inside the automation store's write transaction.</summary>
