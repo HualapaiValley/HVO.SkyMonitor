@@ -280,8 +280,7 @@ public sealed class CameraAgentSatellitePlanner(
     /// <summary>The last supported instant when it falls before the requested end; gaps and leap crossings are not expiry.</summary>
     public static DateTimeOffset? CoverageEndsBefore(OrbitalTimeData time, DateTimeOffset endUtc)
     {
-        ArgumentNullException.ThrowIfNull(time);
-        var end = time.EarthOrientationCoverage is { } eop && eop.EndUtc < time.LeapTableCoverage.EndUtc ? eop.EndUtc : time.LeapTableCoverage.EndUtc;
+        var end = CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(time);
         return endUtc > end ? end : null;
     }
 
