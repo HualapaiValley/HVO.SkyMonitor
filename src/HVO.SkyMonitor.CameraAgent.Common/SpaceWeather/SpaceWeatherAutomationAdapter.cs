@@ -4,6 +4,11 @@ using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
 
 /// <summary>The reserved periodic tick; per-product provider cadence is enforced by policy.</summary>
+/// <remarks>
+/// Removing this definition cannot guarantee downgrade: retained revisions and run occurrences still
+/// name the appended task kind, which older binaries reject while reading automation state. Upgrade
+/// forward; this adapter supplies no history rewrite or rollback. See SqliteLocalAutomationStore.ParseEnum.
+/// </remarks>
 public sealed class SpaceWeatherAutomationAdapter(SpaceWeatherRefreshJob job) : ILocalAutomationPeriodicTaskAdapter
 {
     public const string DefinitionId = "space-weather-refresh";

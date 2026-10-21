@@ -643,3 +643,94 @@ adapter against a Kestrel-hosted LogicHost with the real runner binary and
 records cold and warm start, drain throughput with 1, 2, and 4 instances,
 scale-to-zero and cleanup timing, and host CPU/memory to
 `TestResults/elastic-providers/<revision>/elastic-provider-evidence.json`.
+
+## Space-weather refresh composition (Refs #1398)
+
+Tier C evidence recorded 2026-10-21 UTC by the two offline Manual methods in
+`SpaceWeatherRefreshPerformanceTests`. Each method ran once, separately, after
+the focused candidate gate passed. The live probe was not run.
+
+| Field | Recorded evidence |
+| --- | --- |
+| Workload | Four core products from committed `swpc-v1` capture bytes; alerts padded with JSON whitespace to 1 MiB. One warmup and five full-tick/restart/sweep repeats; 720 direct job ticks at compressed 120-second spacing. Retention seeds 35 days with one full tick per day, then advances another 35 days. Parser inputs repeat one valid synthetic record 2,000 times and reject 2,001; the largest committed scenario body per product is also classified. |
+| Environment | 12-vCPU x64 Linux VM, Intel i9-14900K reported, ext4, Release; SDK 10.0.402, .NET 10.0.13. All build/test starts waited for load1 below 6 and the shared MEASURING marker to be absent; start/end loads are retained with external evidence. |
+| I/O | Zero network requests and zero-latency stub responses; real SQLite WAL/FULL publication, reads, retention and restart. Physical database plus sidecar growth is 1,744,896 bytes per simulated day. This is footprint growth, not block-device I/O or write amplification. |
+| CPU | Full tick p95 process CPU 6504.016 ms; compressed-day CPU 3233207.523 ms. All stage distributions are below. Concurrent capture CPU/allocation includes refresh. |
+| Memory | Full tick p95 allocation 3353.752 MiB, 3322.129× the 1,058,557 decoded bytes. Working-set deltas and generation 0/1/2 collections are below; delta is not peak process footprint. |
+| Latency | Full tick p95 5537.415 ms excluding network, against the provisional 50 ms ceiling. Singleton stages have one sample, so their three quantiles coincide. |
+| Throughput | 1098 provider attempts over 720 ticks; 0.239 ticks per real second in the compressed day. This is offline composition throughput, not provider request permission. |
+| Backlog | The benchmark awaits one serialized job at a time. It does not qualify a queued backlog or the full 50,000-attempt/10,000-receipt caps. Production uses the existing bounded off-sweep worker; no capture or live processing slot is acquired. |
+| Result | Provisional ceilings exceeded: tick p95, tick allocation / decoded bytes. This baseline does not establish those performance budgets. The frozen Fetch/Policy/Storage and Processing contracts were not changed. Parser-only 2,000-record parsing also took 45.350 seconds and allocated 39.46 GiB, independently exposing a cost in the frozen parser boundary; allocation call stacks were not profiled. No existing performance threshold was changed. |
+
+| Stage (samples) | Wall ms med/p95/max | CPU ms med/p95/max | Alloc MiB med/p95/max | WS delta MiB med/p95/max | GC 0/1/2 sum |
+| --- | --- | --- | --- | --- | --- |
+| fullTick1MiB (5) | 5220.790 / 5537.415 / 5537.415 | 5934.598 / 6504.016 / 6504.016 | 3353.563 / 3353.752 / 3353.752 | -4.074 / 12.582 / 12.582 | 1273/848/193 |
+| sweepWithoutDefinition (5) | 0.369 / 0.657 / 0.657 | 0.380 / 1.672 / 1.672 | 0.011 / 0.012 / 0.012 | 0.000 / 0.000 / 0.000 | 0/0/0 |
+| sweepWithNotDueDefinition (5) | 0.681 / 1.220 / 1.220 | 1.101 / 1.652 / 1.652 | 0.026 / 0.027 / 0.027 | 0.000 / 0.000 / 0.000 | 0/0/0 |
+| restartRebuild (5) | 8.863 / 13.367 / 13.367 | 9.357 / 16.273 / 16.273 | 5.076 / 5.088 / 5.088 | 0.000 / 0.016 / 0.016 | 2/0/0 |
+| simulatedDay120SecondTicks (1) | 3012438.126 / 3012438.126 / 3012438.126 | 3233207.523 / 3233207.523 / 3233207.523 | 2355943.291 / 2355943.291 / 2355943.291 | -21.270 / -21.270 / -21.270 | 224030/195456/69659 |
+| retention35DayHistory (1) | 4.642 / 4.642 / 4.642 | 2.449 / 2.449 / 2.449 | 0.044 / 0.044 / 0.044 | 0.004 / 0.004 / 0.004 | 0/0/0 |
+| alerts2000Records (1) | 45350.071 / 45350.071 / 45350.071 | 48417.567 / 48417.567 / 48417.567 | 40406.981 / 40406.981 / 40406.981 | -14.543 / -14.543 / -14.543 | 3934/3694/1291 |
+| alerts2001RecordsRejected (1) | 0.776 / 0.776 / 0.776 | 0.772 / 0.772 / 0.772 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0/0/0 |
+| largestCommittedScenarioBodies (1) | 106.707 / 106.707 / 106.707 | 114.969 / 114.969 / 114.969 | 90.961 / 90.961 / 90.961 | -3.488 / -3.488 / -3.488 | 9/6/3 |
+| captureBaseline (20) | 22.657 / 24.015 / 24.051 | 24.993 / 46.842 / 50.619 | 11.767 / 11.776 / 11.776 | 11.547 / 12.164 / 12.938 | 8/8/8 |
+| captureWithMaximumRateRefresh (20) | 28.404 / 38.620 / 43.256 | 54.487 / 70.418 / 79.709 | 27.402 / 30.375 / 30.703 | 0.551 / 12.891 / 14.895 | 39/35/19 |
+
+Full tick decoded bytes: 1,058,557, including 1,048,576 alerts bytes. Provisional tick ceilings: p95 5537.415 ms versus 50 ms; allocation p95 3322.129× decoded bytes versus 8×; working-set delta p95 12.582 MiB versus 32 MiB; physical database/sidecar growth 1.664 MiB/day versus 5 MiB/day.
+
+The compressed day made 1098 provider attempts over 720 ticks, 0.239 ticks per real second. Capture p95 changed +60.81% (24.015 to 38.620 ms); all 20 frame checksums matched, 1 concurrent provider attempts, zero network requests. Process-scoped CPU/allocation in the concurrent series includes refresh. These are sequential A/B observations, not a statistical or hardware qualification claim.
+
+Tick/restart/sweep stages have one warmup and five measured repeats. Day, retention, record-bound and largest-scenario stages each have one measured sample; their median/p95/max are therefore identical. Capture has one warmup and 20 measured frames per series. Restart uses a new store in the same process with OS page cache retained. Full distributions and per-sample values are retained in JSON.
+
+
+| Provisional comparison | Measured | Ceiling | Result |
+| --- | --- | --- | --- |
+| tick p95 | 5537.415 ms | 50 ms | Over |
+| tick allocation / decoded bytes | 3322.129 × | 8 × | Over |
+| tick working-set delta p95 | 12.582 MiB | 32 MiB | Within |
+| database growth / simulated day | 1.664 MiB | 5 MiB | Within |
+
+| Sized stage | Decoded input bytes | Allocation p95 / input bytes | 8× comparison |
+| --- | --- | --- | --- |
+| fullTick1MiB | 1,058,557 | 3322.129× | Over |
+| restartRebuild | 1,058,557 | 5.040× | Within |
+| alerts2000Records | 398,001 | 106456.492× | Over |
+| alerts2001RecordsRejected | 398,200 | 0.001× | Within |
+| largestCommittedScenarioBodies | 40,021 | 2383.233× | Over |
+
+Sweep and retention stages have no new decoded-input denominator; the compressed day does not record cumulative decoded bytes. Their allocations remain reported in full above. Capture allocations include pixel production and concurrent refresh, so the weather byte-multiplier budget is not applied to those rows. All recorded per-stage working-set delta p95 values are below 32 MiB; these are deltas, not peak process sizes.
+
+The 50 ms latency comparison applies to the full tick with the 1 MiB alerts body;
+control-path, parser, restart and cumulative day/retention stages are reported
+separately above. The 32 MiB comparison uses the measured working-set delta,
+not a peak-memory assertion. One external read-only row-count diagnostic was
+taken during the long simulated-day stage; it did not modify domain state. The
+5 MiB comparison uses physical database/sidecar
+growth. Overages are reported without tuning frozen code to make the test pass.
+
+Capture isolation uses the real VirtualSky module at 1280×960 Mono16, a fixed
+empty in-memory catalog, disabled sensor noise, one warmup and 20 frames per
+series. Concurrent direct manual jobs target the policy's 60-second minimum logical
+spacing. Only one provider attempt overlapped this short capture series, so it
+does not establish sustained maximum-rate qualification. All frame checksums
+match; p95 changes by
++60.81%. This measures module rendering under contention,
+not full host/camera hardware or pipeline qualification. Sequential A/B sampling
+does not establish statistical significance. The observed 60.81% p95 increase
+and the tick/allocation overages require owner profiling and disposition before
+merge; no performance qualification is claimed. No capture threshold is tightened.
+
+JSON artifacts are `space-weather-refresh-performance.json` and
+`space-weather-capture-isolation.json`, under `HVO_ISSUE1398_EVIDENCE_ROOT`
+(default `TestResults/issue-1398/`). They include raw samples, environment,
+input lengths/hashes and per-product largest-scenario provenance. The 1 MiB
+alerts SHA-256 is `9F0008C04D9833E9E809235F2BC2203F79BA1948FA4317354E6CEFD143999EF8`. Restart creates a new store in
+the same process; OS page cache remains warm. Capture correctness is byte-exact.
+
+Run these separately after the applicable gate and load/marker check, with
+TMPDIR unset and `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock`:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build -c Release -m:4 --filter "TestCategory=Manual&FullyQualifiedName~SpaceWeatherRefreshPerformanceTests.FullTickRetentionRestartSimulatedDayAndRunnerSweepsAreMeasured"
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build -c Release -m:4 --filter "TestCategory=Manual&FullyQualifiedName~SpaceWeatherRefreshPerformanceTests.CapturePathWithAndWithoutConcurrentMaximumRateRefreshIsMeasured"
+```
