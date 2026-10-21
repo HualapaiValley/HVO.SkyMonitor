@@ -1,11 +1,13 @@
 using System.Globalization;
 using Bunit;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using static HVO.SkyMonitor.CameraAgent.Tests.Components.TestSpaceWeatherUiService;
 using SwData = HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.SpaceWeatherUiTestData;
 
@@ -63,6 +65,8 @@ public sealed class SpaceWeatherAttentionTests
         CollectionAssert.AreEqual(AllLinks, items.Select(static item => item.LinkText).ToArray());
         Assert.IsTrue(items.All(static item => item.Section == SpaceWeatherAttention.Section && item.Href == SpaceWeatherHref));
         Assert.AreEqual("Some records could not be read for: alerts.", items[3].Detail);
+        Assert.AreEqual("An HVO SkyMonitor estimate from SWPC notices that are unacknowledged, changed since acknowledgement, " +
+            "or whose escalation since acknowledgement cannot be determined. Cloud is not assessed.", items[0].Detail);
         StringAssert.Contains(items[0].Detail, "HVO SkyMonitor estimate", StringComparison.Ordinal);
         StringAssert.Contains(items[0].Detail, "Cloud is not assessed.", StringComparison.Ordinal);
         foreach (var item in items)
@@ -89,6 +93,22 @@ public sealed class SpaceWeatherAttentionTests
         var items = SpaceWeatherAttention.From(Acknowledged());
 
         Assert.AreEqual("One notice to review", items.Single().Title);
+    }
+
+    [TestMethod]
+    public void From_RaisesHaltItemsOnlyForConfiguredProducts()
+    {
+        var projection = Projection(SwData.Status(products:
+        [
+            SwData.Product(configured: false, halt: Halt()),
+            SwData.Product(product: "scales", halt: Halt("rejected-repeatedly")),
+        ]));
+
+        var titles = SpaceWeatherAttention.From(projection).Select(static item => item.Title).ToArray();
+
+        Assert.HasCount(2, projection.ProductHalts);
+        CollectionAssert.DoesNotContain(titles, "SWPC fetching halted (alerts)");
+        Assert.AreEqual("SWPC fetching halted (scales)", titles.Single(static title => title.StartsWith("SWPC fetching halted", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -156,7 +176,7 @@ public sealed class SpaceWeatherAttentionTests
     [TestMethod]
     public void Layout_AFailedReadAfterASuccessfulOneKeepsOnlyTheStoreItem()
     {
-        using var context = CreateLayoutContext(out var spaceWeather);
+        using var context = CreateLayoutContext(out var spaceWeather, spaceWeatherEnabled: true);
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
         cut.WaitForAssertion(() => Assert.AreEqual("2 open attention items", Badge(cut, SpaceWeatherAttention.Section)));
@@ -174,17 +194,56 @@ public sealed class SpaceWeatherAttentionTests
     }
 
     [TestMethod]
+    public void Layout_AFirstReadThatFailsWithTheSwitchOnShowsOnlyTheStoreItem()
+    {
+        using var context = CreateLayoutContext(out var spaceWeather, spaceWeatherEnabled: true);
+        spaceWeather.GetHandler = static _ => ValueTask.FromResult(OperatorUiResult<SpaceWeatherUiView>.Failure(
+            OperatorUiResultKind.Unavailable, SpaceWeatherSummary.UnavailableText));
+
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+
+        cut.WaitForAssertion(() => Assert.AreEqual("1 open attention item", Badge(cut, SpaceWeatherAttention.Section)));
+        Assert.AreEqual("Review", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim());
+        Assert.IsTrue(cut.Instance.SpaceWeatherUnavailable);
+        Assert.AreEqual("Space-weather store unavailable", cut.Instance.SpaceWeatherItems.Single().Title);
+        Assert.AreEqual(1, spaceWeather.Reads);
+    }
+
+    [TestMethod]
+    public void Layout_ConsecutiveFailedReadsWithTheSwitchOnKeepTheStoreItem()
+    {
+        using var context = CreateLayoutContext(out var spaceWeather, spaceWeatherEnabled: true);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+        cut.WaitForAssertion(() => Assert.AreEqual("2 open attention items", Badge(cut, SpaceWeatherAttention.Section)));
+        spaceWeather.GetHandler = static _ => ValueTask.FromResult(OperatorUiResult<SpaceWeatherUiView>.Failure(
+            OperatorUiResultKind.Unavailable, SpaceWeatherSummary.UnavailableText));
+        navigation.NavigateTo("/operations/system");
+        cut.WaitForAssertion(() => Assert.AreEqual("1 open attention item", Badge(cut, SpaceWeatherAttention.Section)));
+        var firstFailure = cut.Instance.SpaceWeatherItems;
+
+        navigation.NavigateTo("/operations/storage");
+
+        cut.WaitForAssertion(() => Assert.AreNotSame(firstFailure, cut.Instance.SpaceWeatherItems));
+        Assert.AreEqual(3, spaceWeather.Reads);
+        Assert.AreEqual("1 open attention item", Badge(cut, SpaceWeatherAttention.Section));
+        Assert.AreEqual("Space-weather store unavailable", cut.Instance.SpaceWeatherItems.Single().Title);
+        Assert.IsTrue(cut.Instance.SpaceWeatherUnavailable);
+    }
+
+    [TestMethod]
     [DataRow(true)]
     [DataRow(false)]
-    public void Layout_AFirstReadThatFailsOrIsDeniedClaimsNothing(bool denied)
+    public void Layout_AFailedReadClaimsNothingWhenAccessIsDeniedOrTheSwitchIsOff(bool denied)
     {
-        using var context = CreateLayoutContext(out var spaceWeather);
+        using var context = CreateLayoutContext(out var spaceWeather, spaceWeatherEnabled: denied);
         spaceWeather.GetHandler = _ => ValueTask.FromResult(OperatorUiResult<SpaceWeatherUiView>.Failure(
             denied ? OperatorUiResultKind.Unauthorized : OperatorUiResultKind.Unavailable, "down"));
 
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
 
-        cut.WaitForAssertion(() => Assert.AreEqual("Healthy", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
+        cut.WaitForAssertion(() => Assert.AreEqual(1, spaceWeather.Reads));
+        Assert.AreEqual("Healthy", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".ops-nav-badge.attention"));
         Assert.IsEmpty(cut.Instance.SpaceWeatherItems);
         Assert.AreEqual(!denied, cut.Instance.SpaceWeatherUnavailable);
@@ -257,12 +316,16 @@ public sealed class SpaceWeatherAttentionTests
         _ => $"{count} open attention items.",
     };
 
-    private static BunitContext CreateLayoutContext(out TestSpaceWeatherUiService spaceWeather)
+    private static BunitContext CreateLayoutContext(out TestSpaceWeatherUiService spaceWeather, bool spaceWeatherEnabled = false)
     {
         var context = new BunitContext();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
         spaceWeather = new TestSpaceWeatherUiService();
         context.Services.AddSingleton<ICameraAgentSpaceWeatherUiService>(spaceWeather);
+        context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions
+        {
+            SpaceWeather = new SpaceWeatherOptions { Enabled = spaceWeatherEnabled },
+        }));
         context.JSInterop.SetupModule("./Components/Layout/ResponsiveNavigation.razor.js").Mode = JSRuntimeMode.Loose;
         return context;
     }

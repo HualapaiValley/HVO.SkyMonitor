@@ -163,7 +163,7 @@ public sealed class SpaceWeatherUiProjectionBuilderTests
     }
 
     [TestMethod]
-    public void UnknownEscalationIsNotAcknowledgeableButStillCountsTowardTheSite()
+    public void UnknownEscalationIsAcknowledgeableAgainAndStillCountsTowardTheSite()
     {
         var root = Warning(1, Now.AddHours(-2), Now.AddHours(4), code: "WARK09", level: "G5");
         var acknowledgements = new Dictionary<SwpcMessageNode, SwpcAcknowledgement> { [Node("WARK09", 1)] = new("owner", Now.AddHours(-3)) };
@@ -172,7 +172,7 @@ public sealed class SpaceWeatherUiProjectionBuilderTests
 
         Assert.AreEqual(SpaceWeatherEscalation.Unknown, projection.Current.Single().Escalation);
         Assert.AreEqual("acknowledged; escalation since then cannot be determined", projection.Current.Single().EscalationText);
-        Assert.IsFalse(projection.Current.Single().NeedsAcknowledgement);
+        Assert.IsTrue(projection.Current.Single().NeedsAcknowledgement);
         Assert.AreEqual(1, projection.ReachCount);
     }
 

@@ -140,8 +140,12 @@ public sealed record SpaceWeatherUiNotice
 
     public bool IsCurrent => State is SwpcNoticeState.Pending or SwpcNoticeState.Active;
 
-    /// <summary>Unacknowledged, or escalated since it was acknowledged.</summary>
-    public bool NeedsAcknowledgement => Escalation is SpaceWeatherEscalation.NotAcknowledged or SpaceWeatherEscalation.Escalated;
+    /// <summary>
+    /// Unacknowledged, escalated since it was acknowledged, or of undeterminable escalation; a fresh acknowledgement
+    /// records a new acknowledgement time.
+    /// </summary>
+    public bool NeedsAcknowledgement => Escalation is SpaceWeatherEscalation.NotAcknowledged or
+        SpaceWeatherEscalation.Escalated or SpaceWeatherEscalation.Unknown;
 
     /// <summary>Within or near the site's geomagnetic latitude by the HVO estimate.</summary>
     public bool ReachesSite => Relevance is LocalRelevanceCategory.InImpactArea or LocalRelevanceCategory.PossibleNearHorizon;
@@ -212,6 +216,14 @@ public sealed record SpaceWeatherUiProjection
     public int HistoryNotShown => HistoryTotal - History.Count;
     public int NoticeTotal => CurrentTotal + RecentTotal + HistoryTotal;
     public int HistoryPageCount => Math.Max(1, (History.Count + SpaceWeatherUiBounds.HistoryPageSize - 1) / SpaceWeatherUiBounds.HistoryPageSize);
+
+    /// <summary>A retained halt on a product this host does not fetch; it cannot be resumed here.</summary>
+    public bool IsUnconfigured(SpaceWeatherUiHalt halt)
+    {
+        ArgumentNullException.ThrowIfNull(halt);
+        return halt.Product is { } product &&
+            !Sources.Any(source => source.Configured && string.Equals(source.Product, product, StringComparison.Ordinal));
+    }
 
     /// <summary>Clamps a requested history page to the navigable range.</summary>
     public int ClampHistoryPage(int index) => Math.Clamp(index, 0, Math.Min(SpaceWeatherUiBounds.HistoryPages, HistoryPageCount) - 1);

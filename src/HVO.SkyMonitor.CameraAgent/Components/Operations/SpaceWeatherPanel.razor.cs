@@ -21,6 +21,7 @@ public sealed partial class SpaceWeatherPanel : ComponentBase, IAsyncDisposable
     internal const string AutomationsRunsLink = "/operations/automations?view=runs";
     internal const string CloudText = "Cloud: not assessed";
     internal const string InconsistentText = "Data changed while reading; reload.";
+    internal const string UnconfiguredHaltText = "Product not configured; this retained halt cannot be resumed here.";
     internal const string NoNoticesText = "No SWPC notices retained.";
     internal const string NoFirstSuccessText =
         "No successful fetch yet. Notices appear here after the first successful fetch of the alerts product.";
@@ -443,8 +444,16 @@ public sealed partial class SpaceWeatherPanel : ComponentBase, IAsyncDisposable
 
     private static string AcknowledgementText(SpaceWeatherUiNotice notice)
         => notice.AcknowledgedAt is { } at
-            ? string.Concat("Acknowledged ", at.UtcText, " (", at.LocalText, "); ", notice.EscalationText)
+            ? string.Concat("Acknowledged ", at.UtcText, " (", at.LocalText, ")", AcknowledgementSuffix(notice.Escalation))
             : "Not acknowledged";
+
+    /// <summary>What follows the acknowledgement time; a settled acknowledgement needs no suffix.</summary>
+    private static string AcknowledgementSuffix(SpaceWeatherEscalation escalation) => escalation switch
+    {
+        SpaceWeatherEscalation.Escalated => "; escalated since acknowledged",
+        SpaceWeatherEscalation.Unknown => "; escalation since then cannot be determined",
+        _ => string.Empty
+    };
 
     internal static string Number(int value) => value.ToString("N0", CultureInfo.InvariantCulture);
 

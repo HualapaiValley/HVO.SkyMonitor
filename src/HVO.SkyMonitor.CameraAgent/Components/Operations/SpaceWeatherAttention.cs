@@ -29,7 +29,7 @@ internal static class SpaceWeatherAttention
             items.Add(new(Section, "warning", "warning",
                 Count(projection.ReachCount, "notice reaches or approaches", "notices reach or approach") +
                 " this site's geomagnetic latitude",
-                "An HVO SkyMonitor estimate from SWPC notices that are unacknowledged or changed since acknowledgement. Cloud is not assessed.",
+                "An HVO SkyMonitor estimate from SWPC notices that are unacknowledged, changed since acknowledgement, or whose escalation since acknowledgement cannot be determined. Cloud is not assessed.",
                 Href, "Review"));
         }
         if (projection.ReviewCount > 0)
@@ -55,7 +55,7 @@ internal static class SpaceWeatherAttention
         {
             items.Add(Halted(providerHalt));
         }
-        foreach (var halt in projection.ProductHalts)
+        foreach (var halt in projection.ProductHalts.Where(halt => !projection.IsUnconfigured(halt)))
         {
             items.Add(Halted(halt));
         }

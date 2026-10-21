@@ -1,8 +1,10 @@
 using System.Globalization;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
+using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using static HVO.SkyMonitor.CameraAgent.Tests.Components.TestSpaceWeatherUiService;
@@ -143,6 +145,27 @@ public sealed class SpaceWeatherPanelTests
             Assert.AreEqual(SpaceWeatherOperations.Credit, cut.Find("#space-weather-credit").TextContent);
         });
         AssertCompliantWording(cut.Markup);
+    }
+
+    [TestMethod]
+    public void Ready_SaysTheCloudTextExactlyOnce()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var status = SwData.Status(providerHalt: Halt(),
+            products: [SwData.Product(rejected: 5, halt: Halt("rejected-repeatedly"))]);
+        service.GetHandler = _ => Success(View(SwData.Project(SwData.View(Notices(), recordDrift: Now.AddHours(-2)), status: status)));
+
+        var cut = context.Render<SpaceWeatherPanel>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(2, cut.FindAll("article.space-weather-notice"));
+            Assert.HasCount(2, cut.FindAll("article.space-weather-halt"));
+            Assert.HasCount(2, cut.FindAll("#space-weather-drift li"));
+        });
+        Assert.AreEqual(1, Occurrences(cut.Markup, SpaceWeatherPanel.CloudText), cut.Markup);
+        StringAssert.StartsWith(cut.Find("#space-weather-cloud").TextContent, SpaceWeatherPanel.CloudText, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -436,7 +459,8 @@ public sealed class SpaceWeatherPanelTests
         var service = Configure(context);
         var status = provider
             ? SwData.Status(providerHalt: new SpaceWeatherOperations.HaltStatus("rate-limited", "2026-10-20T13:07:42+02:00"))
-            : SwData.Status(products: [SwData.Product(configured: false, halt: Halt())]);
+            : SwData.Status(products:
+                [SwData.Product(halt: new SpaceWeatherOperations.HaltStatus("rejected-repeatedly", "2026-10-20T13:07:42+02:00"))]);
         service.GetHandler = _ => Success(View(Projection(status)));
         var cut = context.Render<SpaceWeatherPanel>();
 
@@ -451,6 +475,31 @@ public sealed class SpaceWeatherPanelTests
 
         Assert.IsEmpty(cut.FindAll("dialog"));
         Assert.IsEmpty(service.Resumes);
+    }
+
+    [TestMethod]
+    public void UnconfiguredProductHalt_IsLabelledAndOffersNoResume()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var status = SwData.Status(products: [SwData.Product(configured: false, halt: Halt()), SwData.Product("scales", halt: Halt())]);
+        service.GetHandler = _ => Success(View(Projection(status)));
+        var cut = context.Render<SpaceWeatherPanel>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var retained = cut.Find("article.space-weather-halt[data-product='alerts']");
+            StringAssert.Contains(retained.TextContent, "SWPC fetching halted (alerts)", StringComparison.Ordinal);
+            Assert.AreEqual(SpaceWeatherPanel.UnconfiguredHaltText, retained.QuerySelector(".space-weather-blocked")!.TextContent);
+            Assert.IsFalse(retained.TextContent.Contains("Fetching stays halted", StringComparison.Ordinal), retained.TextContent);
+            Assert.IsNull(retained.QuerySelector("button"));
+            Assert.IsEmpty(cut.FindAll("#space-weather-resume-0"));
+
+            var configured = cut.Find("article.space-weather-halt[data-product='scales']");
+            StringAssert.Contains(configured.TextContent, "Fetching stays halted until an operator resumes it.", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find("#space-weather-resume-1").HasAttribute("disabled"));
+        });
+        AssertCompliantWording(cut.Markup);
     }
 
     [TestMethod]
@@ -605,6 +654,55 @@ public sealed class SpaceWeatherPanelTests
     }
 
     [TestMethod]
+    [DataRow(SpaceWeatherEscalation.Escalated, "; escalated since acknowledged")]
+    [DataRow(SpaceWeatherEscalation.NotEscalated, "")]
+    [DataRow(SpaceWeatherEscalation.Unknown, "; escalation since then cannot be determined")]
+    public void AcknowledgedNotice_SaysWhenAndWhatChangedSince(SpaceWeatherEscalation escalation, string suffix)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var projection = SwData.Project(EscalationView(escalation));
+        var notice = projection.Current.Single();
+        Assert.AreEqual(escalation, notice.Escalation);
+        service.GetHandler = _ => Success(View(projection));
+
+        var cut = context.Render<SpaceWeatherPanel>();
+
+        var text = cut.WaitForElement("article[data-group='WARK09/1'] .space-weather-acknowledgement").TextContent;
+        Assert.AreEqual(string.Concat("Acknowledged ", notice.AcknowledgedAt!.UtcText, " (", notice.AcknowledgedAt.LocalText, ")", suffix),
+            text);
+        Assert.IsFalse(text.Contains("; acknowledged", StringComparison.Ordinal), text);
+        AssertCompliantWording(cut.Markup);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void UnknownEscalation_OffersAcknowledgeOnlyWithChangeRights(bool canMutate)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.GetHandler = _ => Success(View(SwData.Project(EscalationView(SpaceWeatherEscalation.Unknown)), canMutate));
+        var cut = context.Render<SpaceWeatherPanel>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, cut.FindAll("article.space-weather-notice"));
+            Assert.HasCount(canMutate ? 1 : 0, cut.FindAll("button.space-weather-acknowledge[data-group='WARK09/1']"));
+        });
+        if (!canMutate)
+        {
+            Assert.IsEmpty(service.Acknowledgements);
+            return;
+        }
+
+        cut.Find("button.space-weather-acknowledge[data-group='WARK09/1']").Click();
+
+        cut.WaitForAssertion(() => Assert.HasCount(1, service.Acknowledgements));
+        Assert.AreEqual("WARK09/1", service.Acknowledgements.Single().Group);
+    }
+
+    [TestMethod]
     public void ReadOnlyOperator_SeesTheStateButNoEnabledCommand()
     {
         using var context = new BunitContext();
@@ -714,6 +812,24 @@ public sealed class SpaceWeatherPanelTests
     }
 
     [TestMethod]
+    public void DriftList_NamesRecordDriftOnlyForConfiguredProducts()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var status = SwData.Status(products: [SwData.Product(configured: false), SwData.Product("scales", rejected: 5)]);
+        service.GetHandler = _ => Success(View(SwData.Project(SwData.View(Notices(), recordDrift: Now.AddHours(-2)), status: status)));
+        var cut = context.Render<SpaceWeatherPanel>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var drift = cut.FindAll("#space-weather-drift li");
+            Assert.HasCount(1, drift);
+            Assert.AreEqual("scales", drift[0].GetAttribute("data-product"));
+            StringAssert.StartsWith(drift[0].TextContent, "Format drift on scales", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void UnauthorizedRead_NavigatesToAccessDenied()
     {
         using var context = new BunitContext();
@@ -792,6 +908,31 @@ public sealed class SpaceWeatherPanelTests
                 return "#space-weather-inconsistent";
         }
     }
+
+    /// <summary>The G5 warning WARK09/1, acknowledged so that its escalation since then is <paramref name="escalation"/>.</summary>
+    private static SwpcStoreView EscalationView(SpaceWeatherEscalation escalation)
+    {
+        // A raise after the acknowledgement escalates it; an acknowledgement older than the only version cannot be judged.
+        SwpcMessageRecord[] messages = escalation == SpaceWeatherEscalation.Unknown
+            ? [SwData.Warning(1, Now.AddHours(-2), Now.AddHours(4), code: "WARK09", level: "G5")]
+            :
+            [
+                SwData.Warning(1, Now.AddHours(-2), Now.AddHours(4), code: "WARK09", level: "G4"),
+                SwData.Warning(2, Now.AddHours(-2), Now.AddHours(4), code: "WARK09", level: "G5", issued: Now.AddHours(-1), link: 1),
+            ];
+        var acknowledgedAt = escalation switch
+        {
+            SpaceWeatherEscalation.Escalated => Now.AddMinutes(-90),
+            SpaceWeatherEscalation.NotEscalated => Now.AddMinutes(-30),
+            _ => Now.AddHours(-3),
+        };
+        return SwData.View(messages, acknowledgements: new Dictionary<SwpcMessageNode, SwpcAcknowledgement>
+        {
+            [SwData.Node("WARK09", 1)] = new("owner", acknowledgedAt),
+        });
+    }
+
+    private static int Occurrences(string markup, string value) => markup.Split(value, StringSplitOptions.None).Length - 1;
 
     private static TestSpaceWeatherUiService Configure(BunitContext context)
     {

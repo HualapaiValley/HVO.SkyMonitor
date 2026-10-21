@@ -4,7 +4,7 @@
    body, URL, header or path, and an unreadable state never claims anything about current notices. *@
 <section class="ops-panel space-weather-panel" aria-labelledby="space-weather-heading">
     <header class="ops-panel-heading">
-        <div><h2 id="space-weather-heading">SWPC notices and refresh state</h2><p>Source activity as SWPC states it, with this site's estimate on a separate line. @CloudText.</p></div>
+        <div><h2 id="space-weather-heading">SWPC notices and refresh state</h2><p>Source activity as SWPC states it, with this site's estimate on a separate line.</p></div>
         @if (_view is { Projection: { } heading })
         {
             var chip = heading switch
@@ -131,17 +131,25 @@
                             var halt = halts[index];
                             var triggerId = $"space-weather-resume-{index}";
                             var blocked = ResumeBlockedReason(view, halt);
+                            var unconfigured = projection.IsUnconfigured(halt);
                             <article class="ops-action-row space-weather-halt" data-scope="@halt.Scope" data-product="@halt.Product">
                                 <span class="ops-action-icon warning" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10"></path><path d="M13 5v10"></path></svg></span>
-                                <span><strong>SWPC fetching halted (@halt.Target)</strong><small>@halt.Description. Since @(halt.Since?.UtcText ?? halt.SinceUtcText)@(halt.Since is { } since ? $" ({since.LocalText})" : string.Empty). Fetching stays halted until an operator resumes it.</small>
-                                    @if (blocked is not null)
+                                <span><strong>SWPC fetching halted (@halt.Target)</strong><small>@halt.Description. Since @(halt.Since?.UtcText ?? halt.SinceUtcText)@(halt.Since is { } since ? $" ({since.LocalText})" : string.Empty).@(unconfigured ? string.Empty : " Fetching stays halted until an operator resumes it.")</small>
+                                    @if (unconfigured)
+                                    {
+                                        <small class="space-weather-blocked">@UnconfiguredHaltText</small>
+                                    }
+                                    else if (blocked is not null)
                                     {
                                         <small id="@($"{triggerId}-unavailable")" class="space-weather-blocked">@blocked</small>
                                     }
                                 </span>
-                                <button type="button" id="@triggerId" class="button secondary" disabled="@(Busy || blocked is not null)"
-                                        aria-describedby="@(blocked is null ? null : $"{triggerId}-unavailable")"
-                                        @onclick="() => OpenResumeDialog(halt, triggerId)">Resume</button>
+                                @if (!unconfigured)
+                                {
+                                    <button type="button" id="@triggerId" class="button secondary" disabled="@(Busy || blocked is not null)"
+                                            aria-describedby="@(blocked is null ? null : $"{triggerId}-unavailable")"
+                                            @onclick="() => OpenResumeDialog(halt, triggerId)">Resume</button>
+                                }
                             </article>
                         }
                     </div>
@@ -157,7 +165,7 @@
                         {
                             <li data-product="@product">Format drift on @product: responses have been rejected repeatedly; the provider's format may have changed.</li>
                         }
-                        @foreach (var source in projection.Sources.Where(static source => source.RecordDrift is not null))
+                        @foreach (var source in projection.Sources.Where(source => source.RecordDrift is not null && projection.RecordDriftProducts.Contains(source.Product)))
                         {
                             <li data-product="@source.Product">Record drift on @source.Product since @source.RecordDrift!.UtcText (@source.RecordDrift.LocalText): some records could not be read.</li>
                         }

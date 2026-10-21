@@ -1,9 +1,11 @@
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Layout;
 
@@ -30,6 +32,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     private int _readVersion;
     private bool _disposed;
     private ICameraAgentSpaceWeatherUiService? _spaceWeatherService;
+    private bool _spaceWeatherEnabled;
     private TimeProvider _clock = TimeProvider.System;
     private CameraAgentOperationsView? _operationsView;
     private bool _operationsRefreshFailed;
@@ -73,6 +76,8 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     protected override async Task OnInitializedAsync()
     {
         _spaceWeatherService = ServiceProvider.GetService<ICameraAgentSpaceWeatherUiService>();
+        // The switch is restart-only, so a failed read reports against it rather than against an earlier projection.
+        _spaceWeatherEnabled = ServiceProvider.GetService<IOptions<CameraAgentHostOptions>>()?.Value.SpaceWeather.Enabled ?? false;
         _clock = ServiceProvider.GetService<TimeProvider>() ?? TimeProvider.System;
         UpdatePath(NavigationManager.Uri);
         NavigationManager.LocationChanged += OnLocationChanged;
@@ -213,10 +218,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
             }
             else
             {
-                var enabled = SpaceWeather?.Enabled ?? false;
                 SpaceWeather = null;
                 SpaceWeatherUnavailable = result.Kind != OperatorUiResultKind.Unauthorized;
-                SpaceWeatherItems = SpaceWeatherUnavailable ? SpaceWeatherAttention.Unavailable(enabled) : [];
+                SpaceWeatherItems = SpaceWeatherUnavailable ? SpaceWeatherAttention.Unavailable(_spaceWeatherEnabled) : [];
             }
             if (_operationsView is { } operations)
             {
