@@ -125,7 +125,7 @@ public sealed partial class LifecycleContractTests
             Assert.IsFalse(error.ToString().Contains("could not carry", StringComparison.Ordinal), error.ToString());
         else
             StringAssert.Contains(error.ToString(),
-                "could not carry the capture-schedule-version counter of 'raw/journal/raw-ingress.db' (the snapshot has no row to carry it into)",
+                "could not carry the capture-schedule-version counter of 'raw/journal/raw-ingress.db' with key \"1\" (the snapshot has no row to carry it into)",
                 StringComparison.Ordinal);
     }
 
