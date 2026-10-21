@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Components;
@@ -33,6 +34,17 @@ public sealed partial class SatelliteSetupPanel : ComponentBase
         }
         finally { _busy = false; }
     }
+
+    private static string Interval(OrbitalUtcInterval? interval)
+        => interval is { } value ? $"{value.StartUtc:O} to {value.EndUtc:O}" : "None";
+
+    private static string Window(OrbitalEarthOrientationStatus? status) => status switch
+    {
+        OrbitalEarthOrientationStatus.Final => "Final Earth orientation",
+        OrbitalEarthOrientationStatus.Predicted => "Predicted Earth orientation",
+        OrbitalEarthOrientationStatus.Mixed => "Final and predicted Earth orientation",
+        _ => "Not covered"
+    };
 
     private async Task SaveAsync(CameraAgentSettingsGroupState group, string value)
     {

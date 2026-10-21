@@ -30,6 +30,10 @@ public sealed class OrbitalTimeData
     public string? EarthOrientationSha256 { get; }
     public OrbitalUtcInterval? EarthOrientationCoverage { get; }
     public OrbitalEarthOrientationStatus EarthOrientationStatus { get; }
+    /// <summary>First to last Bulletin B final row. Rows inside are not guaranteed contiguous; queries still validate.</summary>
+    public OrbitalUtcInterval? EarthOrientationFinalCoverage { get; }
+    /// <summary>First to last Bulletin A predicted row, under the same caveat as the final span.</summary>
+    public OrbitalUtcInterval? EarthOrientationPredictedCoverage { get; }
     public string LeapSecondsSha256 { get; }
     /// <summary>Inclusive supported ticks. The artifact's expiration instant itself is excluded.</summary>
     public OrbitalUtcInterval LeapTableCoverage { get; }
@@ -54,7 +58,15 @@ public sealed class OrbitalTimeData
             EarthOrientationCoverage = new(_earthOrientation[0].Utc, _earthOrientation[^1].Utc);
             EarthOrientationStatus = _earthOrientation.Select(r => r.Status).Distinct().Count() == 1
                 ? _earthOrientation[0].Status : OrbitalEarthOrientationStatus.Mixed;
+            EarthOrientationFinalCoverage = Span(OrbitalEarthOrientationStatus.Final);
+            EarthOrientationPredictedCoverage = Span(OrbitalEarthOrientationStatus.Predicted);
         }
+    }
+
+    private OrbitalUtcInterval? Span(OrbitalEarthOrientationStatus status)
+    {
+        var rows = _earthOrientation.Where(row => row.Status == status).ToArray();
+        return rows.Length == 0 ? null : new(rows[0].Utc, rows[^1].Utc);
     }
 
     /// <summary>Hashes actual unmodified bytes and parses bounded finals2000A and IERS/NTP leap inputs.</summary>

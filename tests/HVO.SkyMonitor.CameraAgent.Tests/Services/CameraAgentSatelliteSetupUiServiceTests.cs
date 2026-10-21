@@ -66,6 +66,69 @@ public sealed class CameraAgentSatelliteSetupUiServiceTests
     }
 
     [TestMethod]
+    [DataRow("final")]
+    [DataRow("predicted")]
+    [DataRow("expired")]
+    public async Task Status_ShowsTheBundledSourceCoverageAndExpiryAsync(string state)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var options = new PlanningTestInputs.Settings();
+        using var times = new CameraAgentPinnedOrbitalTimeSource(options);
+        var data = (await times.ReadAsync(CancellationToken.None).ConfigureAwait(false))!;
+        // Instants come from the bundled pair itself, so the states hold for every approved release snapshot.
+        var start = state switch
+        {
+            "final" => data.EarthOrientationFinalCoverage!.StartUtc.AddDays(1),
+            "predicted" => data.EarthOrientationPredictedCoverage!.StartUtc.AddDays(1),
+            _ => CameraAgentSatellitePlanner.CoverageEndsBefore(data, DateTimeOffset.MaxValue)!.Value.AddDays(1)
+        };
+        var service = new CameraAgentSatelliteSetupUiService(new Authentication(), Authorization(true, true),
+            harness.Service, new TestOrbitalUiService(), times, options);
+        var view = (await service.GetAsync(start, start.AddHours(6), CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.AreEqual("Bundled with this CameraAgent release", view.ActiveSource);
+        Assert.AreEqual(data.EarthOrientationFinalCoverage, view.FinalCoverage);
+        Assert.AreEqual(data.EarthOrientationPredictedCoverage, view.PredictedCoverage);
+        Assert.AreEqual(data.LeapTableExpiresUtc, view.LeapSecondsExpireUtc);
+        foreach (var file in view.Files)
+        {
+            Assert.AreEqual("Bundled and hash verified", file.Status);
+            Assert.Contains("Retrieved", file.Origin!, StringComparison.Ordinal);
+        }
+        if (state == "expired")
+        {
+            var problem = view.Problems.Single();
+            Assert.AreEqual("coverage-expired", problem.Code);
+            Assert.Contains("The bundled time data covers planning only until", problem.Message, StringComparison.Ordinal);
+            Assert.IsNull(view.WindowEarthOrientation);
+        }
+        else
+        {
+            Assert.IsEmpty(view.Problems);
+            Assert.AreEqual(state == "final" ? OrbitalEarthOrientationStatus.Final : OrbitalEarthOrientationStatus.Predicted,
+                view.WindowEarthOrientation);
+        }
+    }
+
+    [TestMethod]
+    public async Task Status_AnIncompleteOverrideIsShownAndTheBundledPairIsNotUsedAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var options = new PlanningTestInputs.Settings();
+        options.CurrentValue.LeapSecondsPath = "/absent/leap-seconds.list";
+        using var times = new CameraAgentPinnedOrbitalTimeSource(options);
+        var service = new CameraAgentSatelliteSetupUiService(new Authentication(), Authorization(true, true),
+            harness.Service, new TestOrbitalUiService(), times, options);
+        var view = (await service.GetAsync(PlanningTestInputs.Start, PlanningTestInputs.Start.AddHours(6), CancellationToken.None)
+            .ConfigureAwait(false)).Value!;
+        Assert.AreEqual("Configured override", view.ActiveSource);
+        var problem = view.Problems.Single();
+        Assert.AreEqual("no-time-data", problem.Code);
+        Assert.Contains("override is incomplete", problem.Message, StringComparison.Ordinal);
+        Assert.AreEqual("/absent/leap-seconds.list", view.Files[1].Path);
+        Assert.IsNull(view.EarthOrientationCoverage);
+    }
+
+    [TestMethod]
     public async Task Authorization_DeniedReadsAndWritesDoNotCallDependenciesAsync()
     {
         var service = new CameraAgentSatelliteSetupUiService(new Authentication(), Authorization(false, false),
