@@ -26,7 +26,7 @@ internal sealed partial class CaptureProcessingPersistence
             return new(originalManifestArtifactId, evidence);
         }
         var gate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(gate, "trail-composition", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             var originalOutput = await RequireOutputAsync(originalManifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);

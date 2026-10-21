@@ -140,7 +140,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         ensureCompatible?.Invoke();
         var preparedInputs = await PrepareReplayInputsAsync(source, revision, cancellationToken).ConfigureAwait(false);
         var storageGate = StorageLifecycleLock.ForRoot(_root);
-        await storageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(storageGate, "replay", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
