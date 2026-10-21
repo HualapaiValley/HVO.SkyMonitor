@@ -72,6 +72,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Release CameraAgent images trial per-architecture, framework-dependent non-composite ReadyToRun; native release jobs verify application headers, layout and identical hashes from two clean publishes. Developer and advisory image builds retain IL defaults. (#1473)
+
 - Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
   initialization, and runs on one bounded worker so provider waits and normalization let other automations proceed.
   Its journal records the real completion; provider floor, halt and single-flight rules remain in force. (#1425)

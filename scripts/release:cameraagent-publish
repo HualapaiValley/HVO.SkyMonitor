@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Shared restore/publish arguments for the release image; ordinary builds retain IL defaults.
+set -euo pipefail
+phase="${1:-}"
+case "$phase" in restore | publish) shift ;; *) echo 'Expected restore or publish.' >&2; exit 64 ;; esac
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+arguments=()
+case "${HVO_READY_TO_RUN:-false}" in
+    false) ;;
+    true)
+        case "${TARGETARCH:-}" in
+            amd64) rid=linux-x64 ;;
+            arm64) rid=linux-arm64 ;;
+            *) echo 'ReadyToRun requires TARGETARCH=amd64 or arm64.' >&2; exit 64 ;;
+        esac
+        arguments=(-r "$rid" -p:SelfContained=false -p:PublishReadyToRun=true -p:PublishReadyToRunComposite=false)
+        ;;
+    *) echo 'HVO_READY_TO_RUN must be true or false.' >&2; exit 64 ;;
+esac
+if [[ "$phase" == publish ]]; then
+    arguments+=(--no-restore)
+    [[ "${HVO_READY_TO_RUN:-false}" != true ]] || arguments+=(--self-contained false)
+fi
+exec dotnet "$phase" "$root/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj" "${arguments[@]}" "$@"

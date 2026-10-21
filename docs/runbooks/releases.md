@@ -10,6 +10,28 @@ A release is trusted by `SHA256SUMS` and the build-provenance attestations the r
 is (contract section 4). The key-signed manifests and indexes, their Key Vault signing job and the trust root the
 installer embedded were retired by the owner on 2026-10-16; nothing in a release is signed with a key of ours.
 
+## CameraAgent ReadyToRun trial
+
+The shared native image job (`release-image.yml`), used by releases and integration pre-releases, passes
+`HVO_READY_TO_RUN=true` to the CameraAgent Dockerfile. Its default is `false`, so ordinary Docker, Compose,
+devcontainer and advisory builds keep IL publishing. The opt-in restores and publishes with the same native RID
+(`linux-x64` or `linux-arm64`), framework-dependent and non-composite. Tiered compilation and PGO defaults remain
+unchanged. ReplayRunner and the other executables keep their existing publish settings.
+
+Before producing each image, the native job exports the CameraAgent payload twice with `--no-cache` and identical
+source and build arguments. `scripts/release:check-cameraagent-publish` checks the Linux PE machine, CLI
+managed-native pointer and ReadyToRun header of every top-level `HVO.*.dll`, along with the RID, framework-dependent
+layout, Blazor script, native-library architecture and forbidden files. The job compares every published file's path,
+size and SHA-256, separately from OCI metadata. Both outputs and their manifests are retained for seven days, including
+on failure. A mismatch blocks image publication; it is not normalized away. Existing architecture and publish gates
+remain required by full qualification.
+
+On the next pre-release, compare IL and R2R on the Pi with identical state, catalogs, image inputs and resource limits.
+Alternate cold starts; record first Current Sky render/API read, readiness and first useful image, CPU, RSS, compressed
+image size and native publish time. Take a separate EventPipe trace to attribute JIT cost. Retain R2R only if the measured
+benefit justifies its cost. Hosted arm64 repeatability and Pi performance are release evidence, not a result supplied by
+an x64 development run.
+
 ## The product version
 
 `VersionPrefix` in `Directory.Build.props` is the only product version: the version the next release carries.

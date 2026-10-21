@@ -18,6 +18,10 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8d
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
+# Explicit release-image opt-in; Compose, advisory and developer builds publish IL by default.
+ARG HVO_READY_TO_RUN=false
+ARG TARGETARCH
+COPY scripts/release:cameraagent-publish scripts/release:cameraagent-publish
 
 # Copy solution and project files needed for restore
 COPY Directory.Build.props ./
@@ -41,15 +45,15 @@ COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modul
 COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
 
 # Restore project dependencies into a source-independent cache layer.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN ./scripts/release:cameraagent-publish restore
 
 # Copy source code
 COPY src/ src/
 
 # Restore again after Razor sources are present so implicit framework assets are discovered.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN ./scripts/release:cameraagent-publish restore
 
 # Build and publish. Every published assembly carries the informational version <version>+<revision>; .dockerignore
 # excludes .git, so the SDK cannot derive the revision itself. The identity is declared after restore and the source
@@ -70,11 +74,10 @@ RUN case "${HVO_SOURCE_REVISION}" in \
         *) [ "${#HVO_VERSION}" -le 128 ] ;; \
     esac \
     || { echo "HVO_VERSION must be empty or 1-128 ASCII letters, digits, periods, and hyphens." >&2; exit 64; } \
-    && dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
+    && /src/scripts/release:cameraagent-publish publish -c Release -o /app/publish \
         ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}" \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
-ARG TARGETARCH
 RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *) exit 64 ;; esac \
     && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
         --no-restore -c Release -r "${rid}" -o /app/replay-runner \
@@ -83,6 +86,10 @@ RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *)
 # Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
 # an overlay copy-up of the entire payload, which rewrites every published file a second time.
 RUN chmod -R a+rX /app/publish /app/replay-runner
+
+# Export exactly the image's CameraAgent payload for clean native repeatability checks.
+FROM scratch AS cameraagent-publish
+COPY --from=build /app/publish /
 
 # Stage 2: Runtime
 FROM ${DOTNET_ASPNET_IMAGE}

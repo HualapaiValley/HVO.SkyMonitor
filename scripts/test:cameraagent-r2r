@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""CameraAgent release publish contracts; no SDK, Docker or network required."""
+import json
+import os
+from pathlib import Path
+import runpy
+import struct
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+PUBLISH = ROOT / 'scripts/release:cameraagent-publish'
+CHECK = ROOT / 'scripts/release:check-cameraagent-publish'
+
+
+class CameraAgentR2R(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        fake = self.root / 'dotnet'
+        fake.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+        fake.chmod(0o755)
+        self.env = dict(os.environ, PATH=f'{self.root}:{os.environ["PATH"]}')
+        for key in ('TARGETARCH', 'HVO_READY_TO_RUN'):
+            self.env.pop(key, None)
+
+    def publish(self, phase, mode=None, arch=None):
+        env = dict(self.env)
+        if mode is not None:
+            env['HVO_READY_TO_RUN'] = mode
+        if arch is not None:
+            env['TARGETARCH'] = arch
+        return subprocess.run(['bash', str(PUBLISH), phase, '-p:Configuration=Release'], env=env,
+                              capture_output=True, text=True)
+
+    def test_il_is_default(self):
+        for phase in ('restore', 'publish'):
+            result = self.publish(phase)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads(result.stdout)
+            self.assertNotIn('-r', args)
+            self.assertFalse(any('PublishReadyToRun' in arg for arg in args))
+
+    def test_same_rid_properties_at_restore_and_publish(self):
+        for arch, rid in [('amd64', 'linux-x64'), ('arm64', 'linux-arm64')]:
+            for phase in ('restore', 'publish'):
+                result = self.publish(phase, 'true', arch)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = json.loads(result.stdout)
+                self.assertEqual(args[args.index('-r') + 1], rid)
+                for prop in ('-p:PublishReadyToRun=true', '-p:PublishReadyToRunComposite=false',
+                             '-p:SelfContained=false'):
+                    self.assertIn(prop, args)
+                if phase == 'publish':
+                    self.assertIn('--no-restore', args)
+                self.assertFalse(any('Tiered' in arg for arg in args))
+
+    def test_invalid_opt_in_or_architecture_fails_before_dotnet(self):
+        for mode, arch in [('yes', 'amd64'), ('true', '386'), ('true', None)]:
+            result = self.publish('publish', mode, arch)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+
+    def pe(self, machine=0xFD1D, flags=1, native=True):
+        data = bytearray(1024)
+        data[:2] = b'MZ'
+        struct.pack_into('<I', data, 0x3c, 0x80)
+        data[0x80:0x84] = b'PE\0\0'
+        struct.pack_into('<HH', data, 0x84, machine, 1)
+        struct.pack_into('<H', data, 0x94, 240)
+        optional = 0x98
+        struct.pack_into('<H', data, optional, 0x20b)
+        struct.pack_into('<I', data, optional + 108, 16)
+        struct.pack_into('<II', data, optional + 112 + 14 * 8, 0x2000, 72)
+        struct.pack_into('<IIII', data, optional + 240 + 8, 512, 0x2000, 512, 512)
+        struct.pack_into('<I', data, 512, 72)
+        struct.pack_into('<I', data, 512 + 16, 4)
+        if native:
+            struct.pack_into('<II', data, 512 + 64, 0x2080, 28)
+            struct.pack_into('<IHHIHBB', data, 640, 0x00525452, 16, 0, flags, 1, 12, 0)
+            struct.pack_into('<III', data, 656, 103, 0x2100, 8)
+        path = self.root / 'HVO.SkyMonitor.CameraAgent.dll'
+        path.write_bytes(data)
+        return path
+
+    def probe(self, path, rid='linux-x64'):
+        return runpy.run_path(str(CHECK))['inspect_r2r'](path, rid)
+
+    def test_accepts_both_linux_machines(self):
+        for machine, rid in [(0xFD1D, 'linux-x64'), (0xD11D, 'linux-arm64')]:
+            self.assertEqual(self.probe(self.pe(machine), rid)['rid'], rid)
+
+    def test_rejects_il_wrong_architecture_windows_and_composite(self):
+        for path_args in [dict(native=False), dict(machine=0xD11D), dict(machine=0x8664),
+                          dict(flags=3), dict(flags=0x21)]:
+            with self.subTest(path_args=path_args), self.assertRaises(ValueError):
+                self.probe(self.pe(**path_args))
+
+    def test_rejects_missing_or_truncated_header(self):
+        for data in (b'', b'MZ', b'MZ' + b'\0' * 100):
+            path = self.root / 'bad.dll'
+            path.write_bytes(data)
+            with self.assertRaises(ValueError):
+                self.probe(path)
+
+    def test_compares_every_published_file(self):
+        checker = runpy.run_path(str(CHECK))
+        left, right = self.root / 'left', self.root / 'right'
+        left.mkdir()
+        right.mkdir()
+        for base in (left, right):
+            (base / 'app.dll').write_bytes(b'app')
+            (base / 'web').mkdir()
+            (base / 'web/app.js').write_bytes(b'js')
+        self.assertEqual(checker['inventory'](left), checker['inventory'](right))
+        (right / 'web/app.js').write_bytes(b'changed')
+        self.assertNotEqual(checker['inventory'](left), checker['inventory'](right))
+        (right / 'web/app.js').unlink()
+        self.assertNotEqual(checker['inventory'](left), checker['inventory'](right))
+
+    def layout(self):
+        self.pe()
+        (self.root / 'wwwroot/_framework').mkdir(parents=True)
+        (self.root / 'wwwroot/_framework/blazor.web.js').write_bytes(b'window.Blazor' + b' ' * 10001)
+        (self.root / 'HVO.SkyMonitor.CameraAgent.runtimeconfig.json').write_text(
+            json.dumps({'runtimeOptions': {'frameworks': [{'name': 'Microsoft.NETCore.App'}]}}))
+        (self.root / 'HVO.SkyMonitor.CameraAgent.deps.json').write_text(
+            json.dumps({'runtimeTarget': {'name': '.NETCoreApp,Version=v10.0/linux-x64'}, 'libraries': {}}))
+        native = bytearray(20)
+        native[:6] = b'\x7fELF\x02\x01'
+        struct.pack_into('<H', native, 18, 62)
+        (self.root / 'libSkiaSharp.so').write_bytes(native)
+
+    def test_checks_full_layout_and_rejects_wrong_native_library(self):
+        self.layout()
+        checker = runpy.run_path(str(CHECK))
+        records, report = checker['check'](self.root, 'linux-x64')
+        self.assertEqual(report['nativeFiles'], 1)
+        self.assertEqual(len(report['assemblies']), 1)
+        self.assertEqual(len(records), report['files'])
+        native = bytearray((self.root / 'libSkiaSharp.so').read_bytes())
+        struct.pack_into('<H', native, 18, 183)
+        (self.root / 'libSkiaSharp.so').write_bytes(native)
+        with self.assertRaisesRegex(ValueError, 'architecture mismatch'):
+            checker['check'](self.root, 'linux-x64')
+
+    def test_rejects_forbidden_files_wrong_manifest_and_self_contained(self):
+        self.layout()
+        checker = runpy.run_path(str(CHECK))
+        forbidden = self.root / 'HVO.SkyMonitor.LogicHost.dll'
+        forbidden.write_bytes(b'forbidden')
+        with self.assertRaisesRegex(ValueError, 'Forbidden'):
+            checker['check'](self.root, 'linux-x64')
+        forbidden.unlink()
+        manifest = self.root / 'HVO.SkyMonitor.CameraAgent.deps.json'
+        original = manifest.read_text()
+        manifest.write_text(original.replace('linux-x64', 'linux-arm64'))
+        with self.assertRaisesRegex(ValueError, 'wrong RID'):
+            checker['check'](self.root, 'linux-x64')
+        manifest.write_text(original)
+        config = self.root / 'HVO.SkyMonitor.CameraAgent.runtimeconfig.json'
+        config.write_text(config.read_text().replace('frameworks', 'includedFrameworks'))
+        with self.assertRaisesRegex(ValueError, 'framework-dependent'):
+            checker['check'](self.root, 'linux-x64')
+
+    def test_release_job_checks_two_clean_native_publishes(self):
+        workflow = (ROOT / '.github/workflows/release-image.yml').read_text()
+        self.assertIn('for trial in 1 2', workflow)
+        self.assertIn('--no-cache', workflow)
+        self.assertIn('--target cameraagent-publish', workflow)
+        self.assertIn('HVO_READY_TO_RUN=true', workflow)
+        self.assertIn('release:check-cameraagent-publish', workflow)
+        self.assertIn('diff -u', workflow)
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        self.assertIn('ARG HVO_READY_TO_RUN=false', dockerfile)
+        self.assertIn('FROM scratch AS cameraagent-publish', dockerfile)
+        self.assertEqual(dockerfile.count('release:cameraagent-publish restore'), 2)
+        self.assertIn('release:cameraagent-publish publish', dockerfile)
+        self.assertIn('window.Blazor', dockerfile)
+        for path in (ROOT / 'docker-compose.apps.yml', ROOT / '.devcontainer/devcontainer.json'):
+            self.assertNotIn('HVO_READY_TO_RUN', path.read_text())
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
