@@ -1021,6 +1021,60 @@ public sealed class AutomationsPageTests
     }
 
     [TestMethod]
+    public void Create_ATypedIntervalEqualToAReservedDefaultIsKeptWhenThatTaskWasNotSelected()
+    {
+        using var context = CreateContext();
+        Register(context, WithStillImages(WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: [])))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-interval").Change("120");
+        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.CaptureRelative));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.Periodic));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.StillImageGeneration));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        // As before the space-weather task existed, the orbital task keeps any interval but an untouched generic one.
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void Create_LeavingTheSpaceWeatherTaskResetsItsUntouchedDefault()
+    {
+        using var context = CreateContext();
+        Register(context, WithStillImages(WithSpaceWeather(Automation(definitions: [], calendar: [], runs: []))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.StillImageGeneration));
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual(string.Empty, cut.Find("#automation-id").GetAttribute("value") ?? string.Empty);
+    }
+
+    [TestMethod]
+    public void Create_AnUntouchedOrbitalDefaultBecomesTheSpaceWeatherDefaultAndBack()
+    {
+        using var context = CreateContext();
+        Register(context, WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: []))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+    }
+
+    [TestMethod]
     public void DefinitionQuery_FocusesTheOrbitalCardAndScrollsToItOnce()
     {
         using var context = CreateContext();
@@ -1159,6 +1213,14 @@ public sealed class AutomationsPageTests
         [SpaceWeatherAutomationAdapter.Target],
         true,
         null);
+
+    /// <summary>Adds a second generic periodic task, so the task kind can change without selecting a reserved task.</summary>
+    private static LocalAutomationOperatorState WithStillImages(LocalAutomationOperatorState state)
+        => state with
+        {
+            Registry = [.. state.Registry, new LocalAutomationTaskDescriptor(LocalAutomationTaskKind.StillImageGeneration,
+                "Installed producer", [LocalAutomationTriggerKind.Periodic], ["still-images"], true, null)]
+        };
 
     /// <summary>Adds the space-weather refresh task to the registry and, when <paramref name="defined"/>, its reserved definition.</summary>
     private static LocalAutomationOperatorState WithSpaceWeather(LocalAutomationOperatorState state, bool defined = false)

@@ -80,6 +80,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private string _reasonInput = string.Empty;
     private string _commandReasonInput = string.Empty;
     private LocalAutomationTaskKind _taskKindInput = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition;
+    // The reserved task whose defaults the form last applied, so only its own default counts as untouched.
+    private ReservedAutomationTask? _defaultsTask;
     private LocalAutomationTriggerKind _triggerKindInput = LocalAutomationTriggerKind.Periodic;
     private LocalAutomationSourceWindowPolicy? _sourceWindowInput;
     private bool _enabledInput = true;
@@ -387,10 +389,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     /// <summary>
     /// A reserved task fixes its identifier and suggests its own interval. An untouched default follows the task it
-    /// belongs to, and leaving a reserved task releases the reserved identifier. An edit keeps its identity.
+    /// belongs to, and leaving a reserved task releases the reserved identifier. An edit keeps its identity. A
+    /// reserved task's default counts as untouched only when that task was the previous selection.
     /// </summary>
     private void ApplyTaskDefaults()
     {
+        var previous = _defaultsTask;
+        _defaultsTask = SelectedReservedTask;
         if (SelectedReservedTask is { } reserved)
         {
             if (!Editing)
@@ -398,7 +403,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                 _idInput = reserved.DefinitionId;
             }
             if (_intervalInput is DefaultPeriodicInterval or DefaultCaptureInterval ||
-                ReservedAutomationTasks.IsDefaultInterval(_intervalInput))
+                string.Equals(_intervalInput, previous?.DefaultInterval, StringComparison.Ordinal))
             {
                 _intervalInput = reserved.DefaultInterval;
             }
@@ -408,7 +413,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             _idInput = string.Empty;
         }
-        if (ReservedAutomationTasks.IsDefaultInterval(_intervalInput))
+        if (_intervalInput == DefaultOrbitalInterval ||
+            string.Equals(_intervalInput, previous?.DefaultInterval, StringComparison.Ordinal))
         {
             _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.CaptureRelative
                 ? DefaultCaptureInterval
@@ -466,6 +472,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _idInput = definition.Definition.DefinitionId;
         _nameInput = definition.Definition.Name;
         _taskKindInput = definition.Definition.TaskKind;
+        _defaultsTask = SelectedReservedTask;
         _targetInput = definition.Definition.TaskTarget;
         _triggerKindInput = definition.Definition.TriggerKind;
         _sourceWindowInput = definition.Definition.SourceWindow;
