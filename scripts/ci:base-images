@@ -31,7 +31,7 @@ def discover_dockerfiles(root):
 def logical_lines(path):
     pending = ""
     start = 0
-    for number, line in enumerate(path.read_text(encoding="utf-8-sig").split("\n"), 1):
+    for number, line in enumerate(path.read_bytes().decode("utf-8-sig").split("\n"), 1):
         line = line.removesuffix("\r")
         if not line.strip(" \t") or line.lstrip(" \t").startswith("#"):
             if re.match(r"\s*#\s*escape\s*=\s*`", line, re.I):
