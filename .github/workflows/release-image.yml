@@ -66,7 +66,7 @@ jobs:
               --build-arg "HVO_VERSION=$VERSION" --build-arg "HVO_SOURCE_REVISION=$COMMIT" \
               --build-arg "HVO_CREATED=$CREATED" --provenance=false --sbom=false \
               --output "type=local,dest=$evidence/trial-$trial" .
-            ./scripts/release:check-cameraagent-publish "$evidence/trial-$trial" --rid "$rid" \
+            ./scripts/release:check-cameraagent-publish "$evidence/trial-$trial" --rid "$rid" --created "$CREATED" \
               --manifest "$evidence/trial-$trial.files.json" --report "$evidence/trial-$trial.r2r.json"
           done
           diff -u "$evidence/trial-1.files.json" "$evidence/trial-2.files.json"

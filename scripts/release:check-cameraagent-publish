@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check CameraAgent's release FDD/R2R layout and retain every published-file hash."""
 import argparse
+from datetime import datetime
+from email.utils import format_datetime
 import hashlib
 import json
 from pathlib import Path
@@ -92,7 +94,7 @@ def inventory(root):
     return records
 
 
-def check(root, rid):
+def check(root, rid, created=None):
     blazor = (root / 'wwwroot/_framework/blazor.web.js').read_bytes()
     if len(blazor) <= 10000 or b'window.Blazor' not in blazor:
         raise ValueError('blazor.web.js is missing or incomplete')
@@ -119,22 +121,34 @@ def check(root, rid):
             if len(header) < 20 or header[4:6] != b'\x02\x01' or struct.unpack_from('<H', header, 18)[0] != expected:
                 raise ValueError(f'{record["path"]}: native-library architecture mismatch for {rid}')
             native_count += 1
+    endpoint_count = 0
+    if created is not None:
+        expected = format_datetime(datetime.fromisoformat(created.replace('Z', '+00:00')), usegmt=True)
+        endpoints = json.loads((root / 'HVO.SkyMonitor.CameraAgent.staticwebassets.endpoints.json').read_text())['Endpoints']
+        if not endpoints:
+            raise ValueError('CameraAgent static endpoints are missing')
+        for endpoint in endpoints:
+            modified = [header['Value'] for header in endpoint['ResponseHeaders'] if header['Name'] == 'Last-Modified']
+            if modified != [expected]:
+                raise ValueError(f'{endpoint["Route"]}: Last-Modified is not the immutable release time')
+        endpoint_count = len(endpoints)
     assemblies = sorted(root.glob('HVO.*.dll'))
     if not (root / 'HVO.SkyMonitor.CameraAgent.dll').is_file() or not assemblies or not native_count:
         raise ValueError('CameraAgent assemblies or native dependencies are missing')
     return records, {'rid': rid, 'files': len(records), 'bytes': sum(r['bytes'] for r in records),
-                     'nativeFiles': native_count, 'assemblies': [inspect_r2r(p, rid) for p in assemblies]}
+                     'nativeFiles': native_count, 'staticEndpoints': endpoint_count, 'assemblies': [inspect_r2r(p, rid) for p in assemblies]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('publish', type=Path)
     parser.add_argument('--rid', required=True, choices=MACHINES)
+    parser.add_argument('--created', required=True, help='Immutable UTC HVO_CREATED input used for this publish')
     parser.add_argument('--manifest', required=True, type=Path)
     parser.add_argument('--report', required=True, type=Path)
     args = parser.parse_args()
     try:
-        records, report = check(args.publish, args.rid)
+        records, report = check(args.publish, args.rid, args.created)
         args.manifest.write_text(json.dumps(records, indent=2) + '\n')
         args.report.write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))

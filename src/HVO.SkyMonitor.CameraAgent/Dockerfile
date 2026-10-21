@@ -20,8 +20,10 @@ FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
 # Explicit release-image opt-in; Compose, advisory and developer builds publish IL by default.
 ARG HVO_READY_TO_RUN=false
+ARG HVO_CREATED
 ARG TARGETARCH
 COPY scripts/release:cameraagent-publish scripts/release:cameraagent-publish
+COPY scripts/cameraagent-release.targets scripts/cameraagent-release.targets
 
 # Copy solution and project files needed for restore
 COPY Directory.Build.props ./

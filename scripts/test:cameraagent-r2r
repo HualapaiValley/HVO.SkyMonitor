@@ -8,6 +8,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLISH = ROOT / 'scripts/release:cameraagent-publish'
@@ -27,7 +28,7 @@ class CameraAgentR2R(unittest.TestCase):
             self.env.pop(key, None)
 
     def publish(self, phase, mode=None, arch=None):
-        env = dict(self.env)
+        env = dict(self.env, HVO_CREATED='2026-10-21T09:54:16Z')
         if mode is not None:
             env['HVO_READY_TO_RUN'] = mode
         if arch is not None:
@@ -42,6 +43,7 @@ class CameraAgentR2R(unittest.TestCase):
             args = json.loads(result.stdout)
             self.assertNotIn('-r', args)
             self.assertFalse(any('PublishReadyToRun' in arg for arg in args))
+            self.assertFalse(any('HvoReleaseCreated' in arg or 'CustomAfter' in arg for arg in args))
 
     def test_same_rid_properties_at_restore_and_publish(self):
         for arch, rid in [('amd64', 'linux-x64'), ('arm64', 'linux-arm64')]:
@@ -55,6 +57,8 @@ class CameraAgentR2R(unittest.TestCase):
                     self.assertIn(prop, args)
                 if phase == 'publish':
                     self.assertIn('--no-restore', args)
+                self.assertIn('-p:HvoReleaseCreatedUtc=2026-10-21T09:54:16Z', args)
+                self.assertTrue(any(arg.startswith('-p:CustomAfterMicrosoftCommonTargets=') for arg in args))
                 self.assertFalse(any('Tiered' in arg for arg in args))
 
     def test_invalid_opt_in_or_architecture_fails_before_dotnet(self):
@@ -62,6 +66,27 @@ class CameraAgentR2R(unittest.TestCase):
             result = self.publish('publish', mode, arch)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, '')
+
+    def test_requires_one_valid_immutable_release_time(self):
+        for created in ('', '2026-02-30T09:54:16Z', '2026-10-21', '2026-10-21T09:54:16Z;Other=true'):
+            env = dict(self.env, HVO_READY_TO_RUN='true', TARGETARCH='amd64', HVO_CREATED=created)
+            result = subprocess.run(['bash', str(PUBLISH), 'restore'], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+
+    def test_release_time_is_a_cameraagent_generation_input(self):
+        target = ET.parse(ROOT / 'scripts/cameraagent-release.targets').getroot().find('Target')
+        self.assertEqual(target.attrib['BeforeTargets'], 'GenerateStaticWebAssetsPublishManifest')
+        self.assertIn("'$(MSBuildProjectName)' == 'HVO.SkyMonitor.CameraAgent'", target.attrib['Condition'])
+        task = target.find('UpdateStaticWebAssetEndpoints')
+        self.assertEqual(task.attrib['EndpointsToUpdate'], '@(StaticWebAssetEndpoint)')
+        operation = target.find('ItemGroup/_HvoReleaseAssetHeader')
+        self.assertEqual(operation.attrib['Include'], 'Replace')
+        self.assertEqual(operation.findtext('Name'), 'Last-Modified')
+        self.assertEqual(operation.findtext('UpdateTarget'), 'Header')
+        self.assertEqual(operation.findtext('NewValue'), '$(_HvoReleaseLastModified)')
+        self.assertIsNone(target.find('Exec'))
+        self.assertIsNone(target.find('WriteLinesToFile'))
 
     def pe(self, machine=0xFD1D, flags=0x4b, native=True):
         data = bytearray(1024)
@@ -174,6 +199,23 @@ class CameraAgentR2R(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'framework-dependent'):
             checker['check'](self.root, 'linux-x64')
 
+    def test_actual_endpoint_dates_must_match_release_time(self):
+        self.layout()
+        checker = runpy.run_path(str(CHECK))
+        path = self.root / 'HVO.SkyMonitor.CameraAgent.staticwebassets.endpoints.json'
+        endpoint = {'Route': 'app.css', 'AssetFile': 'app.css', 'Selectors': [],
+                    'ResponseHeaders': [{'Name': 'ETag', 'Value': 'unchanged'},
+                                        {'Name': 'Last-Modified', 'Value': 'Wed, 21 Oct 2026 09:54:16 GMT'}]}
+        path.write_text(json.dumps({'Endpoints': [endpoint]}))
+        _, report = checker['check'](self.root, 'linux-x64', '2026-10-21T09:54:16Z')
+        self.assertEqual(report['staticEndpoints'], 1)
+        with self.assertRaisesRegex(ValueError, 'immutable release time'):
+            checker['check'](self.root, 'linux-x64', '2026-10-21T09:54:17Z')
+        endpoint['ResponseHeaders'].pop()
+        path.write_text(json.dumps({'Endpoints': [endpoint]}))
+        with self.assertRaisesRegex(ValueError, 'immutable release time'):
+            checker['check'](self.root, 'linux-x64', '2026-10-21T09:54:16Z')
+
     def test_release_job_checks_two_clean_native_publishes(self):
         workflow = (ROOT / '.github/workflows/release-image.yml').read_text()
         self.assertIn('for trial in 1 2', workflow)
@@ -181,6 +223,7 @@ class CameraAgentR2R(unittest.TestCase):
         self.assertIn('--target cameraagent-publish', workflow)
         self.assertIn('HVO_READY_TO_RUN=true', workflow)
         self.assertIn('release:check-cameraagent-publish', workflow)
+        self.assertIn('--created "$CREATED"', workflow)
         self.assertIn('diff -u', workflow)
         dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
         self.assertIn('ARG HVO_READY_TO_RUN=false', dockerfile)

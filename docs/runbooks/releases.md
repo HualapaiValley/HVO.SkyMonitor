@@ -16,7 +16,11 @@ The shared native image job (`release-image.yml`), used by releases and integrat
 `HVO_READY_TO_RUN=true` to the CameraAgent Dockerfile. Its default is `false`, so ordinary Docker, Compose,
 devcontainer and advisory builds keep IL publishing. The opt-in restores and publishes with the same native RID
 (`linux-x64` or `linux-arm64`), framework-dependent and non-composite. Tiered compilation and PGO defaults remain
-unchanged. ReplayRunner and the other executables keep their existing publish settings.
+unchanged. The opt-in requires the existing `HVO_CREATED` release input as a UTC `yyyy-MM-ddTHH:mm:ssZ` value.
+`scripts/cameraagent-release.targets` is imported only by that path and only acts on CameraAgent: before the SDK
+generates publish manifests, its `UpdateStaticWebAssetEndpoints` task sets `Last-Modified` from that immutable release
+time. This avoids wall-clock timestamps from compressed/scoped assets; the generated manifest is hashed intact.
+ReplayRunner and the other executables keep their existing publish settings.
 
 Before producing each image, the native job exports the CameraAgent payload twice with `--no-cache` and identical
 source and build arguments. `scripts/release:check-cameraagent-publish` checks the Linux PE machine, CLI
