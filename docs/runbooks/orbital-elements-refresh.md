@@ -184,22 +184,48 @@ history.
 Satellite planning also needs Earth-orientation and leap-second data. Orbital
 refresh does not supply it. Each CameraAgent release bundles one verified pair at
 `/app/time-data/` in the image, so turning **Satellite planning** on needs no
-hand-placed files. The setup panel shows the active source, the final and predicted
-Earth-orientation coverage and the leap-second expiry.
+hand-placed files. The setup panel and `hvo-sky time-data` show the active source,
+the planning coverage end, the final and predicted Earth-orientation coverage and
+the leap-second expiry.
 
 - **Overrides.** Setting any of `CameraAgent:SatellitePlanning:EarthOrientationPath`,
   `EarthOrientationSha256`, `LeapSecondsPath` or `LeapSecondsSha256` selects an
   override, and all four are then required. An incomplete or invalid override
-  stops planning with a reason; it never falls back to the bundled pair. Remove all
-  four to return to the bundled pair. CameraAgent never writes the configured files.
-- **Expiry.** The bundled pair ages with the release. Planning is supported until
-  the earlier of the last Earth-orientation prediction and the leap-second list's
-  expiry, typically several months after the release. After that, searches return
-  the coverage end as the reason. Upgrade CameraAgent, or configure a newer
-  override. Refresh between releases is not available yet (#1474 slice B2).
+  stops planning with a reason; it never falls back to another pair. Remove all
+  four to return to the bundled or refreshed pair. CameraAgent never writes the
+  configured files.
+- **Managed refresh (optional, off by default).** To keep the pair current between
+  releases:
+  1. Turn **Time-data refresh** on in Observatory & location, or run
+     `hvo-sky config set timeDataRefresh.enabled=true`. It applies immediately.
+  2. Create the reserved automation from **Automations → Time-data refresh setup**
+     (`/operations/automations?setup=time-data`): identifier `time-data-refresh`,
+     task `TimeDataRefresh`, target `iers-usno`, interval exactly 86,400 seconds.
+     Setup never replaces an existing definition.
+  3. Optionally use **Run now** for the first attempt, then follow it with
+     `hvo-sky time-data`.
+
+  Each run downloads `finals2000A.daily.extended` and `checksums.sha512` from USNO
+  and `leap-seconds.list` from IERS over HTTPS, checks the published SHA-512 and the
+  leap file's `#h`, parses the pair and adopts it atomically under
+  `state/raw/.time-data/`. At most one attempt starts per 24 hours, including Run
+  now and restarts. A failed run keeps the current pair and shows its reason code;
+  that is not expiry. The adopted pair is used only when its planning coverage ends
+  later than the bundled pair's; a newer release wins a tie. See
+  [Managed refresh](../astronomy/bundled-time-data-v1.md#managed-refresh) for the
+  endpoints, bounds and terms.
+- **Expiry.** A pair ages. Planning is supported until the earlier of the last
+  Earth-orientation prediction and the leap-second list's expiry. After that,
+  searches return the coverage end as the reason and the status says `EXPIRED`.
+  Turn on the refresh, upgrade CameraAgent, or configure a newer override.
+- **Rollback.** A created `time-data-refresh` definition names the appended task
+  kind `TimeDataRefresh`, which a release from before #1474 slice B2 cannot read; as
+  with orbital refresh, removing the definition is not enough, so upgrade forward.
+  `.time-data/` itself is ignored by older releases and needs no snapshot.
 - **Release step.** Before a release tag, run `scripts/time-data:update` on a Linux
-  host and commit the refreshed snapshot. See
-  [Bundled time data](../astronomy/bundled-time-data-v1.md).
+  host and commit the refreshed snapshot. It restores the previous snapshot if it is
+  interrupted or the parse fails. See
+  [Bundled and refreshed time data](../astronomy/bundled-time-data-v1.md).
 
 ## Status, Refresh And Resume
 

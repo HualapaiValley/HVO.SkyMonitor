@@ -1,8 +1,9 @@
-# Bundled Earth-orientation and leap-second data
+# Bundled and refreshed Earth-orientation and leap-second data
 
-Decision note for #1474 part B, slice B1. The owner approved delivery on
-2026-10-21: one approved pair bundled with each release for offline bootstrap
-(this slice), then a separately enabled, bounded refresh (slice B2).
+Decision note for #1474 part B: slice B1 (the bundled pair) and slice B2 (the
+managed refresh). The owner approved delivery on 2026-10-21: one approved pair
+bundled with each release for offline bootstrap, then a separately enabled,
+bounded refresh.
 
 ## Decision
 
@@ -25,8 +26,16 @@ an operator configures an override.
   downloads from the approved HTTPS endpoints without redirects and within the
   loader's size bounds. It verifies each provider checksum and terms statement,
   rewrites the files and `provenance.json`, and parses the pair with the product's
-  validators by running `CameraAgentBundledTimeDataTests`. If that parse fails, it
-  restores the previous snapshot. It prints the coverage for the release notes.
+  validators by running `CameraAgentBundledTimeDataTests`. From the first file it
+  replaces until that parse passes, any exit (an error, Ctrl+C, `SIGTERM` or a
+  failed parse) restores the previous snapshot. Restored files get a fresh
+  modification time, so an incremental build copies them again instead of keeping
+  the rejected pair in its output. It prints the coverage for the release notes.
+  `scripts/test:cameraagent-r2r` proves the rollback with fake `curl` and `dotnet`.
+- **Publish check.** `scripts/release:check-cameraagent-publish` requires
+  `time-data/provenance.json` in every release publish and verifies each file it
+  lists against its SHA-256, so a release cannot ship without the pair or with
+  bytes that differ from the record.
 
 ## Product choice
 
@@ -91,11 +100,22 @@ the reviewed commit establish their origin.
 - If any of `EarthOrientationPath`, `EarthOrientationSha256`, `LeapSecondsPath` or
   `LeapSecondsSha256` is set, the override is the active source and all four must
   be valid. An incomplete or invalid override stops planning with a reason. It
-  never falls back to the bundled pair, and CameraAgent never writes the
-  hand-configured files.
-- Otherwise the bundled pair is the active source.
-- Either source is pinned: only an options change or a new release adopts a
-  different pair.
+  never falls back to the bundled or the refreshed pair, and CameraAgent never
+  writes the hand-configured files.
+- Otherwise CameraAgent verifies and parses the bundled pair and, when the refresh
+  has adopted one, the managed pair. **The pair whose planning coverage ends later
+  is active. On a tie the bundled pair is active.** Planning coverage ends at the
+  earlier of the last Earth-orientation row and the leap-second expiry. A newer
+  release whose bundled pair covers at least as long is therefore never shadowed
+  by an older refresh, and a refresh is used only when it actually extends
+  coverage.
+- If only one of the two verifies, it is active. A managed pair that no longer
+  verifies (a changed byte, a missing file, a damaged pointer) is reported as
+  invalid and the bundled pair is used. If neither verifies, planning stops with a
+  reason.
+- The rule is deterministic: the same files, options and clock always select the
+  same pair. It does not depend on the refresh switch, so turning the refresh off
+  keeps an already adopted pair eligible.
 
 ## Coverage and expiry
 
@@ -111,10 +131,74 @@ The snapshot retrieved on 2026-10-21 has final values to 2026-09-01, predictions
 2027-10-28 and a leap-second list that expires on 2027-06-28, so planning with it
 is supported until 2027-06-27 23:59:59 UTC.
 
-## Seams for slice B2
+## Managed refresh
 
-`ICameraAgentOrbitalTimeSource.ResolveAsync` returns the active source with the
-pair. A managed, refreshed pair would become a third source, ranked between the
-override and the bundled pair, which stays the offline fallback. B2 owns its
-download bounds, single-flight schedule, atomic adoption that keeps the prior
-valid pair, and operator switch. B1 makes no network request at runtime.
+Slice B2 adds a separately enabled refresh that keeps the pair current between
+releases. It is off by default.
+
+- **Switch.** `timeDataRefresh.enabled` in the settings catalogue
+  (`CameraAgent:SatellitePlanning:TimeDataRefreshEnabled`), shown as **Time-data
+  refresh** in Observatory & location and in `hvo-sky config`. It applies
+  immediately. Environment variables and `config/secrets` override it as for the
+  other switches.
+- **Trigger.** Only the reserved automation `time-data-refresh` (task
+  `TimeDataRefresh`, target `iers-usno`, periodic, exactly 86,400 seconds) runs it,
+  so the automation runner owns its cadence, run journal, Run now and restart
+  recovery, as for the orbital and space-weather refreshes. Nothing refreshes time
+  data on a capture or planning request. Saving the definition while the switch is
+  off is allowed; runs then skip with `time-data.disabled`.
+- **At most daily, single flight.** One attempt runs at a time in a process, and an
+  attempt starts at most once per 24 hours. The start time is written to
+  `refresh.json` before the first request, so neither Run now nor a restart adds
+  an attempt. A daily occurrence up to two minutes early waits out the remainder.
+  This is an application limit; neither provider publishes an allowance.
+- **Endpoints and bounds.** Fixed in code, HTTPS only, no redirects, cookies or
+  credentials, one request each with a 60-second deadline and no retry:
+  - `https://maia.usno.navy.mil/ser7/finals2000A.daily.extended` (8 MiB bound);
+  - `https://maia.usno.navy.mil/ser7/checksums.sha512` (64 KiB bound);
+  - `https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list` (64 KiB bound).
+  These are the sources and terms of the bundled pair. The refresh records the same
+  terms statements. It checks the leap file's own public-domain statement on every
+  download; the USNO products page is checked by `scripts/time-data:update` at
+  release time rather than fetched daily.
+- **Verification before adoption.** The Earth-orientation file must match the
+  SHA-512 that `checksums.sha512` lists for it exactly once, and the leap file must
+  match its own `#h` SHA-1. Both files are then parsed with the product validators;
+  a pair without Earth-orientation values is refused. Coverage always comes from
+  the parsed files, never from the download time, so a successful download never
+  extends coverage by itself and nominal-zero Earth orientation is never
+  substituted.
+- **Unchanged and not newer.** A download identical to the adopted pair is recorded
+  as `unchanged`. One whose planning coverage ends before the adopted pair's is
+  `not-newer` and is not adopted.
+- **Atomic adoption.** The pair is kept under the CameraAgent's writable state at
+  `<RawIngressRoot>/.time-data/` (`state/raw/.time-data/` on an installed host), so
+  it survives restarts and upgrades. Each adopted pair is an immutable directory
+  `pairs/<id>/` holding the original bytes and a `provenance.json` (schema
+  `hvo-managed-time-data-v1`, the same fields as the bundled record: source URL,
+  retrieval time, HTTP `Last-Modified`, length, SHA-256, provider checksum, terms).
+  The files are flushed first; replacing `current.json` is the single commit point.
+  A stop before it leaves the prior pair active and an unreferenced directory that
+  the next adoption removes. The current and previous pairs are kept.
+  `current.json` also keeps the last 32 adoptions (pair, adoption and retrieval
+  times, both SHA-256 values), so results computed with a retired pair stay
+  attributable.
+- **Failure.** Any failed download, checksum, parse or write leaves the adopted pair
+  active and is recorded in `refresh.json` with a fixed `time-data.*` reason code.
+  A refresh failure never marks the active pair expired, and an expired pair is
+  reported whatever the last refresh did.
+- **Status.** The satellite setup panel, `GET /api/v1/operations/time-data`
+  (operations read access, the same owner session or API key as the other
+  operations reads) and `hvo-sky time-data` show the active source (`override`,
+  `managed` or `bundled`), its planning coverage end, Earth-orientation end and
+  leap-second expiry, whether it has expired, the switch and whether the daily
+  automation exists, the last attempt with its outcome (`never`, `in-progress`,
+  `interrupted`, `adopted`, `unchanged`, `not-newer` or `failed`), reason and next
+  permitted attempt, and the last adoption.
+- **State contract.** `.time-data/` holds plain files, not a schema-versioned
+  database, so it is not in the image's state-contract label or the installer's
+  snapshot set. A release that does not know it ignores it, and a damaged or
+  unknown pointer is reported as an invalid managed pair while the bundled pair is
+  used. Like the other appended automation task kinds, a created
+  `time-data-refresh` definition names `TimeDataRefresh`, which a release from
+  before this slice cannot read: upgrade forward.
