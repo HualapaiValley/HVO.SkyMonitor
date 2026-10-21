@@ -69,7 +69,7 @@ import tempfile
 import unittest
 
 HELPER = sys.argv.pop()
-CHAIN = (".dotnet", "corefx", "Runtime", "SharedMemory")
+CHAIN = (".dotnet", "corefx", "Runtime", "SharedMemory", ".dotnet", "shm")
 
 class RuntimeDirectories(unittest.TestCase):
     def setUp(self):
@@ -150,6 +150,22 @@ class RuntimeDirectories(unittest.TestCase):
                 result = self.run_check(prefix='mktemp() { printf "%s\\n" "${@: -1}" > "$PROBE_LOG"; command mktemp "$@"; }')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((self.root / "probe").read_text().strip(), str(current / ".hvo-dotnet-home.XXXXXX"))
+
+    def test_xdg_shm_deepest_probe_and_invalid_components(self):
+        current = self.runtime
+        for component in (".dotnet", "shm"):
+            current = current / component
+            current.mkdir()
+            with self.subTest(component=component):
+                result = self.run_check(runtime=self.runtime, prefix='mktemp() { printf "%s\\n" "${@: -1}" > "$PROBE_LOG"; command mktemp "$@"; }')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.root / "probe").read_text().strip(), str(current / ".hvo-dotnet-home.XXXXXX"))
+                current.chmod(0o500)
+                self.refused(runtime=self.runtime, prefix=":")
+                current.chmod(0o700)
+        current.rmdir()
+        current.symlink_to(self.home, target_is_directory=True)
+        self.refused(runtime=self.runtime, prefix=":")
 
     def test_F2_xdg_takes_precedence_over_invalid_dotnet(self):
         (self.home / ".dotnet").touch()

@@ -177,7 +177,10 @@ jobs:
           retention-days: 30
       - name: Run historical Phase 14 acceptance inventory contract
         if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'
-        run: ./scripts/test:phase14-acceptance
+        run: |
+          dotnet build scripts/enum-metadata/HVO.SkyMonitor.EnumMetadata.csproj --no-restore --configuration Release -warnaserror
+          dotnet build src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj --no-restore --configuration Release -warnaserror
+          ./scripts/test:phase14-acceptance
   deployment-contracts:
     name: Deployment Contracts
     needs: [changes, catalog-contracts]

@@ -957,6 +957,7 @@ internal sealed class CameraAgentOperatorUiService(
                     {
                         continue;
                     }
+                    using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-availability");
                     var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
                     return (newest with
                     {
