@@ -88,7 +88,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 NullLogger<OperatorSettingsFile>.Instance));
             var hostOptions = Options.Create(new CameraAgentHostOptions
             {
-                RawIngressRoot = root, DisplayName = InstalledName,
+                RawIngressRoot = root,
+                DisplayName = InstalledName,
                 OrbitalElements = new() { Enabled = orbitalInitiallyEnabled }
             });
             var site = harness.Own(new SettingsFileSiteProfileStore(
