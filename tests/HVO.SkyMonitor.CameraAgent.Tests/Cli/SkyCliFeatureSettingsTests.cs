@@ -14,6 +14,8 @@ public sealed class SkyCliFeatureSettingsTests
     [DataRow("satellitePlanning", false, false)]
     [DataRow("orbitalElements", true, true)]
     [DataRow("satellitePlanning", false, true)]
+    [DataRow("spaceWeather", true, false)]
+    [DataRow("spaceWeather", true, true)]
     public async Task Config_UsesTheRealCatalogueAndSettingsStoreForBothSwitchesAsync(string group, bool restart, bool apply)
     {
         using var settings = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
@@ -48,6 +50,7 @@ public sealed class SkyCliFeatureSettingsTests
     [TestMethod]
     [DataRow("orbitalElements", "Environment")]
     [DataRow("satellitePlanning", "SecretsDirectory")]
+    [DataRow("spaceWeather", "Environment")]
     public async Task Config_ReportsAnOverrideAndDoesNotSendAWriteAsync(string group, string source)
     {
         using var cli = new CliHarness();

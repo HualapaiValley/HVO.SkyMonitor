@@ -43,7 +43,7 @@ else if (_view is not null)
 {
     var summary = _view.Summary;
     var telemetry = summary.CaptureTelemetry.Value;
-    var attention = OperationsAttention.From(_view, _errorMessage is not null);
+    var attention = OperationsAttention.From(_view, _errorMessage is not null, Layout?.SpaceWeatherItems);
     var changes = RecentChanges;
 
     @if (_errorMessage is not null)
@@ -100,6 +100,15 @@ else if (_view is not null)
             </div>
         </section>
     </div>
+
+    @if (Layout?.SpaceWeather is { } spaceWeather)
+    {
+        <SpaceWeatherSummary Projection="spaceWeather" />
+    }
+    else if (Layout?.SpaceWeatherUnavailable == true)
+    {
+        <SpaceWeatherSummary Unavailable="true" />
+    }
 
     <section class="ops-panel ops-grid" aria-labelledby="lane-heading">
         <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/health">Full diagnostics</a></header>

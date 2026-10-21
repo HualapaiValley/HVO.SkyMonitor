@@ -237,6 +237,34 @@ public sealed class CameraAgentAutomationUiServiceTests
     }
 
     [TestMethod]
+    [DataRow("space-weather.reserved-definition-id", "definition.definitionId",
+        "The space-weather refresh task accepts only the identifier space-weather-refresh.")]
+    [DataRow("space-weather.interval-out-of-range", "definition.triggerInterval",
+        "The interval must be between 60 and 120 seconds.")]
+    public void DescribeFailure_UsesTheSpaceWeatherTasksOwnText(string reasonCode, string fieldPath, string expected)
+    {
+        var message = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid, reasonCode, fieldPath, LocalAutomationOperatorState.Empty));
+
+        Assert.AreEqual(expected, message);
+    }
+
+    [TestMethod]
+    public void DescribeFailure_AnUnknownSpaceWeatherCodeFallsBackToTheFieldText()
+    {
+        var message = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid,
+                "space-weather.future-rule",
+                "definition.definitionId",
+                LocalAutomationOperatorState.Empty));
+
+        StringAssert.Contains(message, "lower-case letter", StringComparison.Ordinal);
+        Assert.IsFalse(message.Contains("space-weather.future-rule", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void DescribeFailure_ExplainsAFieldRejectionWithinItsAdvertisedBounds()
     {
         var message = CameraAgentAutomationUiService.DescribeFailure(

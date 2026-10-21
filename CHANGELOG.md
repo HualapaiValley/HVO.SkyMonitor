@@ -34,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent's new Space weather page lists active, pending, recent and paged SWPC notices with source freshness, drift and halts, and offers Refresh now, Resume and Acknowledge. Each notice keeps SWPC's own activity apart from the relevance at the site's geomagnetic latitude and its daylight limits; relevance is an HVO SkyMonitor estimate, not a NOAA statement, and cloud is not assessed. The Overview adds a compact summary and attention items, Automations offers guided setup of the refresh schedule, the `spaceWeather` settings switch turns the feature on after a restart, and System health lists Space weather. (#1398)
+
 - CameraAgent can refresh NOAA SWPC space-weather alerts, scales, Kp forecast and 3-day forecast locally. Refresh is
   off by default. Turn it on with `CameraAgent:SpaceWeather:Enabled` and a reserved `space-weather-refresh` automation
   definition with a 60 to 120 second tick; per-product cadence, spacing, backoff and halts stay with the provider policy,
