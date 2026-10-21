@@ -73,7 +73,7 @@ internal sealed class CameraAgentSatellitePlanningUiService(
     {
         CameraAgentSatellitePlanningOutcome.Ready => "Planning result available.",
         CameraAgentSatellitePlanningOutcome.NoSnapshot => "Validated local orbital data is unavailable or could not be read. Retry the search.",
-        CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable => "Pinned Earth orientation or leap-second inputs are unavailable for this window.",
+        CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable => "Pinned Earth orientation or leap-second inputs are unavailable for this window, or their coverage has run out. No approximation was substituted. Time-data status in satellite setup shows the active source, coverage and expiry.",
         CameraAgentSatellitePlanningOutcome.Invalid => "The planning request is outside the supported bounds.",
         CameraAgentSatellitePlanningOutcome.NoMatches => "No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.",
         CameraAgentSatellitePlanningOutcome.Busy => "Satellite planning is busy. Retry the search.",

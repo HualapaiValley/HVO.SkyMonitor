@@ -72,6 +72,14 @@ public sealed class OrbitalTimeDataTests
         var mixed = OrbitalTimeData.FromFinals2000A(Encoding.ASCII.GetBytes(lines[0] + "\n" + new string(predicted) + "\n"), OrbitalCoordinateTestData.Leaps);
         Assert.AreEqual(OrbitalEarthOrientationStatus.Mixed, mixed.EarthOrientationStatus);
         Assert.AreEqual(OrbitalEarthOrientationStatus.Mixed, mixed.Evaluate(mixed.EarthOrientationCoverage!.StartUtc.AddHours(12)).Status);
+        // Final and predicted spans are reported separately; neither claims the other's rows.
+        Assert.AreEqual(final.EarthOrientationCoverage, final.EarthOrientationFinalCoverage);
+        Assert.IsNull(final.EarthOrientationPredictedCoverage);
+        Assert.AreEqual(data.EarthOrientationCoverage, data.EarthOrientationPredictedCoverage);
+        Assert.IsNull(data.EarthOrientationFinalCoverage);
+        var first = mixed.EarthOrientationCoverage.StartUtc;
+        Assert.AreEqual(new OrbitalUtcInterval(first, first), mixed.EarthOrientationFinalCoverage);
+        Assert.AreEqual(new OrbitalUtcInterval(first.AddDays(1), first.AddDays(1)), mixed.EarthOrientationPredictedCoverage);
     }
 
     [TestMethod]

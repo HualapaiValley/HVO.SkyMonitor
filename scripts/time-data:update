@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Refresh CameraAgent's bundled Earth-orientation and leap-second pair before a release tag (#1474).
+#
+# Downloads both files from their approved HTTPS endpoints, verifies each provider's published checksum and terms
+# statement, rewrites the vendored files and provenance.json, and then parses the pair with the product's own
+# validators. Builds, images and CI never run this; they use the committed snapshot. Run it on a Linux host and
+# commit the result like any other change.
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly TARGET="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/OrbitalPlanning/TimeData"
+readonly TEST_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+readonly TEST_FILTER="FullyQualifiedName~HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning.CameraAgentBundledTimeDataTests"
+
+readonly EOP_FILE=finals2000A.daily.extended
+readonly EOP_URL="https://maia.usno.navy.mil/ser7/$EOP_FILE"
+readonly EOP_CHECKSUMS_URL=https://maia.usno.navy.mil/ser7/checksums.sha512
+readonly EOP_TERMS_URL=https://maia.usno.navy.mil/products/daily.htm
+readonly EOP_TERMS="Distribution Statement A. Approved for public release: distribution unlimited."
+readonly LEAP_FILE=leap-seconds.list
+readonly LEAP_URL="https://hpiers.obspm.fr/iers/bul/bulc/ntp/$LEAP_FILE"
+readonly LEAP_TERMS="This file is in the public domain."
+# The loader's bounds (CameraAgentPinnedOrbitalTimeSource).
+readonly MAX_EOP_BYTES=$((8 * 1024 * 1024))
+readonly MAX_LEAP_BYTES=$((64 * 1024))
+
+fail() {
+    printf 'time-data:update: %s\n' "$1" >&2
+    exit 1
+}
+
+if [[ $# -ne 0 ]]; then
+    printf 'Usage: %s\n' "$0" >&2
+    exit 64
+fi
+
+for tool in awk curl date dotnet jq sha1sum sha256sum sha512sum; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
+done
+
+work="$(mktemp -d)"
+readonly work
+trap 'rm -rf -- "$work"' EXIT
+
+# Fetches one approved URL without redirects into a bounded file and prints its Last-Modified header, if any.
+fetch() {
+    local url="$1" output="$2" limit="$3" headers="$work/headers" size
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --connect-timeout 20 --max-time 120 \
+        --max-filesize "$limit" --dump-header "$headers" --output "$output" "$url" ||
+        fail "download failed: $url"
+    size="$(wc -c < "$output")"
+    (( size > 0 && size <= limit )) || fail "unexpected size $size bytes: $url"
+    awk 'tolower($1) == "last-modified:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); value = $0 }
+        END { print value }' "$headers"
+}
+
+iso_utc() {
+    [[ -n "$1" ]] || return 0
+    date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ
+}
+
+retrieved="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+eop_modified="$(fetch "$EOP_URL" "$work/$EOP_FILE" "$MAX_EOP_BYTES")"
+fetch "$EOP_CHECKSUMS_URL" "$work/checksums.sha512" "$MAX_LEAP_BYTES" >/dev/null
+fetch "$EOP_TERMS_URL" "$work/daily.htm" "$MAX_EOP_BYTES" >/dev/null
+leap_modified="$(fetch "$LEAP_URL" "$work/$LEAP_FILE" "$MAX_LEAP_BYTES")"
+
+# USNO publishes SHA-512 checksums for its daily products.
+eop_provider="$(awk -v name="$EOP_FILE" '$2 == name { print $1; count++ } END { if (count != 1) exit 1 }' \
+    "$work/checksums.sha512")" || fail "checksums.sha512 does not list $EOP_FILE exactly once"
+[[ "$eop_provider" =~ ^[0-9a-f]{128}$ ]] || fail "the published $EOP_FILE SHA-512 is malformed"
+[[ "$(sha512sum "$work/$EOP_FILE" | awk '{ print $1 }')" == "$eop_provider" ]] ||
+    fail "$EOP_FILE does not match its published SHA-512"
+# The page marks the statement up in two elements; require both halves.
+if ! grep -qF "Distribution Statement A." "$work/daily.htm" ||
+    ! grep -qF "Approved for public release: distribution unlimited." "$work/daily.htm"; then
+    fail "the USNO products page no longer carries the expected distribution statement"
+fi
+
+# The leap file carries its own SHA-1 (#h) over the update time, the expiry and every leap row, ignoring comments and
+# whitespace, as described in https://hpiers.obspm.fr/iers/bul/bulc/ntp/sources/README.
+leap_provider="$(awk '/^#h/ { sub(/^#h/, ""); gsub(/[ \t\r]/, ""); print; count++ } END { if (count != 1) exit 1 }' \
+    "$work/$LEAP_FILE")" || fail "$LEAP_FILE does not carry exactly one #h hash"
+[[ "$leap_provider" =~ ^[0-9a-f]{40}$ ]] || fail "the $LEAP_FILE #h hash is malformed"
+leap_computed="$(awk '
+    /^#[$@]/ { line = substr($0, 3); sub(/#.*/, "", line); gsub(/[ \t\r]/, "", line); printf "%s", line; next }
+    /^#/ { next }
+    { line = $0; sub(/#.*/, "", line); gsub(/[ \t\r]/, "", line); printf "%s", line }
+' "$work/$LEAP_FILE" | sha1sum | awk '{ print $1 }')"
+[[ "$leap_computed" == "$leap_provider" ]] || fail "$LEAP_FILE does not match its #h hash"
+grep -qF "$LEAP_TERMS" "$work/$LEAP_FILE" || fail "$LEAP_FILE no longer states that it is in the public domain"
+
+entry() {
+    local file="$1" product="$2" url="$3" modified="$4" algorithm="$5" checksum="$6" checksum_url="$7" terms="$8" \
+        terms_url="$9"
+    jq -n --arg file "$file" --arg product "$product" --arg url "$url" --arg retrieved "$retrieved" \
+        --arg modified "$(iso_utc "$modified")" --argjson length "$(wc -c < "$work/$file")" \
+        --arg sha256 "$(sha256sum "$work/$file" | awk '{ print toupper($1) }')" \
+        --arg algorithm "$algorithm" --arg checksum "$checksum" --arg checksum_url "$checksum_url" \
+        --arg terms "$terms" --arg terms_url "$terms_url" \
+        '{file: $file, product: $product, sourceUrl: $url, retrievedUtc: $retrieved,
+          lastModifiedUtc: (if $modified == "" then null else $modified end), lengthBytes: $length, sha256: $sha256,
+          providerChecksum: {algorithm: $algorithm, value: $checksum, sourceUrl: $checksum_url},
+          terms: $terms, termsUrl: $terms_url}'
+}
+
+jq -n --argjson eop "$(entry "$EOP_FILE" \
+        "IERS Rapid Service/Prediction Center finals2000A daily extended (IAU2000A, since 1973, one year of predictions)" \
+        "$EOP_URL" "$eop_modified" SHA-512 "$eop_provider" "$EOP_CHECKSUMS_URL" "$EOP_TERMS" "$EOP_TERMS_URL")" \
+    --argjson leap "$(entry "$LEAP_FILE" "IERS Earth Orientation Center leap-seconds.list (NTP format)" \
+        "$LEAP_URL" "$leap_modified" "SHA-1 (#h)" "$leap_provider" "$LEAP_URL" "$LEAP_TERMS" "$LEAP_URL")" \
+    '{schema: "hvo-bundled-time-data-v1", earthOrientation: $eop, leapSeconds: $leap}' > "$work/provenance.json"
+
+# Keep the previous snapshot so a pair the product cannot parse is never left in place.
+mkdir -p "$TARGET" "$work/previous"
+for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
+    [[ ! -f "$TARGET/$file" ]] || cp -p "$TARGET/$file" "$work/previous/$file"
+done
+restore() {
+    local file
+    for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
+        if [[ -f "$work/previous/$file" ]]; then cp -p "$work/previous/$file" "$TARGET/$file"; else rm -f -- "$TARGET/$file"; fi
+    done
+}
+for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
+    cp "$work/$file" "$TARGET/$file.tmp"
+    mv -f "$TARGET/$file.tmp" "$TARGET/$file"
+done
+
+if ! dotnet test "$TEST_PROJECT" --configuration Release --filter "$TEST_FILTER" --nologo; then
+    restore
+    fail "the product's validators rejected the downloaded pair; the previous snapshot was restored"
+fi
+
+# A summary for the release notes. The product computes the same facts itself.
+mjd_date() { date -u -d "@$(( ($1 - 40587) * 86400 ))" +%Y-%m-%d; }
+read -r final_end predicted_end < <(awk '
+    { mjd = substr($0, 8, 5) + 0 }
+    length($0) >= 165 && substr($0, 135, 31) ~ /[^ ]/ { final = mjd; next }
+    substr($0, 17, 1) == "P" && substr($0, 58, 1) == "P" { predicted = mjd }
+    END { print final, predicted }' "$TARGET/$EOP_FILE")
+leap_expiry_ntp="$(awk '/^#@/ { line = substr($0, 3); sub(/#.*/, "", line); gsub(/[ \t\r]/, "", line); print line }' \
+    "$TARGET/$LEAP_FILE")"
+printf 'Bundled time data updated (retrieved %s).\n' "$retrieved"
+printf '  Earth orientation: final to %s, predicted to %s\n' "$(mjd_date "$final_end")" "$(mjd_date "$predicted_end")"
+printf '  Leap seconds: expires %s (exclusive)\n' "$(date -u -d "@$(( leap_expiry_ntp - 2208988800 ))" +%Y-%m-%dT%H:%M:%SZ)"
+printf 'Review and commit %s.\n' "${TARGET#"$REPO_ROOT"/}"
