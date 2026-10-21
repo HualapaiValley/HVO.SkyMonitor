@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.Extensions.Configuration;
+using HVO.SkyMonitor.Common.Configuration;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 
@@ -56,20 +57,24 @@ public sealed class CameraAgentFeatureSettingsTests
         {
             File.WriteAllText(Path.Combine(root, key.Replace(":", "__", StringComparison.Ordinal)), "true");
             Environment.SetEnvironmentVariable(variable + key.Replace(":", "__", StringComparison.Ordinal), "true");
+            var fileContents = "{\"CameraAgent\":{\"" + key.Split(':')[1] + "\":{\"Enabled\":false}}}";
             using var harness = await CameraAgentSettingsHarness.CreateAsync(configureOverrides: configuration =>
             {
+                File.WriteAllText(configuration[DeploymentLocalSettings.PathVariable]!, fileContents);
+                ((IConfigurationRoot)configuration).Reload();
                 if (provider == "Environment") configuration.AddEnvironmentVariables(variable);
                 else configuration.AddKeyPerFile(root, optional: false);
-            }).ConfigureAwait(false);
+            }, orbitalInitiallyEnabled: true).ConfigureAwait(false);
             var before = await harness.GroupAsync(group).ConfigureAwait(false);
             var setting = before.Settings.Single();
             Assert.AreEqual(provider, setting.Source.ToString());
+            Assert.AreEqual("true", setting.Value!.Value.GetString());
             Assert.IsFalse(setting.CanWrite);
             Assert.IsNotNull(setting.ReadOnlyReason);
             var result = await harness.WriteAsync(group, before.Version,
                 new Dictionary<string, object?> { [setting.Key] = "false" }).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentSettingsWriteOutcome.ReadOnly, result.Outcome);
-            Assert.AreEqual(string.Empty, harness.ReadSettingsFile());
+            Assert.AreEqual(fileContents, harness.ReadSettingsFile());
         }
         finally
         {
