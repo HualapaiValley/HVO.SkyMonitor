@@ -135,7 +135,7 @@ public sealed partial class LifecycleContractTests
             Assert.AreEqual(2, restored);
             Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", "SELECT last_sequence FROM raw_capture_sequences;"));
             StringAssert.Contains(error.ToString(),
-                "could not carry the capture-schedule-version counter of 'raw/journal/raw-ingress.db' (its value is outside the range a carry can write and verify)",
+                "could not carry the capture-schedule-version counter of 'raw/journal/raw-ingress.db' with key \"1\" (its value is outside the range a carry can write and verify)",
                 StringComparison.Ordinal);
         }
     }
@@ -171,7 +171,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(3, ReadCounter(fixture.Paths, AutomationStore, "SELECT version FROM automation_definitions WHERE definition_id = 'kept';"));
         Assert.AreEqual(0, ReadCounter(fixture.Paths, AutomationStore, "SELECT COUNT(*) FROM automation_definition_revisions WHERE definition_id = char(0);"));
         StringAssert.Contains(error.ToString(),
-            $"could not carry the automation-definition-version counter of '{AutomationStore}' (its key contains a NUL character)",
+            $"could not carry the automation-definition-version counter of '{AutomationStore}' with key \"\\u0000\" (its key contains a NUL character)",
             StringComparison.Ordinal);
     }
 
@@ -250,7 +250,9 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
         if (!fleetCarried)
         {
-            StringAssert.Contains(error.ToString(), $"the counters of '{FleetStore}' (injected carry fault)", StringComparison.Ordinal);
+            StringAssert.Contains(error.ToString(), step == $"read:{FleetStore}"
+                ? $"the counters of '{FleetStore}' (injected carry fault)"
+                : $"the fleet-report-sequence counter of '{FleetStore}' with key \"1\" (injected carry fault)", StringComparison.Ordinal);
         }
     }
 
@@ -322,10 +324,10 @@ public sealed partial class LifecycleContractTests
             case "blob-revision":
                 return;
             case "text-version":
-                StringAssert.Contains(error, $"could not carry the counters of '{AutomationStore}'", StringComparison.Ordinal);
+                StringAssert.Contains(error, $"could not carry the automation-definition-version counter of '{AutomationStore}' with key \"kept\"", StringComparison.Ordinal);
                 break;
             default:
-                StringAssert.Contains(error, $"could not carry the counters of '{FleetStore}'", StringComparison.Ordinal);
+                StringAssert.Contains(error, $"could not carry the fleet-report-sequence counter of '{FleetStore}' with key \"1\"", StringComparison.Ordinal);
                 StringAssert.Contains(error, "is encoded as UTF-16le, not UTF-8", StringComparison.Ordinal);
                 break;
         }

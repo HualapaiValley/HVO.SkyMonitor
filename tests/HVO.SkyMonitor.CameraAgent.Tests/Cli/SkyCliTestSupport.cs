@@ -73,6 +73,10 @@ internal sealed class FakeCameraAgent
     /// <summary>Raised as each request arrives, before it is answered.</summary>
     public Action<RecordedRequest>? OnRequest { get; set; }
 
+    public Action? OnHang { get; set; }
+
+    public Action? OnStalledRead { get; set; }
+
     public FakeCameraAgent Json(string method, string path, object body, HttpStatusCode status = HttpStatusCode.OK)
         => Handle(method, path, _ => Response(status, body));
 
@@ -133,6 +137,7 @@ internal sealed class FakeCameraAgent
         OnRequest?.Invoke(recorded);
         if (Hang)
         {
+            OnHang?.Invoke();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
         }
 
@@ -152,7 +157,7 @@ internal sealed class FakeCameraAgent
         if (StallBodies)
         {
             response.Content.Dispose();
-            response.Content = new StalledContent();
+            response.Content = new StalledContent(OnStalledRead);
         }
 
         return response;
@@ -206,8 +211,8 @@ internal sealed class CliHarness : IDisposable
 
     public bool Interactive { get; set; }
 
-    /// <summary>How long the person at the terminal takes to answer each prompt.</summary>
-    public TimeSpan AnswerDelay { get; set; }
+    /// <summary>Runs while the person answers, with the command deadline paused.</summary>
+    public Action? Answering { get; set; }
 
     /// <summary>The user hvo-sky takes itself to run as: another than this process's makes its own files someone else's.</summary>
     public uint UserId { get; set; } = SkyFileSystem.CurrentUserId;
@@ -275,7 +280,7 @@ internal sealed class CliHarness : IDisposable
             ReadLine = (prompt, secret) =>
             {
                 Prompts.Add((prompt, secret));
-                Thread.Sleep(AnswerDelay);
+                Answering?.Invoke();
                 return Input.Count > 0 ? Input.Dequeue() : null;
             },
             IsInteractive = Interactive,
@@ -704,15 +709,29 @@ internal static class Fake
 /// <summary>A JSON answer whose body never arrives: a read of it waits until it is cancelled.</summary>
 internal sealed class StalledContent : HttpContent
 {
-    public StalledContent() => Headers.ContentType = new MediaTypeHeaderValue("application/json");
+    public StalledContent(Action? read = null)
+    {
+        _read = read;
+        Headers.ContentType = new MediaTypeHeaderValue("application/json");
+    }
+
+    private readonly Action? _read;
+
+    private void Started() => _read?.Invoke();
 
     protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
-        => Task.Delay(Timeout.InfiniteTimeSpan);
+    {
+        Started();
+        return Task.Delay(Timeout.InfiniteTimeSpan);
+    }
 
     protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken cancellationToken)
-        => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    {
+        Started();
+        return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
 
-    protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StalledStream());
+    protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StalledStream(Started));
 
     protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken) => CreateContentReadStreamAsync();
 
@@ -722,7 +741,7 @@ internal sealed class StalledContent : HttpContent
         return false;
     }
 
-    private sealed class StalledStream : Stream
+    private sealed class StalledStream(Action read) : Stream
     {
         public override bool CanRead => true;
 
@@ -740,6 +759,7 @@ internal sealed class StalledContent : HttpContent
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            read();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             return 0;
         }
@@ -761,9 +781,13 @@ internal sealed class StalledContent : HttpContent
     }
 }
 
-/// <summary>A clock whose timers fire only when the test says, for the termination grace period.</summary>
+/// <summary>A fixed clock whose timers fire only when the test says, for deadlines and the termination grace period.</summary>
 internal sealed class ManualTimeProvider : TimeProvider
 {
+    public DateTimeOffset Now { get; set; } = new(2026, 10, 18, 19, 30, 0, TimeSpan.Zero);
+
+    public override DateTimeOffset GetUtcNow() => Now;
+
     private readonly List<ManualTimer> _timers = [];
 
     public IReadOnlyList<ManualTimer> Timers => _timers;
