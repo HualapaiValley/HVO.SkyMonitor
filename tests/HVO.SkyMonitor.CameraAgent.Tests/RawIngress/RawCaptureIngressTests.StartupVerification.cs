@@ -423,6 +423,55 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(0, reads.Opens);
     }
 
+    [TestMethod]
+    public async Task FailAsync_AfterAnInterveningRawPass_RequestsReconciliationAgain()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            RawCaptureReceipt accepted;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                accepted = (await original.AcceptAsync(
+                    configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false))!;
+            }
+            SqliteConnection.ClearAllPools();
+            var payload = accepted.StoredFrame.AbsolutePath;
+            await File.WriteAllBytesAsync(payload, [6, 6, 6, 6]).ConfigureAwait(false);
+            var reads = new PayloadReadCounter();
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System), reads);
+            var lease = await ingress.ClaimAsync(StandardLane, "reconciliation-race", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            using var standard = new StandardCaptureLaneHandler(
+                new RawReadingPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+            var result = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("evidence-unavailable", result.Reason);
+
+            // Consume the handler's request before its terminal lane outcome has been committed.
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0L, reads.BytesRead);
+            Assert.IsTrue(File.Exists(payload));
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure,
+                await ingress.FailAsync(lease, result, CancellationToken.None).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(4L, reads.BytesRead);
+            Assert.IsFalse(File.Exists(payload));
+            Assert.HasCount(1, Directory.EnumerateFiles(
+                Path.Combine(root, "quarantine"), Path.GetFileName(payload), SearchOption.AllDirectories).ToArray());
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("quarantined", await ScalarStringAsync(connection,
+                $"SELECT state FROM raw_captures WHERE capture_id = '{accepted.Manifest.Descriptor.Capture.CaptureId:N}';").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     /// <summary>
     /// Runs the capture's standard lane work as the lane worker does: loading the raw frame verifies its checksum, the
     /// handler reports the evidence unavailable, and the lane's terminal outcome is recorded.
