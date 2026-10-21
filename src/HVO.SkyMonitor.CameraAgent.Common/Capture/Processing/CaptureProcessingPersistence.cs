@@ -344,7 +344,8 @@ internal sealed partial class CaptureProcessingPersistence(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
@@ -360,6 +361,7 @@ internal sealed partial class CaptureProcessingPersistence(
             var checkedOutput = cursorOutput;
             do
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 var page = unavailable
                     ? await _store.ReadUnavailableExpirationPageAsync(
                         _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
@@ -369,6 +371,7 @@ internal sealed partial class CaptureProcessingPersistence(
                         _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
                 foreach (var candidate in page.Items)
                 {
+                    interruptionToken.ThrowIfCancellationRequested();
                     var sourcePaths = candidate.AvailabilityState == "Quarantined" && candidate.QuarantineRelativePath is { } quarantine
                         ? Directory.Exists(ResolveSafePath(quarantine))
                             ? Directory.EnumerateFiles(ResolveSafePath(quarantine)).Order(StringComparer.Ordinal).ToArray()
@@ -418,12 +421,14 @@ internal sealed partial class CaptureProcessingPersistence(
         long? diagnosticId = null;
         do
         {
+            interruptionToken.ThrowIfCancellationRequested();
             var diagnostics = await _store.ReadDiagnosticExpirationPageAsync(
                 _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
                 diagnosticTimestamp, diagnosticId, _lifecycleOptions.ReconciliationBatchSize,
                 cancellationToken).ConfigureAwait(false);
             foreach (var diagnostic in diagnostics.Items)
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 if (diagnostic.QuarantineRelativePath is { } quarantine)
                 {
                     var path = ResolveSafePath(quarantine);

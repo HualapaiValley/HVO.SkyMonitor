@@ -11,7 +11,7 @@ internal sealed record HostPolicyResult(
 /// <summary>
 /// <c>host set-product-root &lt;path&gt;</c>. The operator runs it as the deployment user; the only privileged step is
 /// one narrow <c>sudo</c>-executed internal command that writes the root-owned policy. That helper accepts nothing but
-/// the requested root, re-reads and re-validates the existing policy itself, refuses to move a production root that
+/// the requested root and optional mount-repair switch, re-reads and re-validates the existing policy, refuses to move a root that
 /// already holds instances, and publishes the file atomically. The caller then reads the policy back as itself and
 /// requires it to name exactly the requested root.
 /// </summary>
@@ -37,17 +37,13 @@ internal static class PrivilegedHostPolicy
         {
             // An isolated test location belongs to the invoking user, and root already holds the policy owner's
             // authority, so neither needs the privileged handoff.
-            change = HostProductRootPolicy.Apply(location, request.ProductRoot);
+            change = HostProductRootPolicy.Apply(location, request.ProductRoot, request.RepairMount);
         }
         else
         {
-            var result = await processRunner.RunAsync("sudo", HelperArguments(request.ProductRoot), cancellationToken)
+            var result = await processRunner.RunAsync("sudo", HelperArguments(request.ProductRoot, request.RepairMount), cancellationToken)
                 .ConfigureAwait(false);
-            if (result.ExitCode != 0)
-            {
-                throw new InstallerException(
-                    $"Privileged host policy update failed: {Redaction.SafeDiagnostic(result.StandardError)}");
-            }
+            PrivilegedHelperErrors.ThrowIfFailed(result, "Privileged host policy update failed");
             var outcome = result.StandardOutput.Trim();
             if (outcome is not (HostPolicyChange.Updated or HostPolicyChange.Unchanged))
             {
@@ -64,14 +60,17 @@ internal static class PrivilegedHostPolicy
         return new HostPolicyResult(SchemaVersion, change.Outcome, location.PolicyPath, change.PreviousProductRoot, resolved.Path);
     }
 
-    internal static IReadOnlyList<string> HelperArguments(string productRoot)
-        => ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot];
+    internal static IReadOnlyList<string> HelperArguments(string productRoot, bool repairMount = false)
+        => repairMount
+            ? ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot, "--repair"]
+            : ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot];
 
-    /// <summary>Parses exactly <c>internal-set-product-root --product-root &lt;path&gt;</c> with an acceptable path.</summary>
+    /// <summary>Parses exactly <c>internal-set-product-root --product-root &lt;path&gt; [--repair]</c> with an acceptable path.</summary>
     internal static bool TryParse(string[] args, out string productRoot)
     {
         productRoot = string.Empty;
-        if (args.Length != 3 || args[0] != CommandName || args[1] != "--product-root" ||
+        if (args.Length is not (3 or 4) || args[0] != CommandName || args[1] != "--product-root" ||
+            args.Length == 4 && args[3] != "--repair" ||
             HostProductRootPolicy.ProductRootTextError(args[2]) is not null)
         {
             return false;
@@ -85,21 +84,25 @@ internal static class PrivilegedHostPolicy
     /// can redirect the policy, its owner, or the trust root it is validated from.
     /// </summary>
     public static int RunInternal(string[] args)
+        => RunInternal(args, HostPolicyLocation.Production, NativeLinux.getuid());
+
+    // The public entry point always supplies the fixed production location and actual UID.
+    internal static int RunInternal(string[] args, HostPolicyLocation location, uint uid)
     {
-        if (!TryParse(args, out var productRoot) || NativeLinux.getuid() != 0)
+        if (!TryParse(args, out var productRoot) || uid != 0)
         {
             return 2;
         }
         try
         {
-            var change = HostProductRootPolicy.Apply(HostPolicyLocation.Production, productRoot);
+            var change = HostProductRootPolicy.Apply(location, productRoot, repairMount: args.Length == 4);
             Console.Out.WriteLine(change.Outcome);
             return 0;
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 }
