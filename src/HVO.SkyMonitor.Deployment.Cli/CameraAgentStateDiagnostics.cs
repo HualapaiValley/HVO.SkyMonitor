@@ -15,10 +15,11 @@ internal static class CameraAgentStateDiagnostics
     /// <summary>
     /// A database-derived name and value are redacted as the one assignment they read as, then escaped. The value is the whole
     /// field, so a name the redactor treats as a credential hides all of it, not only the first word an unquoted value ends at.
+    /// Decoration in the name, which the redactor removes, does not make an ordinary name read as a credential.
     /// </summary>
     public static string Assignment(string? name, string? value)
     {
-        var probe = $"{name}=value";
+        var probe = Redaction.WithoutControlSequences($"{name}=value");
         return Reason(!string.IsNullOrEmpty(value) && Redaction.SafeDiagnostic(probe) != probe ? $"{name}=<redacted>" : $"{name}={value}");
     }
 

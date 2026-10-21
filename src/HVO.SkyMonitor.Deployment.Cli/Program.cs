@@ -290,12 +290,14 @@ internal static class Program
         }
         catch (InstallerException exception) when (exception.IsRefusal)
         {
-            await WriteErrorAsync(jsonErrors, "refused", exception.Message, refused: true).ConfigureAwait(false);
+            await WriteErrorAsync(jsonErrors, "refused", exception.Message, refused: true, formatted: exception.IsFormattedDiagnostic)
+                .ConfigureAwait(false);
             return (int)InstallerExitCode.Refused;
         }
         catch (InstallerException exception)
         {
-            await WriteErrorAsync(jsonErrors, "installation-failed", exception.Message).ConfigureAwait(false);
+            await WriteErrorAsync(jsonErrors, "installation-failed", exception.Message, formatted: exception.IsFormattedDiagnostic)
+                .ConfigureAwait(false);
             return (int)InstallerExitCode.Failed;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -306,12 +308,20 @@ internal static class Program
         }
     }
 
-    private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false)
-        => Console.Error.WriteLineAsync(json
-            ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = Redaction.SafeDiagnostic(message) })
+    /// <summary>
+    /// Writes the error line. A message the shared formatter composed (<see cref="InstallerException.IsFormattedDiagnostic"/>)
+    /// is already redacted and escaped, so it is written as it is: scanning it again could redact the fixed wording after a
+    /// hostile name in it (#1491). Every other message is redacted here.
+    /// </summary>
+    private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false, bool formatted = false)
+    {
+        var safe = formatted ? message : Redaction.SafeDiagnostic(message);
+        return Console.Error.WriteLineAsync(json
+            ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = safe })
             : refused
-                ? $"Installation refused: {Redaction.SafeDiagnostic(message)} Nothing was changed."
-                : $"Installation failed: {Redaction.SafeDiagnostic(message)}");
+                ? $"Installation refused: {safe} Nothing was changed."
+                : $"Installation failed: {safe}");
+    }
 
     private static async Task WriteHumanResultAsync(InstallationResult result)
     {

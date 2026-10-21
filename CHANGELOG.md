@@ -149,6 +149,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
 
+- Deployment CLI diagnostics remove ANSI and C1 terminal sequences before redacting, so colour or link codes around a key no longer expose its value; keys ending in a credential word, such as `db_password`, `client_secret`, `accessToken` and `x-api-key`, have their whole quoted value redacted; already formatted errors keep their fixed wording; and backup folder refusals redact and escape the archive name and folder they echo. (#1491)
+
 - `hvo-sky` reaches a loopback address (`127.0.0.1`, `localhost`, `[::1]`) directly, never through an HTTP proxy.
   With `http_proxy` set and no `no_proxy` entry for it, the owner API key went to the proxy unencrypted, without the
   plain-HTTP warning, and the request reached the proxy's own loopback rather than this machine's CameraAgent. Any
