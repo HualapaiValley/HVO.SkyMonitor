@@ -49,6 +49,8 @@ internal sealed class CameraAgentSettingSources
         return new(CameraAgentSettingSource.Default, false);
     }
 
+    internal bool Boolean(string key) => bool.TryParse(_configuration?[key], out var value) && value;
+
     private CameraAgentSettingSource Classify(IConfigurationProvider provider) => provider switch
     {
         _ when _isSettingsFile(provider) => CameraAgentSettingSource.SettingsFile,

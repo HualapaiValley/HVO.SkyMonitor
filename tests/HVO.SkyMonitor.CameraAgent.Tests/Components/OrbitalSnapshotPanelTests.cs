@@ -15,6 +15,26 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class OrbitalSnapshotPanelTests
 {
+    [TestMethod]
+    [DataRow(true, false, true)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, false)]
+    public void Setup_IsOfferedOnlyForEnabledRefreshWithoutAnExistingDefinition(bool enabled, bool exists, bool offered)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(TestOrbitalUiService.Status() with { Enabled = enabled },
+            schedule: TestOrbitalUiService.Schedule() with { Exists = exists }));
+        var cut = context.Render<OrbitalSnapshotPanel>();
+        cut.WaitForElement("#orbital-enabled");
+        Assert.AreEqual(enabled ? "On" : "Off", cut.Find("#orbital-enabled").TextContent);
+        Assert.IsNotNull(cut.Find("a[href='/operations/site#orbitalElements-switch']"));
+        Assert.AreEqual(offered ? 1 : 0, cut.FindAll("#orbital-setup").Count);
+        if (offered) Assert.AreEqual("/operations/automations?setup=orbital", cut.Find("#orbital-setup a").GetAttribute("href"));
+        Assert.Contains("shared NAT", cut.Markup, StringComparison.Ordinal);
+        Assert.IsEmpty(service.RefreshKeys);
+    }
+
     private static readonly DateTimeOffset Now = TestOrbitalUiService.Now;
     private static readonly string ShortManifest = "sha256:" + new string('a', 8) + "…" + new string('a', 8);
 

@@ -22,6 +22,8 @@ internal static class CameraAgentSettingsCatalogue
     public const string CameraGroup = "camera";
     public const string ScheduleGroup = "schedule";
     public const string CurrentSkyGroup = "currentSky";
+    public const string OrbitalElementsGroup = "orbitalElements";
+    public const string SatellitePlanningGroup = "satellitePlanning";
 
     public const string SettingsFileStore = "settingsFile";
     public const string DeploymentLocationStore = "deploymentLocation";
@@ -165,6 +167,18 @@ internal static class CameraAgentSettingsCatalogue
         ConfigurationKey = CurrentSkyRefreshSetting.ConfigurationKey
     };
 
+    public static CameraAgentSettingDefinition OrbitalRefreshEnabled { get; } = FeatureSwitch(
+        OrbitalElementsGroup, "CameraAgent:OrbitalElements:Enabled", "Orbital refresh",
+        "Allow bounded CelesTrak orbital refresh attempts. After restarting, Software & Catalog offers guided " +
+        "creation of the refresh automation. Retained snapshots stay readable when refresh is off.",
+        CameraAgentSettingApplication.Restart);
+
+    public static CameraAgentSettingDefinition SatellitePlanningEnabled { get; } = FeatureSwitch(
+        SatellitePlanningGroup, "CameraAgent:SatellitePlanning:Enabled", "Satellite planning",
+        "Allow diagnostic pass planning from local orbital snapshots and explicitly pinned Earth-orientation and " +
+        "leap-second files. Nothing is captured or scheduled. Time-data paths and hashes remain hand-configured.",
+        CameraAgentSettingApplication.Immediate);
+
     /// <summary>Groups in display order.</summary>
     public static IReadOnlyList<CameraAgentSettingsGroup> Groups { get; } =
     [
@@ -189,7 +203,11 @@ internal static class CameraAgentSettingsCatalogue
             ScheduleRevisionStore, [ActiveScheduleRevision]),
         new(CurrentSkyGroup, "Current sky",
             "How the Current Sky page follows new captures. It changes only what the page shows.",
-            SettingsFileStore, [MinimumRefreshInterval])
+            SettingsFileStore, [MinimumRefreshInterval]),
+        new(OrbitalElementsGroup, "Orbital refresh", OrbitalRefreshEnabled.Description,
+            SettingsFileStore, [OrbitalRefreshEnabled]),
+        new(SatellitePlanningGroup, "Satellite planning", SatellitePlanningEnabled.Description,
+            SettingsFileStore, [SatellitePlanningEnabled])
     ];
 
     public static IReadOnlyList<CameraAgentSettingDefinition> All { get; } = [.. Groups.SelectMany(group => group.Settings)];
@@ -209,6 +227,22 @@ internal static class CameraAgentSettingsCatalogue
                 group.Description,
                 group.Store,
                 [.. group.Settings.Select(setting => setting.ToDescriptor())]))]);
+
+    // On/off choices reuse the settings v1 enum wire shape, including clients from earlier releases.
+    private static CameraAgentSettingDefinition FeatureSwitch(string group, string configurationKey, string title,
+        string description, CameraAgentSettingApplication application) => new()
+        {
+            Key = group + ".enabled",
+            Group = group,
+            Title = title,
+            Description = description,
+            Type = CameraAgentSettingType.Enum,
+            Safety = CameraAgentSettingSafety.Descriptive,
+            Application = application,
+            AllowedValues = [new("false", "Off", "Disabled"), new("true", "On", "Enabled")],
+            Default = "false",
+            ConfigurationKey = configurationKey
+        };
 
     private static CameraAgentSettingDefinition SiteText(
         string key,
