@@ -1,7 +1,10 @@
+using System.Buffers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
@@ -54,10 +57,10 @@ public sealed record CalibrationFamilyMemberV1(
     [property: JsonRequired] IReadOnlyList<CalibrationFamilyMasterV1> Masters);
 
 /// <summary>
-/// One approved calibration family (#1475): per-gain members for one agent, rig and sensor under one mask family.
-/// Its identity, with the gain-normalization policy identity, is the common stack-compatibility axis; the member
-/// chosen for each input may differ by gain and stays in that input's lineage. A defect mask from another mask
-/// family is a boundary, not a member.
+/// One approved calibration family (#1475): per-gain members for one agent, rig and sensor under one mask family,
+/// with masters acquired under one <see cref="AcquisitionModel"/>. Its identity, with the gain-normalization policy
+/// identity, is the common stack-compatibility axis; the member chosen for each input may differ by gain and stays in
+/// that input's lineage. A defect mask from another mask family is a boundary, not a member.
 /// </summary>
 public sealed record CalibrationFamilyV1(
     [property: JsonRequired] string SchemaVersion,
@@ -66,6 +69,7 @@ public sealed record CalibrationFamilyV1(
     [property: JsonRequired] string RigId,
     [property: JsonRequired] string RigProfileSha256,
     [property: JsonRequired] string SensorProfileSha256,
+    [property: JsonRequired] ProfileIdentityDescriptor AcquisitionModel,
     [property: JsonRequired] string MaskProfileSha256,
     [property: JsonRequired] IReadOnlyList<CalibrationFamilyMemberV1> Members)
 {
@@ -73,12 +77,16 @@ public sealed record CalibrationFamilyV1(
     public const int MaximumMembers = 512;
 }
 
-/// <summary>The actual capture conditions of one input frame.</summary>
+/// <summary>
+/// The actual capture conditions of one input frame. <see cref="CalibrationProfile"/> is the light's capture-time
+/// calibration profile identity.
+/// </summary>
 public sealed record CalibrationFamilyInputV1(
     string AgentId,
     string RigId,
     string RigProfileSha256,
     string SensorProfileSha256,
+    ProfileIdentityDescriptor CalibrationProfile,
     string MaskProfileSha256,
     FrameLayoutDescriptor Layout,
     double Gain,
@@ -109,6 +117,16 @@ public static class CalibrationFamilyContract
 {
     private const int MaximumTokenLength = 128;
 
+    /// <summary>
+    /// The calibration models masters can be acquired under, by profile name and version, as the calibration library
+    /// maps its bundle sources. A light whose calibration profile names no acquisition model matches no family.
+    /// </summary>
+    private static readonly (string Name, string Version)[] AcquisitionModels =
+    [
+        ("synthetic-calibration-model", SyntheticCalibrationModelV1.CurrentSchemaVersion),
+        ("virtual-calibration-source-model", VirtualCalibrationSourceModelV1.CurrentSchemaVersion)
+    ];
+
     public static CaptureContractValidationResult Validate(CalibrationFamilyV1? family)
     {
         if (family is null ||
@@ -136,6 +154,11 @@ public static class CalibrationFamilyContract
         {
             return Failure("sensorProfileSha256");
         }
+        if (family.AcquisitionModel is not { } model || !Sha256(model.Sha256) ||
+            !AcquisitionModels.Contains((model.Name, model.Version)))
+        {
+            return Failure("acquisitionModel");
+        }
         if (!Sha256(family.MaskProfileSha256))
         {
             return Failure("maskProfileSha256");
@@ -145,7 +168,7 @@ public static class CalibrationFamilyContract
         {
             return Failure("members");
         }
-        foreach (var member in members)
+        foreach (var member in OrderMembers(members))
         {
             var validation = ValidateMember(member);
             if (!validation.IsValid)
@@ -165,6 +188,16 @@ public static class CalibrationFamilyContract
         var masters = members.SelectMany(static member => member.Masters).ToArray();
         if (masters.DistinctBy(static master => master.ArtifactId).Count() !=
             masters.DistinctBy(static master => (master.ArtifactId, master.Kind, master.PayloadSha256.ToUpperInvariant())).Count())
+        {
+            return Failure("members.masters");
+        }
+        // A defect master may serve every gain of its mask family; a bias, dark or flat applies to one gain and offset.
+        if (members
+            .SelectMany(static member => member.Masters
+                .Where(static master => !string.Equals(master.Kind, CalibrationReferenceKinds.Defect, StringComparison.Ordinal))
+                .Select(master => (master.ArtifactId, Gain: member.Gain + 0.0, Offset: member.Offset + 0.0)))
+            .GroupBy(static master => master.ArtifactId)
+            .Any(static uses => uses.Select(static use => (use.Gain, use.Offset)).Distinct().Skip(1).Any()))
         {
             return Failure("members.masters");
         }
@@ -191,7 +224,8 @@ public static class CalibrationFamilyContract
         if (!string.Equals(family.AgentId, input.AgentId, StringComparison.Ordinal) ||
             !string.Equals(family.RigId, input.RigId, StringComparison.Ordinal) ||
             !string.Equals(family.RigProfileSha256, input.RigProfileSha256, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(family.SensorProfileSha256, input.SensorProfileSha256, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(family.SensorProfileSha256, input.SensorProfileSha256, StringComparison.OrdinalIgnoreCase) ||
+            !AcquisitionModelMatches(family.AcquisitionModel, input.CalibrationProfile))
         {
             return CalibrationFamilyMemberResolution.Excluded(CalibrationFamilyReasonCodes.IdentityMismatch);
         }
@@ -236,6 +270,22 @@ public static class CalibrationFamilyContract
             ? CalibrationFamilyMemberResolution.Excluded(CalibrationFamilyReasonCodes.Stale)
             : CalibrationFamilyMemberResolution.Applicable(selected);
     }
+
+    /// <summary>Orders members canonically, by gain, offset and member ID.</summary>
+    internal static IEnumerable<CalibrationFamilyMemberV1> OrderMembers(IEnumerable<CalibrationFamilyMemberV1> members)
+        => members
+            .OrderBy(static member => member.Gain)
+            .ThenBy(static member => member.Offset)
+            .ThenBy(static member => member.MemberId, StringComparer.Ordinal);
+
+    /// <summary>
+    /// The light was captured under the family's acquisition model: the same profile name and version, and the same
+    /// SHA-256 in any case.
+    /// </summary>
+    private static bool AcquisitionModelMatches(ProfileIdentityDescriptor model, ProfileIdentityDescriptor calibrationProfile)
+        => string.Equals(calibrationProfile.Name, model.Name, StringComparison.Ordinal) &&
+           string.Equals(calibrationProfile.Version, model.Version, StringComparison.Ordinal) &&
+           string.Equals(calibrationProfile.Sha256, model.Sha256, StringComparison.OrdinalIgnoreCase);
 
     private static CaptureContractValidationResult ValidateMember(CalibrationFamilyMemberV1 member)
     {
@@ -338,14 +388,34 @@ public static class CalibrationFamilyContract
     private static bool ValidInput(CalibrationFamilyInputV1 input)
         => !string.IsNullOrWhiteSpace(input.AgentId) && !string.IsNullOrWhiteSpace(input.RigId) &&
            Sha256(input.RigProfileSha256) && Sha256(input.SensorProfileSha256) && Sha256(input.MaskProfileSha256) &&
+           input.CalibrationProfile is { } profile && !string.IsNullOrWhiteSpace(profile.Name) &&
+           !string.IsNullOrWhiteSpace(profile.Version) && Sha256(profile.Sha256) &&
            input.Layout is not null && input.Layout.Validate().IsValid &&
            double.IsFinite(input.Gain) &&
            (input.Offset is null || double.IsFinite(input.Offset.Value)) &&
            (input.TemperatureC is null || double.IsFinite(input.TemperatureC.Value)) &&
            input.Exposure > TimeSpan.Zero;
 
+    /// <summary>
+    /// A token is non-blank, at most 128 UTF-16 units and well-formed. JSON writes an unpaired surrogate as U+FFFD, so
+    /// such a token would not round-trip.
+    /// </summary>
     private static bool Token(string? value)
-        => !string.IsNullOrWhiteSpace(value) && value.Length <= MaximumTokenLength;
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaximumTokenLength)
+        {
+            return false;
+        }
+        for (var remaining = value.AsSpan(); !remaining.IsEmpty;)
+        {
+            if (Rune.DecodeFromUtf16(remaining, out _, out var consumed) != OperationStatus.Done)
+            {
+                return false;
+            }
+            remaining = remaining[consumed..];
+        }
+        return true;
+    }
 
     private static bool Sha256(string? value)
         => value is { Length: 64 } && value.All(Uri.IsHexDigit);
@@ -360,7 +430,11 @@ public static class CalibrationFamilyContract
 /// </summary>
 public static class CalibrationFamilyContractJson
 {
-    public const int MaximumContractBytes = 1024 * 1024;
+    /// <summary>
+    /// Bounds both parsing and serialization. The largest valid family, 512 members whose tokens escape every character
+    /// to six bytes, serializes to about 1.3 MB, so every valid family round-trips.
+    /// </summary>
+    public const int MaximumContractBytes = 2 * 1024 * 1024;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public static byte[] Serialize(CalibrationFamilyV1 family)
@@ -373,8 +447,11 @@ public static class CalibrationFamilyContractJson
                 $"Calibration family is invalid at '{validation.FieldPath}' ({validation.ReasonCode}).",
                 nameof(family));
         }
-        return JsonSerializer.SerializeToUtf8Bytes(
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
             CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(Normalize(family), SerializerOptions)));
+        return bytes.Length <= MaximumContractBytes
+            ? bytes
+            : throw new InvalidOperationException("The canonical calibration family exceeds the contract bound.");
     }
 
     public static string ComputeIdentitySha256(CalibrationFamilyV1 family)
@@ -423,8 +500,9 @@ public static class CalibrationFamilyContractJson
         {
             RigProfileSha256 = family.RigProfileSha256.ToUpperInvariant(),
             SensorProfileSha256 = family.SensorProfileSha256.ToUpperInvariant(),
+            AcquisitionModel = family.AcquisitionModel with { Sha256 = family.AcquisitionModel.Sha256.ToUpperInvariant() },
             MaskProfileSha256 = family.MaskProfileSha256.ToUpperInvariant(),
-            Members = [.. family.Members
+            Members = [.. CalibrationFamilyContract.OrderMembers(family.Members
                 .Select(static member => member with
                 {
                     Gain = member.Gain + 0.0,
@@ -440,10 +518,7 @@ public static class CalibrationFamilyContractJson
                     Masters = [.. member.Masters
                         .OrderBy(static master => KindRank(master.Kind))
                         .Select(static master => master with { PayloadSha256 = master.PayloadSha256.ToUpperInvariant() })]
-                })
-                .OrderBy(static member => member.Gain)
-                .ThenBy(static member => member.Offset)
-                .ThenBy(static member => member.MemberId, StringComparer.Ordinal)]
+                }))]
         };
 
     private static int KindRank(string kind)

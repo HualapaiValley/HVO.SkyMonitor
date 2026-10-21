@@ -16,6 +16,11 @@ public sealed class CalibrationFamilyContractTests
     private static readonly string SensorSha256 = string.Concat(Enumerable.Repeat("B2", 32));
     private static readonly string MaskSha256 = string.Concat(Enumerable.Repeat("C3", 32));
     private static readonly string OtherMaskSha256 = string.Concat(Enumerable.Repeat("D4", 32));
+    private static readonly string ModelSha256 = string.Concat(Enumerable.Repeat("E5", 32));
+    private static readonly ProfileIdentityDescriptor Model =
+        new("virtual-calibration-source-model", "virtual-calibration-source-model-v1", ModelSha256);
+    private static readonly ProfileIdentityDescriptor SyntheticModel =
+        new("synthetic-calibration-model", "synthetic-calibration-model-v1", ModelSha256);
     private static readonly DateTimeOffset EffectiveFrom = new(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset Observed = new(2026, 10, 21, 6, 0, 0, TimeSpan.Zero);
 
@@ -161,6 +166,31 @@ public sealed class CalibrationFamilyContractTests
     }
 
     [TestMethod]
+    public void EvaluationExcludesALightFromAnotherAcquisitionModel()
+    {
+        var family = Family(Member(100));
+
+        Assert.IsTrue(CalibrationFamilyContract.Evaluate(
+            family, Input(100) with { CalibrationProfile = Model with { Sha256 = Lowercase(ModelSha256) } }).IsApplicable);
+        Assert.IsTrue(CalibrationFamilyContract.Evaluate(
+            family with { AcquisitionModel = SyntheticModel },
+            Input(100) with { CalibrationProfile = SyntheticModel }).IsApplicable);
+        ProfileIdentityDescriptor[] otherModel =
+        [
+            Model with { Sha256 = OtherMaskSha256 },
+            Model with { Version = "virtual-calibration-source-model-v2" },
+            Model with { Name = "Virtual-Calibration-Source-Model" },
+            SyntheticModel,
+            new("calibration", "none-v1", ModelSha256),
+            new("configured-calibration", "configured-v1", ModelSha256)
+        ];
+        foreach (var profile in otherModel)
+        {
+            AssertExcluded(family, Input(100) with { CalibrationProfile = profile }, CalibrationFamilyReasonCodes.IdentityMismatch);
+        }
+    }
+
+    [TestMethod]
     public void EvaluationExcludesAnInvalidFamilyOrInvalidConditions()
     {
         var overlapping = Family(Member(100), Member(100, "gain-100-b") with { MaximumTemperatureC = 10 });
@@ -178,7 +208,11 @@ public sealed class CalibrationFamilyContractTests
             Input(100) with { Layout = Layout() with { StrideBytes = 1 } },
             Input(100) with { Layout = null! },
             Input(100) with { AgentId = " " },
-            Input(100) with { SensorProfileSha256 = "not-a-hash" }
+            Input(100) with { SensorProfileSha256 = "not-a-hash" },
+            Input(100) with { CalibrationProfile = null! },
+            Input(100) with { CalibrationProfile = Model with { Name = " " } },
+            Input(100) with { CalibrationProfile = Model with { Version = string.Empty } },
+            Input(100) with { CalibrationProfile = Model with { Sha256 = "not-a-hash" } }
         ];
         foreach (var input in invalid)
         {
@@ -186,6 +220,51 @@ public sealed class CalibrationFamilyContractTests
         }
         Assert.ThrowsExactly<ArgumentNullException>(() => CalibrationFamilyContract.Evaluate(null!, Input(100)));
         Assert.ThrowsExactly<ArgumentNullException>(() => CalibrationFamilyContract.Evaluate(family, null!));
+    }
+
+    [TestMethod]
+    public void EvaluationReportsTheEarlierOfTwoFailingChecks()
+    {
+        var until = new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero);
+        var family = Family(Member(100) with
+        {
+            MinimumLightExposure = TimeSpan.FromSeconds(5),
+            MaximumLightExposure = TimeSpan.FromSeconds(20),
+            EffectiveUntilUtc = until
+        });
+        var input = Input(100);
+        var otherLayout = Layout() with { BlackLevel = 65 };
+        var longExposure = TimeSpan.FromSeconds(30);
+        (CalibrationFamilyInputV1 Both, CalibrationFamilyInputV1 LaterOnly, string Earlier, string Later)[] pairs =
+        [
+            (input with { Gain = double.NaN, AgentId = "agent-b" }, input with { AgentId = "agent-b" },
+                CalibrationFamilyReasonCodes.InvalidConditions, CalibrationFamilyReasonCodes.IdentityMismatch),
+            (input with { AgentId = "agent-b", MaskProfileSha256 = OtherMaskSha256 }, input with { MaskProfileSha256 = OtherMaskSha256 },
+                CalibrationFamilyReasonCodes.IdentityMismatch, CalibrationFamilyReasonCodes.MaskFamilyMismatch),
+            (input with { CalibrationProfile = SyntheticModel, MaskProfileSha256 = OtherMaskSha256 }, input with { MaskProfileSha256 = OtherMaskSha256 },
+                CalibrationFamilyReasonCodes.IdentityMismatch, CalibrationFamilyReasonCodes.MaskFamilyMismatch),
+            (input with { MaskProfileSha256 = OtherMaskSha256, Gain = 101 }, input with { Gain = 101 },
+                CalibrationFamilyReasonCodes.MaskFamilyMismatch, CalibrationFamilyReasonCodes.MissingMember),
+            (input with { Gain = 101, Layout = otherLayout }, input with { Layout = otherLayout },
+                CalibrationFamilyReasonCodes.MissingMember, CalibrationFamilyReasonCodes.ReadoutMismatch),
+            (input with { Layout = otherLayout, TemperatureC = null }, input with { TemperatureC = null },
+                CalibrationFamilyReasonCodes.ReadoutMismatch, CalibrationFamilyReasonCodes.TemperatureUnavailable),
+            (input with { TemperatureC = null, Exposure = longExposure }, input with { Exposure = longExposure },
+                CalibrationFamilyReasonCodes.TemperatureUnavailable, CalibrationFamilyReasonCodes.ExposureOutOfRange),
+            (input with { TemperatureC = 50, Exposure = longExposure }, input with { Exposure = longExposure },
+                CalibrationFamilyReasonCodes.TemperatureOutOfRange, CalibrationFamilyReasonCodes.ExposureOutOfRange),
+            (input with { Exposure = longExposure, ObservedUtc = until }, input with { ObservedUtc = until },
+                CalibrationFamilyReasonCodes.ExposureOutOfRange, CalibrationFamilyReasonCodes.Stale)
+        ];
+        foreach (var (both, laterOnly, earlier, later) in pairs)
+        {
+            AssertExcluded(family, laterOnly, later);
+            AssertExcluded(family, both, earlier);
+        }
+
+        var invalidFamily = family with { SchemaVersion = "hvo-calibration-family-v2" };
+        AssertExcluded(family, input with { Gain = double.NaN }, CalibrationFamilyReasonCodes.InvalidConditions);
+        AssertExcluded(invalidFamily, input with { Gain = double.NaN }, CalibrationFamilyReasonCodes.InvalidFamily);
     }
 
     [TestMethod]
@@ -263,6 +342,40 @@ public sealed class CalibrationFamilyContractTests
     }
 
     [TestMethod]
+    public void ValidationRejectsABiasDarkOrFlatSharedAcrossGainOrOffset()
+    {
+        foreach (var kind in new[] { CalibrationReferenceKinds.Bias, CalibrationReferenceKinds.Dark, CalibrationReferenceKinds.Flat })
+        {
+            var shared = Masters(0).Single(master => master.Kind == kind);
+            var sharing = Masters(100).Select(master => master.Kind == kind ? shared : master).ToArray();
+
+            AssertInvalid(Family(Member(0), Member(100) with { Masters = sharing }), CalibrationFamilyReasonCodes.InvalidContract, "members.masters");
+            AssertInvalid(
+                Family(Member(0), Member(0, "offset-11") with { Offset = 11, Masters = sharing }),
+                CalibrationFamilyReasonCodes.InvalidContract,
+                "members.masters");
+            AssertInvalid(
+                Family(Member(0), Member(0, "no-offset") with { Offset = null, Masters = sharing }),
+                CalibrationFamilyReasonCodes.InvalidContract,
+                "members.masters");
+        }
+
+        var cold = Member(0, "gain-0-cold") with { MinimumTemperatureC = -10, MaximumTemperatureC = -6 };
+        Assert.IsTrue(CalibrationFamilyContract.Validate(Family(cold, Member(0))).IsValid);
+        Assert.IsTrue(CalibrationFamilyContract.Validate(Family(cold, Member(-0.0) with { Masters = Masters(0) })).IsValid);
+    }
+
+    [TestMethod]
+    public void ValidationReportsTheSameFieldInEitherMemberOrder()
+    {
+        var invalidOffset = Member(0) with { Offset = double.NaN };
+        var invalidTemperature = Member(100) with { MinimumTemperatureC = double.NaN };
+
+        AssertInvalid(Family(invalidOffset, invalidTemperature), CalibrationFamilyReasonCodes.InvalidContract, "members.offset");
+        AssertInvalid(Family(invalidTemperature, invalidOffset), CalibrationFamilyReasonCodes.InvalidContract, "members.offset");
+    }
+
+    [TestMethod]
     public void ValidationRejectsInconsistentMaskFamilies()
     {
         AssertInvalid(
@@ -288,10 +401,16 @@ public sealed class CalibrationFamilyContractTests
             (family with { SchemaVersion = "hvo-calibration-family-v2" }, "schemaVersion"),
             (family with { FamilyId = " " }, "familyId"),
             (family with { FamilyId = new string('f', 129) }, "familyId"),
+            (family with { FamilyId = "family-\uD800" }, "familyId"),
             (family with { AgentId = string.Empty }, "agentId"),
             (family with { RigId = null! }, "rigId"),
             (family with { RigProfileSha256 = "not-a-hash" }, "rigProfileSha256"),
             (family with { SensorProfileSha256 = new string('G', 64) }, "sensorProfileSha256"),
+            (family with { AcquisitionModel = null! }, "acquisitionModel"),
+            (family with { AcquisitionModel = Model with { Sha256 = "not-a-hash" } }, "acquisitionModel"),
+            (family with { AcquisitionModel = Model with { Version = "virtual-calibration-source-model-v2" } }, "acquisitionModel"),
+            (family with { AcquisitionModel = Model with { Version = SyntheticModel.Version } }, "acquisitionModel"),
+            (family with { AcquisitionModel = new ProfileIdentityDescriptor("calibration", "none-v1", ModelSha256) }, "acquisitionModel"),
             (family with { MaskProfileSha256 = MaskSha256[1..] }, "maskProfileSha256"),
             (family with { Members = [] }, "members"),
             (family with { Members = null! }, "members"),
@@ -301,6 +420,7 @@ public sealed class CalibrationFamilyContractTests
                 Members = [.. Enumerable.Range(0, CalibrationFamilyV1.MaximumMembers + 1).Select(gain => Member(gain))]
             }, "members"),
             (Family(member with { MemberId = " " }), "members.memberId"),
+            (Family(member with { MemberId = "gain-\uDC00-100" }), "members.memberId"),
             (Family(member with { Gain = double.NaN }), "members.gain"),
             (Family(member with { Gain = -1 }), "members.gain"),
             (Family(member with { Offset = double.PositiveInfinity }), "members.offset"),
@@ -345,7 +465,9 @@ public sealed class CalibrationFamilyContractTests
     {
         var family = Family(Member(100));
         var expectedJson =
-            "{\"agentId\":\"agent-a\",\"familyId\":\"virtual-family\"," +
+            "{\"acquisitionModel\":{\"name\":\"virtual-calibration-source-model\"," +
+            $"\"sha256\":\"{ModelSha256}\",\"version\":\"virtual-calibration-source-model-v1\"}}," +
+            "\"agentId\":\"agent-a\",\"familyId\":\"virtual-family\"," +
             $"\"maskProfileSha256\":\"{MaskSha256}\"," +
             "\"members\":[{\"effectiveFromUtc\":\"2026-10-01T00:00:00\\u002B00:00\",\"effectiveUntilUtc\":null,\"gain\":100," +
             "\"inputLayout\":{\"blackLevel\":64,\"byteLength\":16,\"byteOrder\":\"LittleEndian\",\"cfaPattern\":\"Rggb\"," +
@@ -369,7 +491,7 @@ public sealed class CalibrationFamilyContractTests
 
         Assert.AreEqual(expectedJson, Encoding.UTF8.GetString(bytes));
         Assert.AreEqual(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(expectedJson))), CalibrationFamilyContractJson.ComputeIdentitySha256(family));
-        Assert.AreEqual("41621157B6B300608D7E3851905B5CC735186244293E71DA48DE67A2EC353F1F", CalibrationFamilyContractJson.ComputeIdentitySha256(family));
+        Assert.AreEqual("C1DF89728362BD59149A4AD5F20DDC13A57EF023D38AC61EDAC039D178D4DB3B", CalibrationFamilyContractJson.ComputeIdentitySha256(family));
     }
 
     [TestMethod]
@@ -395,6 +517,42 @@ public sealed class CalibrationFamilyContractTests
     }
 
     [TestMethod]
+    public void FamilyIdentityNormalizesEachFieldOnItsOwn()
+    {
+        var member = Member(100);
+        var zeroLevels = Layout() with { BlackLevel = 0, WhiteLevel = 0 };
+        (CalibrationFamilyV1 Normalized, CalibrationFamilyV1 Variant)[] cases =
+        [
+            (Family(member with { Gain = 0 }), Family(member with { Gain = -0.0 })),
+            (Family(member with { Offset = 0 }), Family(member with { Offset = -0.0 })),
+            (Family(member with { InputLayout = zeroLevels }), Family(member with { InputLayout = zeroLevels with { BlackLevel = -0.0 } })),
+            (Family(member with { InputLayout = zeroLevels }), Family(member with { InputLayout = zeroLevels with { WhiteLevel = -0.0 } })),
+            (Family(member with { MinimumTemperatureC = 0 }), Family(member with { MinimumTemperatureC = -0.0 })),
+            (Family(member with { MaximumTemperatureC = 0 }), Family(member with { MaximumTemperatureC = -0.0 })),
+            (Family(member), Family(member) with { RigProfileSha256 = Lowercase(RigSha256) }),
+            (Family(member), Family(member) with { SensorProfileSha256 = Lowercase(SensorSha256) }),
+            (Family(member), Family(member) with { AcquisitionModel = Model with { Sha256 = Lowercase(ModelSha256) } }),
+            (Family(member), Family(member) with { MaskProfileSha256 = Lowercase(MaskSha256) }),
+            (Family(member), Family(member with { MaskProfileSha256 = Lowercase(MaskSha256) })),
+            (Family(member), Family(member with
+            {
+                Masters = [.. member.Masters.Select(static master => master with { PayloadSha256 = Lowercase(master.PayloadSha256) })]
+            }))
+        ];
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var (normalized, variant) = cases[index];
+            var message = FormattableString.Invariant($"case {index}");
+            CollectionAssert.AreEqual(CalibrationFamilyContractJson.Serialize(normalized), CalibrationFamilyContractJson.Serialize(variant), message);
+            Assert.AreEqual(
+                CalibrationFamilyContractJson.ComputeIdentitySha256(normalized),
+                CalibrationFamilyContractJson.ComputeIdentitySha256(variant),
+                message);
+        }
+    }
+
+    [TestMethod]
     public void FamilyIdentityChangesWithEveryApplicabilityField()
     {
         var member = Member(100);
@@ -406,6 +564,8 @@ public sealed class CalibrationFamilyContractTests
             family with { RigId = "rig-b" },
             family with { RigProfileSha256 = OtherMaskSha256 },
             family with { SensorProfileSha256 = OtherMaskSha256 },
+            family with { AcquisitionModel = Model with { Sha256 = OtherMaskSha256 } },
+            family with { AcquisitionModel = SyntheticModel },
             Family(member with { MaskProfileSha256 = OtherMaskSha256 }) with { MaskProfileSha256 = OtherMaskSha256 },
             Family(member with { MemberId = "gain-100-b" }),
             Family(member with { Gain = 101 }),
@@ -451,8 +611,8 @@ public sealed class CalibrationFamilyContractTests
         AssertParseRejected(json.Replace(bias, Lowercase(bias), StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
         AssertParseRejected(json.Replace("\"gain\":100,", "\"gain\":100.0,", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
         AssertParseRejected(json.Replace("\"00:00:10\"", "\"0:00:10\"", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
-        AssertParseRejected(json.Replace("{\"agentId\"", "{\"extra\":1,\"agentId\"", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
-        AssertParseRejected(json.Replace("{\"agentId\"", "{\"familyId\":\"other\",\"agentId\"", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
+        AssertParseRejected(json.Replace("{\"acquisitionModel\"", "{\"extra\":1,\"acquisitionModel\"", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
+        AssertParseRejected(json.Replace("{\"acquisitionModel\"", "{\"familyId\":\"other\",\"acquisitionModel\"", StringComparison.Ordinal), CalibrationFamilyReasonCodes.NonCanonicalJson);
         AssertParseRejected(
             json.Replace("\"gain\":100,", "\"gain\":0,", StringComparison.Ordinal),
             CalibrationFamilyReasonCodes.DuplicateMember);
@@ -467,6 +627,61 @@ public sealed class CalibrationFamilyContractTests
         AssertParseRejected("null", CalibrationFamilyReasonCodes.InvalidContract);
         AssertParseRejected("{", CalibrationFamilyReasonCodes.InvalidContract);
         AssertParseRejected(new string(' ', CalibrationFamilyContractJson.MaximumContractBytes + 1), CalibrationFamilyReasonCodes.InvalidContract);
+    }
+
+    [TestMethod]
+    public void TheLargestValidFamilyRoundTripsWithinTheContractBound()
+    {
+        var family = LargestFamily();
+        Assert.IsTrue(CalibrationFamilyContract.Validate(family).IsValid);
+
+        var bytes = CalibrationFamilyContractJson.Serialize(family);
+        var parsed = CalibrationFamilyContractJson.Parse(bytes);
+
+        Assert.IsLessThanOrEqualTo(CalibrationFamilyContractJson.MaximumContractBytes, bytes.Length);
+        Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
+        CollectionAssert.AreEqual(bytes, CalibrationFamilyContractJson.Serialize(parsed.Value!));
+        Assert.AreEqual(
+            CalibrationFamilyContractJson.ComputeIdentitySha256(family),
+            CalibrationFamilyContractJson.ComputeIdentitySha256(parsed.Value!));
+    }
+
+    /// <summary>
+    /// The most members, each token at the length limit with every UTF-16 unit escaped to six bytes, and numbers, times
+    /// and layout values in their longest forms.
+    /// </summary>
+    private static CalibrationFamilyV1 LargestFamily()
+    {
+        static string Token(int index)
+            => string.Concat(Enumerable.Repeat("<+\u00E9\uD83D\uDE00", 25)) +
+               string.Concat(new[] { index / 64, index / 8 % 8, index % 8 }.Select(static digit => (char)('\u4E00' + digit)));
+
+        var layout = new FrameLayoutDescriptor(
+            1_073_741_823, int.MaxValue, 2_147_483_646, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,
+            16, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb,
+            2.2250738585072014E-308, 0.30000000000000004, 2_147_483_646L * int.MaxValue)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.OpaqueContainerV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+            Readout = new FrameReadoutDescriptor(
+                int.MaxValue, int.MaxValue, 1_073_741_824, 0, 1_073_741_823, int.MaxValue, 1, 1, FrameBinningAlgorithm.IdentityV1, 0, 0)
+        };
+        var members = Enumerable.Range(0, CalibrationFamilyV1.MaximumMembers)
+            .Select(index => new CalibrationFamilyMemberV1(
+                Token(index),
+                BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(double.MaxValue) - index),
+                -double.MaxValue,
+                layout,
+                -double.MaxValue,
+                double.MaxValue,
+                TimeSpan.MaxValue - TimeSpan.FromTicks(1),
+                TimeSpan.MaxValue,
+                DateTimeOffset.MaxValue.AddTicks(-1),
+                DateTimeOffset.MaxValue,
+                MaskSha256,
+                Masters(index)))
+            .ToArray();
+        return Family(members) with { FamilyId = Token(0), AgentId = Token(1), RigId = Token(2) };
     }
 
     private static void AssertExcluded(CalibrationFamilyV1 family, CalibrationFamilyInputV1 input, string reasonCode)
@@ -505,6 +720,7 @@ public sealed class CalibrationFamilyContractTests
             "rig-a",
             RigSha256,
             SensorSha256,
+            Model,
             MaskSha256,
             members);
 
@@ -533,7 +749,7 @@ public sealed class CalibrationFamilyContractTests
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"payload:{kind}:{gain:R}"))));
 
     private static CalibrationFamilyInputV1 Input(double gain)
-        => new("agent-a", "rig-a", RigSha256, SensorSha256, MaskSha256, Layout(), gain, 10, 0, TimeSpan.FromSeconds(10), Observed);
+        => new("agent-a", "rig-a", RigSha256, SensorSha256, Model, MaskSha256, Layout(), gain, 10, 0, TimeSpan.FromSeconds(10), Observed);
 
     private static FrameLayoutDescriptor Layout()
         => new(
