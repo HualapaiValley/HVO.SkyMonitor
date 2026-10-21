@@ -179,6 +179,28 @@ the first attempt, so the request is accepted straight away.
 Disabling or removing the definition stops scheduling. It does not delete snapshots or
 history.
 
+### Satellite Planning Time Data
+
+Satellite planning also needs Earth-orientation and leap-second data. Orbital
+refresh does not supply it. Each CameraAgent release bundles one verified pair at
+`/app/time-data/` in the image, so turning **Satellite planning** on needs no
+hand-placed files. The setup panel shows the active source, the final and predicted
+Earth-orientation coverage and the leap-second expiry.
+
+- **Overrides.** Setting any of `CameraAgent:SatellitePlanning:EarthOrientationPath`,
+  `EarthOrientationSha256`, `LeapSecondsPath` or `LeapSecondsSha256` selects an
+  override, and all four are then required. An incomplete or invalid override
+  stops planning with a reason; it never falls back to the bundled pair. Remove all
+  four to return to the bundled pair. CameraAgent never writes the configured files.
+- **Expiry.** The bundled pair ages with the release. Planning is supported until
+  the earlier of the last Earth-orientation prediction and the leap-second list's
+  expiry, typically several months after the release. After that, searches return
+  the coverage end as the reason. Upgrade CameraAgent, or configure a newer
+  override. Refresh between releases is not available yet (#1474 slice B2).
+- **Release step.** Before a release tag, run `scripts/time-data:update` on a Linux
+  host and commit the refreshed snapshot. See
+  [Bundled time data](../astronomy/bundled-time-data-v1.md).
+
 ## Status, Refresh And Resume
 
 | Method | Route | Policy |
@@ -906,7 +928,9 @@ in `docs/hvo-install-contract.md`.
   - Raw provider response: `Manifest.Sources[].RawSha256`.
   - Each record also carries its own `RecordSha256`.
 - **Time inputs.** #528 does not supply Earth-orientation parameters or leap-second
-  inputs. The host must resolve approved local EOP and leap-second inputs separately.
+  inputs. The host resolves approved local EOP and leap-second inputs separately: the
+  release-bundled pair or an explicit override (#1474, see
+  [Satellite Planning Time Data](#satellite-planning-time-data)).
   #528 adds no implicit zero-EOP or default-clock behaviour.
 - **Scope.** #528 registers no prediction engine or consumer.
 
