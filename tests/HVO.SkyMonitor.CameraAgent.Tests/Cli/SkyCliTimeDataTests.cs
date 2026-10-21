@@ -52,6 +52,21 @@ public sealed class SkyCliTimeDataTests
     }
 
     [TestMethod]
+    public async Task TimeData_SaysPlainlyWhenNoPairCoversTheCurrentTimeAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Route, Status(expired: false, new("adopted", Attempt, Attempt, "time-data.adopted", "", Attempt, Attempt.AddDays(1)),
+            coversNow: false));
+
+        var result = await harness.RunAsync("time-data").ConfigureAwait(false);
+
+        Assert.AreEqual(0, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Out,
+            "NOT COVERING NOW: no verified pair covers the current time; the active pair's coverage ends 2027-06-28T00:00:00Z", StringComparison.Ordinal);
+        Assert.DoesNotContain("planning covered until", result.Out, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task TimeData_Json_IsTheStatusDocumentAsItIsAsync()
     {
         using var harness = new CliHarness();
@@ -64,6 +79,7 @@ public sealed class SkyCliTimeDataTests
         Assert.AreEqual(CameraAgentTimeDataStatus.CurrentVersion, json.GetProperty("schemaVersion").GetString());
         Assert.AreEqual("adopted", json.GetProperty("refresh").GetProperty("outcome").GetString());
         Assert.IsFalse(json.GetProperty("expired").GetBoolean());
+        Assert.IsTrue(json.GetProperty("coversNow").GetBoolean());
     }
 
     [TestMethod]
@@ -77,8 +93,8 @@ public sealed class SkyCliTimeDataTests
         Assert.AreEqual(3, result.ExitCode, result.ToString());
     }
 
-    private static CameraAgentTimeDataStatus Status(bool expired, CameraAgentTimeDataRefreshStatus refresh) => new(
-        CameraAgentTimeDataStatus.CurrentVersion, Attempt, true, true, true, "managed", "none", End, End.AddMonths(4), End, expired,
+    private static CameraAgentTimeDataStatus Status(bool expired, CameraAgentTimeDataRefreshStatus refresh, bool? coversNow = null) => new(
+        CameraAgentTimeDataStatus.CurrentVersion, Attempt, true, true, true, "managed", "none", End, End.AddMonths(4), End, expired, coversNow ?? !expired,
         new string('A', 64), new string('B', 64), refresh,
         new("20261021T060003Z-0a1b2c3d", Attempt.AddDays(-1), Attempt.AddDays(-1), "verified", End, new string('A', 64), new string('B', 64)));
 }

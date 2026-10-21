@@ -65,12 +65,15 @@ internal sealed class CameraAgentSatelliteSetupUiService(
         var snapshot = await orbital.GetAsync(cancellationToken).ConfigureAwait(false);
         if (snapshot is not { IsSuccess: true, Value: { HasData: true, Manifest: not null, StoreUnavailable: false } })
             problems.Add(new("no-snapshot", "No validated local orbital snapshot is available.", "/operations/software#software-orbital-heading", "Set up orbital refresh"));
-        var resolution = await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        var start = startUtc.ToUniversalTime();
+        var end = endUtc.ToUniversalTime();
+        // The pair planning would use for this window, which can differ from the one for the current time.
+        var resolution = await timeSource.ResolveAsync(new OrbitalUtcInterval(start, end), cancellationToken).ConfigureAwait(false);
         var time = resolution.Data;
         var bundled = resolution.Source == CameraAgentOrbitalTimeDataSource.Bundled;
         var refreshed = resolution.Source == CameraAgentOrbitalTimeDataSource.Managed;
-        var directory = refreshed && resolution.ManagedPair is { } pair && timeData is not null
-            ? timeData.PairDirectory(pair.Pair) : CameraAgentPinnedOrbitalTimeSource.BundledDirectory;
+        var directory = refreshed && resolution.ActiveManagedPair is { } pair && timeData is not null
+            ? timeData.PairDirectory(pair) : CameraAgentPinnedOrbitalTimeSource.BundledDirectory;
         var files = bundled || refreshed
             ? new[]
             {
@@ -98,8 +101,6 @@ internal sealed class CameraAgentSatelliteSetupUiService(
             }, TimeDataLink, "Configure time data"));
         else
         {
-            var start = startUtc.ToUniversalTime();
-            var end = endUtc.ToUniversalTime();
             try
             {
                 var first = time.Evaluate(start).Status;

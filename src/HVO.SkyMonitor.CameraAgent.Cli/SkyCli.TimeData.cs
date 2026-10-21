@@ -47,7 +47,9 @@ internal static class SkyTimeDataText
             ? "none"
             : SkyJson.Boolean(status, "expired") == true
                 ? $"EXPIRED: planning was covered until {SkyCliFormat.Time(end)}"
-                : $"planning covered until {SkyCliFormat.Time(end)}");
+                : SkyJson.Boolean(status, "coversNow") == false
+                    ? $"NOT COVERING NOW: no verified pair covers the current time; the active pair's coverage ends {SkyCliFormat.Time(end)}"
+                    : $"planning covered until {SkyCliFormat.Time(end)}");
         yield return ("Earth orientation to", SkyCliFormat.Time(SkyJson.Time(status, "earthOrientationEndUtc")));
         yield return ("Leap seconds expire", SkyCliFormat.Time(SkyJson.Time(status, "leapSecondsExpireUtc")));
         yield return ("Refresh", (SkyJson.Boolean(status, "refreshEnabled") == true ? "on" : "off") +

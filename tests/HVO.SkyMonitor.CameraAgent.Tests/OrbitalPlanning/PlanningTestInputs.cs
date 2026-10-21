@@ -107,9 +107,15 @@ internal sealed class PlanningTestInputs
         internal OrbitalTimeData? Current = TimeData();
         internal CameraAgentOrbitalTimeDataSource Source = CameraAgentOrbitalTimeDataSource.Override;
         internal CameraAgentOrbitalTimeDataProblem Unavailable = CameraAgentOrbitalTimeDataProblem.OverrideInvalid;
+        internal OrbitalUtcInterval? LastWindow;
         public ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(new CameraAgentOrbitalTimeResolution(Source,
                 Current is null ? Unavailable : CameraAgentOrbitalTimeDataProblem.None, Current));
+        public ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(OrbitalUtcInterval window, CancellationToken cancellationToken)
+        {
+            LastWindow = window;
+            return ResolveAsync(cancellationToken);
+        }
     }
     internal sealed class Engines : ICameraAgentOrbitalPlanningEngineFactory, IOrbitalPredictionEngine, IOrbitalPassArcEngine
     {

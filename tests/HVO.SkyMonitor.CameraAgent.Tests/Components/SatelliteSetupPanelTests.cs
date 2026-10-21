@@ -72,10 +72,11 @@ public sealed class SatelliteSetupPanelTests
     }
 
     [TestMethod]
-    [DataRow(false, "failed")]
-    [DataRow(true, "adopted")]
-    [DataRow(false, "never")]
-    public void Refresh_ShowsTheLastAttemptAndTheAdoptionSeparatelyFromExpiry(bool expired, string outcome)
+    [DataRow(false, "failed", true)]
+    [DataRow(true, "adopted", false)]
+    [DataRow(false, "never", true)]
+    [DataRow(false, "adopted", false)]
+    public void Refresh_ShowsTheLastAttemptAndTheAdoptionSeparatelyFromExpiry(bool expired, string outcome, bool coversNow)
     {
         using var context = new BunitContext();
         var end = new DateTimeOffset(2027, 6, 28, 0, 0, 0, TimeSpan.Zero);
@@ -88,15 +89,19 @@ public sealed class SatelliteSetupPanelTests
             ? new CameraAgentManagedTimePairStatus("20261022T060004Z-0a1b2c3d", attempt.AddSeconds(4), attempt, "verified", end, new('A', 64), new('B', 64))
             : null;
         var status = new CameraAgentTimeDataStatus(CameraAgentTimeDataStatus.CurrentVersion, attempt, true, true, outcome != "never",
-            outcome == "adopted" ? "managed" : "bundled", "none", end, end.AddMonths(4), end, expired, new('A', 64), new('B', 64), refresh, pair);
+            outcome == "adopted" ? "managed" : "bundled", "none", end, end.AddMonths(4), end, expired, coversNow, new('A', 64), new('B', 64), refresh, pair);
         var service = new Service("ready", view: new([], [], [], null, null, TimeData: status));
         context.Services.AddSingleton<ICameraAgentSatelliteSetupUiService>(service);
         var cut = context.Render<SatelliteSetupPanel>(parameters => parameters.Add(panel => panel.AtUtc, TestOrbitalUiService.Now));
         var facts = cut.WaitForElement("#time-data-refresh");
         Assert.AreEqual(outcome, facts.GetAttribute("data-refresh-outcome"));
         Assert.AreEqual(expired ? "true" : "false", facts.GetAttribute("data-expired"));
+        Assert.AreEqual(coversNow ? "true" : "false", facts.GetAttribute("data-covers-now"));
         var text = facts.TextContent;
-        Assert.Contains(expired ? "Expired: the active managed pair covered planning until" : "pair covers planning until", text, StringComparison.Ordinal);
+        Assert.Contains(expired ? "Expired: the active managed pair covered planning until"
+            : coversNow ? "pair covers planning until"
+            : "Not covering now: no verified pair covers the current time, so planning from now is unavailable", text, StringComparison.Ordinal);
+        if (!coversNow) Assert.DoesNotContain("pair covers planning until", text, StringComparison.Ordinal);
         Assert.Contains(outcome switch
         {
             "failed" => "Failed at 2026-10-22T06:00:04.0000000+00:00 (time-data.checksum-mismatch); the active pair is unchanged",

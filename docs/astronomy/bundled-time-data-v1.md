@@ -103,19 +103,30 @@ the reviewed commit establish their origin.
   never falls back to the bundled or the refreshed pair, and CameraAgent never
   writes the hand-configured files.
 - Otherwise CameraAgent verifies and parses the bundled pair and, when the refresh
-  has adopted one, the managed pair. **The pair whose planning coverage ends later
-  is active. On a tie the bundled pair is active.** Planning coverage ends at the
-  earlier of the last Earth-orientation row and the leap-second expiry. A newer
-  release whose bundled pair covers at least as long is therefore never shadowed
-  by an older refresh, and a refresh is used only when it actually extends
-  coverage.
-- If only one of the two verifies, it is active. A managed pair that no longer
-  verifies (a changed byte, a missing file, a damaged pointer) is reported as
-  invalid and the bundled pair is used. If neither verifies, planning stops with a
-  reason.
-- The rule is deterministic: the same files, options and clock always select the
-  same pair. It does not depend on the refresh switch, so turning the refresh off
-  keeps an already adopted pair eligible.
+  has adopted one, the adopted managed pair and the managed pair it replaced.
+  **Only pairs that continuously cover the time being planned are eligible: the
+  planning window, or the current time for the status. Among them the pair whose
+  planning coverage ends later is active. On a tie the bundled pair is active.**
+  Planning coverage ends at the earlier of the last Earth-orientation row and the
+  leap-second expiry.
+- Why coverage of the planned time comes first: after USNO's daily update (about
+  17:11 UTC) the file has only rapid (`I`) values for the current UTC day, which
+  planning treats as a gap. A pair downloaded then cannot evaluate the rest of that
+  day, although its coverage ends later. The pair it replaced stays active until
+  00:00 UTC, when the new pair covers the day and takes over. A refresh is
+  therefore used only when it covers the planned time and extends coverage, it
+  never takes away coverage of the current day, and a newer release whose bundled
+  pair covers at least as long is never shadowed by an older refresh.
+- If no verified pair covers the planned time (all have expired, or the only pair
+  was retrieved after that day's update), the same rule ranks every verified pair.
+  The planner then reports the coverage end or the gap, and the status reports
+  that no pair covers the current time.
+- A managed pair that no longer verifies (a changed byte, a missing file, a damaged
+  pointer) is reported as invalid, and the bundled pair is used. If no pair
+  verifies, planning stops with a reason.
+- The rule is deterministic: the same files, options and requested time always
+  select the same pair. It does not depend on the refresh switch, so turning the
+  refresh off keeps an already adopted pair eligible.
 
 ## Coverage and expiry
 
@@ -127,9 +138,10 @@ last Earth-orientation row and the leap-second expiry. Past that, the planner
 returns `TimeInputsUnavailable` with the coverage end, and the panel reports
 `coverage-expired`. Neither ever substitutes nominal zero Earth orientation.
 
-The snapshot retrieved on 2026-10-21 has final values to 2026-09-01, predictions to
-2027-10-28 and a leap-second list that expires on 2027-06-28, so planning with it
-is supported until 2027-06-27 23:59:59 UTC.
+The snapshot retrieved on 2026-10-21 has final values to 2026-09-01, rapid values to
+2026-10-21, predictions from 2026-10-22 to 2027-10-28 and a leap-second list that
+expires on 2027-06-28. Rapid values are a gap, so planning with it is supported up
+to 2026-09-01 and from 2026-10-22 00:00 UTC until 2027-06-27 23:59:59 UTC.
 
 ## Managed refresh
 
@@ -170,7 +182,11 @@ releases. It is off by default.
   substituted.
 - **Unchanged and not newer.** A download identical to the adopted pair is recorded
   as `unchanged`. One whose planning coverage ends before the adopted pair's is
-  `not-newer` and is not adopted.
+  `not-newer` and is not adopted. A download is also `not-newer` when neither it
+  nor the adopted pair covers the current time yet and adopting it would retire
+  the replaced pair, which does. With the durable daily floor this happens only
+  when two attempts fall on one UTC day because `refresh.json` was lost or the
+  clock went back.
 - **Atomic adoption.** The pair is kept under the CameraAgent's writable state at
   `<RawIngressRoot>/.time-data/` (`state/raw/.time-data/` on an installed host), so
   it survives restarts and upgrades. Each adopted pair is an immutable directory
@@ -191,7 +207,8 @@ releases. It is off by default.
   (operations read access, the same owner session or API key as the other
   operations reads) and `hvo-sky time-data` show the active source (`override`,
   `managed` or `bundled`), its planning coverage end, Earth-orientation end and
-  leap-second expiry, whether it has expired, the switch and whether the daily
+  leap-second expiry, whether it has expired, whether it covers the current time
+  (`coversNow`; false means planning from now fails), the switch and whether the daily
   automation exists, the last attempt with its outcome (`never`, `in-progress`,
   `interrupted`, `adopted`, `unchanged`, `not-newer` or `failed`), reason and next
   permitted attempt, and the last adoption.

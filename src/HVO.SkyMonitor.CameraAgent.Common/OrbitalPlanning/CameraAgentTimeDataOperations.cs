@@ -20,10 +20,13 @@ public sealed record CameraAgentManagedTimePairStatus(string Pair, DateTimeOffse
 /// Read-only time-data status for the setup panel, the operations API and <c>hvo-sky</c>. <c>ActiveSource</c> is
 /// <c>override</c>, <c>managed</c> or <c>bundled</c>; <c>Problem</c> is <c>none</c> or why no pair is active.
 /// <c>Expired</c> means the active pair's planning coverage has ended, which is distinct from a failed refresh.
+/// <c>CoversNow</c> is true only when the active pair can evaluate the current time, so planning from now can use it.
+/// It is false after expiry and when no verified pair covers the current time yet, for example on the UTC day a pair
+/// was retrieved after the provider's daily update when no earlier pair covers that day.
 /// </summary>
 public sealed record CameraAgentTimeDataStatus(string SchemaVersion, DateTimeOffset ObservedUtc, bool PlanningEnabled,
     bool RefreshEnabled, bool RefreshScheduled, string ActiveSource, string Problem, DateTimeOffset? CoverageEndUtc,
-    DateTimeOffset? EarthOrientationEndUtc, DateTimeOffset? LeapSecondsExpireUtc, bool Expired, string? EarthOrientationSha256,
+    DateTimeOffset? EarthOrientationEndUtc, DateTimeOffset? LeapSecondsExpireUtc, bool Expired, bool CoversNow, string? EarthOrientationSha256,
     string? LeapSecondsSha256, CameraAgentTimeDataRefreshStatus Refresh, CameraAgentManagedTimePairStatus? ManagedPair)
 {
     public const string CurrentVersion = "hvo-time-data-status-v1";
@@ -71,6 +74,7 @@ public sealed class CameraAgentTimeDataOperations(
         return new(CameraAgentTimeDataStatus.CurrentVersion, now, configuration.Enabled, configuration.TimeDataRefreshEnabled,
             await IsScheduledAsync(cancellationToken).ConfigureAwait(false), Token(resolution.Source), Token(resolution.Problem), end,
             time?.EarthOrientationCoverage?.EndUtc, time?.LeapTableExpiresUtc, end is { } until && now > until,
+            time is not null && CameraAgentPinnedOrbitalTimeSource.Covers(time, new(now, now)),
             time?.EarthOrientationSha256, time?.LeapSecondsSha256, await RefreshAsync(cancellationToken).ConfigureAwait(false), managed);
     }
 

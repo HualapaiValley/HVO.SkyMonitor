@@ -7,8 +7,9 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 
 /// <summary>
-/// Where the active time pair comes from. Any configured override setting selects the override. Otherwise the adopted
-/// managed pair and the bundled pair compete by planning coverage (see <see cref="CameraAgentPinnedOrbitalTimeSource"/>).
+/// Where the active time pair comes from. Any configured override setting selects the override. Otherwise the bundled
+/// and managed pairs compete by coverage of the requested time and then of planning (see
+/// <see cref="CameraAgentPinnedOrbitalTimeSource"/>).
 /// </summary>
 public enum CameraAgentOrbitalTimeDataSource
 {
@@ -40,8 +41,9 @@ public enum CameraAgentManagedTimeDataState
 
 /// <summary>
 /// The active source and pair. Data is present exactly when Problem is None. The provenance fields describe the active
-/// bundled or managed pair. Managed and ManagedPair describe the adopted managed pair even when another source wins, and
-/// ManagedCoverageEndUtc is its last supported planning instant when it verified.
+/// bundled or managed pair, and ActiveManagedPair names the active managed pair: the adopted one, or the one it replaced
+/// while the adopted one does not yet cover the requested time. Managed and ManagedPair describe the adopted managed pair
+/// even when another pair is active, and ManagedCoverageEndUtc is its last supported planning instant when it verified.
 /// </summary>
 public sealed record CameraAgentOrbitalTimeResolution(
     CameraAgentOrbitalTimeDataSource Source,
@@ -51,12 +53,17 @@ public sealed record CameraAgentOrbitalTimeResolution(
     CameraAgentTimeFileProvenance? LeapSecondsProvenance = null,
     CameraAgentManagedTimeDataState Managed = CameraAgentManagedTimeDataState.None,
     CameraAgentManagedTimePointer? ManagedPair = null,
-    DateTimeOffset? ManagedCoverageEndUtc = null);
+    DateTimeOffset? ManagedCoverageEndUtc = null,
+    string? ActiveManagedPair = null);
 
 /// <summary>Locally resolved immutable actual time bytes.</summary>
 public interface ICameraAgentOrbitalTimeSource
 {
+    /// <summary>The pair for the current instant.</summary>
     ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(CancellationToken cancellationToken);
+
+    /// <summary>The pair for a planning window, which the window's queries are then validated against.</summary>
+    ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(OrbitalUtcInterval window, CancellationToken cancellationToken);
 }
 
 public static class CameraAgentOrbitalTimeSourceExtensions
@@ -72,11 +79,15 @@ public static class CameraAgentOrbitalTimeSourceExtensions
 /// <summary>
 /// Bounded pinned local-file loader. A configured override (any of the four path/hash settings) takes precedence and
 /// must be complete and valid; an invalid override never falls back to another pair. Otherwise the pair bundled with
-/// this release and the managed pair the refresh last adopted (when there is one) are each verified against their
-/// provenance SHA-256 values and parsed, and the pair whose planning coverage ends later is active; on a tie, or when
-/// only one verifies, the bundled pair wins over the managed one, so a newer release is never shadowed by an older
-/// refresh. This loader never downloads, writes or replaces data with nominal-zero Earth orientation; a different pair
-/// becomes active only by an options change, a new release or an adoption. Problems carry no paths.
+/// this release, the managed pair the refresh last adopted and, while that one verifies, the managed pair it replaced
+/// are each verified against their provenance SHA-256 values and parsed. Only pairs that continuously cover the
+/// requested window (the current instant when the caller has none) are eligible, so a refresh retrieved after the
+/// provider's daily update, which cannot evaluate the rest of that UTC day, never takes the day's coverage away. Among
+/// the eligible pairs the one whose planning coverage ends later is active; on a tie the bundled pair wins over the
+/// managed ones, so a newer release is never shadowed by an older refresh. When none is eligible the same rule ranks
+/// every verified pair, and the caller's coverage check reports why. This loader never downloads, writes or replaces
+/// data with nominal-zero Earth orientation; a different pair becomes active only by an options change, a new release,
+/// an adoption or a later requested time. Problems carry no paths.
 /// </summary>
 public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTimeSource, IDisposable
 {
@@ -92,22 +103,24 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
     private readonly IOptionsMonitor<CameraAgentSatellitePlanningOptions> options;
     private readonly string bundledDirectory;
     private readonly CameraAgentManagedTimeDataStore? managed;
+    private readonly TimeProvider timeProvider;
     private readonly SemaphoreSlim gate = new(1, 1);
     private string? cachedConfiguration;
-    private CameraAgentOrbitalTimeResolution? cached;
+    private VerifiedPairs? cached;
 
     public CameraAgentPinnedOrbitalTimeSource(IOptionsMonitor<CameraAgentSatellitePlanningOptions> options,
-        CameraAgentManagedTimeDataStore? managed = null)
-        : this(options, BundledDirectory, managed)
+        CameraAgentManagedTimeDataStore? managed = null, TimeProvider? timeProvider = null)
+        : this(options, BundledDirectory, managed, timeProvider)
     {
     }
 
     internal CameraAgentPinnedOrbitalTimeSource(IOptionsMonitor<CameraAgentSatellitePlanningOptions> options, string bundledDirectory,
-        CameraAgentManagedTimeDataStore? managed = null)
+        CameraAgentManagedTimeDataStore? managed = null, TimeProvider? timeProvider = null)
     {
         this.options = options;
         this.bundledDirectory = bundledDirectory;
         this.managed = managed;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>True when any override setting is present, which selects the override over the bundled pair.</summary>
@@ -125,8 +138,36 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
         return time.EarthOrientationCoverage is { } eop && eop.EndUtc < time.LeapTableCoverage.EndUtc ? eop.EndUtc : time.LeapTableCoverage.EndUtc;
     }
 
-    public async ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// True when the pair continuously supports planning queries over the window, as the planner validates them: daily
+    /// Earth-orientation brackets throughout (rapid-only rows are a gap), inside the leap-second list and with no leap
+    /// crossing.
+    /// </summary>
+    public static bool Covers(OrbitalTimeData time, OrbitalUtcInterval window)
     {
+        ArgumentNullException.ThrowIfNull(time);
+        ArgumentNullException.ThrowIfNull(window);
+        try
+        {
+            time.ValidateModel(OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true), window,
+                OrbitalPredictionUse.Diagnostic, OrbitalGeometryBasis.ConfiguredRig);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        return ResolveAsync(new OrbitalUtcInterval(now, now), cancellationToken);
+    }
+
+    public async ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(OrbitalUtcInterval window, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(window);
         cancellationToken.ThrowIfCancellationRequested();
         var configuration = options.CurrentValue.Copy();
         var source = HasOverride(configuration) ? CameraAgentOrbitalTimeDataSource.Override : CameraAgentOrbitalTimeDataSource.Bundled;
@@ -139,24 +180,46 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
         // The adopted pair is part of the identity, so an adoption is picked up by the next resolution.
         var identity = Convert.ToHexString(SHA256.HashData(OrbitalContract.SerializeCanonical(configuration))) + "/" +
             (pointer.Invalid ? "invalid" : pointer.Value?.Pair ?? "none");
+        VerifiedPairs verified;
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (identity == cachedConfiguration && cached is not null) return cached;
-            // A failed explicit adoption also clears the previous inputs. Never silently use an older pair.
-            cached = null;
-            cachedConfiguration = null;
-            var resolution = source == CameraAgentOrbitalTimeDataSource.Override
-                ? await ReadOverrideAsync(configuration, cancellationToken).ConfigureAwait(false)
-                : await ReadBundledOrManagedAsync(pointer, cancellationToken).ConfigureAwait(false);
-            if (resolution.Data is not null)
+            if (identity == cachedConfiguration && cached is not null)
             {
-                cached = resolution;
-                cachedConfiguration = identity;
+                verified = cached;
             }
-            return resolution;
+            else
+            {
+                // A failed explicit adoption also clears the previous inputs. Never silently use an older pair.
+                cached = null;
+                cachedConfiguration = null;
+                verified = source == CameraAgentOrbitalTimeDataSource.Override
+                    ? await ReadOverrideAsync(configuration, cancellationToken).ConfigureAwait(false)
+                    : await ReadBundledOrManagedAsync(pointer, cancellationToken).ConfigureAwait(false);
+                if (verified.Pairs.Count > 0)
+                {
+                    cached = verified;
+                    cachedConfiguration = identity;
+                }
+            }
         }
         finally { gate.Release(); }
+        return Select(verified, window);
+    }
+
+    /// <summary>The eligible pair whose planning coverage ends later; a tie keeps the earlier-ranked pair, so bundled wins.</summary>
+    private static CameraAgentOrbitalTimeResolution Select(VerifiedPairs verified, OrbitalUtcInterval window)
+    {
+        var eligible = verified.Pairs.Where(pair => Covers(pair.Data, window)).ToArray();
+        VerifiedPair? active = null;
+        foreach (var pair in eligible.Length > 0 ? eligible : verified.Pairs)
+        {
+            if (active is null || PlanningCoverageEnd(pair.Data) > PlanningCoverageEnd(active.Data)) active = pair;
+        }
+        return active is null
+            ? new(verified.Source, verified.Problem, null, Managed: verified.Managed, ManagedPair: verified.Pointer)
+            : new(active.Source, CameraAgentOrbitalTimeDataProblem.None, active.Data, active.EarthOrientation, active.LeapSeconds,
+                verified.Managed, verified.Pointer, verified.ManagedCoverageEndUtc, active.Pair);
     }
 
     private async Task<(CameraAgentManagedTimePointer? Value, bool Invalid)> ReadPointerAsync(CancellationToken cancellationToken)
@@ -172,7 +235,7 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
         }
     }
 
-    private static async Task<CameraAgentOrbitalTimeResolution> ReadOverrideAsync(CameraAgentSatellitePlanningOptions configuration,
+    private static async Task<VerifiedPairs> ReadOverrideAsync(CameraAgentSatellitePlanningOptions configuration,
         CancellationToken cancellationToken)
     {
         try
@@ -181,36 +244,54 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
                 MaximumEarthOrientationBytes, cancellationToken).ConfigureAwait(false);
             var leaps = await ReadPinnedAsync(configuration.LeapSecondsPath!, configuration.LeapSecondsSha256!,
                 MaximumLeapSecondsBytes, cancellationToken).ConfigureAwait(false);
-            return new(CameraAgentOrbitalTimeDataSource.Override, CameraAgentOrbitalTimeDataProblem.None, OrbitalTimeData.FromFinals2000A(eop, leaps));
+            return new(CameraAgentOrbitalTimeDataSource.Override, CameraAgentOrbitalTimeDataProblem.None,
+                [new(CameraAgentOrbitalTimeDataSource.Override, null, OrbitalTimeData.FromFinals2000A(eop, leaps))]);
         }
         catch (Exception exception) when (IsInputFailure(exception))
         {
-            return new(CameraAgentOrbitalTimeDataSource.Override, CameraAgentOrbitalTimeDataProblem.OverrideInvalid, null);
+            return new(CameraAgentOrbitalTimeDataSource.Override, CameraAgentOrbitalTimeDataProblem.OverrideInvalid, []);
         }
     }
 
-    private async Task<CameraAgentOrbitalTimeResolution> ReadBundledOrManagedAsync(
+    private async Task<VerifiedPairs> ReadBundledOrManagedAsync(
         (CameraAgentManagedTimePointer? Value, bool Invalid) pointer, CancellationToken cancellationToken)
     {
-        var bundled = await ReadProvenancedAsync(bundledDirectory, ProvenanceSchema, cancellationToken).ConfigureAwait(false);
+        var pairs = new List<VerifiedPair>(3);
+        if (await ReadProvenancedAsync(bundledDirectory, ProvenanceSchema, cancellationToken).ConfigureAwait(false) is { } bundled)
+            pairs.Add(new(CameraAgentOrbitalTimeDataSource.Bundled, null, bundled.Data, bundled.EarthOrientation, bundled.LeapSeconds));
         var state = pointer.Invalid ? CameraAgentManagedTimeDataState.Invalid : CameraAgentManagedTimeDataState.None;
-        PinnedPair? adopted = null;
+        DateTimeOffset? managedEnd = null;
         if (pointer.Value is { } value)
         {
-            adopted = await ReadProvenancedAsync(managed!.PairDirectory(value.Pair), CameraAgentManagedTimeDataStore.ProvenanceSchema,
-                cancellationToken).ConfigureAwait(false);
+            var adopted = await ReadManagedAsync(value.Pair, cancellationToken).ConfigureAwait(false);
             state = adopted is null ? CameraAgentManagedTimeDataState.Invalid : CameraAgentManagedTimeDataState.Verified;
+            if (adopted is not null)
+            {
+                managedEnd = PlanningCoverageEnd(adopted.Data);
+                pairs.Add(adopted);
+                // The pair it replaced stays eligible, so an adoption never takes away coverage the new pair lacks yet.
+                if (value.Previous is { } previous && await ReadManagedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced)
+                    pairs.Add(replaced);
+            }
         }
-        var managedEnd = adopted is null ? (DateTimeOffset?)null : PlanningCoverageEnd(adopted.Data);
-        // The later planning coverage wins; a tie, or only the bundled pair verifying, keeps the bundled pair.
-        var useManaged = adopted is not null && (bundled is null || managedEnd > PlanningCoverageEnd(bundled.Data));
-        var active = useManaged ? adopted : bundled;
-        var source = useManaged ? CameraAgentOrbitalTimeDataSource.Managed : CameraAgentOrbitalTimeDataSource.Bundled;
-        return active is null
-            ? new(source, CameraAgentOrbitalTimeDataProblem.BundledInvalid, null, Managed: state, ManagedPair: pointer.Value)
-            : new(source, CameraAgentOrbitalTimeDataProblem.None, active.Data, active.EarthOrientation, active.LeapSeconds,
-                state, pointer.Value, managedEnd);
+        return new(CameraAgentOrbitalTimeDataSource.Bundled,
+            pairs.Count == 0 ? CameraAgentOrbitalTimeDataProblem.BundledInvalid : CameraAgentOrbitalTimeDataProblem.None,
+            pairs, state, pointer.Value, managedEnd);
     }
+
+    private async Task<VerifiedPair?> ReadManagedAsync(string pair, CancellationToken cancellationToken)
+        => await ReadProvenancedAsync(managed!.PairDirectory(pair), CameraAgentManagedTimeDataStore.ProvenanceSchema,
+            cancellationToken).ConfigureAwait(false) is { } read
+            ? new(CameraAgentOrbitalTimeDataSource.Managed, pair, read.Data, read.EarthOrientation, read.LeapSeconds)
+            : null;
+
+    /// <summary>The verified pairs of one configuration and pointer, ranked for ties: bundled, adopted, then the one it replaced.</summary>
+    private sealed record VerifiedPairs(CameraAgentOrbitalTimeDataSource Source, CameraAgentOrbitalTimeDataProblem Problem,
+        IReadOnlyList<VerifiedPair> Pairs, CameraAgentManagedTimeDataState Managed = CameraAgentManagedTimeDataState.None,
+        CameraAgentManagedTimePointer? Pointer = null, DateTimeOffset? ManagedCoverageEndUtc = null);
+
+    private sealed record VerifiedPair(CameraAgentOrbitalTimeDataSource Source, string? Pair, OrbitalTimeData Data,
+        CameraAgentTimeFileProvenance? EarthOrientation = null, CameraAgentTimeFileProvenance? LeapSeconds = null);
 
     /// <summary>A provenance-described pair directory, verified and parsed; null when anything fails.</summary>
     internal static async Task<PinnedPair?> ReadProvenancedAsync(string directory, string schema, CancellationToken cancellationToken)

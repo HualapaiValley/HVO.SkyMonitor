@@ -267,9 +267,11 @@ public sealed partial class CameraAgentManagedTimeDataStore
         {
             using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
-            if (Text(root, "schema") != PointerSchema || Text(root, "pair") is not { } pair || !IsPairName(pair) ||
-                !root.TryGetProperty("history", out var history) || history.ValueKind != JsonValueKind.Array ||
-                history.GetArrayLength() is 0 or > MaximumHistory)
+            // A non-object root or history item would make property reads throw InvalidOperationException instead.
+            if (root.ValueKind != JsonValueKind.Object || Text(root, "schema") != PointerSchema || Text(root, "pair") is not { } pair ||
+                !IsPairName(pair) || !root.TryGetProperty("history", out var history) || history.ValueKind != JsonValueKind.Array ||
+                history.GetArrayLength() is 0 or > MaximumHistory ||
+                history.EnumerateArray().Any(static item => item.ValueKind != JsonValueKind.Object))
                 throw new InvalidDataException();
             var previous = Text(root, "previous");
             if (previous is not null && !IsPairName(previous)) throw new InvalidDataException();
@@ -292,7 +294,8 @@ public sealed partial class CameraAgentManagedTimeDataStore
         {
             using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
-            if (Text(root, "schema") != StateSchema || !Enum.TryParse<CameraAgentTimeDataRefreshOutcome>(Text(root, "outcome"), out var outcome) ||
+            if (root.ValueKind != JsonValueKind.Object || Text(root, "schema") != StateSchema ||
+                !Enum.TryParse<CameraAgentTimeDataRefreshOutcome>(Text(root, "outcome"), out var outcome) ||
                 !Enum.IsDefined(outcome) || !root.TryGetProperty("manual", out var manual) || manual.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                 throw new InvalidDataException();
             return new(Time(root, "lastAttemptUtc") ?? throw new InvalidDataException(), manual.GetBoolean(), outcome,

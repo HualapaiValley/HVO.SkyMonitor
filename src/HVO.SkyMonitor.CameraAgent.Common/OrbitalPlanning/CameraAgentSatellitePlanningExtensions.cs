@@ -44,7 +44,7 @@ public static class CameraAgentSatellitePlanningExtensions
         // The managed pair is used when the host also adds the time-data refresh; planning never downloads.
         services.TryAddSingleton<ICameraAgentOrbitalTimeSource>(static provider => new CameraAgentPinnedOrbitalTimeSource(
             provider.GetRequiredService<IOptionsMonitor<CameraAgentSatellitePlanningOptions>>(),
-            provider.GetService<CameraAgentManagedTimeDataStore>()));
+            provider.GetService<CameraAgentManagedTimeDataStore>(), provider.GetRequiredService<TimeProvider>()));
         services.TryAddSingleton<ICameraAgentOrbitalPlanningEngineFactory, CameraAgentOrbitalPlanningEngineFactory>();
         services.TryAddSingleton<ICameraAgentSatellitePlanner>(provider => new CameraAgentSatellitePlanner(
             provider.GetRequiredService<ICameraAgentSkyMapProjection>(),

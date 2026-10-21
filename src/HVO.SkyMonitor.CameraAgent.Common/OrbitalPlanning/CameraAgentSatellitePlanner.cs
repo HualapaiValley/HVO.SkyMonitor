@@ -92,8 +92,8 @@ public sealed class CameraAgentSatellitePlanner(
         var filter = ParseFilter(request.ObjectFilter);
         var settings = options.CurrentValue.Copy();
         var settingsIdentity = Hash(settings);
-        var time = await ReadTimeAsync(settings, cancellationToken).ConfigureAwait(false);
         var interval = new OrbitalUtcInterval(request.StartUtc, request.EndUtc);
+        var time = await ReadTimeAsync(settings, interval, cancellationToken).ConfigureAwait(false);
         var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
         ValidateQueryTime(time, model, interval);
         var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
@@ -199,7 +199,7 @@ public sealed class CameraAgentSatellitePlanner(
         var settings = options.CurrentValue.Copy();
         if (Hash(settings) != settingsIdentity) throw ContextChanged();
         var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        var time = await ReadTimeAsync(settings, cancellationToken).ConfigureAwait(false);
+        var time = await ReadTimeAsync(settings, interval, cancellationToken).ConfigureAwait(false);
         if (snapshot.Manifest.ManifestSha256 != snapshotIdentity || OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true) != model ||
             Hash(await ReadContextAsync(interval, cancellationToken).ConfigureAwait(false)) != contextIdentity)
             throw ContextChanged();
@@ -212,9 +212,11 @@ public sealed class CameraAgentSatellitePlanner(
         throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.NoSnapshot, "No validated local orbital snapshot is available.");
     }
 
-    private async Task<OrbitalTimeData> ReadTimeAsync(CameraAgentSatellitePlanningOptions settings, CancellationToken cancellationToken)
+    /// <summary>The pair for the requested window, so a pair that cannot evaluate it is not chosen while another can.</summary>
+    private async Task<OrbitalTimeData> ReadTimeAsync(CameraAgentSatellitePlanningOptions settings, OrbitalUtcInterval interval,
+        CancellationToken cancellationToken)
     {
-        var resolution = settings.Enabled ? await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false) : null;
+        var resolution = settings.Enabled ? await timeSource.ResolveAsync(interval, cancellationToken).ConfigureAwait(false) : null;
         if (resolution?.Data is { NominalZeroEarthOrientation: false } time) return time;
         throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, resolution?.Problem switch
         {

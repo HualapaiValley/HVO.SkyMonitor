@@ -10,7 +10,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 /// <summary>
 /// Runs one managed time-data refresh: three bounded downloads from the approved endpoints, the provider checksums
 /// (USNO SHA-512 and the leap file's <c>#h</c>), a parse with the product validators, and then atomic adoption of the
-/// pair unless it is unchanged or covers less than the adopted one. Any failure keeps the adopted pair.
+/// pair unless it is unchanged, covers less than the adopted one, or would retire the only adopted pair that covers the
+/// current time. Any failure keeps the adopted pair.
 /// </summary>
 /// <remarks>
 /// It runs only as the reserved automation occurrence, never on a capture or planning request. One attempt runs at a
@@ -177,8 +178,8 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
         var candidate = new CameraAgentTimeDataCandidate(eop.Bytes, eop.LastModifiedUtc, sha512, leap.Bytes, leap.LastModifiedUtc,
             leapHash, started);
         var candidateEnd = CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(candidateData);
-        var adopted = await ReadAdoptedAsync(cancellationToken).ConfigureAwait(false);
-        if (adopted is { } current)
+        var adopted = await ReadPointerAsync(cancellationToken).ConfigureAwait(false);
+        if (adopted is not null && await ReadAdoptedAsync(adopted.Pair, cancellationToken).ConfigureAwait(false) is { } current)
         {
             if (current.Data.EarthOrientationSha256 == candidateData.EarthOrientationSha256 &&
                 current.Data.LeapSecondsSha256 == candidateData.LeapSecondsSha256)
@@ -187,6 +188,15 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
             if (candidateEnd < currentEnd)
                 return (CameraAgentTimeDataRefreshOutcome.NotNewer, NotNewerReasonCode, string.Create(CultureInfo.InvariantCulture,
                     $"the download covers planning to {candidateEnd.UtcDateTime:O}, before the adopted pair's {currentEnd.UtcDateTime:O}; the adopted pair is kept"));
+            // Adoption retires the previous pair. While neither the download nor the adopted pair covers the current time
+            // (two attempts on one UTC day: the attempt record was lost or the clock went back), that pair may be the only one that does.
+            var now = timeProvider.GetUtcNow();
+            var instant = new OrbitalUtcInterval(now, now);
+            if (!CameraAgentPinnedOrbitalTimeSource.Covers(candidateData, instant) && !CameraAgentPinnedOrbitalTimeSource.Covers(current.Data, instant) &&
+                adopted.Previous is { } previous && await ReadAdoptedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced &&
+                CameraAgentPinnedOrbitalTimeSource.Covers(replaced.Data, instant))
+                return (CameraAgentTimeDataRefreshOutcome.NotNewer, NotNewerReasonCode,
+                    "neither the download nor the adopted pair covers the current time yet, and adopting it would retire the previous pair, which does; the adopted pairs are kept");
         }
         var pointer = await store.AdoptAsync(candidate, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
         return (CameraAgentTimeDataRefreshOutcome.Adopted, AdoptedReasonCode, Coverage(
@@ -199,21 +209,23 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
             => string.Create(CultureInfo.InvariantCulture, $"{text}; planning coverage to {end.UtcDateTime:O}");
     }
 
-    /// <summary>The verified adopted pair, or null when there is none or it no longer verifies.</summary>
-    private async ValueTask<CameraAgentPinnedOrbitalTimeSource.PinnedPair?> ReadAdoptedAsync(CancellationToken cancellationToken)
+    /// <summary>The adopted pointer, or null when there is none or it is damaged.</summary>
+    private async ValueTask<CameraAgentManagedTimePointer?> ReadPointerAsync(CancellationToken cancellationToken)
     {
-        CameraAgentManagedTimePointer? pointer;
         try
         {
-            pointer = await store.ReadPointerAsync(cancellationToken).ConfigureAwait(false);
+            return await store.ReadPointerAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
         {
             return null;
         }
-        return pointer is null ? null : await CameraAgentPinnedOrbitalTimeSource.ReadProvenancedAsync(store.PairDirectory(pointer.Pair),
-            CameraAgentManagedTimeDataStore.ProvenanceSchema, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>A verified adopted pair, or null when it no longer verifies.</summary>
+    private async ValueTask<CameraAgentPinnedOrbitalTimeSource.PinnedPair?> ReadAdoptedAsync(string pair, CancellationToken cancellationToken)
+        => await CameraAgentPinnedOrbitalTimeSource.ReadProvenancedAsync(store.PairDirectory(pair),
+            CameraAgentManagedTimeDataStore.ProvenanceSchema, cancellationToken).ConfigureAwait(false);
 
     /// <summary>Closes the attempt record even after cancellation: one small local write, never a request.</summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

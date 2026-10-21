@@ -59,15 +59,17 @@ default:
 With none of the four override settings present, planning uses the pair bundled
 with the release in `time-data/` beside the application (`/app/time-data/` in the
 image): `finals2000A.daily.extended`, `leap-seconds.list` and their
-`provenance.json`, or the managed pair under `<RawIngressRoot>/.time-data/` when
-the refresh has adopted one whose planning coverage ends later (the bundled pair
-wins a tie). Each resolution verifies the files against the SHA-256 values in
+`provenance.json`, or a managed pair under `<RawIngressRoot>/.time-data/` when
+the refresh has adopted one. Of the verified pairs that continuously cover the
+planning window, the one whose planning coverage ends later is used (the bundled
+pair wins a tie), so the pair a refresh replaced stays in use until the new one
+covers the window. Each resolution verifies the files against the SHA-256 values in
 their provenance record and parses them; a mismatch or malformed record leaves
 that pair unavailable. Setting any of the four selects the override, which must
 then be complete and valid. An incomplete or invalid override makes planning
 unavailable with a reason; it never falls back to another pair, and CameraAgent
-never writes the configured files. Only an options change, a new release or a
-refresh adoption makes another pair active.
+never writes the configured files. Only an options change, a new release, a
+refresh adoption or a later planning window makes another pair active.
 
 The file source reads at most 8 MiB of EOP and 64 KiB of leap data. An embedding
 host may instead provide `ICameraAgentOrbitalTimeSource` to return an already
@@ -116,7 +118,7 @@ displays the active source (bundled, refreshed or override), each file's status,
 path, SHA-256 and provenance, the final and predicted EOP spans, whether the
 checked window uses final or predicted values, and the exclusive leap-second
 expiry. Its refresh facts show the planning coverage end (and plainly when it has
-expired), the refresh switch and whether the daily automation exists, the last
+expired or no verified pair covers the current time), the refresh switch and whether the daily automation exists, the last
 attempt with its outcome and reason, and the last adoption; a failed refresh is
 shown there and never as expiry. The panel makes no download request and never
 substitutes nominal zero EOP. Without the refresh, the bundled pair ages with the

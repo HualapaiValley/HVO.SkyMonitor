@@ -210,14 +210,20 @@ the leap-second expiry.
   leap file's `#h`, parses the pair and adopts it atomically under
   `state/raw/.time-data/`. At most one attempt starts per 24 hours, including Run
   now and restarts. A failed run keeps the current pair and shows its reason code;
-  that is not expiry. The adopted pair is used only when its planning coverage ends
-  later than the bundled pair's; a newer release wins a tie. See
+  that is not expiry. The adopted pair is used only when it covers the planned time
+  and its planning coverage ends later than the bundled pair's; a newer release
+  wins a tie. A pair downloaded after USNO's daily update (about 17:11 UTC) cannot
+  evaluate the rest of that UTC day, so the pair it replaced stays in use until
+  00:00 UTC. See
   [Managed refresh](../astronomy/bundled-time-data-v1.md#managed-refresh) for the
   endpoints, bounds and terms.
 - **Expiry.** A pair ages. Planning is supported until the earlier of the last
   Earth-orientation prediction and the leap-second list's expiry. After that,
   searches return the coverage end as the reason and the status says `EXPIRED`.
-  Turn on the refresh, upgrade CameraAgent, or configure a newer override.
+  Turn on the refresh, upgrade CameraAgent, or configure a newer override. When no
+  verified pair covers the current time but none has expired (for example the
+  only pair was downloaded after that day's update), the status says
+  `NOT COVERING NOW` and searches from now are unavailable until 00:00 UTC.
 - **Rollback.** A created `time-data-refresh` definition names the appended task
   kind `TimeDataRefresh`, which a release from before #1474 slice B2 cannot read; as
   with orbital refresh, removing the definition is not enough, so upgrade forward.

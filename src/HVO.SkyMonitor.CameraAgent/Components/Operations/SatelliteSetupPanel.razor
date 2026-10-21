@@ -33,7 +33,7 @@
         </div>
         <details id="satellite-time-data">
             <summary>Read-only time-data configuration and resolved status</summary>
-            <p>Each CameraAgent release bundles one verified finals2000A Earth-orientation file and one <code>leap-seconds.list</code>, and planning uses that pair by default. To override it, set all four of <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. While any of them is set, no other pair is used: an incomplete or invalid override stops planning. Environment variables and <code>config/secrets</code> override that file. With <strong>Time-data refresh</strong> on and its daily automation created, CameraAgent downloads a newer pair at most once a day, checks the providers' checksums and parses it before adopting it; without an override, the refreshed or the bundled pair is used, whichever covers planning later (the bundled pair on a tie).</p>
+            <p>Each CameraAgent release bundles one verified finals2000A Earth-orientation file and one <code>leap-seconds.list</code>, and planning uses that pair by default. To override it, set all four of <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. While any of them is set, no other pair is used: an incomplete or invalid override stops planning. Environment variables and <code>config/secrets</code> override that file. With <strong>Time-data refresh</strong> on and its daily automation created, CameraAgent downloads a newer pair at most once a day, checks the providers' checksums and parses it before adopting it; without an override, planning uses the verified pair that covers the planned time and covers planning latest (the bundled pair on a tie), so a refreshed pair that cannot evaluate the rest of the day it was retrieved never replaces one that can.</p>
             <dl class="ops-facts">
                 <div class="full"><dt>Active source</dt><dd>@(view.ActiveSource ?? "Not resolved")</dd></div>
                 @foreach (var file in view.Files)
@@ -48,7 +48,7 @@
             </dl>
             @if (view.TimeData is { } status)
             {
-                <dl id="time-data-refresh" class="ops-facts" data-refresh-outcome="@status.Refresh.Outcome" data-expired="@(status.Expired ? "true" : "false")">
+                <dl id="time-data-refresh" class="ops-facts" data-refresh-outcome="@status.Refresh.Outcome" data-expired="@(status.Expired ? "true" : "false")" data-covers-now="@(status.CoversNow ? "true" : "false")">
                     <div class="full"><dt>Planning coverage</dt><dd>@Coverage(status)</dd></div>
                     <div class="full"><dt>Time-data refresh</dt><dd>@(status.RefreshEnabled ? "On" : "Off")@if (!status.RefreshScheduled) { <small>The daily automation is not set up. <a href="/operations/automations?setup=time-data">Create the time-data refresh automation</a>.</small> }</dd></div>
                     <div class="full"><dt>Last refresh attempt</dt><dd>@Attempt(status.Refresh)@if (status.Refresh.Detail is { Length: > 0 } detail) { <small>@detail</small> }@if (status.Refresh.NextPermittedAttemptUtc is { } next) { <small>Next permitted attempt: @next.ToString("O")</small> }</dd></div>

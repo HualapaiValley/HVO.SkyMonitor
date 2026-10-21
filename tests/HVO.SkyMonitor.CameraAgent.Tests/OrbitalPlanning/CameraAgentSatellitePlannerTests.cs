@@ -52,6 +52,7 @@ public sealed class CameraAgentSatellitePlannerTests
         var view = response.Value!;
         var pass = view.Passes.Single().Pass;
         Assert.AreSame(input.Times.Current, input.Engine.BoundTime);
+        Assert.AreEqual(new OrbitalUtcInterval(request.StartUtc, request.EndUtc), input.Times.LastWindow, "the pair is chosen for the requested window");
         Assert.AreEqual(input.Times.Current!.EarthOrientationSha256, pass.Model.EarthOrientationSha256);
         Assert.AreEqual(input.Times.Current.LeapSecondsSha256, pass.Model.LeapSecondsSha256);
         Assert.AreEqual(OrbitalPredictionModel.Propagator, pass.Model.Propagator);

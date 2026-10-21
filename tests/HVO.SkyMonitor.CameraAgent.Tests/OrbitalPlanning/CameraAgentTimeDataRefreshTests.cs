@@ -213,7 +213,7 @@ public sealed class CameraAgentTimeDataRefreshTests
         // A restarted process sees the pair adopted before the crash, never the half-adopted one.
         var restarted = new CameraAgentManagedTimeDataStore(host.Store.RootDirectory);
         Assert.AreEqual(current.Pair, (await restarted.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!.Pair);
-        using var source = new CameraAgentPinnedOrbitalTimeSource(host.Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, restarted);
+        using var source = new CameraAgentPinnedOrbitalTimeSource(host.Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, restarted, host.Clock);
         var resolution = await source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Managed, resolution.Source);
         Assert.AreEqual(current.History[0].LeapSecondsSha256, resolution.Data!.LeapSecondsSha256);
@@ -345,24 +345,24 @@ public sealed class CameraAgentTimeDataRefreshTests
 
         // A newer release (a bundled pair that covers longer) is not shadowed by the older refresh.
         var newerBundle = host.CopyBundle(WithLaterExpiry(BundledLeap, 3000));
-        using (var upgraded = new CameraAgentPinnedOrbitalTimeSource(host.Options, newerBundle, host.Store))
+        using (var upgraded = new CameraAgentPinnedOrbitalTimeSource(host.Options, newerBundle, host.Store, host.Clock))
             Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled,
                 (await upgraded.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false)).Source);
 
         // A missing bundle leaves the verified managed pair; a corrupted managed pair leaves the bundled one.
-        using (var unbundled = new CameraAgentPinnedOrbitalTimeSource(host.Options, Path.Combine(host.Root, "absent"), host.Store))
+        using (var unbundled = new CameraAgentPinnedOrbitalTimeSource(host.Options, Path.Combine(host.Root, "absent"), host.Store, host.Clock))
             Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Managed,
                 (await unbundled.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false)).Source);
         var pointer = (await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!;
         await File.AppendAllTextAsync(Path.Combine(host.Store.PairDirectory(pointer.Pair), CameraAgentTimeDataSources.LeapSecondsFile), "#",
             TestContext.CancellationToken).ConfigureAwait(false);
-        using (var fresh = new CameraAgentPinnedOrbitalTimeSource(host.Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, host.Store))
+        using (var fresh = new CameraAgentPinnedOrbitalTimeSource(host.Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, host.Store, host.Clock))
         {
             var fallback = await fresh.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, fallback.Source);
             Assert.AreEqual(CameraAgentManagedTimeDataState.Invalid, fallback.Managed);
         }
-        using (var neither = new CameraAgentPinnedOrbitalTimeSource(host.Options, Path.Combine(host.Root, "absent"), host.Store))
+        using (var neither = new CameraAgentPinnedOrbitalTimeSource(host.Options, Path.Combine(host.Root, "absent"), host.Store, host.Clock))
         {
             var none = await neither.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentOrbitalTimeDataProblem.BundledInvalid, none.Problem);
@@ -484,6 +484,273 @@ public sealed class CameraAgentTimeDataRefreshTests
         }
     }
 
+    [TestMethod]
+    public async Task AdoptingAPairRetrievedAfterTheDailyUpdateKeepsTheRestOfTheDayCoveredAsync()
+    {
+        // USNO's daily update (about 17:11Z) leaves only rapid (I) rows for the current UTC day, which planning treats as a
+        // gap. The committed snapshot is such a download: retrieved after the 2026-10-21 update, it covers from 2026-10-22.
+        var day = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+        using var host = new Host(day.AddHours(12));
+        var earlier = await host.Store.AdoptAsync(Candidate(PredictedOn(BundledEop, day), WithLaterExpiry(BundledLeap, 50)),
+            day.AddHours(-12), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, (await PlanAsync(host, host.Clock.Now).ConfigureAwait(false)).Outcome,
+            "the pair adopted the day before still covers today");
+
+        // The daily run after the update downloads a pair whose coverage ends later but cannot evaluate the rest of today.
+        host.Clock.Now = day.AddHours(17.5);
+        var later = Republished(BundledLeap, 400);
+        host.Client.Serve(CameraAgentTimeDataSources.LeapSecondsUri, later);
+        var execution = await host.Job.ExecuteAsync(manual: false, TestContext.CancellationToken).ConfigureAwait(false);
+        StringAssert.StartsWith(execution.Detail, CameraAgentTimeDataRefreshJob.AdoptedReasonCode, StringComparison.Ordinal);
+        var adopted = (await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!;
+        Assert.AreEqual(earlier.Pair, adopted.Previous);
+
+        // Until 00:00Z the earlier pair stays active, and the status names the pair planning uses.
+        foreach (var at in new[] { day.AddHours(17.75), day.AddHours(23.5) })
+        {
+            host.Clock.Now = at;
+            var plan = await PlanAsync(host, at).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, plan.Outcome, $"planning from {at:O}");
+            Assert.AreEqual(earlier.History[0].LeapSecondsSha256, plan.LeapSecondsSha256, "the earlier pair keeps today covered");
+            var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual("managed", status.ActiveSource);
+            Assert.AreEqual("none", status.Problem);
+            Assert.IsFalse(status.Expired);
+            Assert.IsTrue(status.CoversNow);
+            Assert.AreEqual(plan.LeapSecondsSha256, status.LeapSecondsSha256, "the status describes the pair planning uses");
+            Assert.AreEqual(earlier.Pair, (await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false)).ActiveManagedPair);
+            Assert.AreEqual(adopted.Pair, status.ManagedPair!.Pair, "the last adoption is still reported");
+        }
+
+        // A lost attempt record lifts the floor; a second same-day download must not retire the only pair covering today.
+        host.Clock.Now = day.AddHours(18);
+        File.Delete(Path.Combine(host.Store.RootDirectory, CameraAgentManagedTimeDataStore.StateFile));
+        host.Client.Serve(CameraAgentTimeDataSources.LeapSecondsUri, Republished(BundledLeap, 800));
+        var again = await host.Job.ExecuteAsync(manual: true, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, again.Outcome, again.Detail);
+        StringAssert.StartsWith(again.Detail, CameraAgentTimeDataRefreshJob.NotNewerReasonCode, StringComparison.Ordinal);
+        var kept = (await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!;
+        Assert.AreEqual(adopted.Pair, kept.Pair);
+        Assert.AreEqual(earlier.Pair, kept.Previous);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, (await PlanAsync(host, host.Clock.Now).ConfigureAwait(false)).Outcome);
+
+        // From 00:00Z the new pair covers the day and, ending latest, takes over.
+        foreach (var at in new[] { day.AddDays(1), day.AddDays(1).AddHours(6) })
+        {
+            host.Clock.Now = at;
+            var plan = await PlanAsync(host, at).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, plan.Outcome, $"planning from {at:O}");
+            Assert.AreEqual(Convert.ToHexString(SHA256.HashData(later)), plan.LeapSecondsSha256, "the new pair takes over");
+            var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual("managed", status.ActiveSource);
+            Assert.IsTrue(status.CoversNow);
+            Assert.AreEqual(plan.LeapSecondsSha256, status.LeapSecondsSha256);
+            Assert.AreEqual(adopted.Pair, (await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false)).ActiveManagedPair);
+        }
+    }
+
+    [TestMethod]
+    public async Task TheStatusSaysSoWhenNoVerifiedPairCoversTheCurrentTimeAndPlanningFailsAsync()
+    {
+        // The committed snapshot, retrieved after the 2026-10-21 update, is the only pair: it cannot evaluate the rest of that day.
+        var day = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+        using var host = new Host(day.AddHours(18));
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await PlanAsync(host, host.Clock.Now).ConfigureAwait(false)).Outcome);
+        var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("bundled", status.ActiveSource);
+        Assert.AreEqual("none", status.Problem);
+        Assert.IsFalse(status.Expired);
+        Assert.IsFalse(status.CoversNow, "the status never reads current while planning from now fails");
+
+        // A pair adopted now cannot evaluate the rest of the day either, so nothing changes until 00:00Z.
+        var later = Republished(BundledLeap, 400);
+        host.Client.Serve(CameraAgentTimeDataSources.LeapSecondsUri, later);
+        StringAssert.StartsWith((await host.Job.ExecuteAsync(manual: false, TestContext.CancellationToken).ConfigureAwait(false)).Detail,
+            CameraAgentTimeDataRefreshJob.AdoptedReasonCode, StringComparison.Ordinal);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await PlanAsync(host, host.Clock.Now).ConfigureAwait(false)).Outcome);
+        Assert.IsFalse((await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false)).CoversNow);
+
+        // From 00:00Z it covers the day and takes over; the status and planning agree.
+        host.Clock.Now = day.AddDays(1);
+        var plan = await PlanAsync(host, host.Clock.Now).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, plan.Outcome);
+        Assert.AreEqual(Convert.ToHexString(SHA256.HashData(later)), plan.LeapSecondsSha256);
+        status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("managed", status.ActiveSource);
+        Assert.IsTrue(status.CoversNow);
+        Assert.AreEqual(plan.LeapSecondsSha256, status.LeapSecondsSha256);
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentManagedTimeDataStore.PointerFile, "[]")]
+    [DataRow(CameraAgentManagedTimeDataStore.PointerFile, "\"x\"")]
+    [DataRow(CameraAgentManagedTimeDataStore.PointerFile, "history")]
+    [DataRow(CameraAgentManagedTimeDataStore.StateFile, "[]")]
+    [DataRow(CameraAgentManagedTimeDataStore.StateFile, "\"x\"")]
+    public async Task ANonObjectPointerOrRecordIsInvalidDataThatPlanningRefreshAndStatusHandleAsync(string file, string shape)
+    {
+        using var host = new Host();
+        var adopted = await host.AdoptLongerPairAsync().ConfigureAwait(false);
+        await host.Store.WriteStateAsync(new(Start.AddDays(-2), false, CameraAgentTimeDataRefreshOutcome.Adopted,
+            CameraAgentTimeDataRefreshJob.AdoptedReasonCode, string.Empty, Start.AddDays(-2), Start.AddDays(-2)),
+            TestContext.CancellationToken).ConfigureAwait(false);
+        var path = Path.Combine(host.Store.RootDirectory, file);
+        var damaged = shape;
+        if (shape == "history")
+        {
+            // A well-formed file whose history holds a number instead of an adoption.
+            var node = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path, TestContext.CancellationToken).ConfigureAwait(false))!;
+            node["history"] = new System.Text.Json.Nodes.JsonArray(1);
+            damaged = node.ToJsonString();
+        }
+        await File.WriteAllTextAsync(path, damaged, TestContext.CancellationToken).ConfigureAwait(false);
+
+        if (file == CameraAgentManagedTimeDataStore.PointerFile)
+        {
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+            // Planning falls back to the bundled pair and reports the managed pair as invalid.
+            var resolution = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, resolution.Source);
+            Assert.AreEqual(CameraAgentOrbitalTimeDataProblem.None, resolution.Problem);
+            Assert.AreEqual(CameraAgentManagedTimeDataState.Invalid, resolution.Managed);
+            Assert.IsNotNull(resolution.Data);
+            // The status stays readable (the endpoint would otherwise answer 503).
+            var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual("bundled", status.ActiveSource);
+            Assert.IsNull(status.ManagedPair);
+            // The next refresh replaces the damaged pointer.
+            var execution = await host.Job.ExecuteAsync(manual: false, TestContext.CancellationToken).ConfigureAwait(false);
+            StringAssert.StartsWith(execution.Detail, CameraAgentTimeDataRefreshJob.AdoptedReasonCode, StringComparison.Ordinal);
+            Assert.IsNotNull(await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false));
+        }
+        else
+        {
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await host.Store.ReadStateAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+            var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual("unreadable", status.Refresh.Outcome, "the status stays readable (the endpoint would otherwise answer 503)");
+            Assert.AreEqual("managed", status.ActiveSource);
+            // The next attempt replaces the damaged record and records its own failure.
+            host.Client.Fail(CameraAgentTimeDataSources.EarthOrientationUri, CameraAgentTimeDataClient.TransportReasonCode);
+            var execution = await host.Job.ExecuteAsync(manual: false, TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationRunOutcome.Failed, execution.Outcome, execution.Detail);
+            var state = (await host.Store.ReadStateAsync(TestContext.CancellationToken).ConfigureAwait(false))!;
+            Assert.AreEqual(CameraAgentTimeDataRefreshOutcome.Failed, state.Outcome);
+            Assert.AreEqual(CameraAgentTimeDataClient.TransportReasonCode, state.ReasonCode);
+            Assert.AreEqual(adopted.Pair, (await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!.Pair);
+        }
+    }
+
+    [TestMethod]
+    public async Task TheTimeDataHandlerFollowsNoRedirectAndTheClientSendsEachRequestOnceAsync()
+    {
+        var handler = CameraAgentTimeDataSources.CreatePrimaryHandler();
+        using (handler)
+        {
+            Assert.IsInstanceOfType<SocketsHttpHandler>(handler);
+            var sockets = (SocketsHttpHandler)handler;
+            Assert.IsFalse(sockets.AllowAutoRedirect, "no redirect is followed");
+            Assert.IsFalse(sockets.UseCookies, "no cookies");
+            Assert.AreEqual(DecompressionMethods.None, sockets.AutomaticDecompression, "no automatic decompression");
+            Assert.IsNull(sockets.Credentials, "no credentials");
+            Assert.IsFalse(sockets.PreAuthenticate);
+        }
+
+        // The client itself never retries: a redirect or a transport failure is one request.
+        foreach (var respond in new Func<HttpResponseMessage>[]
+        {
+            () => Response(HttpStatusCode.MovedPermanently, []),
+            () => throw new HttpRequestException("refused")
+        })
+        {
+            var requests = 0;
+            var download = await FetchAsync(() => { requests++; return respond(); }, CameraAgentTimeDataSources.LeapSecondsUri, 3).ConfigureAwait(false);
+            Assert.IsNull(download.Bytes);
+            Assert.AreEqual(1, requests, "exactly one request");
+        }
+    }
+
+    [TestMethod]
+    public async Task TheRegisteredTimeDataPipelineHasNothingInFrontOfTheNoRedirectHandlerAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-time-data-http-" + Guid.NewGuid().ToString("N"));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+        services.AddCameraAgentSatellitePlanning(new ConfigurationBuilder().Build());
+        services.AddCameraAgentTimeDataRefresh();
+        var provider = services.BuildServiceProvider();
+        await using var disposal = provider.ConfigureAwait(false);
+
+        var chain = new List<HttpMessageHandler>();
+        for (HttpMessageHandler? next = provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(CameraAgentTimeDataSources.HttpClientName);
+             next is not null; next = (next as DelegatingHandler)?.InnerHandler)
+            chain.Add(next);
+        // Only the factory's own lifetime wrapper precedes the primary handler: no retry, resilience, redirect or logging handler.
+        var names = string.Join(" -> ", chain.Select(static handler => handler.GetType().FullName));
+        Assert.HasCount(2, chain, names);
+        Assert.AreEqual(typeof(IHttpClientFactory).Assembly, chain[0].GetType().Assembly, names);
+        Assert.IsInstanceOfType<SocketsHttpHandler>(chain[1], names);
+        Assert.IsFalse(((SocketsHttpHandler)chain[1]).AllowAutoRedirect, "the registered primary handler follows no redirect");
+        Assert.IsFalse(Directory.Exists(root));
+    }
+
+    /// <summary>Plans one hour from <paramref name="startUtc"/> with the real loader and planner, returning the leap hash it planned with.</summary>
+    private static async Task<(CameraAgentSatellitePlanningOutcome Outcome, string? LeapSecondsSha256)> PlanAsync(Host host, DateTimeOffset startUtc)
+    {
+        var inputs = new PlanningTestInputs();
+        var planner = new CameraAgentSatellitePlanner(inputs.Sky, inputs.Configuration, host.Source, inputs.Engine, host.Options, host.Clock,
+            inputs.Snapshots);
+        var scene = await inputs.Sky.ProjectAsync(startUtc, CancellationToken.None).ConfigureAwait(false);
+        var response = await planner.SearchAsync(new(startUtc, startUtc.AddHours(1), "25544", 0, scene.Observer.CanonicalSha256,
+            scene.Geometry.RigProfileHashSha256), CancellationToken.None).ConfigureAwait(false);
+        return (response.Outcome, response.Outcome == CameraAgentSatellitePlanningOutcome.Ready
+            ? inputs.Engine.LastSearch!.Request.Model.LeapSecondsSha256 : null);
+    }
+
+    /// <summary>The file as published before <paramref name="day"/>'s update, when that day's rapid row was still predicted.</summary>
+    private static byte[] PredictedOn(byte[] eop, DateTimeOffset day)
+    {
+        var mjd = (day - new DateTimeOffset(1858, 11, 17, 0, 0, 0, TimeSpan.Zero)).Days.ToString(CultureInfo.InvariantCulture) + ".00";
+        var lines = Encoding.ASCII.GetString(eop).Split('\n');
+        var changed = 0;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Length < 68 || lines[i].Substring(7, 8) != mjd) continue;
+            var row = lines[i].ToCharArray();
+            row[16] = 'P';
+            row[57] = 'P';
+            lines[i] = new string(row);
+            changed++;
+        }
+        Assert.AreEqual(1, changed, "the day's row");
+        return Encoding.ASCII.GetBytes(string.Join('\n', lines));
+    }
+
+    /// <summary>The leap list with its expiry moved <paramref name="days"/> later and its own #h recomputed, as IERS publishes it.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA5350:Do Not Use Weak Cryptographic Algorithms",
+        Justification = "Reproduces the provider's published SHA-1 #h for a test fixture.")]
+    private static byte[] Republished(byte[] leap, int days)
+    {
+        var lines = Encoding.ASCII.GetString(WithLaterExpiry(leap, days)).Split('\n');
+        var data = new StringBuilder();
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("#$", StringComparison.Ordinal) || line.StartsWith("#@", StringComparison.Ordinal))
+                data.Append(Squeeze(line[2..].Split('#')[0]));
+            else if (!line.StartsWith('#'))
+                data.Append(Squeeze(line.Split('#')[0]));
+        }
+        var hash = Convert.ToHexStringLower(SHA1.HashData(Encoding.ASCII.GetBytes(data.ToString())));
+        var republished = Encoding.ASCII.GetBytes(string.Join('\n',
+            lines.Select(line => line.StartsWith("#h", StringComparison.Ordinal) ? "#h\t" + hash : line)));
+        Assert.AreEqual(hash, CameraAgentTimeDataSources.VerifiedLeapSecondsHash(republished), "the fixture carries a valid #h");
+        return republished;
+
+        static string Squeeze(string text) => string.Concat(text.Where(static c => c is not (' ' or '\t' or '\r')));
+    }
+
     private static LocalAutomationDefinition Definition() => new(CameraAgentTimeDataAutomationAdapter.DefinitionId, "Time data", true,
         LocalAutomationTaskKind.TimeDataRefresh, CameraAgentTimeDataAutomationAdapter.Target, LocalAutomationTriggerKind.Periodic,
         CameraAgentTimeDataAutomationAdapter.IntervalSeconds, Start);
@@ -602,7 +869,7 @@ public sealed class CameraAgentTimeDataRefreshTests
     {
         internal static readonly DateTimeOffset Modified = new(2026, 10, 21, 17, 11, 48, TimeSpan.Zero);
         internal readonly string Root = Path.Combine(Path.GetTempPath(), "hvo-time-data-" + Guid.NewGuid().ToString("N"));
-        internal readonly Clock Clock = new(Start);
+        internal readonly Clock Clock;
         internal readonly PlanningTestInputs.Settings Options = new();
         internal readonly FakeClient Client = new();
         internal readonly CameraAgentManagedTimeDataStore Store;
@@ -610,11 +877,12 @@ public sealed class CameraAgentTimeDataRefreshTests
         internal readonly CameraAgentTimeDataRefreshJob Job;
         internal readonly CameraAgentTimeDataOperations Operations;
 
-        internal Host()
+        internal Host(DateTimeOffset? now = null)
         {
+            Clock = new(now ?? Start);
             Options.CurrentValue.TimeDataRefreshEnabled = true;
             Store = new(Path.Combine(Root, "raw", CameraAgentManagedTimeDataStore.DirectoryName));
-            Source = new(Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, Store);
+            Source = new(Options, CameraAgentPinnedOrbitalTimeSource.BundledDirectory, Store, Clock);
             Job = new(Store, Client, Options, Clock, NullLogger<CameraAgentTimeDataRefreshJob>.Instance);
             Operations = new(Source, Store, Job, Options, Clock);
         }

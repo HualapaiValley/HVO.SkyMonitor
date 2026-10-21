@@ -39,12 +39,17 @@ public sealed partial class SatelliteSetupPanel : ComponentBase
     private static string Interval(OrbitalUtcInterval? interval)
         => interval is { } value ? $"{value.StartUtc:O} to {value.EndUtc:O}" : "None";
 
-    /// <summary>The active pair's coverage, saying plainly when it has ended; a failed refresh is reported separately.</summary>
+    /// <summary>
+    /// The active pair's coverage, saying plainly when it has ended or does not cover the current time; a failed refresh
+    /// is reported separately.
+    /// </summary>
     private static string Coverage(CameraAgentTimeDataStatus status) => status.CoverageEndUtc is not { } end
         ? "No active time data"
         : status.Expired
             ? $"Expired: the active {status.ActiveSource} pair covered planning until {end:O}"
-            : $"The active {status.ActiveSource} pair covers planning until {end:O}";
+            : !status.CoversNow
+                ? $"Not covering now: no verified pair covers the current time, so planning from now is unavailable; the active {status.ActiveSource} pair's coverage ends {end:O}"
+                : $"The active {status.ActiveSource} pair covers planning until {end:O}";
 
     private static string Attempt(CameraAgentTimeDataRefreshStatus refresh) => refresh.Outcome switch
     {
