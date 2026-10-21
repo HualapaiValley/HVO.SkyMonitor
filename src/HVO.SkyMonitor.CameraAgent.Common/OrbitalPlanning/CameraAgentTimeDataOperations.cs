@@ -1,3 +1,4 @@
+using System.Data.Common;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using Microsoft.Extensions.Options;
 
@@ -47,8 +48,9 @@ public sealed class CameraAgentTimeDataOperations(
         var resolution = await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false);
         var time = resolution.Data;
         var end = time is null ? (DateTimeOffset?)null : CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(time);
+        // An override or disabled planning does not evaluate the managed pair; its last adoption is still reported.
         var pointer = resolution.ManagedPair;
-        if (resolution.Problem == CameraAgentOrbitalTimeDataProblem.Disabled)
+        if (pointer is null && resolution.Managed != CameraAgentManagedTimeDataState.Invalid)
         {
             try
             {
@@ -106,8 +108,9 @@ public sealed class CameraAgentTimeDataOperations(
                 item.Definition.DefinitionId == CameraAgentTimeDataAutomationAdapter.DefinitionId &&
                 item.Definition.TaskKind == LocalAutomationTaskKind.TimeDataRefresh);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or IOException or InvalidDataException)
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or InvalidDataException or DbException)
         {
+            // An unavailable automation store is reported on the Automations page; status stays readable.
             return false;
         }
     }

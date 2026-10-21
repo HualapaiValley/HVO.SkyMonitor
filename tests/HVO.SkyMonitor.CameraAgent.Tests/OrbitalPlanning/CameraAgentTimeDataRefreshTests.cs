@@ -421,6 +421,19 @@ public sealed class CameraAgentTimeDataRefreshTests
         Assert.AreEqual(end, expired.ManagedPair.CoverageEndUtc);
         Assert.IsTrue(expired.RefreshEnabled);
         Assert.IsFalse(expired.RefreshScheduled, "no automation store is attached");
+
+        // An override does not evaluate the managed pair, but its last adoption is still reported.
+        var settings = host.Options.CurrentValue;
+        settings.EarthOrientationPath = Path.Combine(host.Root, "absent-eop");
+        settings.EarthOrientationSha256 = new string('A', 64);
+        settings.LeapSecondsPath = Path.Combine(host.Root, "absent-leap");
+        settings.LeapSecondsSha256 = new string('B', 64);
+        var overridden = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("override", overridden.ActiveSource);
+        Assert.AreEqual("override-invalid", overridden.Problem);
+        Assert.IsNull(overridden.CoverageEndUtc);
+        Assert.AreEqual(adopted.Pair, overridden.ManagedPair!.Pair);
+        Assert.AreEqual("not-checked", overridden.ManagedPair.State);
     }
 
     [TestMethod]
