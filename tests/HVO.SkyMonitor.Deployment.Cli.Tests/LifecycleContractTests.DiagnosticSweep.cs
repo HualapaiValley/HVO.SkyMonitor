@@ -12,6 +12,10 @@ public sealed partial class LifecycleContractTests
     [DataRow(true)]
     public async Task Diagnostic1476_AllOwnedFailureMessagesAreSafe(bool json)
     {
+        // An unsupported literal spelling must never silently turn a runtime control into printable source text.
+        const string unsupported = "\"\\u001b\"";
+        var unsupportedPosition = 0;
+        Assert.ThrowsExactly<AssertFailedException>(() => Diagnostic1476Literal(unsupported, ref unsupportedPosition, out _));
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, "HVO.SkyMonitor.v9.slnx"))) root = root.Parent;
         Assert.IsNotNull(root);
@@ -126,6 +130,8 @@ public sealed partial class LifecycleContractTests
             if (character == '\\')
             {
                 var escaped = source[position++];
+                Assert.IsTrue(escaped is 'n' or 'r' or 't' or '\\' or '"' or '\'',
+                    "Extend the diagnostic sweep for this C# literal escape.");
                 result.Append(escaped switch { 'n' => '\n', 'r' => '\r', 't' => '\t', _ => escaped });
             }
             else if (interpolated && character == '{')
