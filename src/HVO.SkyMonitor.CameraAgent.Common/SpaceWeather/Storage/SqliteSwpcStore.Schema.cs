@@ -29,7 +29,7 @@ public sealed partial class SqliteSwpcStore
         var version = Convert.ToInt64(Scalar(db, tx, "PRAGMA user_version;"), CultureInfo.InvariantCulture);
         if (version == 0)
         {
-            if (Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%';"), CultureInfo.InvariantCulture) != 0)
+            if (Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*';"), CultureInfo.InvariantCulture) != 0)
                 throw new InvalidDataException("Space-weather storage contains an unversioned schema.");
             Exec(db, tx, Schema);
             Exec(db, tx, "INSERT INTO swpc_meta(id,revision,ingest_sequence) VALUES(1,0,0);");
@@ -49,7 +49,7 @@ public sealed partial class SqliteSwpcStore
     }
     private static Dictionary<string, string> Definitions(SqliteConnection db, SqliteTransaction? tx)
     {
-        using var command = Command(db, tx, "SELECT name,type,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name;");
+        using var command = Command(db, tx, "SELECT name,type,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY name;");
         using var reader = command.ExecuteReader(); var result = new Dictionary<string, string>(StringComparer.Ordinal);
         while (reader.Read()) result.Add(reader.GetString(0), reader.GetString(1) + ":" + reader.GetString(2) + ":" + SqliteRawCaptureJournal.NormalizeSchemaSql(reader.GetString(3)));
         return result;

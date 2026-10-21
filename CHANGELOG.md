@@ -82,6 +82,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+
 - Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
 
 - CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;

@@ -14,6 +14,8 @@ public sealed partial class SqliteSwpcStore
         var added = new List<SwpcMessageRecord>();
         if (candidate.Parsed is SwpcAlertsBody alerts && outcome != SwpcFetchOutcome.Unchanged)
         {
+            var priorOrphanNodes = ReadNotices(db, tx).Groups.Where(group => group.Orphan)
+                .SelectMany(group => group.Nodes).ToHashSet();
             diagnostics.AddRange(SwpcAlertsParser.Diagnostics(alerts.Value));
             var seen = new HashSet<(string Identity, string Hash)>();
             foreach (var record in alerts.Value.Records)
@@ -35,15 +37,11 @@ public sealed partial class SqliteSwpcStore
             foreach (var message in added)
                 if (message.Header.Link is { } link && link.TargetSerial != message.Serial && !present.Contains(new(message.Code, link.TargetSerial)))
                     diagnostics.Add("orphan-link:" + message.Identity);
+            // A union preserves component nodes even when its lowest serial changes.
             foreach (var group in notices.Groups)
-            {
-                if (group.Orphan) Exec(db, tx, "INSERT OR IGNORE INTO swpc_orphans(identity) VALUES($i);", ("$i", group.Identity));
-                else if (notices.OrphanGroups.Contains(group.Identity))
-                {
-                    Exec(db, tx, "DELETE FROM swpc_orphans WHERE identity=$i;", ("$i", group.Identity));
+                if (!group.Orphan && group.Nodes.Overlaps(priorOrphanNodes))
                     diagnostics.Add("orphan-resolved:" + group.Identity);
-                }
-            }
+            SynchronizeOrphanMarkers(db, tx, notices.Groups, notices.OrphanGroups);
         }
         if (outcome == SwpcFetchOutcome.Updated)
         {
@@ -63,4 +61,16 @@ public sealed partial class SqliteSwpcStore
         PruneRaw(db, tx, atUtc);
         return (added.Count, touched.ToImmutable(), [.. diagnostics.Order(StringComparer.Ordinal)]);
     }
+    private static int SynchronizeOrphanMarkers(SqliteConnection db, SqliteTransaction tx,
+        IEnumerable<SwpcNoticeGroup> groups, ImmutableHashSet<string> knownMarkers)
+    {
+        var expected = groups.Where(group => group.Orphan).Select(group => group.Identity).ToHashSet(StringComparer.Ordinal);
+        var changed = 0;
+        foreach (var identity in knownMarkers.Except(expected))
+            changed += Exec(db, tx, "DELETE FROM swpc_orphans WHERE identity=$id;", ("$id", identity));
+        foreach (var identity in expected.Except(knownMarkers, StringComparer.Ordinal))
+            changed += Exec(db, tx, "INSERT INTO swpc_orphans(identity) VALUES($id);", ("$id", identity));
+        return changed;
+    }
+
 }

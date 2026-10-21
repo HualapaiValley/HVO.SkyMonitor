@@ -156,4 +156,134 @@ public sealed class SwpcStoreTests
         command.CommandText = "SELECT hex(body) FROM swpc_raw;";
         Assert.AreEqual("00", await command.ExecuteScalarAsync().ConfigureAwait(false), "A corrupt accepted body is preserved for explicit recovery.");
     }
+    private static async Task<SwpcWriteResult> CompleteAlerts(SqliteSwpcStore store, params string[] records)
+    {
+        var body = "[" + string.Join(",", records.Select(record => record[1..^1])) + "]";
+        var snapshot = Alerts(body);
+        var before = await store.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false);
+        var start = new SwpcAttemptStart(Guid.NewGuid(), before.Revision, SwpcProduct.Alerts, "orphan-regression",
+            SwpcAttemptTrigger.Manual, Now, new(null, null), Empty);
+        var begun = await store.BeginAttemptAsync(start, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Applied, begun.Status);
+        var completion = new SwpcAttemptCompletion(start.AttemptId, begun.View.Revision, Now, Now.AddSeconds(1), Now,
+            SwpcFetchOutcome.Updated, 200, "updated", snapshot.DecodedByteCount, SwpcValidatorOutcome.NotSent, snapshot);
+        var result = await store.CompleteAttemptAsync(completion, _ => new(Empty, null, null, []), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Applied, result.Status);
+        return result;
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SqlitePrefixLookalikeApplicationTablesFailClosed(bool versioned)
+    {
+        if (versioned)
+        {
+            using var initial = Open();
+            await initial.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        else Directory.CreateDirectory(_root);
+        Sql("CREATE TABLE sqliteXforeign(value TEXT); INSERT INTO sqliteXforeign VALUES('retained');");
+        using var store = Open();
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => store.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        using var db = Database();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT value FROM sqliteXforeign;";
+        Assert.AreEqual("retained", await command.ExecuteScalarAsync().ConfigureAwait(false));
+        command.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(versioned ? 1L : 0L, await command.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task OrphanResolutionFollowsItsComponentAcrossACanonicalIdentityChange()
+    {
+        using (var store = Open())
+        {
+            await CompleteAlerts(store, Message(1)).ConfigureAwait(false);
+            var orphan = await CompleteAlerts(store, Message(3, link: "Continuation of Serial Number: 2\n")).ConfigureAwait(false);
+            Assert.HasCount(1, orphan.View.Notices.OrphanGroups);
+            Assert.IsTrue(orphan.View.Notices.OrphanGroups.Contains("ALTZZZ/2"));
+
+            var joined = await CompleteAlerts(store, Message(2, link: "Continuation of Serial Number: 1\n")).ConfigureAwait(false);
+
+            Assert.AreEqual("orphan-resolved:ALTZZZ/1", joined.Diagnostics.Single());
+            Assert.HasCount(1, joined.View.Notices.Groups);
+            Assert.IsFalse(joined.View.Notices.Groups[0].Orphan);
+            Assert.HasCount(3, joined.View.Notices.Groups[0].Nodes);
+            Assert.IsEmpty(joined.View.Notices.OrphanGroups);
+        }
+        using var reopened = Open();
+        Assert.IsEmpty((await reopened.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false)).Notices.OrphanGroups);
+        var expired = await reopened.ReadAsync(Now.AddDays(36), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(expired.Notices.Groups);
+        Assert.IsEmpty(expired.Notices.OrphanGroups);
+    }
+
+    [TestMethod]
+    public async Task ThreeWayJoinResolvesOnceForTheResultingGroupAndDropsAllPriorMarkers()
+    {
+        using var store = Open();
+        await CompleteAlerts(store, Message(6, link: "Continuation of Serial Number: 5\n")).ConfigureAwait(false);
+        await CompleteAlerts(store, Message(4, link: "Continuation of Serial Number: 3\n")).ConfigureAwait(false);
+        var before = await CompleteAlerts(store, Message(2, link: "Continuation of Serial Number: 1\n")).ConfigureAwait(false);
+        Assert.HasCount(3, before.View.Notices.OrphanGroups);
+
+        var joined = await CompleteAlerts(store,
+            Message(5, link: "Continuation of Serial Number: 4\n"),
+            Message(3, link: "Continuation of Serial Number: 2\n"),
+            Message(1)).ConfigureAwait(false);
+
+        Assert.AreEqual("orphan-resolved:ALTZZZ/1", joined.Diagnostics.Single());
+        Assert.HasCount(1, joined.View.Notices.Groups);
+        Assert.HasCount(6, joined.View.Notices.Groups[0].Nodes);
+        Assert.IsFalse(joined.View.Notices.Groups[0].Orphan);
+        Assert.IsEmpty(joined.View.Notices.OrphanGroups);
+        var expired = await store.ReadAsync(Now.AddDays(36), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(expired.Notices.Groups);
+        Assert.IsEmpty(expired.Notices.OrphanGroups);
+    }
+
+    [TestMethod]
+    public async Task AJoinThatRemainsOrphanedMovesItsMarkerUntilTheWholeGroupResolves()
+    {
+        using var store = Open();
+        await CompleteAlerts(store, Message(3, link: "Continuation of Serial Number: 2\n")).ConfigureAwait(false);
+
+        var joined = await CompleteAlerts(store, Message(2, link: "Continuation of Serial Number: 1\n")).ConfigureAwait(false);
+
+        Assert.HasCount(1, joined.View.Notices.Groups);
+        Assert.AreEqual("ALTZZZ/1", joined.View.Notices.Groups[0].Identity);
+        Assert.IsTrue(joined.View.Notices.Groups[0].Orphan);
+        Assert.HasCount(1, joined.View.Notices.OrphanGroups);
+        Assert.IsTrue(joined.View.Notices.OrphanGroups.Contains("ALTZZZ/1"));
+        Assert.IsFalse(joined.Diagnostics.Any(value => value.StartsWith("orphan-resolved:", StringComparison.Ordinal)));
+        var resolved = await CompleteAlerts(store, Message(1)).ConfigureAwait(false);
+        Assert.AreEqual("orphan-resolved:ALTZZZ/1", resolved.Diagnostics.Single());
+        Assert.IsEmpty(resolved.View.Notices.OrphanGroups);
+        var expired = await store.ReadAsync(Now.AddDays(36), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(expired.Notices.Groups);
+        Assert.IsEmpty(expired.Notices.OrphanGroups);
+    }
+
+    [TestMethod]
+    public async Task RetentionRemovesLegacyOrphanMarkersThatNoLongerIdentifyAnOrphanGroup()
+    {
+        using var store = Open();
+        var retained = await CompleteAlerts(store, Message(1)).ConfigureAwait(false);
+        Sql("INSERT INTO swpc_orphans(identity) VALUES('ALTZZZ/2');");
+
+        var purged = await store.ApplyRetentionAsync(Now, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsGreaterThan(retained.View.Revision, purged.Revision);
+        var current = await store.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, current.Notices.Groups);
+        Assert.IsEmpty(current.Notices.OrphanGroups);
+        Sql("INSERT INTO swpc_orphans(identity) VALUES('ALTZZZ/2');");
+        var expired = await store.ReadAsync(Now.AddDays(36), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(expired.Notices.Groups);
+        Assert.IsEmpty(expired.Notices.OrphanGroups);
+    }
+
 }

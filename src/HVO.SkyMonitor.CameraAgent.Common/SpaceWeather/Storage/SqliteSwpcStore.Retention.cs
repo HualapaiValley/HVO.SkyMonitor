@@ -26,11 +26,11 @@ public sealed partial class SqliteSwpcStore
                 Exec(db, tx, "DELETE FROM swpc_ranks WHERE code=$c AND serial=$s;", ("$c", node.Code), ("$s", node.Serial));
                 Exec(db, tx, "DELETE FROM swpc_acks WHERE code=$c AND serial=$s;", ("$c", node.Code), ("$s", node.Serial));
             }
-            Exec(db, tx, "DELETE FROM swpc_orphans WHERE identity=$id;", ("$id", group.Identity));
         }
+        var orphans = SynchronizeOrphanMarkers(db, tx, notices.Groups.Except(expired), notices.OrphanGroups);
         var audit = PruneAudit(db, tx, atUtc);
         var (snapshots, bytes) = PruneRaw(db, tx, atUtc);
-        if (expired.Length > 0 || snapshots > 0 || audit > 0) Bump(db, tx);
+        if (expired.Length > 0 || snapshots > 0 || audit > 0 || orphans > 0) Bump(db, tx);
         return new(Revision(db, tx), expired.Length, versions, snapshots, bytes);
     }
 
