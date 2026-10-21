@@ -85,7 +85,7 @@ internal static class CameraAgentStateSnapshot
             if (!File.Exists(source))
             {
                 if (CameraAgentStateLayout.SqliteSidecarSuffixes.Any(suffix => File.Exists(source + suffix)))
-                    throw new InstallerException($"The CameraAgent store '{relative}' has recovery files but no database; it cannot be snapshotted.");
+                    throw new InstallerException($"The CameraAgent store '{CameraAgentStateDiagnostics.Reason(relative)}' has recovery files but no database; it cannot be snapshotted.");
                 databases.Add(new StateSnapshotDatabase(relative, false, null, 0, null, 0, null, []));
                 continue;
             }
@@ -98,7 +98,7 @@ internal static class CameraAgentStateSnapshot
             catch (Exception exception) when (exception is SqliteException or IOException)
             {
                 throw new InstallerException(
-                    $"The CameraAgent store '{relative}' could not be snapshotted: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
+                    $"The CameraAgent store '{CameraAgentStateDiagnostics.Reason(relative)}' could not be snapshotted: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
             }
             StepCompleted($"snapshot:{relative}");
         }
@@ -150,7 +150,7 @@ internal static class CameraAgentStateSnapshot
                 if (!string.Equals(
                         Convert.ToString(await mode.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture),
                         "delete", StringComparison.OrdinalIgnoreCase))
-                    throw new InstallerException($"The snapshot of '{relative}' could not be made self-contained.");
+                    throw new InstallerException($"The snapshot of '{CameraAgentStateDiagnostics.Reason(relative)}' could not be made self-contained.");
             }
         }
         File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -159,7 +159,7 @@ internal static class CameraAgentStateSnapshot
         NativeLinux.FlushDirectory(root);
         var snapshotFacts = VerifyFile(destination, relative);
         if (snapshotFacts != facts)
-            throw new InstallerException($"The snapshot of '{relative}' does not match its source schema and row counts.");
+            throw new InstallerException($"The snapshot of '{CameraAgentStateDiagnostics.Reason(relative)}' does not match its source schema and row counts.");
         return new StateSnapshotDatabase(
             relative, true, fileName, new FileInfo(destination).Length,
             await SafeFileSystem.ComputeSha256Async(destination, cancellationToken).ConfigureAwait(false),
@@ -206,9 +206,9 @@ internal static class CameraAgentStateSnapshot
             EnsureRegularStore(file, database.RelativePath);
             if (new FileInfo(file).Length != database.Length ||
                 await SafeFileSystem.ComputeSha256Async(file, cancellationToken).ConfigureAwait(false) != database.Sha256)
-                throw new InstallerException($"The snapshot of '{database.RelativePath}' differs from its manifest.");
+                throw new InstallerException($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' differs from its manifest.");
             if (VerifyFile(file, database.RelativePath) != new StoreFacts(database.UserVersion, database.SchemaSha256!, database.Tables))
-                throw new InstallerException($"The snapshot of '{database.RelativePath}' does not match its recorded schema and row counts.");
+                throw new InstallerException($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
         return manifest;
     }
@@ -309,7 +309,7 @@ internal static class CameraAgentStateSnapshot
             File.Move(temporary, target, overwrite: true);
             NativeLinux.FlushDirectory(directory);
             if (await SafeFileSystem.ComputeSha256Async(target, cancellationToken).ConfigureAwait(false) != installed)
-                throw new InstallerException($"The restored '{database.RelativePath}' differs from the copy staged for it.");
+                throw new InstallerException($"The restored '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' differs from the copy staged for it.");
             touchedDirectories.Add(directory);
             StepCompleted($"restore:{database.RelativePath}");
         }
@@ -377,7 +377,7 @@ internal static class CameraAgentStateSnapshot
     {
         var copied = await CopySyncedAsync(SnapshotFile(root, database), temporary, cancellationToken).ConfigureAwait(false);
         if (copied != database.Sha256)
-            throw new InstallerException($"The restored copy of '{database.RelativePath}' differs from its snapshot.");
+            throw new InstallerException($"The restored copy of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' differs from its snapshot.");
     }
 
     /// <summary>Removes a staged copy and any rollback journal, write-ahead log or wal-index a carry left beside it.</summary>
@@ -530,7 +530,7 @@ internal static class CameraAgentStateSnapshot
     private static string SnapshotFile(string root, StateSnapshotDatabase database)
     {
         if (database.SnapshotFile is not { Length: > 0 } name || name != Path.GetFileName(name) || name.StartsWith('.'))
-            throw new InstallerException($"The snapshot manifest names an invalid file for '{database.RelativePath}'.");
+            throw new InstallerException($"The snapshot manifest names an invalid file for '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}'.");
         return Path.Combine(root, name);
     }
 
@@ -551,7 +551,7 @@ internal static class CameraAgentStateSnapshot
         var info = new FileInfo(path);
         if (info.LinkTarget is not null || (info.Attributes & FileAttributes.ReparsePoint) != 0 ||
             (info.Attributes & FileAttributes.Directory) != 0)
-            throw new InstallerException($"The CameraAgent store '{relative}' is not a regular file.");
+            throw new InstallerException($"The CameraAgent store '{CameraAgentStateDiagnostics.Reason(relative)}' is not a regular file.");
     }
 
     private static StoreFacts VerifyFile(string path, string relative)
@@ -571,7 +571,7 @@ internal static class CameraAgentStateSnapshot
             var results = new List<string>();
             while (reader.Read()) results.Add(reader.GetString(0));
             if (results is not ["ok"])
-                throw new InstallerException($"The snapshot of '{relative}' failed its integrity check.");
+                throw new InstallerException($"The snapshot of '{CameraAgentStateDiagnostics.Reason(relative)}' failed its integrity check.");
         }
         return ReadFacts(connection);
     }

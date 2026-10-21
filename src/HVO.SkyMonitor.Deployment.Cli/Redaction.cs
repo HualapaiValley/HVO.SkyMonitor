@@ -30,6 +30,13 @@ internal static class Redaction
             "$1<redacted>",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant,
             TimeSpan.FromSeconds(1));
+        // A decorated quoted value must be consumed whole before the unquoted fallback can stop at its quote.
+        firstLine = System.Text.RegularExpressions.Regex.Replace(
+            firstLine,
+            """(?i)(["']?\b(?:password|token|secret)\b["']?\s*[=: ]\s*)(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)+(?:"[^"]*"|'[^']*')""",
+            "$1<redacted>",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
         firstLine = System.Text.RegularExpressions.Regex.Replace(
             firstLine,
             "(?i)([\\\"']?\\b(?:password|token|secret)\\b[\\\"']?\\s*[=: ]\\s*\\\")[^\\\"]*(\\\")",

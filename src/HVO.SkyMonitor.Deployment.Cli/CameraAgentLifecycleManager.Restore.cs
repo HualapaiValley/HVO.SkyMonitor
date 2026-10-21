@@ -297,7 +297,7 @@ internal sealed partial class CameraAgentLifecycleManager
             }
             if (left.FirstOrDefault(suffix => File.Exists(target + suffix)) is { } both)
             {
-                throw new InstallerException($"The restore cannot carry '{store}{both}' over from the live instance: the restored instance has one too.");
+                throw new InstallerException($"The restore cannot carry '{CameraAgentStateDiagnostics.Reason(store + both)}' over from the live instance: the restored instance has one too.");
             }
             var missing = new Stack<string>();
             for (var ancestor = directory; !Directory.Exists(ancestor); ancestor = Path.GetDirectoryName(ancestor)!) missing.Push(ancestor);
@@ -364,12 +364,12 @@ internal sealed partial class CameraAgentLifecycleManager
         var instanceId = request.InstanceId!.Value;
         var record = await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false)
             ?? throw InstallerException.Refused(
-                $"'{name}' is not a committed backup in {vault.Root}: a partial or unrecorded archive is never restored.");
+                $"'{CameraAgentStateDiagnostics.Reason(name)}' is not a committed backup in {CameraAgentStateDiagnostics.Reason(vault.Root)}: a partial or unrecorded archive is never restored.");
         if (record.InstanceId != instanceId)
-            throw InstallerException.Refused($"'{name}' is a backup of instance {record.InstanceId:D}, not {instanceId:D}.");
+            throw InstallerException.Refused($"'{CameraAgentStateDiagnostics.Reason(name)}' is a backup of instance {record.InstanceId:D}, not {instanceId:D}.");
         // The files a restore writes are the account's that took the backup, so it runs as that account alone
         // (PR-1369-R2 F13): its record names it, verified when the backup ran.
-        EnsureRecordedOwner(request, record.RuntimeUid, record.RuntimeGid, uid, gid, $"'{name}' was taken by");
+        EnsureRecordedOwner(request, record.RuntimeUid, record.RuntimeGid, uid, gid, $"'{CameraAgentStateDiagnostics.Reason(name)}' was taken by");
 
         var captured = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         var (archive, sha256, length) = await ReadBackupArchiveAsync(
@@ -383,7 +383,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     while ((read = await data.ReadAsync(chunk, token).ConfigureAwait(false)) > 0)
                     {
                         if (buffer.Length + read > MaximumCapturedRecordBytes)
-                            throw InstallerException.Refused($"The backup is not one the installer can restore: its {entry} is too large. Nothing was changed.");
+                            throw InstallerException.Refused($"The backup is not one the installer can restore: its {CameraAgentStateDiagnostics.Reason(entry)} is too large. Nothing was changed.");
                         await buffer.WriteAsync(chunk.AsMemory(0, read), token).ConfigureAwait(false);
                     }
                     captured[entry] = buffer.ToArray();
@@ -391,7 +391,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 new BackupProgress(error, request.Json, "verify", record.TotalBytes), cancellationToken)
             .ConfigureAwait(false);
         if (sha256 != record.ArchiveSha256 || length != record.ArchiveLength)
-            throw InstallerException.Refused($"'{name}' is not the archive its record names, so it was not restored.");
+            throw InstallerException.Refused($"'{CameraAgentStateDiagnostics.Reason(name)}' is not the archive its record names, so it was not restored.");
         var manifest = await ArchivedRecordAsync(captured, InstanceManifestEntry, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
             .ConfigureAwait(false);
         _ = await ArchivedRecordAsync(captured, InstallationResultEntry, DeploymentJsonContext.Default.InstallationResult, cancellationToken)
@@ -402,15 +402,15 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         catch (InstallerException exception) when (!exception.IsRefusal)
         {
-            throw InstallerException.Refused($"The backup's instance manifest is not one this installer reads ({exception.Message})", exception);
+            throw InstallerException.Refused($"The backup's instance manifest is not one this installer reads ({CameraAgentStateDiagnostics.Reason(exception.Message)})", exception);
         }
         if (manifest.InstanceId != instanceId || archive.InstanceId != instanceId || archive.OperationId != record.OperationId)
-            throw InstallerException.Refused($"'{name}' does not hold instance {instanceId:D}.");
+            throw InstallerException.Refused($"'{CameraAgentStateDiagnostics.Reason(name)}' does not hold instance {instanceId:D}.");
         if (!string.Equals(manifest.ProductRoot, paths.ProductRoot, StringComparison.Ordinal) ||
             !string.Equals(archive.ProductRoot, paths.ProductRoot, StringComparison.Ordinal))
-            throw InstallerException.Refused($"'{name}' was taken under the product root {archive.ProductRoot}, not {paths.ProductRoot}; a restore keeps the product root.");
-        EnsureRecordedOwner(request, archive.RuntimeUid, archive.RuntimeGid, uid, gid, $"'{name}' was taken by");
-        EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"The instance '{name}' holds belongs to");
+            throw InstallerException.Refused($"'{CameraAgentStateDiagnostics.Reason(name)}' was taken under the product root {CameraAgentStateDiagnostics.Reason(archive.ProductRoot)}, not {CameraAgentStateDiagnostics.Reason(paths.ProductRoot)}; a restore keeps the product root.");
+        EnsureRecordedOwner(request, archive.RuntimeUid, archive.RuntimeGid, uid, gid, $"'{CameraAgentStateDiagnostics.Reason(name)}' was taken by");
+        EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"The instance '{CameraAgentStateDiagnostics.Reason(name)}' holds belongs to");
         // The instance lock belongs to the running command and the staging folder to the restore, so an archive that
         // holds either, or a snapshot entry not in the one shape a snapshot has, is not one this installer wrote.
         if (archive.Entries.Any(static entry =>
@@ -435,7 +435,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!Directory.Exists(manifest.Catalog.InstallRoot))
         {
             throw InstallerException.Refused(
-                $"The restored instance needs catalog {manifest.Catalog.CatalogId} {manifest.Catalog.PackageVersion}, which is not installed. Install it with '{InstallerProgram.Current} catalog install --catalog-bundle <bundle>', then run the restore again.");
+                $"The restored instance needs catalog {CameraAgentStateDiagnostics.Reason(manifest.Catalog.CatalogId)} {CameraAgentStateDiagnostics.Reason(manifest.Catalog.PackageVersion)}, which is not installed. Install it with '{CameraAgentStateDiagnostics.Reason(InstallerProgram.Current)} catalog install --catalog-bundle <bundle>', then run the restore again.");
         }
         var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -468,15 +468,15 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!File.Exists(paths.ManifestPath))
         {
             throw InstallerException.Refused(
-                $"{paths.InstanceRoot} holds files but no instance manifest, so it is not a preserved instance; a restore does not replace it.");
+                $"{CameraAgentStateDiagnostics.Reason(paths.InstanceRoot)} holds files but no instance manifest, so it is not a preserved instance; a restore does not replace it.");
         }
         var live = ReadManifestAsync(paths.ManifestPath, CancellationToken.None).GetAwaiter().GetResult();
         if (live.InstanceId != instanceId)
-            throw InstallerException.Refused($"{paths.InstanceRoot} holds another instance.");
+            throw InstallerException.Refused($"{CameraAgentStateDiagnostics.Reason(paths.InstanceRoot)} holds another instance.");
         if (live.LifecycleCondition != InstanceLifecycleCondition.Uninstalled)
         {
             throw InstallerException.Refused(
-                $"Instance {instanceId:D} is installed; a restore never replaces an installed instance. Uninstall it first with '{InstallerProgram.Current} cameraagent uninstall --instance-id {instanceId:D}'.");
+                $"Instance {instanceId:D} is installed; a restore never replaces an installed instance. Uninstall it first with '{CameraAgentStateDiagnostics.Reason(InstallerProgram.Current)} cameraagent uninstall --instance-id {instanceId:D}'.");
         }
     }
 
@@ -517,7 +517,7 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             throw InstallerException.Refused(string.Create(
                 CultureInfo.InvariantCulture,
-                $"There is not enough free space to restore the backup on the filesystem holding {measured.MeasuredPath}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes + reclaimed)} is free."));
+                $"There is not enough free space to restore the backup on the filesystem holding {CameraAgentStateDiagnostics.Reason(measured.MeasuredPath)}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes + reclaimed)} is free."));
         }
     }
 
@@ -534,7 +534,7 @@ internal sealed partial class CameraAgentLifecycleManager
         where T : class
     {
         if (!captured.TryGetValue(entry, out var bytes))
-            throw InstallerException.Refused($"The backup is not one the installer can restore: it does not hold {entry}. Nothing was changed.");
+            throw InstallerException.Refused($"The backup is not one the installer can restore: it does not hold {CameraAgentStateDiagnostics.Reason(entry)}. Nothing was changed.");
         try
         {
             using var stream = new MemoryStream(bytes, writable: false);
@@ -542,7 +542,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         catch (InstallerException exception) when (!exception.IsRefusal)
         {
-            throw InstallerException.Refused($"The backup is not one the installer can restore: its {entry} is not valid. Nothing was changed.", exception);
+            throw InstallerException.Refused($"The backup is not one the installer can restore: its {CameraAgentStateDiagnostics.Reason(entry)} is not valid. Nothing was changed.", exception);
         }
     }
 
@@ -584,7 +584,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     }
                     else
                     {
-                        throw InstallerException.Refused($"The backup is not one the installer can restore: it holds {entry}. Nothing was changed.");
+                        throw InstallerException.Refused($"The backup is not one the installer can restore: it holds {CameraAgentStateDiagnostics.Reason(entry)}. Nothing was changed.");
                     }
                     if (directory)
                     {
@@ -702,7 +702,7 @@ internal sealed partial class CameraAgentLifecycleManager
             if (!Exists(source)) continue;
             if (Exists(live))
             {
-                if (Exists(kept)) throw new InstallerException($"The restore cannot keep the replaced '{entry}': it was kept already.");
+                if (Exists(kept)) throw new InstallerException($"The restore cannot keep the replaced '{CameraAgentStateDiagnostics.Reason(entry)}': it was kept already.");
                 Move(live, kept, paths.InstanceRoot, previous);
             }
             Move(source, live, staged, paths.InstanceRoot);
@@ -764,7 +764,7 @@ internal sealed partial class CameraAgentLifecycleManager
             await ShowCredentialWarningAsync(
                     archive,
                     string.Create(CultureInfo.InvariantCulture,
-                        $"Warning: the backup ({archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}) held credentials or authority the live instance revoked since; the restore revoked them again: {string.Join("; ", outcome.Changes)}."),
+                        $"Warning: the backup ({archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}) held credentials or authority the live instance revoked since; the restore revoked them again: {string.Join("; ", outcome.Changes.Select(CameraAgentStateDiagnostics.Reason))}."),
                     json, error)
                 .ConfigureAwait(false);
         }
@@ -817,7 +817,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (changed.Count == 0) return [];
         var kept = string.Create(CultureInfo.InvariantCulture,
-            $"Warning: the live instance's owner settings changed after the backup ({archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}); the restore kept the live ones, so the backup does not give back site ownership the live instance moved: {string.Join(", ", changed)}.");
+            $"Warning: the live instance's owner settings changed after the backup ({archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}); the restore kept the live ones, so the backup does not give back site ownership the live instance moved: {string.Join(", ", changed.Select(CameraAgentStateDiagnostics.Reason))}.");
         await ShowCredentialWarningAsync(archived.Archive, kept, json, error).ConfigureAwait(false);
         return [new InstallationWarning("restore-live-owner-settings-kept", kept)];
     }

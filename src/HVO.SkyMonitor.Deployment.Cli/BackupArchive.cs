@@ -107,14 +107,14 @@ internal static class BackupArchive
         {
             if (source.Length != item.Size)
             {
-                throw new InstallerException($"'{item.Source}' changed size while it was backed up.");
+                throw new InstallerException($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
             }
             using var hashing = new HashingReadStream(source, item.Size);
             var file = new PaxTarEntry(TarEntryType.RegularFile, item.Name) { Mode = item.Mode, DataStream = hashing };
             await tar.WriteEntryAsync(file, cancellationToken).ConfigureAwait(false);
             if (hashing.BytesRead != item.Size)
             {
-                throw new InstallerException($"'{item.Source}' changed size while it was backed up.");
+                throw new InstallerException($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
             }
             return new BackupArchiveEntry(item.Name, BackupArchiveEntry.FileType, FormatMode(item.Mode), item.Size, hashing.Sha256());
         }
@@ -172,7 +172,7 @@ internal static class BackupArchive
                 {
                     if (!seen.TryAdd(entry.Name, new BackupArchiveEntry(entry.Name, BackupArchiveEntry.DirectoryType, FormatMode(mode), 0, null)))
                     {
-                        throw Invalid($"it holds {entry.Name} twice");
+                        throw Invalid($"it holds {CameraAgentStateDiagnostics.Reason(entry.Name)} twice");
                     }
                     if (extract is not null)
                     {
@@ -188,11 +188,11 @@ internal static class BackupArchive
                 await data.CopyToAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
                 if (data.BytesRead != entry.Length)
                 {
-                    throw Invalid($"its {entry.Name} is shorter than its header says");
+                    throw Invalid($"its {CameraAgentStateDiagnostics.Reason(entry.Name)} is shorter than its header says");
                 }
                 if (!seen.TryAdd(entry.Name, new BackupArchiveEntry(entry.Name, BackupArchiveEntry.FileType, FormatMode(mode), entry.Length, data.Sha256())))
                 {
-                    throw Invalid($"it holds {entry.Name} twice");
+                    throw Invalid($"it holds {CameraAgentStateDiagnostics.Reason(entry.Name)} twice");
                 }
                 read += entry.Length;
                 progress?.Invoke(read);
@@ -212,7 +212,7 @@ internal static class BackupArchive
         }
         catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or FormatException or IOException)
         {
-            throw Invalid($"it cannot be read to its end ({Redaction.SafeDiagnostic(exception.Message)})");
+            throw Invalid($"it cannot be read to its end ({CameraAgentStateDiagnostics.Reason(exception.Message)})");
         }
         if (manifest is null)
         {
@@ -223,19 +223,19 @@ internal static class BackupArchive
         {
             if (!listed.TryAdd(entry.Path, entry))
             {
-                throw Invalid($"its manifest names {entry.Path} twice");
+                throw Invalid($"its manifest names {CameraAgentStateDiagnostics.Reason(entry.Path)} twice");
             }
         }
         foreach (var (name, entry) in seen)
         {
             if (!listed.TryGetValue(name, out var expected) || expected != entry)
             {
-                throw Invalid($"its {name} is not the one its manifest names");
+                throw Invalid($"its {CameraAgentStateDiagnostics.Reason(name)} is not the one its manifest names");
             }
         }
         if (listed.Keys.FirstOrDefault(name => !seen.ContainsKey(name)) is { } missing)
         {
-            throw Invalid($"it does not hold {missing}, which its manifest names");
+            throw Invalid($"it does not hold {CameraAgentStateDiagnostics.Reason(missing)}, which its manifest names");
         }
         if (manifest.TotalBytes != manifest.Entries.Sum(static entry => entry.Size))
         {
@@ -262,7 +262,7 @@ internal static class BackupArchive
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new InstallerException($"{name} could not be restored: {Redaction.SafeDiagnostic(exception.Message)}", exception);
+            throw new InstallerException($"{CameraAgentStateDiagnostics.Reason(name)} could not be restored: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
         }
     }
 
@@ -272,18 +272,18 @@ internal static class BackupArchive
         var directory = type == TarEntryType.Directory;
         if (type is not (TarEntryType.Directory or TarEntryType.RegularFile or TarEntryType.V7RegularFile))
         {
-            return $"its {name} is neither a file nor a folder";
+            return $"its {CameraAgentStateDiagnostics.Reason(name)} is neither a file nor a folder";
         }
         if (!name.StartsWith(InstancePrefix, StringComparison.Ordinal) && !name.StartsWith(SnapshotPrefix, StringComparison.Ordinal))
         {
-            return $"it holds {name}, outside the instance and its snapshot";
+            return $"it holds {CameraAgentStateDiagnostics.Reason(name)}, outside the instance and its snapshot";
         }
         // A folder's name ends in exactly one '/'; with it removed, no segment may be empty.
         var trimmed = directory ? name[..^1] : name;
         if (directory != name.EndsWith('/') || name.Length > 4096 || name.Any(char.IsControl) || name.Contains('\\', StringComparison.Ordinal) ||
             trimmed.Split('/').Any(static segment => segment is "" or "." or ".."))
         {
-            return $"it holds an entry named '{name}', which is not the canonical spelling of a path";
+            return $"it holds an entry named '{CameraAgentStateDiagnostics.Reason(name)}', which is not the canonical spelling of a path";
         }
         return null;
     }
@@ -301,7 +301,7 @@ internal static class BackupArchive
         }
         catch (JsonException exception)
         {
-            throw Invalid($"its manifest is not valid ({Redaction.SafeDiagnostic(exception.Message)})");
+            throw Invalid($"its manifest is not valid ({CameraAgentStateDiagnostics.Reason(exception.Message)})");
         }
         if (manifest.SchemaVersion > SchemaVersion)
         {

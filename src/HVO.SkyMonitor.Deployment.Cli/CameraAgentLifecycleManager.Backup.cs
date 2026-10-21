@@ -70,7 +70,7 @@ internal sealed partial class CameraAgentLifecycleManager
             catch (Exception exception) when (exception is InstallerException { IsRefusal: false } or IOException or UnauthorizedAccessException)
             {
                 throw InstallerException.Refused(
-                    $"The backup folder {vault.Root} could not be created as the service account's: {Redaction.SafeDiagnostic(exception.Message)}. Nothing was changed.",
+                    $"The backup folder {CameraAgentStateDiagnostics.Reason(vault.Root)} could not be created as the service account's: {CameraAgentStateDiagnostics.Reason(exception.Message)}. Nothing was changed.",
                     exception);
             }
             vault.Admit();
@@ -128,7 +128,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 throw InstallerException.Refused(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"There is not enough free space for {what} on the filesystem holding {measured.MeasuredPath}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes + reclaimed)} is free. Free space there, then run the backup again."));
+                    $"There is not enough free space for {what} on the filesystem holding {CameraAgentStateDiagnostics.Reason(measured.MeasuredPath)}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes + reclaimed)} is free. Free space there, then run the backup again."));
             }
         }
     }
@@ -301,7 +301,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 // What is left stays journaled as mutated, so --resume finishes it.
                 throw new InstallerException(
-                    RecoveryFailureMessage($"The backup failed ({Redaction.SafeDiagnostic(exception.Message)})", cleanupFailure, restartFailure,
+                    RecoveryFailureMessage($"The backup failed ({CameraAgentStateDiagnostics.Reason(exception.Message)})", cleanupFailure, restartFailure,
                         drainAttempted || operation.PreMutationContinuity is not null),
                     exception);
             }
@@ -405,8 +405,8 @@ internal sealed partial class CameraAgentLifecycleManager
     private static string RecoveryFailureMessage(string cause, Exception? cleanupFailure, Exception? restartFailure, bool restarted)
     {
         var parts = new List<string> { cause };
-        if (cleanupFailure is not null) parts.Add($"discarding its partial archive also failed ({Redaction.SafeDiagnostic(cleanupFailure.Message)})");
-        if (restartFailure is not null) parts.Add($"restarting the instance also failed ({Redaction.SafeDiagnostic(restartFailure.Message)})");
+        if (cleanupFailure is not null) parts.Add($"discarding its partial archive also failed ({CameraAgentStateDiagnostics.Reason(cleanupFailure.Message)})");
+        if (restartFailure is not null) parts.Add($"restarting the instance also failed ({CameraAgentStateDiagnostics.Reason(restartFailure.Message)})");
         else if (restarted) parts.Add("the instance was restarted and resumed");
         return $"{string.Join("; ", parts)}. Rerun the same command with --resume to finish.";
     }
@@ -431,7 +431,7 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             if (committed.ArchiveSha256 != operation.BackupManifestSha256 || committed.OperationId != operation.OperationId ||
                 committed.RuntimeUid != uid || committed.RuntimeGid != gid)
-                throw new InstallerException($"The committed backup '{name}' is not the archive this backup wrote.");
+                throw new InstallerException($"The committed backup '{CameraAgentStateDiagnostics.Reason(name)}' is not the archive this backup wrote.");
             return committed;
         }
         var (manifest, sha256, length) = await ReadBackupArchiveAsync(
@@ -440,7 +440,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (sha256 != operation.BackupManifestSha256 || manifest.OperationId != operation.OperationId ||
             manifest.RuntimeUid != uid || manifest.RuntimeGid != gid)
         {
-            throw new InstallerException($"The backup '{name}' read back differs from what was written, so it was not kept.");
+            throw new InstallerException($"The backup '{CameraAgentStateDiagnostics.Reason(name)}' read back differs from what was written, so it was not kept.");
         }
         var record = new BackupRecord(
             BackupRecord.CurrentSchemaVersion, name, manifest.InstanceId, manifest.OperationId, manifest.CreatedUtc, length, sha256,
@@ -546,7 +546,7 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             var warning = new InstallationWarning(
                 "state-snapshot-cleanup-incomplete",
-                $"Database snapshots no longer needed were not all removed ({Redaction.SafeDiagnostic(exception.Message)}); the next backup, restore or upgrade removes them.");
+                $"Database snapshots no longer needed were not all removed ({CameraAgentStateDiagnostics.Reason(exception.Message)}); the next backup, restore or upgrade removes them.");
             if (!json) await error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
             return [warning];
         }
