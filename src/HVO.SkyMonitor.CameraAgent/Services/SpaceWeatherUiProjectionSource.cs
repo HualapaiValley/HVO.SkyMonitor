@@ -37,10 +37,15 @@ internal sealed class SpaceWeatherUiProjectionSource(
 
     /// <summary>
     /// Returns the cached projection while it is fresh, otherwise joins or starts the shared read. Only
-    /// <paramref name="cancellationToken"/> cancellation escapes; every read failure is a projection state.
+    /// <paramref name="cancellationToken"/> cancellation escapes; every read failure is a projection state. A caller
+    /// that is already cancelled never starts a read.
     /// </summary>
     internal Task<SpaceWeatherUiProjection> GetAsync(CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<SpaceWeatherUiProjection>(cancellationToken);
+        }
         TaskCompletionSource<SpaceWeatherUiProjection>? started = null;
         Task<SpaceWeatherUiProjection> shared;
         long readGeneration;

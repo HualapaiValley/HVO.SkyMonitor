@@ -152,6 +152,7 @@ internal sealed class CameraAgentSpaceWeatherUiService(
             return OperatorUiResult<SpaceWeatherCommandView>.Failure(
                 OperatorUiResultKind.Invalid, "The signed-in owner identity cannot be recorded for this command.");
         }
+        cancellationToken.ThrowIfCancellationRequested();
         SpaceWeatherOperations.CommandResult result;
         try
         {
