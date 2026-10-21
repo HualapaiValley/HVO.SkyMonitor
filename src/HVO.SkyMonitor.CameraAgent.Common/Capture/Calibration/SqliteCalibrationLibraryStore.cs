@@ -1381,6 +1381,56 @@ public sealed class SqliteCalibrationLibraryStore(
         }
     }
 
+    /// <summary>Whether <paramref name="storageRoot"/> is the root this library keeps its evidence under.</summary>
+    internal bool OwnsStorageRoot(string storageRoot) => PathsEqual(_storageRoot, storageRoot);
+
+    /// <summary>
+    /// Holds the payload and manifest of each library master in <paramref name="artifactIds"/>, whatever its bundle's
+    /// own <c>retention_hold</c>: the masters of every active calibration family (#1475). An ID the library does not
+    /// hold as a master has nothing to protect. Like the bundle holds, this is one short read under the library gate.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetMasterRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        IReadOnlyCollection<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+        if (!PathsEqual(_storageRoot, storageRoot) || artifactIds.Count == 0)
+        {
+            return [];
+        }
+        var ids = JsonSerializer.Serialize(artifactIds.Select(static id => id.ToString("N")).ToArray());
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT artifact_id, payload_relative_path, manifest_relative_path
+                FROM calibration_library_artifacts
+                WHERE role = 'master' AND artifact_id IN (SELECT value FROM json_each($ids))
+                ORDER BY artifact_id;
+                """;
+            command.Parameters.AddWithValue("$ids", ids);
+            var holds = new List<ProcessingRetentionHold>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                _ = ResolveSafePath(reader.GetString(1));
+                _ = ResolveSafePath(reader.GetString(2));
+                holds.Add(new ProcessingRetentionHold(
+                    Guid.ParseExact(reader.GetString(0), "N"),
+                    reader.GetString(1),
+                    reader.GetString(2)));
+            }
+            return holds;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public void Dispose() => _gate.Dispose();
 
     private static async Task<CalibrationTelemetryInventory> ReadTelemetryInventoryAsync(

@@ -39,7 +39,8 @@ internal sealed class CompositeProcessingRetentionHolds(
     CameraAgentClearReferenceLoader clearReferences,
     SqliteCalibrationLibraryStore calibrationLibrary,
     IAcceptanceRetentionControl? acceptanceControl = null,
-    TimeLapses.SqliteTimeLapseStore? timeLapses = null) :
+    TimeLapses.SqliteTimeLapseStore? timeLapses = null,
+    SqliteCalibrationFamilyStore? calibrationFamilies = null) :
     IProcessingRetentionHolds,
     IRawIngressLifecycleProcessingRetentionHolds,
     IProcessingOutputExpiration
@@ -69,7 +70,15 @@ internal sealed class CompositeProcessingRetentionHolds(
             ? []
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var videos = timeLapses is null ? [] : await timeLapses.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
-        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Distinct().ToArray();
+        // The masters of every active calibration family stay held whatever their bundle's own retention_hold, until the
+        // family is deactivated. The families store is read under its own gate, never the library's.
+        var families = calibrationFamilies is null || !calibrationLibrary.OwnsStorageRoot(storageRoot)
+            ? []
+            : await calibrationLibrary.GetMasterRetentionHoldsUnderLifecycleLockAsync(
+                storageRoot,
+                await calibrationFamilies.GetActiveMasterArtifactIdsAsync(cancellationToken).ConfigureAwait(false),
+                cancellationToken).ConfigureAwait(false);
+        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(families).Distinct().ToArray();
     }
 
     public ValueTask<int> ExpireOutputsAsync(
