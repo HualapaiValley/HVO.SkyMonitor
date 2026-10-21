@@ -126,7 +126,8 @@
       "scenarios/s24-json-nonfinite.json",
       "scenarios/s25-year-bounds.json",
       "scenarios/s26-original-record-verbatim.json",
-      "scenarios/s27-original-record-outer-whitespace.json"
+      "scenarios/s27-original-record-outer-whitespace.json",
+      "scenarios/s28-orphan-join-chain.json"
     ],
     "generator": "fixtures.py",
     "roundingVectors": "rounding-vectors.json",
@@ -135,8 +136,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 10465,
-      "sha256": "7E2E63A047044BDBB3D096670F341D164B4EA18E2BC2E3A77482B51107481B10"
+      "bytes": 10556,
+      "sha256": "4CCDF40160ABD7F81451BEAABDF4132C6681968E0D010824CEC93B51D6B01233"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -165,8 +166,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 181622,
-      "sha256": "E96BE721999FCFA138FCD4D4EE5720B6D14B36D4EA1E14841719603A02F78D49"
+      "bytes": 184399,
+      "sha256": "534B0DADA564426CD7E9A75C594E6FB735C3DAC1D9D721EA9DAF8916BAAD2BEF"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -312,6 +313,11 @@
       "path": "scenarios/s27-original-record-outer-whitespace.json",
       "bytes": 8117,
       "sha256": "BCBBCEE83B6CD52DA0A175A3AAC9E1C3FF895AAF25EABC89368598329091AC22"
+    },
+    {
+      "path": "scenarios/s28-orphan-join-chain.json",
+      "bytes": 148394,
+      "sha256": "A48CE15AC944DD9791ED8D1FF5639FDDC631EDF9AAC25E45F8F8E4061DC8CEC7"
     }
   ]
 }

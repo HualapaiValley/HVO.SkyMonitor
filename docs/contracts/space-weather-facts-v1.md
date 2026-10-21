@@ -249,6 +249,12 @@ notice group. The group identity is `CODE/<lowest serial>`.
   the target. When the target arrives, `orphan-resolved` is reported and the
   groups join (s06). Orphan status is evaluated after the whole body is
   ingested, because SWPC lists records newest first.
+  Orphan status belongs to the linked component: each resulting non-orphan
+  group that contains any node of a prior orphan group reports `orphan-resolved`
+  once under its resulting identity, while a component that remains orphaned
+  reports no resolution when its identity changes. The durable orphan markers
+  equal exactly the current orphan group identities after every alerts body
+  and retention purge; obsolete identities disappear silently.
 
 **Families.** Each message is assigned a family from its code and headline
 kind:
@@ -784,6 +790,7 @@ A fetch also reports:
 | s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
 | s26 | Verbatim original alert JSON (including numeric x: 1.5, escapes and whitespace) survives two restarts and an unchanged refetch |
 | s27 | Outer JSON whitespace; literal UTF-8 and Unicode escape spellings; two message versions retain their exact original-record bytes in ingest order through two restarts and an unchanged refetch |
+| s28 | Synthetic orphan chains: resolution after identity change; two orphan components join a stored root once; a still-orphan join moves its marker; restart preserves the component; later root arrival resolves it; retention removes an orphan group and its marker |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those
@@ -820,3 +827,9 @@ field/headline/media whitespace, missing-level rank,
 the 3-day product marker and escalation after an earlier raise, to state the
 reference model's existing behaviour. The model, scenarios, captured bytes and
 every expectation are unchanged.
+
+The v1 errata in Refs #1398 (2026-10-21) make orphan reconciliation explicit:
+orphan status belongs to the linked component, `orphan-resolved` is reported
+under the resulting identity, and markers follow the groups and are purged
+with them. s01–s27, the captured bytes and every existing expectation are
+unchanged; s28 is added.
