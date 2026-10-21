@@ -135,7 +135,7 @@ public sealed partial class LifecycleContractTests
             File.Delete(link);
         }
         Assert.IsTrue(failure.IsFormattedDiagnostic, "A composed recovery diagnostic must retain its formatting marker.");
-        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         Console.WriteLine(JsonSerializer.Serialize(output));
         StringAssert.Contains(output, CameraAgentStateDiagnostics.Reason(entry), StringComparison.Ordinal);
         Assert.IsFalse(output.Contains("\\\\u0022", StringComparison.Ordinal), "Existing encoded identity was encoded again.");
@@ -204,7 +204,7 @@ public sealed partial class LifecycleContractTests
             File.Delete(link);
         }
         Assert.IsTrue(failure.IsFormattedDiagnostic, "A composed recovery diagnostic must retain its formatting marker.");
-        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         Console.WriteLine(JsonSerializer.Serialize(output));
         StringAssert.Contains(failure.Message, formatted, StringComparison.Ordinal);
         StringAssert.Contains(output, CameraAgentStateDiagnostics.Reason(entry), StringComparison.Ordinal);

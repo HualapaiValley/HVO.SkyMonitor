@@ -35,7 +35,10 @@ public sealed partial class LifecycleContractTests
             warning = document.RootElement.GetProperty("warning").GetString()!;
         }
         Console.WriteLine(JsonSerializer.Serialize(warning));
-        StringAssert.Contains(warning, JsonEncodedText.Encode(plan.Uncarried[0].Reason).ToString(), StringComparison.Ordinal);
+        // The reason SQLite gave, without the key's decoration, which redaction removes first (#1491).
+        StringAssert.Contains(warning,
+            JsonEncodedText.Encode(plan.Uncarried[0].Reason.Replace("\u001b[31m", string.Empty, StringComparison.Ordinal)).ToString(),
+            StringComparison.Ordinal);
         Assert.IsFalse(warning.Contains(key, StringComparison.Ordinal), "The reason echoed the raw counter key.");
         Assert.IsFalse(warning.Contains('\u001b', StringComparison.Ordinal), "The warning contains a terminal escape character.");
         using var redactedError = new StringWriter();
