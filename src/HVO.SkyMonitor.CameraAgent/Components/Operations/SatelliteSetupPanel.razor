@@ -33,7 +33,7 @@
         </div>
         <details id="satellite-time-data">
             <summary>Read-only time-data configuration and resolved status</summary>
-            <p>Each CameraAgent release bundles one verified finals2000A Earth-orientation file and one <code>leap-seconds.list</code>, and planning uses that pair by default. To override it, set all four of <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. While any of them is set, the bundled pair is not used: an incomplete or invalid override stops planning. Environment variables and <code>config/secrets</code> override that file. Automatic refresh between releases is not available yet.</p>
+            <p>Each CameraAgent release bundles one verified finals2000A Earth-orientation file and one <code>leap-seconds.list</code>, and planning uses that pair by default. To override it, set all four of <code>CameraAgent:SatellitePlanning:EarthOrientationPath</code>, <code>EarthOrientationSha256</code>, <code>LeapSecondsPath</code> and <code>LeapSecondsSha256</code> in the operator settings file with absolute paths visible inside CameraAgent. While any of them is set, no other pair is used: an incomplete or invalid override stops planning. Environment variables and <code>config/secrets</code> override that file. With <strong>Time-data refresh</strong> on and its daily automation created, CameraAgent downloads a newer pair at most once a day, checks the providers' checksums and parses it before adopting it; without an override, the refreshed or the bundled pair is used, whichever covers planning later (the bundled pair on a tie).</p>
             <dl class="ops-facts">
                 <div class="full"><dt>Active source</dt><dd>@(view.ActiveSource ?? "Not resolved")</dd></div>
                 @foreach (var file in view.Files)
@@ -46,6 +46,15 @@
                 <div class="full"><dt>Checked window</dt><dd>@Window(view.WindowEarthOrientation)</dd></div>
                 <div class="full"><dt>Leap-second expiry (exclusive)</dt><dd>@(view.LeapSecondsExpireUtc?.ToString("O") ?? "Not resolved")</dd></div>
             </dl>
+            @if (view.TimeData is { } status)
+            {
+                <dl id="time-data-refresh" class="ops-facts" data-refresh-outcome="@status.Refresh.Outcome" data-expired="@(status.Expired ? "true" : "false")">
+                    <div class="full"><dt>Planning coverage</dt><dd>@Coverage(status)</dd></div>
+                    <div class="full"><dt>Time-data refresh</dt><dd>@(status.RefreshEnabled ? "On" : "Off")@if (!status.RefreshScheduled) { <small>The daily automation is not set up. <a href="/operations/automations?setup=time-data">Create the time-data refresh automation</a>.</small> }</dd></div>
+                    <div class="full"><dt>Last refresh attempt</dt><dd>@Attempt(status.Refresh)@if (status.Refresh.Detail is { Length: > 0 } detail) { <small>@detail</small> }@if (status.Refresh.NextPermittedAttemptUtc is { } next) { <small>Next permitted attempt: @next.ToString("O")</small> }</dd></div>
+                    <div class="full"><dt>Last successful adoption</dt><dd>@Adoption(status.ManagedPair)</dd></div>
+                </dl>
+            }
             <p><a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/astronomy/satellite-planning-v1.md#enable-local-planning">Time-data setup instructions</a>. Capture-time predicted tracks remain unavailable pending #529/#1393; astrometry remains unavailable pending #526/#1187/#523.</p>
         </details>
         @if (_message is not null) { <p role="status">@_message</p> }

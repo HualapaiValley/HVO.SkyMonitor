@@ -16,8 +16,11 @@ public sealed class SkyCliFeatureSettingsTests
     [DataRow("satellitePlanning", false, true)]
     [DataRow("spaceWeather", true, false)]
     [DataRow("spaceWeather", true, true)]
+    [DataRow("timeDataRefresh", false, false)]
+    [DataRow("timeDataRefresh", false, true)]
     public async Task Config_UsesTheRealCatalogueAndSettingsStoreForBothSwitchesAsync(string group, bool restart, bool apply)
     {
+        var property = "\"" + CameraAgentSettingsCatalogue.Find(group + ".enabled")!.ConfigurationKey!.Split(':')[^1] + "\": ";
         using var settings = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
         using var cli = new CliHarness();
         cli.Api.Json("GET", Fake.SettingsRoute + "/catalogue", CameraAgentSettingsCatalogue.ToResponse());
@@ -39,18 +42,19 @@ public sealed class SkyCliFeatureSettingsTests
         var on = await cli.RunAsync("config", "set", group + ".enabled=true").ConfigureAwait(false);
         Assert.AreEqual(0, on.ExitCode, on.ToString());
         Assert.Contains(restart ? "next CameraAgent start" : "in effect now", on.Out, StringComparison.Ordinal);
-        StringAssert.Contains(settings.ReadSettingsFile(), "\"Enabled\": true", StringComparison.Ordinal);
+        StringAssert.Contains(settings.ReadSettingsFile(), property + "true", StringComparison.Ordinal);
         var file = cli.WriteFile("features.json", "{\"schemaVersion\":1,\"settings\":{\"" + group + ".enabled\":\"false\"}}");
         var off = apply ? await cli.RunAsync("config", "apply", file).ConfigureAwait(false)
             : await cli.RunAsync("config", "set", group + ".enabled=false").ConfigureAwait(false);
         Assert.AreEqual(0, off.ExitCode, off.ToString());
-        StringAssert.Contains(settings.ReadSettingsFile(), "\"Enabled\": false", StringComparison.Ordinal);
+        StringAssert.Contains(settings.ReadSettingsFile(), property + "false", StringComparison.Ordinal);
     }
 
     [TestMethod]
     [DataRow("orbitalElements", "Environment")]
     [DataRow("satellitePlanning", "SecretsDirectory")]
     [DataRow("spaceWeather", "Environment")]
+    [DataRow("timeDataRefresh", "SecretsDirectory")]
     public async Task Config_ReportsAnOverrideAndDoesNotSendAWriteAsync(string group, string source)
     {
         using var cli = new CliHarness();

@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
 using Microsoft.AspNetCore.Components;
 
@@ -50,6 +51,15 @@ internal static class ReservedAutomationTasks
     internal const string SpaceWeatherIdentifierHint =
         "Reserved for the space-weather refresh schedule; this task accepts only this identifier.";
 
+    internal const string TimeDataIntervalHint =
+        "Exactly 86,400 seconds; CameraAgent makes at most one time-data refresh attempt a day";
+
+    internal const string TimeDataIdentifierHint =
+        "Reserved for the time-data refresh schedule; this task accepts only this identifier.";
+
+    private const string TimeDataBanner =
+        "Time-data refresh setup: create the reserved automation with its daily interval (86,400 seconds). If it already exists, use its existing card; setup never replaces it. It runs only while <strong>Time-data refresh</strong> is on in Observatory &amp; location, and never more than once a day, including Run now. Each run downloads the Earth-orientation and leap-second files from IERS/USNO over HTTPS, checks the providers' checksums and parses them before adopting the pair; a failed run keeps the current pair. <a href=\"/operations/site#satellite-time-data\">Follow its status in the time-data section</a>. <a href=\"https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/astronomy/bundled-time-data-v1.md#managed-refresh\">Read the endpoints and terms</a>.";
+
     private const string OrbitalBanner =
         "Orbital refresh setup: create the reserved automation with a six-hour interval (21,600 seconds; never below 7,200). If it already exists, use its existing card; setup never replaces it. After saving, optionally <a href=\"/operations/software#software-orbital-heading\">open Software &amp; Catalog for the first Refresh now</a>. Creation does not immediately contact the provider. Shared NAT or proxy users share an egress budget; use as few refreshers as needed and intervals well above two hours. <a href=\"https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/orbital-elements-refresh.md#provider-policy\">Read the provider policy before enabling refresh</a>.";
 
@@ -88,7 +98,23 @@ internal static class ReservedAutomationTasks
         "space-weather-setup-guide",
         new MarkupString(SpaceWeatherBanner));
 
-    internal static IReadOnlyList<ReservedAutomationTask> All { get; } = [Orbital, SpaceWeather];
+    internal static readonly ReservedAutomationTask TimeData = new(
+        LocalAutomationTaskKind.TimeDataRefresh,
+        CameraAgentTimeDataAutomationAdapter.DefinitionId,
+        CameraAgentTimeDataAutomationAdapter.Target,
+        LocalAutomationTriggerKind.Periodic,
+        CameraAgentTimeDataAutomationAdapter.IntervalSeconds,
+        CameraAgentTimeDataAutomationAdapter.IntervalSeconds,
+        CameraAgentTimeDataAutomationAdapter.IntervalSeconds,
+        "orbital",
+        TimeDataIdentifierHint,
+        TimeDataIntervalHint,
+        "time-data",
+        "Time-data refresh",
+        "time-data-setup-guide",
+        new MarkupString(TimeDataBanner));
+
+    internal static IReadOnlyList<ReservedAutomationTask> All { get; } = [Orbital, SpaceWeather, TimeData];
 
     /// <summary>The reserved task of <paramref name="kind"/>, or null for a task the generic editor configures.</summary>
     internal static ReservedAutomationTask? ForKind(LocalAutomationTaskKind kind)

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Components;
@@ -37,6 +38,28 @@ public sealed partial class SatelliteSetupPanel : ComponentBase
 
     private static string Interval(OrbitalUtcInterval? interval)
         => interval is { } value ? $"{value.StartUtc:O} to {value.EndUtc:O}" : "None";
+
+    /// <summary>The active pair's coverage, saying plainly when it has ended; a failed refresh is reported separately.</summary>
+    private static string Coverage(CameraAgentTimeDataStatus status) => status.CoverageEndUtc is not { } end
+        ? "No active time data"
+        : status.Expired
+            ? $"Expired: the active {status.ActiveSource} pair covered planning until {end:O}"
+            : $"The active {status.ActiveSource} pair covers planning until {end:O}";
+
+    private static string Attempt(CameraAgentTimeDataRefreshStatus refresh) => refresh.Outcome switch
+    {
+        "never" => "No refresh has been attempted",
+        "in-progress" => $"Running since {refresh.LastAttemptUtc:O}",
+        "interrupted" => $"Interrupted: started {refresh.LastAttemptUtc:O} and did not finish",
+        "failed" => $"Failed at {refresh.CompletedUtc:O} ({refresh.ReasonCode}); the active pair is unchanged",
+        "unreadable" => "The refresh record could not be read",
+        _ => $"{refresh.Outcome} at {refresh.CompletedUtc:O} ({refresh.ReasonCode})"
+    };
+
+    private static string Adoption(CameraAgentManagedTimePairStatus? pair) => pair is null
+        ? "No refreshed pair has been adopted"
+        : $"{pair.AdoptedUtc:O} (retrieved {pair.RetrievedUtc:O}; {pair.State}" +
+          (pair.CoverageEndUtc is { } end ? $"; covers planning until {end:O})" : ")");
 
     private static string Window(OrbitalEarthOrientationStatus? status) => status switch
     {

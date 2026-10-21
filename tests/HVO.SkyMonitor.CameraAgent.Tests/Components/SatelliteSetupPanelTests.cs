@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
@@ -47,7 +48,7 @@ public sealed class SatelliteSetupPanelTests
         var text = cut.WaitForElement("#satellite-time-data").TextContent;
         foreach (var expected in new[] { "Bundled with this CameraAgent release", "Provenance: Retrieved 2026-10-21T18:00:00Z",
             $"{final.StartUtc:O} to {final.EndUtc:O}", $"{predicted.StartUtc:O} to {predicted.EndUtc:O}", "Predicted Earth orientation",
-            "2027-06-28T00:00:00.0000000+00:00", "Automatic refresh between releases is not available yet" })
+            "2027-06-28T00:00:00.0000000+00:00", "downloads a newer pair at most once a day" })
             Assert.Contains(expected, text, StringComparison.Ordinal);
     }
 
@@ -64,6 +65,47 @@ public sealed class SatelliteSetupPanelTests
         cut.Find("#satellitePlanning-enabled").Change("true");
         Assert.AreEqual(("satellitePlanning", "v1", "true"), service.Writes.Last());
         Assert.Contains("Saved; in effect now", cut.Markup, StringComparison.Ordinal);
+        cut.Find("#timeDataRefresh-enabled").Change("true");
+        Assert.AreEqual(("timeDataRefresh", "v1", "true"), service.Writes.Last());
+        Assert.Contains("Saved; in effect now", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Applies immediately.", cut.Find("#timeDataRefresh-switch").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(false, "failed")]
+    [DataRow(true, "adopted")]
+    [DataRow(false, "never")]
+    public void Refresh_ShowsTheLastAttemptAndTheAdoptionSeparatelyFromExpiry(bool expired, string outcome)
+    {
+        using var context = new BunitContext();
+        var end = new DateTimeOffset(2027, 6, 28, 0, 0, 0, TimeSpan.Zero);
+        var attempt = new DateTimeOffset(2026, 10, 22, 6, 0, 0, TimeSpan.Zero);
+        var refresh = outcome == "never"
+            ? new CameraAgentTimeDataRefreshStatus("never", null, null, null, null, null, null)
+            : new CameraAgentTimeDataRefreshStatus(outcome, attempt, attempt.AddSeconds(4),
+                outcome == "failed" ? "time-data.checksum-mismatch" : "time-data.adopted", "detail text", attempt.AddSeconds(4), attempt.AddDays(1));
+        var pair = outcome == "adopted"
+            ? new CameraAgentManagedTimePairStatus("20261022T060004Z-0a1b2c3d", attempt.AddSeconds(4), attempt, "verified", end, new('A', 64), new('B', 64))
+            : null;
+        var status = new CameraAgentTimeDataStatus(CameraAgentTimeDataStatus.CurrentVersion, attempt, true, true, outcome != "never",
+            outcome == "adopted" ? "managed" : "bundled", "none", end, end.AddMonths(4), end, expired, new('A', 64), new('B', 64), refresh, pair);
+        var service = new Service("ready", view: new([], [], [], null, null, TimeData: status));
+        context.Services.AddSingleton<ICameraAgentSatelliteSetupUiService>(service);
+        var cut = context.Render<SatelliteSetupPanel>(parameters => parameters.Add(panel => panel.AtUtc, TestOrbitalUiService.Now));
+        var facts = cut.WaitForElement("#time-data-refresh");
+        Assert.AreEqual(outcome, facts.GetAttribute("data-refresh-outcome"));
+        Assert.AreEqual(expired ? "true" : "false", facts.GetAttribute("data-expired"));
+        var text = facts.TextContent;
+        Assert.Contains(expired ? "Expired: the active managed pair covered planning until" : "pair covers planning until", text, StringComparison.Ordinal);
+        Assert.Contains(outcome switch
+        {
+            "failed" => "Failed at 2026-10-22T06:00:04.0000000+00:00 (time-data.checksum-mismatch); the active pair is unchanged",
+            "adopted" => "adopted at 2026-10-22T06:00:04.0000000+00:00 (time-data.adopted)",
+            _ => "No refresh has been attempted"
+        }, text, StringComparison.Ordinal);
+        Assert.Contains(pair is null ? "No refreshed pair has been adopted" : "2026-10-22T06:00:04.0000000+00:00 (retrieved", text, StringComparison.Ordinal);
+        Assert.AreEqual(outcome == "never", cut.FindAll("#time-data-refresh a[href='/operations/automations?setup=time-data']").Count == 1,
+            "the automation link is offered only while the daily automation is missing");
     }
 
     [TestMethod]
@@ -83,7 +125,7 @@ public sealed class SatelliteSetupPanelTests
 
     private sealed class Service(string reason, string? overridden = null, SatelliteSetupView? view = null) : ICameraAgentSatelliteSetupUiService
     {
-        private static readonly string[] FeatureGroups = ["orbitalElements", "satellitePlanning"];
+        private static readonly string[] FeatureGroups = ["orbitalElements", "satellitePlanning", "timeDataRefresh"];
         internal List<(string, string, string)> Writes { get; } = [];
         public Task<OperatorUiResult<SatelliteSetupView>> GetAsync(DateTimeOffset startUtc, DateTimeOffset endUtc, CancellationToken cancellationToken)
         {

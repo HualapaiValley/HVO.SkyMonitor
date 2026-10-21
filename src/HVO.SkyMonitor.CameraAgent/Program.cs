@@ -452,6 +452,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentOrbitalOperationsEndpoints();
+        app.MapCameraAgentTimeDataOperationsEndpoints();
         app.MapCameraAgentSpaceWeatherOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentSettingsEndpoints();
