@@ -251,7 +251,7 @@ public static class SkyMonitorObservabilityExtensions
         return app;
     }
 
-    private static Task WriteDetailedHealthResponse(HttpContext context, HealthReport report)
+    internal static Task WriteDetailedHealthResponse(HttpContext context, HealthReport report)
     {
         context.Response.ContentType = "application/json";
         var payload = new
