@@ -167,6 +167,31 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void SpaceWeatherHostWorkflowReferencesNoDeliveryOrEnvironmentalSource()
+    {
+        var project = Repository.Value.Projects[CameraAgentCommon];
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
+            type => type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal),
+            type => new[] { "Outbox", "Delivery", "Notification", "IEnvironmentalSource" }.Any(word =>
+                type.Namespace.Contains(word, StringComparison.Ordinal) || type.Name.Contains(word, StringComparison.Ordinal)));
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherEndpointsReferenceOnlyTheOperationsContract()
+    {
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgent]),
+            type => type.Type.Name.StartsWith("CameraAgentSpaceWeatherOperationsEndpoints", StringComparison.Ordinal),
+            type => type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal)
+                && !type.Name.StartsWith("SpaceWeatherOperations", StringComparison.Ordinal));
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
     {
         var checkedCount = 0;

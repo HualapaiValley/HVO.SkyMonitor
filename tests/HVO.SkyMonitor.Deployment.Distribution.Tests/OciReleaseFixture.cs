@@ -20,7 +20,7 @@ internal sealed class OciReleaseFixture : IDisposable
 
     /// <summary>The image's <c>io.hvo.skymonitor.state-contracts</c> label, which release.json's <c>stateContracts</c> repeats.</summary>
     public const string StateContracts =
-        """{"identity":{"writes":1,"reads":{"min":1,"max":1}},"rawIngress":{"writes":15,"reads":{"min":13,"max":15}}}""";
+        """{"identity":{"writes":1,"reads":{"min":1,"max":1}},"rawIngress":{"writes":15,"reads":{"min":13,"max":15}},"artifactOutbox":{"writes":2,"reads":{"min":2,"max":2}},"fleetStatus":{"writes":1,"reads":{"min":1,"max":1}},"environmentalOutbox":{"writes":3,"reads":{"min":3,"max":3}},"executionEvidenceOutbox":{"writes":1,"reads":{"min":1,"max":1}},"timeLapses":{"writes":1,"reads":{"min":1,"max":1}},"nightlyProducts":{"writes":2,"reads":{"min":2,"max":2}},"localAutomations":{"writes":3,"reads":{"min":3,"max":3}},"orbitalElements":{"writes":1,"reads":{"min":1,"max":1}},"spaceWeather":{"writes":1,"reads":{"min":1,"max":1}}}""";
     public const string IndexMediaType = "application/vnd.oci.image.index.v1+json";
     public const string ManifestMediaType = "application/vnd.oci.image.manifest.v1+json";
 

@@ -73,6 +73,7 @@ public sealed class CameraAgentStateSnapshotTests
     {
         // The orbital store holds the provider's attempt floor and any halt, which a restore must never rewind (#528).
         Assert.DoesNotContain(CameraAgentStateLayout.OrbitalElementsStore, CameraAgentStateLayout.SqliteStores);
+        Assert.DoesNotContain(CameraAgentStateLayout.SpaceWeatherStore, CameraAgentStateLayout.SqliteStores);
     }
 
     [TestMethod]
@@ -83,6 +84,8 @@ public sealed class CameraAgentStateSnapshotTests
         CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
         var orbital = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.OrbitalElementsStore);
         CreateDatabase(orbital, 2);
+        var spaceWeather = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.SpaceWeatherStore);
+        CreateDatabase(spaceWeather, 2);
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
         // After the snapshot the candidate records a provider attempt and keeps a content file beside the store.
         await using (var connection = new SqliteConnection($"Data Source={orbital};Pooling=False"))
@@ -92,6 +95,14 @@ public sealed class CameraAgentStateSnapshotTests
             command.CommandText = "INSERT INTO rows(value) VALUES('candidate attempt');";
             await command.ExecuteNonQueryAsync();
         }
+        await using (var connection = new SqliteConnection($"Data Source={spaceWeather};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate halt');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var spaceWeatherExpected = await SafeFileSystem.ComputeSha256Async(spaceWeather, CancellationToken.None);
         var content = Path.Combine(Path.GetDirectoryName(orbital)!, "payloads", "candidate.json");
         Directory.CreateDirectory(Path.GetDirectoryName(content)!);
         await File.WriteAllTextAsync(content, "{}");
@@ -101,6 +112,8 @@ public sealed class CameraAgentStateSnapshotTests
 
         Assert.AreEqual(expected, await SafeFileSystem.ComputeSha256Async(orbital, CancellationToken.None));
         CollectionAssert.Contains(Rows(orbital), "candidate attempt");
+        Assert.AreEqual(spaceWeatherExpected, await SafeFileSystem.ComputeSha256Async(spaceWeather, CancellationToken.None));
+        CollectionAssert.Contains(Rows(spaceWeather), "candidate halt");
         Assert.IsTrue(File.Exists(content));
     }
 

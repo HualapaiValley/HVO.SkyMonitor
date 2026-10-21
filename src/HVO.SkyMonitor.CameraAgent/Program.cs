@@ -250,6 +250,7 @@ public class Program
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(LocalAutomationTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
@@ -352,6 +353,7 @@ public class Program
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
         healthChecks.AddCheck<OrbitalElementsHealthCheck>("orbital-elements", tags: ["dependency"]);
+        healthChecks.AddCheck<SpaceWeatherHealthCheck>("space-weather", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<TransientCandidateDeliveryHealthCheck>(
             "transient-candidate-delivery", tags: ["dependency"]);
@@ -447,6 +449,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentOrbitalOperationsEndpoints();
+        app.MapCameraAgentSpaceWeatherOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentSettingsEndpoints();
         app.MapCameraAgentNamedRigEndpoints();

@@ -111,13 +111,17 @@ internal static class CameraAgentStateLayout
     /// <summary>The orbital elements store's location under the state root.</summary>
     public const string OrbitalElementsStore = RawDirectoryName + "/.orbital-elements/orbital-elements.db";
 
+    /// <summary>The space-weather store's location under the state root.</summary>
+    public const string SpaceWeatherStore = RawDirectoryName + "/.space-weather/space-weather.db";
+
     /// <summary>
     /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators, except the orbital
-    /// elements store. These are the small databases a migrating upgrade snapshots. None lies inside a bulk frame,
+    /// elements and space-weather stores. These are the small databases a migrating upgrade snapshots. None lies inside a bulk frame,
     /// archive or derived tree, so the snapshot never reads bulk data. The artifact outbox lives in each storage root
     /// the generated pipeline writes to. <see cref="OrbitalElementsStore"/> is deliberately not listed: it holds the
     /// provider's attempt floor and any halt, and a restore must never rewind them, or the release rolled back to could
-    /// request inside the floor or after the provider refused.
+    /// request inside the floor or after the provider refused. <see cref="SpaceWeatherStore"/> is also excluded:
+    /// restoring an older copy would rewind per-product Retry-After floors, backoff and provider/product halts.
     /// </summary>
     public static IReadOnlyList<string> SqliteStores { get; } =
     [

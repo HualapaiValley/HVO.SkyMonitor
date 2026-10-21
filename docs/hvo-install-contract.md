@@ -388,7 +388,9 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 3, reads 3 to 3 |
 | `orbitalElements` | `raw/.orbital-elements/orbital-elements.db`, with its content files beside it | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): the provider floor and halt must never be rewound |
 
-- The state snapshot of #1340 copies every store here except `orbitalElements`. That store holds the provider's
+| `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
+
+- The state snapshot of #1340 copies every store here except `orbitalElements` and `spaceWeather`. The space-weather store holds per-product Retry-After floors, backoff and provider/product halts; restoring an older copy would rewind them. Future incompatible schema changes must revisit this exclusion under #1340. The orbital store holds the provider's
   attempt floor and any halt. Restoring an older copy would rewind them, and the release rolled back to could then
   request inside the floor or after the provider refused. A future orbital schema change that older releases cannot
   read must revisit this exclusion under #1340.
@@ -411,7 +413,7 @@ Decision D2. Before an upgrade can change a small store, a restorable copy of it
   - RoofController takes a backup of its own data, as its `backup` command does, as the first step of every
     upgrade, before it puts the release's installer in place; that data is a few small files. Its
     `rollback --restore-backup` puts back the stores the release before cannot read, after asking (or with `--yes`).
-  - SkyMonitor snapshots its SQLite stores, except `orbitalElements` (section 6), only when the candidate declares a
+  - SkyMonitor snapshots its SQLite stores, except `orbitalElements` and `spaceWeather` (section 6), only when the candidate declares a
     state migration (#1340). It pauses and drains capture and stops the instance first, then takes the snapshot. Its
     rollback restores the snapshot the upgrade it undoes took, and says what is lost.
   - SkyMonitor's `backup` command is #1353; RoofController has one.

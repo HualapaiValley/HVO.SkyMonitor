@@ -34,7 +34,8 @@ public sealed class CameraAgentStateContractsLabelTests
         ("timeLapses", "raw/.time-lapses/time-lapses.db", "PRAGMA user_version;"),
         ("nightlyProducts", "raw/.nightly-products/nightly-products.db", "PRAGMA user_version;"),
         ("localAutomations", "raw/.automation/local-automations.db", "PRAGMA user_version;"),
-        ("orbitalElements", "raw/.orbital-elements/orbital-elements.db", "PRAGMA user_version;")
+        ("orbitalElements", "raw/.orbital-elements/orbital-elements.db", "PRAGMA user_version;"),
+        ("spaceWeather", "raw/.space-weather/space-weather.db", "PRAGMA user_version;")
     ];
 
     private static readonly string[] StorageRoots = ["/app/data/raw", "/app/data/archive", "/app/data/archive/products"];

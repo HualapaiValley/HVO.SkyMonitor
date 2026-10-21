@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// (<c>PreviousReleaseStoreReadabilityTests</c>) proves the runtime keeps its SQLite stores at exactly the fixture's
 /// locations, plus the ones that release declares it adds, for the fixture's storage roots; this side proves the
 /// installer finds every one of those fixture locations from configuration alone, so a store the runtime adds without
-/// declaring it, or moves, fails one side or the other. The orbital elements store is the one location the snapshot
+/// declaring it, or moves, fails one side or the other. The orbital elements and space-weather stores are locations the snapshot
 /// deliberately leaves out (<see cref="CameraAgentStateLayout.SqliteStores"/>), so it is never expected here.
 /// </summary>
 [TestClass]
@@ -38,7 +38,7 @@ public sealed class CameraAgentStateInventoryTests
             var stores = CameraAgentStateInventory.Stores(paths, ContractReplayProfile.InProcess);
 
             CollectionAssert.AreEqual(
-                locations.Where(static location => location != CameraAgentStateLayout.OrbitalElementsStore).ToArray(),
+                locations.Where(static location => location != CameraAgentStateLayout.OrbitalElementsStore && location != CameraAgentStateLayout.SpaceWeatherStore).ToArray(),
                 stores.Order(StringComparer.Ordinal).ToArray(),
                 "The installer's snapshot inventory does not name exactly the store locations the CameraAgent keeps.");
         }
