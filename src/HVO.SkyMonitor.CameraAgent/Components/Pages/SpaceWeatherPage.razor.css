@@ -1,0 +1,4 @@
+/* Space weather. The shared Operations vocabulary lives in OperationsLayout.razor.css and the panel styles itself in
+   SpaceWeatherPanel.razor.css; the page only spaces the panel below the heading. */
+
+.space-weather-page { display: grid; gap: 1rem; margin-top: .2rem; }

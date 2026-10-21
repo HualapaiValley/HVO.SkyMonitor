@@ -48,6 +48,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     /// <summary>The latest space-weather projection, or null before the first read or after a failed one.</summary>
     internal SpaceWeatherUiProjection? SpaceWeather { get; private set; }
 
+    /// <summary>Whether the latest space-weather read failed for a reason other than authorization.</summary>
+    internal bool SpaceWeatherUnavailable { get; private set; }
+
     /// <summary>The space-weather attention items included in the sidebar and Overview attention model.</summary>
     internal IReadOnlyList<OperationsAttentionItem> SpaceWeatherItems { get; private set; } = [];
 
@@ -150,6 +153,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
             _attention = null;
             _operationsView = null;
             SpaceWeather = null;
+            SpaceWeatherUnavailable = false;
             SpaceWeatherItems = [];
             _displayName = null;
             _moduleType = null;
@@ -204,13 +208,15 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
             if (result is { IsSuccess: true, Value: { } view })
             {
                 SpaceWeather = view.Projection;
+                SpaceWeatherUnavailable = false;
                 SpaceWeatherItems = SpaceWeatherAttention.From(view.Projection);
             }
             else
             {
                 var enabled = SpaceWeather?.Enabled ?? false;
                 SpaceWeather = null;
-                SpaceWeatherItems = result.Kind == OperatorUiResultKind.Unauthorized ? [] : SpaceWeatherAttention.Unavailable(enabled);
+                SpaceWeatherUnavailable = result.Kind != OperatorUiResultKind.Unauthorized;
+                SpaceWeatherItems = SpaceWeatherUnavailable ? SpaceWeatherAttention.Unavailable(enabled) : [];
             }
             if (_operationsView is { } operations)
             {

@@ -33,6 +33,10 @@ internal static class SpaceWeatherOperatorText
         ["space-weather.antiforgery-invalid"] = "The request could not be verified. Reload the page and try again.",
 
         // Resume and acknowledge.
+        ["resumed"] = "Resumed. The next run fetches again within the provider's own cadence.",
+        ["not-halted"] = "Nothing to resume: that halt is no longer active.",
+        ["acknowledged"] = "Acknowledged. The notice stays listed until it ends.",
+        ["replayed"] = "Already applied. This request was recorded before, so nothing changed again.",
         ["space-weather.resume-halt-changed"] =
             "The halt changed after this page read it. Review the current halt before resuming.",
         ["space-weather.resume-invalid-halt-time"] = "The halt time must be the UTC time shown for the current halt.",

@@ -1,0 +1,322 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@* The full space-weather panel: the local refresh state, sources, drift and halts, and the retained SWPC notices with
+   SWPC's own wording kept apart from this site's HVO estimate. It reads only the shared projection, never a raw
+   body, URL, header or path, and an unreadable state never claims anything about current notices. *@
+<section class="ops-panel space-weather-panel" aria-labelledby="space-weather-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="space-weather-heading">SWPC notices and refresh state</h2><p>Source activity as SWPC states it, with this site's estimate on a separate line. @CloudText.</p></div>
+        @if (_view is { Projection: { } heading })
+        {
+            var chip = heading switch
+            {
+                { Enabled: false } => new SpaceWeatherSummary.Chip("Off", "skipped"),
+                { HasData: false } => new SpaceWeatherSummary.Chip("Unavailable", "failure"),
+                _ => SpaceWeatherSummary.FreshnessChip(heading.AlertsFreshness),
+            };
+            <span id="space-weather-state" class="state-chip @chip.Tone">@chip.Text</span>
+        }
+        else if (_error is not null)
+        {
+            <span id="space-weather-state" class="state-chip failure">Unavailable</span>
+        }
+    </header>
+
+    @if (_view is null)
+    {
+        @if (_loading)
+        {
+            <div id="space-weather-loading" class="ops-note-banner compact" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Reading the space-weather state.</span></div>
+        }
+        else
+        {
+            <div id="space-weather-error" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>@SpaceWeatherSummary.UnavailableText</strong> @_error Nothing is claimed about current notices.</span></div>
+            <div class="ops-action-list space-weather-actions">
+                <article class="ops-action-row">
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"></path><path d="M16.2 3.8v3.4h-3.4"></path></svg></span>
+                    <span><strong>Reload</strong><small>Read the space-weather state again. This page does not poll.</small></span>
+                    <button type="button" id="space-weather-reload" class="button secondary" disabled="@Busy" @onclick="ReloadAsync">@(_reloading ? "Reloading…" : "Reload")</button>
+                </article>
+            </div>
+        }
+    }
+    else
+    {
+        var view = _view;
+        var projection = view.Projection;
+
+        @if (_message is not null)
+        {
+            <div id="space-weather-message" class="ops-note-banner compact" role="@(_message.IsError ? "alert" : "status")"><span class="status-icon @_message.Tone" aria-hidden="true"></span><span>@_message.Text</span></div>
+        }
+
+        @if (projection.State == SpaceWeatherUiState.StoreUnavailable)
+        {
+            <div id="space-weather-store-unavailable" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@StoreUnavailableText</span></div>
+        }
+        else if (projection.State == SpaceWeatherUiState.ReadFailed)
+        {
+            <div id="space-weather-read-failed" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@ReadFailedText</span></div>
+        }
+        @if (projection.Inconsistent)
+        {
+            <div id="space-weather-inconsistent" class="ops-note-banner compact" role="status"><span class="status-icon warning" aria-hidden="true"></span><span>@InconsistentText</span></div>
+        }
+        @if (!projection.Enabled)
+        {
+            <div id="space-weather-off" class="ops-note-banner compact" role="status"><span class="status-icon skipped" aria-hidden="true"></span><span><strong>Space weather is off.</strong> Nothing is fetched. Notices retained earlier are still listed below. <a href="#space-weather-switch">Turning it on</a></span></div>
+        }
+        else if (projection.HasData && projection.NoFirstSuccess)
+        {
+            <div id="space-weather-no-first-success" class="ops-note-banner compact" role="status"><span class="status-icon pending" aria-hidden="true"></span><span>@NoFirstSuccessText</span></div>
+        }
+        @if (projection is { Enabled: true, HasData: true, DefinitionExists: false })
+        {
+            <div id="space-weather-setup" class="ops-note-banner compact" role="status"><span class="status-icon pending" aria-hidden="true"></span><span>Space weather is on, but no refresh schedule exists, so nothing is fetched. <a id="space-weather-setup-link" href="@AutomationsSetupLink">Set up schedule</a></span></div>
+        }
+        else if (projection is { Enabled: true, HasData: true, DefinitionEnabled: false })
+        {
+            <div id="space-weather-definition-disabled" class="ops-note-banner compact" role="status"><span class="status-icon pending" aria-hidden="true"></span><span>The space-weather-refresh automation is disabled, so nothing is fetched on a schedule. <a href="@AutomationsDefinitionLink">Open in Automations</a></span></div>
+        }
+
+        <dl class="ops-facts space-weather-facts">
+            <div><dt>Feature</dt><dd id="space-weather-enabled">@(projection.Enabled ? "On" : "Off")</dd></div>
+            <div><dt>Schedule</dt><dd id="space-weather-schedule">@ScheduleText(projection)<small><a href="@AutomationsDefinitionLink">Open in Automations</a></small></dd></div>
+            <div><dt>Read</dt><dd id="space-weather-observed">@projection.Observed.UtcText<small>@projection.Observed.LocalText</small></dd></div>
+            <div><dt>Site</dt><dd id="space-weather-site">@SiteText(projection.Site)<small>Times also shown in @projection.Site.ZoneLabel</small></dd></div>
+            <div class="full"><dt>Cloud</dt><dd id="space-weather-cloud">@CloudText<small>Local weather and cloud are not part of this estimate.</small></dd></div>
+        </dl>
+
+        <div class="ops-action-list space-weather-actions">
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 3v9"></path><path d="m6.5 8.5 3.5 3.5 3.5-3.5"></path><path d="M4 16h12"></path></svg></span>
+                <span><strong>Refresh now (all enabled products)</strong><small>Queues one run of the space-weather-refresh schedule. Each run checks every enabled product; the provider's own cadence decides what is fetched.</small>
+                    @if (RefreshUnavailableReason is { } refreshUnavailable)
+                    {
+                        <small id="space-weather-refresh-unavailable" class="space-weather-blocked">@refreshUnavailable</small>
+                    }
+                </span>
+                <button type="button" id="@RefreshTriggerId" class="button primary" disabled="@(Busy || RefreshUnavailableReason is not null)"
+                        aria-describedby="@(RefreshUnavailableReason is null ? null : "space-weather-refresh-unavailable")"
+                        @onclick="RefreshAsync">@(_refreshing ? "Requesting…" : _refreshKey is null ? "Refresh now (all enabled products)" : "Retry refresh")</button>
+            </article>
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"></circle><path d="M10 6v4l3 2"></path></svg></span>
+                <span><strong>Schedule and run history</strong><small>The refresh schedule is the space-weather-refresh automation, edited with its revision and audit in Automations.</small></span>
+                <span class="space-weather-links">
+                    <a id="space-weather-schedule-link" href="@AutomationsDefinitionLink">Schedule</a>
+                    @if (projection is { HasData: true, DefinitionExists: false })
+                    {
+                        <a id="space-weather-setup-schedule" href="@AutomationsSetupLink">Set up schedule</a>
+                    }
+                    <a id="space-weather-runs-link" href="@AutomationsRunsLink">Run history</a>
+                </span>
+            </article>
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"></path><path d="M16.2 3.8v3.4h-3.4"></path></svg></span>
+                <span><strong>Reload</strong><small>Read the space-weather state again. This page does not poll.</small></span>
+                <button type="button" id="space-weather-reload" class="button secondary" disabled="@Busy" @onclick="ReloadAsync">@(_reloading ? "Reloading…" : "Reload")</button>
+            </article>
+        </div>
+
+        @if (projection.HasData)
+        {
+            var halts = projection.ProviderHalt is { } providerHalt ? projection.ProductHalts.Prepend(providerHalt).ToArray() : projection.ProductHalts.ToArray();
+            @if (halts.Length > 0)
+            {
+                <section id="space-weather-halts" class="space-weather-subsection" aria-labelledby="space-weather-halts-heading">
+                    <h3 id="space-weather-halts-heading">Fetch halts</h3>
+                    <div class="ops-action-list">
+                        @for (var index = 0; index < halts.Length; index++)
+                        {
+                            var halt = halts[index];
+                            var triggerId = $"space-weather-resume-{index}";
+                            var blocked = ResumeBlockedReason(view, halt);
+                            <article class="ops-action-row space-weather-halt" data-scope="@halt.Scope" data-product="@halt.Product">
+                                <span class="ops-action-icon warning" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10"></path><path d="M13 5v10"></path></svg></span>
+                                <span><strong>SWPC fetching halted (@halt.Target)</strong><small>@halt.Description. Since @(halt.Since?.UtcText ?? halt.SinceUtcText)@(halt.Since is { } since ? $" ({since.LocalText})" : string.Empty). Fetching stays halted until an operator resumes it.</small>
+                                    @if (blocked is not null)
+                                    {
+                                        <small id="@($"{triggerId}-unavailable")" class="space-weather-blocked">@blocked</small>
+                                    }
+                                </span>
+                                <button type="button" id="@triggerId" class="button secondary" disabled="@(Busy || blocked is not null)"
+                                        aria-describedby="@(blocked is null ? null : $"{triggerId}-unavailable")"
+                                        @onclick="() => OpenResumeDialog(halt, triggerId)">Resume</button>
+                            </article>
+                        }
+                    </div>
+                </section>
+            }
+
+            @if (projection.FormatDriftProducts.Count > 0 || projection.RecordDriftProducts.Count > 0)
+            {
+                <section id="space-weather-drift" class="space-weather-subsection" aria-labelledby="space-weather-drift-heading">
+                    <h3 id="space-weather-drift-heading">Drift</h3>
+                    <ul class="space-weather-drift-list">
+                        @foreach (var product in projection.FormatDriftProducts)
+                        {
+                            <li data-product="@product">Format drift on @product: responses have been rejected repeatedly; the provider's format may have changed.</li>
+                        }
+                        @foreach (var source in projection.Sources.Where(static source => source.RecordDrift is not null))
+                        {
+                            <li data-product="@source.Product">Record drift on @source.Product since @source.RecordDrift!.UtcText (@source.RecordDrift.LocalText): some records could not be read.</li>
+                        }
+                    </ul>
+                </section>
+            }
+
+            <section id="space-weather-sources" class="space-weather-subsection" aria-labelledby="space-weather-sources-heading">
+                <h3 id="space-weather-sources-heading">Sources</h3>
+                <div class="ops-table-wrap">
+                    <table class="ops-table space-weather-sources">
+                        <thead><tr><th scope="col">Product</th><th scope="col">Configured</th><th scope="col">Last outcome</th><th scope="col">Freshness</th><th scope="col">Last success</th><th scope="col">In-file stamp</th><th scope="col">Next attempt</th><th scope="col">Retry not before</th><th scope="col">Consecutive</th><th scope="col">Halt</th></tr></thead>
+                        <tbody>
+                            @foreach (var source in projection.Sources)
+                            {
+                                <tr data-product="@source.Product">
+                                    <th scope="row">@source.Product</th>
+                                    <td>@(source.Configured ? "enabled" : "not enabled")</td>
+                                    <td>@(source.LastOutcome ?? "None recorded")</td>
+                                    <td>@source.Freshness</td>
+                                    <td>@TimeCell(source.LastSuccess, "Never")</td>
+                                    <td>@TimeCell(source.InFileStamp, "None")</td>
+                                    <td>@TimeCell(source.NextAttempt, "Not scheduled")</td>
+                                    <td>@TimeCell(source.RetryNotBefore, "None")</td>
+                                    <td>@Counters(source)</td>
+                                    <td>@(source.Halt is { } sourceHalt ? $"Halted: {sourceHalt.Description}" : "None")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            @if (projection.NoticeTotal == 0)
+            {
+                <p id="space-weather-no-notices" class="ops-panel-empty">@NoNoticesText</p>
+            }
+            else
+            {
+                @foreach (var list in Lists(projection, _historyPage))
+                {
+                    <section id="@list.Id" class="space-weather-subsection" aria-labelledby="@($"{list.Id}-heading")">
+                        <h3 id="@($"{list.Id}-heading")">@list.Title</h3>
+                        <p class="space-weather-list-intro">@list.Description</p>
+                        @if (list.Notices.Count == 0)
+                        {
+                            <p class="ops-panel-empty">@list.EmptyText</p>
+                        }
+                        @foreach (var notice in list.Notices)
+                        {
+                            <article class="space-weather-notice @notice.StateText.Replace(' ', '-')" data-group="@notice.Group">
+                                <header class="space-weather-notice-heading">
+                                    <span class="state-chip @SpaceWeatherSummary.StateTone(notice)">@notice.StateText</span>
+                                    <strong>@notice.Label</strong>
+                                    @if (notice.Corrected)
+                                    {
+                                        <span class="space-weather-tag">corrected</span>
+                                    }
+                                    @if (notice.Orphan)
+                                    {
+                                        <span class="space-weather-tag">cancellation without a retained original</span>
+                                    }
+                                    @if (notice.MayBeOutOfDate)
+                                    {
+                                        <span class="space-weather-tag warning">may be out of date: alerts are not fresh</span>
+                                    }
+                                </header>
+                                <p class="space-weather-line global"><span>Global</span>@notice.GlobalLine</p>
+                                <p class="space-weather-line site"><span>At this site</span>@notice.SiteLine</p>
+                                @foreach (var restriction in notice.Darkness)
+                                {
+                                    <p class="space-weather-line darkness"><span>Darkness</span>@restriction</p>
+                                }
+                                <dl class="space-weather-times">
+                                    <div><dt>Issued</dt><dd>@notice.Issued.UtcText<small>@notice.Issued.LocalText</small></dd></div>
+                                    @if (notice.LastUpdate is { } lastUpdate)
+                                    {
+                                        <div><dt>Last update</dt><dd>@lastUpdate.UtcText@(notice.LastUpdateIsCancellation ? " (cancellation)" : string.Empty)<small>@lastUpdate.LocalText</small></dd></div>
+                                    }
+                                    <div><dt>From</dt><dd>@notice.From.UtcText<small>@notice.From.LocalText</small></dd></div>
+                                    <div><dt>Until</dt><dd>@notice.Until.UtcText<small>@notice.Until.LocalText</small></dd></div>
+                                    @if (notice.EndReason is { } endReason)
+                                    {
+                                        <div><dt>Ended</dt><dd>@endReason</dd></div>
+                                    }
+                                    <div><dt>Versions</dt><dd>@Number(notice.VersionCount)</dd></div>
+                                </dl>
+                                <footer class="space-weather-notice-footer">
+                                    <span class="space-weather-acknowledgement">@AcknowledgementText(notice)</span>
+                                    @if (CanMutate && notice.NeedsAcknowledgement)
+                                    {
+                                        <button type="button" class="button secondary space-weather-acknowledge" disabled="@Busy" data-group="@notice.Group"
+                                                @onclick="() => AcknowledgeAsync(notice)">@(_acknowledging == notice.Group ? "Acknowledging…" : _acknowledgeKeys.ContainsKey(notice.Group) ? "Retry acknowledge" : "Acknowledge")</button>
+                                    }
+                                </footer>
+                            </article>
+                        }
+                        @if (list.More > 0)
+                        {
+                            <p class="space-weather-more" data-list="@list.Id">@Number(list.More) more</p>
+                        }
+                        @if (list.Paged)
+                        {
+                            var pages = Math.Min(SpaceWeatherUiBounds.HistoryPages, projection.HistoryPageCount);
+                            @if (pages > 1)
+                            {
+                                <nav class="space-weather-pager" aria-label="History pages">
+                                    <button type="button" id="space-weather-history-previous" class="button secondary" disabled="@(_historyPage == 0)" @onclick="() => ShowHistoryPage(_historyPage - 1)">Previous</button>
+                                    <span id="space-weather-history-page">Page @(_historyPage + 1) of @pages</span>
+                                    <button type="button" id="space-weather-history-next" class="button secondary" disabled="@(_historyPage >= pages - 1)" @onclick="() => ShowHistoryPage(_historyPage + 1)">Next</button>
+                                </nav>
+                            }
+                            @if (projection.HistoryNotShown > 0)
+                            {
+                                <p id="space-weather-history-older" class="space-weather-more">@Number(projection.HistoryNotShown) older retained notices are not shown.</p>
+                            }
+                        }
+                    </section>
+                }
+            }
+        }
+
+        <section id="space-weather-switch" class="space-weather-subsection" aria-labelledby="space-weather-switch-heading">
+            <h3 id="space-weather-switch-heading">Space-weather switch</h3>
+            <p>Space weather is <strong>@(projection.Enabled ? "on" : "off")</strong>. The switch is the <code>spaceWeather</code> settings group, changed with <code>hvo-sky config set spaceWeather.enabled=true</code> (or <code>false</code>). It applies after CameraAgent restarts.</p>
+        </section>
+
+        <p id="space-weather-credit" class="space-weather-credit">@projection.Credit</p>
+    }
+</section>
+
+@if (_dialogOpen && _resumeHalt is { } resumeHalt)
+{
+    <dialog class="action-dialog operations-dialog space-weather-resume-dialog" aria-labelledby="space-weather-resume-heading" aria-describedby="space-weather-resume-description" @ref="_dialogElement" @oncancel="CancelDialog">
+        <form @onsubmit="SubmitResumeAsync" @onsubmit:preventDefault>
+            <div class="dialog-header">
+                <div><p class="eyebrow">Operator command</p><h2 id="space-weather-resume-heading">Resume SWPC fetching (@resumeHalt.Target)</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_resuming" @onclick="CancelDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="space-weather-resume-description" class="dialog-intro">Resuming clears only the halt shown here; if the halt changed after this page read it, nothing is cleared. The provider's own cadence still decides when each product is fetched.</p>
+            <dl class="space-weather-resume-facts">
+                <div><dt>Scope</dt><dd id="space-weather-resume-scope">@resumeHalt.Scope@(resumeHalt.Product is { } product ? $" / {product}" : string.Empty)</dd></div>
+                <div><dt>Halted since</dt><dd id="space-weather-resume-since">@(resumeHalt.Since?.UtcText ?? resumeHalt.SinceUtcText)<small>@resumeHalt.Since?.LocalText</small></dd></div>
+                <div><dt>Reason</dt><dd id="space-weather-resume-reason">@resumeHalt.Description</dd></div>
+            </dl>
+            @if (_resumePinned)
+            {
+                <div class="dialog-note"><strong>Retry the same request.</strong><span>The first attempt's result is unknown. Retrying sends the identical request with the same durable key, so it is never applied twice.</span></div>
+            }
+            @if (_dialogMessage is not null)
+            {
+                <div class="space-weather-dialog-message"><div id="space-weather-resume-message" class="ops-note-banner compact" role="@(_dialogMessageIsError ? "alert" : "status")"><span class="status-icon @(_dialogMessageIsError ? "failure" : "running")" aria-hidden="true"></span><span>@_dialogMessage</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_resuming" @onclick="CancelDialog">Cancel</button>
+                <button type="submit" id="space-weather-resume-confirm" class="button primary" disabled="@_resuming">@(_resuming ? "Resuming…" : _resumePinned ? "Retry resume" : "Resume")</button>
+            </footer>
+        </form>
+    </dialog>
+}
