@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -17,6 +18,15 @@ public sealed partial class CurrentSkyPageTests
     private static readonly Guid ThirdCaptureId = Guid.Parse("00000000-0000-0000-0000-000000000031");
 
     [TestMethod]
+    public void RefreshDiagnosticsDoNothingOutsideTheRefreshScope()
+    {
+        using var unrelatedActivity = new Activity("ExactCapture.Read").Start();
+        foreach (var phase in new[] { "view-read", "preview-validation", "layer-availability", "layer-read" })
+            Assert.IsNull(CameraAgentCurrentSkyRefreshDiagnostics.Measure(phase));
+        Assert.AreSame(unrelatedActivity, Activity.Current);
+    }
+
+    [TestMethod]
     [DataRow("view-read")]
     [DataRow("preview-validation")]
     [DataRow("layer-availability")]
@@ -27,16 +37,16 @@ public sealed partial class CurrentSkyPageTests
         var clock = new ManualTimeProvider(OperatorUiTestData.Now);
         var logger = new RefreshLogger();
         using var timing = new CameraAgentCurrentSkyRefreshDiagnostics(clock, logger);
-        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure(clock, "view-read"))
+        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("view-read"))
         {
             if (slowPhase is "preview-validation" or "layer-availability")
             {
-                using var nested = CameraAgentCurrentSkyRefreshDiagnostics.Measure(clock, slowPhase);
+                using var nested = CameraAgentCurrentSkyRefreshDiagnostics.Measure(slowPhase);
                 clock.Advance(TimeSpan.FromSeconds(6));
             }
             else if (slowPhase == "view-read") clock.Advance(TimeSpan.FromSeconds(6));
         }
-        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure(clock, "layer-read"))
+        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read"))
         {
             if (slowPhase == "layer-read") clock.Advance(TimeSpan.FromSeconds(6));
         }

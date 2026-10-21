@@ -168,7 +168,7 @@ internal sealed class CameraAgentCurrentImagePresentationService(
         {
             try
             {
-                using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure(timeProvider, "layer-availability");
+                using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-availability");
                 structuredLayersAvailable = await structuredLayers.IsAvailableAsync(
                     display.CaptureId, cancellationToken).ConfigureAwait(false);
             }
@@ -212,7 +212,7 @@ internal sealed class CameraAgentCurrentImagePresentationService(
         int maximumAttempts,
         CancellationToken cancellationToken)
     {
-        using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure(timeProvider, "preview-validation");
+        using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("preview-validation");
         var projection = capturePresentation.ProjectWithRetainedDisplay(capture);
         CameraAgentPresentationStage? selectedStage = null;
         var stages = new CameraAgentPresentationSlot[projection.Stages.Count];

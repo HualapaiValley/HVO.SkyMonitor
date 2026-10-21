@@ -256,7 +256,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         try
         {
             OperatorUiResult<CameraAgentCurrentSkyView> result;
-            using (CameraAgentCurrentSkyRefreshDiagnostics.Measure(TimeProvider, "view-read"))
+            using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("view-read"))
                 result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
@@ -582,7 +582,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         {
             using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
-            using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure(TimeProvider, "layer-read");
+            using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
             return await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)

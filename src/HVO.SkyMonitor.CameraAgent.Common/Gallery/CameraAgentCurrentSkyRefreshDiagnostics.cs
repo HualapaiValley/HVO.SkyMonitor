@@ -28,12 +28,11 @@ public sealed partial class CameraAgentCurrentSkyRefreshDiagnostics : IDisposabl
     }
 
     /// <summary>Measures a phase only when the calling flow belongs to a page refresh.</summary>
-    public static IDisposable? Measure(TimeProvider clock, string phase)
+    public static IDisposable? Measure(string phase)
     {
-        ArgumentNullException.ThrowIfNull(clock);
         ArgumentException.ThrowIfNullOrEmpty(phase);
         return Activity.Current?.GetCustomProperty(TimingKey) is CameraAgentCurrentSkyRefreshDiagnostics timing
-            ? new Phase(timing, clock, phase) : null;
+            ? new Phase(timing, phase) : null;
     }
 
     public void LogDeadline(TimeSpan bound, bool firstRefresh)
@@ -72,13 +71,13 @@ public sealed partial class CameraAgentCurrentSkyRefreshDiagnostics : IDisposabl
         Message = "Current Sky page refresh missed {BoundSeconds} s bound. FirstRefresh={FirstRefresh}; ElapsedMs={ElapsedMs}; SlowestPhase={SlowestPhase}.")]
     private static partial void DeadlineMissed(ILogger logger, double boundSeconds, bool firstRefresh, double elapsedMs, string slowestPhase);
 
-    private sealed class Phase(CameraAgentCurrentSkyRefreshDiagnostics owner, TimeProvider clock, string phase) : IDisposable
+    private sealed class Phase(CameraAgentCurrentSkyRefreshDiagnostics owner, string phase) : IDisposable
     {
-        private readonly long _started = clock.GetTimestamp();
+        private readonly long _started = owner._clock.GetTimestamp();
 
         public void Dispose()
         {
-            var elapsed = clock.GetElapsedTime(_started).TotalMilliseconds;
+            var elapsed = owner._clock.GetElapsedTime(_started).TotalMilliseconds;
             lock (owner._gate)
             {
                 if (owner._disposed) return;
