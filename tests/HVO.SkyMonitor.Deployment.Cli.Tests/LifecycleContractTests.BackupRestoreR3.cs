@@ -125,7 +125,8 @@ public sealed partial class LifecycleContractTests
             "the restored account was not renamed and locked out as a removed account is");
         var kept = restored.Warnings!.Single(static warning => warning.Code == "restore-live-owner-settings-kept");
         StringAssert.Contains(kept.Message, "account owner-2, the live owner", StringComparison.Ordinal);
-        StringAssert.Contains(kept.Message, "account owner held the live owner's email and sign-in name", StringComparison.Ordinal);
+        StringAssert.Contains(kept.Message,
+            System.Text.Json.JsonEncodedText.Encode("account owner held the live owner's email and sign-in name").ToString(), StringComparison.Ordinal);
     }
 
     /// <summary>
