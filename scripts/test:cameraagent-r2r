@@ -63,7 +63,7 @@ class CameraAgentR2R(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, '')
 
-    def pe(self, machine=0xFD1D, flags=1, native=True):
+    def pe(self, machine=0xFD1D, flags=0x4b, native=True):
         data = bytearray(1024)
         data[:2] = b'MZ'
         struct.pack_into('<I', data, 0x3c, 0x80)
@@ -79,8 +79,8 @@ class CameraAgentR2R(unittest.TestCase):
         struct.pack_into('<I', data, 512 + 16, 4)
         if native:
             struct.pack_into('<II', data, 512 + 64, 0x2080, 28)
-            struct.pack_into('<IHHIHBB', data, 640, 0x00525452, 16, 0, flags, 1, 12, 0)
-            struct.pack_into('<III', data, 656, 103, 0x2100, 8)
+            struct.pack_into('<IHHII', data, 640, 0x00525452, 16, 0, flags, 1)
+            struct.pack_into('<III', data, 656, 102, 0x2100, 8)
         path = self.root / 'HVO.SkyMonitor.CameraAgent.dll'
         path.write_bytes(data)
         return path
@@ -94,9 +94,18 @@ class CameraAgentR2R(unittest.TestCase):
 
     def test_rejects_il_wrong_architecture_windows_and_composite(self):
         for path_args in [dict(native=False), dict(machine=0xD11D), dict(machine=0x8664),
-                          dict(flags=3), dict(flags=0x21)]:
+                          dict(flags=0x10), dict(flags=0x21)]:
             with self.subTest(path_args=path_args), self.assertRaises(ValueError):
                 self.probe(self.pe(**path_args))
+
+    def test_rejects_composite_section_and_missing_native_functions(self):
+        for section in (115, 116, 103):
+            path = self.pe()
+            data = bytearray(path.read_bytes())
+            struct.pack_into('<I', data, 656, section)
+            path.write_bytes(data)
+            with self.subTest(section=section), self.assertRaises(ValueError):
+                self.probe(path)
 
     def test_rejects_missing_or_truncated_header(self):
         for data in (b'', b'MZ', b'MZ' + b'\0' * 100):

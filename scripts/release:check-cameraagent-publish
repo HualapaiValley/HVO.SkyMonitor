@@ -56,18 +56,22 @@ def inspect_r2r(path, rid):
     if not cli_flags & 4 or not native_rva or native_size < 16:
         raise ValueError(f'{path.name}: not ReadyToRun (missing managed-native header)')
     native = rva_offset(native_rva, native_size)
-    signature, major, minor, flags, count, entry_size, entry_type = unpack('<IHHIHBB', native)
-    # ready to run header / flags: dotnet/runtime src/coreclr/inc/readytorun.h.
-    if signature != 0x00525452 or not major or flags & (2 | 0x20):
+    signature, major, minor, flags, count = unpack('<IHHII', native)
+    # https://github.com/dotnet/runtime/blob/v10.0.0/src/coreclr/inc/readytorun.h
+    # Pin the format to CoreCLR .NET 10's native header definitions.
+    # Bit 0x2 is SKIP_TYPE_VALIDATION; embedded MSIL/component flags indicate composite output.
+    if signature != 0x00525452 or major != 16 or flags & (0x10 | 0x20):
         raise ValueError(f'{path.name}: missing or composite ReadyToRun header')
-    if not count or entry_size != 12 or entry_type != 0 or 16 + count * entry_size > native_size:
+    if not count or 16 + count * 12 > native_size:
         raise ValueError(f'{path.name}: invalid ReadyToRun section table')
     section_types = []
     for i in range(count):
-        section_type, address, size = unpack('<III', native + 16 + i * entry_size)
+        section_type, address, size = unpack('<III', native + 16 + i * 12)
         rva_offset(address, size)
         section_types.append(section_type)
-    if 103 not in section_types:  # RuntimeFunctions proves native method bodies are present.
+    if 115 in section_types or 116 in section_types:
+        raise ValueError(f'{path.name}: composite ReadyToRun section')
+    if 102 not in section_types:  # RuntimeFunctions proves native method bodies are present.
         raise ValueError(f'{path.name}: no ReadyToRun runtime functions')
     return {'assembly': path.name, 'rid': rid, 'machine': f'0x{machine:04x}',
             'r2rVersion': f'{major}.{minor}', 'flags': flags}
