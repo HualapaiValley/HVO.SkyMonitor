@@ -172,7 +172,8 @@ public sealed class CameraAgentTimeDataRefreshTests
             {
                 client.Serve(CameraAgentTimeDataSources.EarthOrientationUri, garbage);
                 client.Serve(CameraAgentTimeDataSources.EarthOrientationChecksumsUri, Checksums(garbage));
-            }),
+            }
+            ),
             "oversize" => (CameraAgentTimeDataClient.OversizeReasonCode,
                 client => client.Fail(CameraAgentTimeDataSources.EarthOrientationUri, CameraAgentTimeDataClient.OversizeReasonCode)),
             "timed-out" => (CameraAgentTimeDataClient.TimedOutReasonCode,

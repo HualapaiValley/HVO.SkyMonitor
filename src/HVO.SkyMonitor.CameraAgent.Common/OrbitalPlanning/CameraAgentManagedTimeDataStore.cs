@@ -135,7 +135,7 @@ public sealed partial class CameraAgentManagedTimeDataStore
             // A damaged pointer never blocks adopting a verified pair; its history is lost with it.
             current = null;
         }
-        var pair =string.Concat(adoptedUtc.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture), "-",
+        var pair = string.Concat(adoptedUtc.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture), "-",
             Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4)));
         var relative = string.Concat(PairsDirectory, "/", pair, "/");
         await PublishBytesAsync(root, relative + CameraAgentTimeDataSources.EarthOrientationFile, candidate.EarthOrientation, cancellationToken).ConfigureAwait(false);

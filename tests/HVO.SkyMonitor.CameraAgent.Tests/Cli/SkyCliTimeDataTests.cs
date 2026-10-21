@@ -36,7 +36,10 @@ public sealed class SkyCliTimeDataTests
         using var harness = new CliHarness();
         harness.Api.Json("GET", Route, Status(expired: true, new("never", null, null, null, null, null, null)) with
         {
-            RefreshEnabled = false, RefreshScheduled = false, ManagedPair = null, ActiveSource = "bundled"
+            RefreshEnabled = false,
+            RefreshScheduled = false,
+            ManagedPair = null,
+            ActiveSource = "bundled"
         });
 
         var result = await harness.RunAsync("time-data").ConfigureAwait(false);
