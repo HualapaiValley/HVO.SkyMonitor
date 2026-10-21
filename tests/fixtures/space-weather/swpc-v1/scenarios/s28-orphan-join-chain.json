@@ -12,8 +12,8 @@
   ],
   "containsSyntheticRecords": true,
   "notes": [
-    "All WARK04 records, serials 28001 through 28033, are synthetic; no SWPC message text is reused.",
-    "Two orphan components join a stored root in one body. Another component changes identity while still orphaned, survives restart, then resolves. A final independent orphan is removed at its exact retention boundary together with the other notices."
+    "All WARK04 records, serials 28001 through 28035, are synthetic; no SWPC message text is reused.",
+    "Two orphan components join a stored root in one body. Another component changes identity while still orphaned, survives restart, then resolves. Two final independent orphans have different retention boundaries: the first is removed with the other notices while the second keeps its marker, then the second is removed at its own exact boundary."
   ],
   "sites": [
     {
@@ -2286,7 +2286,7 @@
         "contentType": "application/json",
         "etag": "\"fixture-s28-19\"",
         "lastModified": "Wed, 21 Oct 2026 12:19:00 GMT",
-        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28033\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28032\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:16:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28021\\r\\nIssue Time: 2026 Oct 21 1216 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:14:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28022\\r\\nIssue Time: 2026 Oct 21 1214 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28021\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:12:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28023\\r\\nIssue Time: 2026 Oct 21 1212 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28022\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:10:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28012\\r\\nIssue Time: 2026 Oct 21 1210 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28011\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:10:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28014\\r\\nIssue Time: 2026 Oct 21 1210 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28013\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:08:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28013\\r\\nIssue Time: 2026 Oct 21 1208 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28012\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:08:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28015\\r\\nIssue Time: 2026 Oct 21 1208 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28014\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:06:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28011\\r\\nIssue Time: 2026 Oct 21 1206 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:04:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28002\\r\\nIssue Time: 2026 Oct 21 1204 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28001\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:02:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28003\\r\\nIssue Time: 2026 Oct 21 1202 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28002\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:00:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28001\\r\\nIssue Time: 2026 Oct 21 1200 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"}]"
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28033\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28032\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28035\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28034\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 22 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:16:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28021\\r\\nIssue Time: 2026 Oct 21 1216 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:14:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28022\\r\\nIssue Time: 2026 Oct 21 1214 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28021\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:12:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28023\\r\\nIssue Time: 2026 Oct 21 1212 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28022\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:10:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28012\\r\\nIssue Time: 2026 Oct 21 1210 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28011\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:10:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28014\\r\\nIssue Time: 2026 Oct 21 1210 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28013\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:08:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28013\\r\\nIssue Time: 2026 Oct 21 1208 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28012\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:08:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28015\\r\\nIssue Time: 2026 Oct 21 1208 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28014\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:06:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28011\\r\\nIssue Time: 2026 Oct 21 1206 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:04:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28002\\r\\nIssue Time: 2026 Oct 21 1204 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28001\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:02:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28003\\r\\nIssue Time: 2026 Oct 21 1202 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28002\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:00:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28001\\r\\nIssue Time: 2026 Oct 21 1200 UTC\\r\\n\\r\\nWARNING: Synthetic geomagnetic K-index of 4 expected\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"}]"
       },
       "expect": {
         "refused": null,
@@ -2300,15 +2300,21 @@
             "group": "WARK04/28032",
             "reason": "new",
             "level": "K4"
+          },
+          {
+            "group": "WARK04/28034",
+            "reason": "new",
+            "level": "K4"
           }
         ],
         "diagnostics": [
-          "orphan-link:WARK04/28033/2026-10-21T12:18:00Z"
+          "orphan-link:WARK04/28033/2026-10-21T12:18:00Z",
+          "orphan-link:WARK04/28035/2026-10-21T12:18:00Z"
         ],
         "product": {
           "lastOutcome": "updated",
           "freshness": "fresh",
-          "lkgSha256": "A345050EB924C1AB64AD50D521C0A2839925EF698C7A55E8CB9941655CE6ACE5",
+          "lkgSha256": "DEEC5EDC96B09716E3775EAECB1285604C5CE65B3A6F2D802EC846478F926912",
           "lastSuccessUtc": "2026-10-21T12:19:00Z",
           "nextAttemptNotBeforeUtc": "2026-10-21T12:21:00Z",
           "retryNotBeforeUtc": null,
@@ -2323,8 +2329,8 @@
             "lastModified": "Wed, 21 Oct 2026 12:19:00 GMT"
           },
           "facts": {
-            "records": 12,
-            "acceptedRecords": 12
+            "records": 13,
+            "acceptedRecords": 13
           }
         },
         "notices": {
@@ -2411,13 +2417,34 @@
               "fromLocal": "2026-10-21T05:00:00-07:00",
               "untilLocal": "2026-10-21T11:00:00-07:00"
             }
+          },
+          "WARK04/28034": {
+            "family": "warning",
+            "level": "K4",
+            "state": "active",
+            "fromUtc": "2026-10-21T12:00:00Z",
+            "untilUtc": "2026-10-22T18:00:00Z",
+            "endReason": null,
+            "mayBeOutOfDate": false,
+            "latest": "WARK04/28035/2026-10-21T12:18:00Z",
+            "versions": 1,
+            "corrected": false,
+            "orphan": true,
+            "acknowledged": null,
+            "relevance": {
+              "hvo": "NotExpected"
+            },
+            "local": {
+              "fromLocal": "2026-10-21T05:00:00-07:00",
+              "untilLocal": "2026-10-22T11:00:00-07:00"
+            }
           }
         },
         "products": {
           "alerts": {
             "lastOutcome": "updated",
             "freshness": "fresh",
-            "lkgSha256": "A345050EB924C1AB64AD50D521C0A2839925EF698C7A55E8CB9941655CE6ACE5",
+            "lkgSha256": "DEEC5EDC96B09716E3775EAECB1285604C5CE65B3A6F2D802EC846478F926912",
             "lastSuccessUtc": "2026-10-21T12:19:00Z",
             "nextAttemptNotBeforeUtc": "2026-10-21T12:21:00Z",
             "retryNotBeforeUtc": null,
@@ -2432,8 +2459,8 @@
               "lastModified": "Wed, 21 Oct 2026 12:19:00 GMT"
             },
             "facts": {
-              "records": 12,
-              "acceptedRecords": 12
+              "records": 13,
+              "acceptedRecords": 13
             }
           },
           "scales": {
@@ -2549,6 +2576,9 @@
           ],
           "WARK04/28033/2026-10-21T12:18:00Z": [
             "{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28033\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28032\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 21 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"}"
+          ],
+          "WARK04/28035/2026-10-21T12:18:00Z": [
+            "{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28035\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28034\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 22 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"}"
           ]
         }
       }
@@ -2558,12 +2588,34 @@
       "kind": "evaluate",
       "atUtc": "2026-11-25T18:00:00Z",
       "expect": {
-        "notices": {},
+        "notices": {
+          "WARK04/28034": {
+            "family": "warning",
+            "level": "K4",
+            "state": "history",
+            "fromUtc": "2026-10-21T12:00:00Z",
+            "untilUtc": "2026-10-22T18:00:00Z",
+            "endReason": "expired",
+            "mayBeOutOfDate": false,
+            "latest": "WARK04/28035/2026-10-21T12:18:00Z",
+            "versions": 1,
+            "corrected": false,
+            "orphan": true,
+            "acknowledged": null,
+            "relevance": {
+              "hvo": "NotExpected"
+            },
+            "local": {
+              "fromLocal": "2026-10-21T05:00:00-07:00",
+              "untilLocal": "2026-10-22T11:00:00-07:00"
+            }
+          }
+        },
         "products": {
           "alerts": {
             "lastOutcome": "updated",
             "freshness": "outdated",
-            "lkgSha256": "A345050EB924C1AB64AD50D521C0A2839925EF698C7A55E8CB9941655CE6ACE5",
+            "lkgSha256": "DEEC5EDC96B09716E3775EAECB1285604C5CE65B3A6F2D802EC846478F926912",
             "lastSuccessUtc": "2026-10-21T12:19:00Z",
             "nextAttemptNotBeforeUtc": "2026-10-21T12:21:00Z",
             "retryNotBeforeUtc": null,
@@ -2578,8 +2630,121 @@
               "lastModified": "Wed, 21 Oct 2026 12:19:00 GMT"
             },
             "facts": {
-              "records": 12,
-              "acceptedRecords": 12
+              "records": 13,
+              "acceptedRecords": 13
+            }
+          },
+          "scales": {
+            "lastOutcome": null,
+            "freshness": "none",
+            "lkgSha256": null,
+            "lastSuccessUtc": null,
+            "nextAttemptNotBeforeUtc": null,
+            "retryNotBeforeUtc": null,
+            "consecutiveTransientFailures": 0,
+            "consecutiveRateLimited": 0,
+            "consecutiveRejected": 0,
+            "recordDriftOpen": false,
+            "recordDriftStampUtc": null,
+            "halt": null,
+            "validators": {
+              "etag": null,
+              "lastModified": null
+            },
+            "facts": null
+          },
+          "kp-forecast": {
+            "lastOutcome": null,
+            "freshness": "none",
+            "lkgSha256": null,
+            "lastSuccessUtc": null,
+            "nextAttemptNotBeforeUtc": null,
+            "retryNotBeforeUtc": null,
+            "consecutiveTransientFailures": 0,
+            "consecutiveRateLimited": 0,
+            "consecutiveRejected": 0,
+            "recordDriftOpen": false,
+            "recordDriftStampUtc": null,
+            "halt": null,
+            "validators": {
+              "etag": null,
+              "lastModified": null
+            },
+            "facts": null
+          },
+          "3-day-forecast": {
+            "lastOutcome": null,
+            "freshness": "none",
+            "lkgSha256": null,
+            "lastSuccessUtc": null,
+            "nextAttemptNotBeforeUtc": null,
+            "retryNotBeforeUtc": null,
+            "consecutiveTransientFailures": 0,
+            "consecutiveRateLimited": 0,
+            "consecutiveRejected": 0,
+            "recordDriftOpen": false,
+            "recordDriftStampUtc": null,
+            "halt": null,
+            "validators": {
+              "etag": null,
+              "lastModified": null
+            },
+            "facts": null
+          },
+          "ovation": {
+            "lastOutcome": null,
+            "freshness": "none",
+            "lkgSha256": null,
+            "lastSuccessUtc": null,
+            "nextAttemptNotBeforeUtc": null,
+            "retryNotBeforeUtc": null,
+            "consecutiveTransientFailures": 0,
+            "consecutiveRateLimited": 0,
+            "consecutiveRejected": 0,
+            "recordDriftOpen": false,
+            "recordDriftStampUtc": null,
+            "halt": null,
+            "validators": {
+              "etag": null,
+              "lastModified": null
+            },
+            "facts": null
+          }
+        },
+        "originalRecords": {
+          "WARK04/28035/2026-10-21T12:18:00Z": [
+            "{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-21 12:18:00.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 28035\\r\\nIssue Time: 2026 Oct 21 1218 UTC\\r\\n\\r\\nEXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected\\nExtension to Serial Number: 28034\\nValid From: 2026 Oct 21 1200 UTC\\nValid To: 2026 Oct 22 1800 UTC\\nComment: Synthetic orphan conformance fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    },
+    {
+      "step": 14,
+      "kind": "evaluate",
+      "atUtc": "2026-11-26T18:00:00Z",
+      "expect": {
+        "notices": {},
+        "products": {
+          "alerts": {
+            "lastOutcome": "updated",
+            "freshness": "outdated",
+            "lkgSha256": "DEEC5EDC96B09716E3775EAECB1285604C5CE65B3A6F2D802EC846478F926912",
+            "lastSuccessUtc": "2026-10-21T12:19:00Z",
+            "nextAttemptNotBeforeUtc": "2026-10-21T12:21:00Z",
+            "retryNotBeforeUtc": null,
+            "consecutiveTransientFailures": 0,
+            "consecutiveRateLimited": 0,
+            "consecutiveRejected": 0,
+            "recordDriftOpen": false,
+            "recordDriftStampUtc": null,
+            "halt": null,
+            "validators": {
+              "etag": "\"fixture-s28-19\"",
+              "lastModified": "Wed, 21 Oct 2026 12:19:00 GMT"
+            },
+            "facts": {
+              "records": 13,
+              "acceptedRecords": 13
             }
           },
           "scales": {

@@ -2858,14 +2858,15 @@ def scenarios(cap: Capture):
                 "Orphan components follow joins, survive restart and leave no retention markers",
                 ["orphan-link", "orphan-resolved", "canonical-identity", "three-way-join", "restart", "retention"],
                 synthetic_records=True,
-                notes=["All WARK04 records, serials 28001 through 28033, are synthetic; no SWPC message text is reused.",
+                notes=["All WARK04 records, serials 28001 through 28035, are synthetic; no SWPC message text is reused.",
                        "Two orphan components join a stored root in one body. Another component changes identity "
-                       "while still orphaned, survives restart, then resolves. A final independent orphan is "
-                       "removed at its exact retention boundary together with the other notices."])
+                       "while still orphaned, survives restart, then resolves. Two final independent orphans have "
+                       "different retention boundaries: the first is removed with the other notices while the second "
+                       "keeps its marker, then the second is removed at its own exact boundary."])
 
-    def orphan_record(serial, minute, target=None):
+    def orphan_record(serial, minute, target=None, valid_to="2026 Oct 21 1800 UTC"):
         lines = ["WARNING: Synthetic geomagnetic K-index of 4 expected",
-                 "Valid From: 2026 Oct 21 1200 UTC", "Valid To: 2026 Oct 21 1800 UTC",
+                 "Valid From: 2026 Oct 21 1200 UTC", f"Valid To: {valid_to}",
                  "Comment: Synthetic orphan conformance fixture; not an SWPC product."]
         if target is not None:
             lines[0] = "EXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected"
@@ -2883,7 +2884,8 @@ def scenarios(cap: Capture):
         (13, [orphan_record(28023, 12, 28022)]),
         (15, [orphan_record(28022, 14, 28021)]),
         (17, [orphan_record(28021, 16)]),
-        (19, [orphan_record(28033, 18, 28032)]),
+        (19, [orphan_record(28033, 18, 28032),
+              orphan_record(28035, 18, 28034, valid_to="2026 Oct 22 1800 UTC")]),
     ]
     for minute, batch in batches:
         if minute == 17:
@@ -2893,6 +2895,7 @@ def scenarios(cap: Capture):
         at = f"2026-10-21T12:{minute:02d}:00Z"
         b.fetch(at, alerts_ok(records, f'"fixture-s28-{minute:02d}"', http_date(at)), None)
     b.step("evaluate", atUtc="2026-11-25T18:00:00Z")
+    b.step("evaluate", atUtc="2026-11-26T18:00:00Z")
     # Expectations come from the corrected model; existing scenarios stay hand-authored and unchanged.
     model = Model(b.doc)
     for step in b.doc["steps"]:

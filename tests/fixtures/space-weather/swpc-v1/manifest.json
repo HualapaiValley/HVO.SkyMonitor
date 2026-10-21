@@ -166,8 +166,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 184399,
-      "sha256": "534B0DADA564426CD7E9A75C594E6FB735C3DAC1D9D721EA9DAF8916BAAD2BEF"
+      "bytes": 184679,
+      "sha256": "118976C5AA844F0D1F40A5571DEC003EC27C08048E076A812F28F5B8927D56F0"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -316,8 +316,8 @@
     },
     {
       "path": "scenarios/s28-orphan-join-chain.json",
-      "bytes": 148394,
-      "sha256": "A48CE15AC944DD9791ED8D1FF5639FDDC631EDF9AAC25E45F8F8E4061DC8CEC7"
+      "bytes": 155070,
+      "sha256": "628110E269403CE07453DE0FE95317EE4D8D0506BD97F899C71DF2251C16F696"
     }
   ]
 }

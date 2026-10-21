@@ -790,7 +790,7 @@ A fetch also reports:
 | s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
 | s26 | Verbatim original alert JSON (including numeric x: 1.5, escapes and whitespace) survives two restarts and an unchanged refetch |
 | s27 | Outer JSON whitespace; literal UTF-8 and Unicode escape spellings; two message versions retain their exact original-record bytes in ingest order through two restarts and an unchanged refetch |
-| s28 | Synthetic orphan chains: resolution after identity change; two orphan components join a stored root once; a still-orphan join moves its marker; restart preserves the component; later root arrival resolves it; retention removes an orphan group and its marker |
+| s28 | Synthetic orphan chains: resolution after identity change; two orphan components join a stored root once; a still-orphan join moves its marker; restart preserves the component; later root arrival resolves it; retention removes an expired orphan group and its marker while a later-expiring orphan keeps its marker until its own boundary |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those
