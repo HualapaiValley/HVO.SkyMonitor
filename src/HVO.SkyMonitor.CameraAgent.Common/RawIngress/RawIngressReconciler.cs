@@ -10,13 +10,17 @@ internal sealed class RawIngressReconciler(
     SqliteRawCaptureJournal journal,
     Action? fileFlushRecorder = null,
     Action? directorySyncRecorder = null,
-    IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null)
+    IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null,
+    Func<string, Stream>? openPayload = null,
+    bool verifyCommittedPayloads = false)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
     private readonly IReadOnlyList<CaptureLaneDefinition> _laneDefinitions = laneDefinitions ?? [];
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
+    private readonly Func<string, Stream> _openPayload = openPayload ?? OpenPayload;
+    private readonly bool _verifyCommittedPayloads = verifyCommittedPayloads;
 
     /// <summary>A quarantine move found by inspection and made only under the maintenance barrier.</summary>
     private sealed record PendingQuarantine(string? PayloadPath, string? SidecarPath, string Reason, Guid? CaptureId);
@@ -28,6 +32,13 @@ internal sealed class RawIngressReconciler(
     /// rows that name those files, so while capture admission is not running no evidence is moved: the moves are
     /// counted as deferred and nothing is marked for them, and the next reconciliation makes them.
     /// </summary>
+    /// <remarks>
+    /// A committed entry's payload was flushed before its row committed, so this checks its structure only: the sidecar
+    /// is the committed manifest and the payload has the committed length. Its bytes are not read, so the pass does not
+    /// grow with retained payload bytes; the consumers that read a payload verify its checksum first. Evidence without a
+    /// committed row, which a crash can leave, is still hashed in full, as is every committed payload when
+    /// <c>verifyCommittedPayloads</c> is set.
+    /// </remarks>
     internal async Task<RawIngressReconciliationSummary> RunAsync(
         Func<CancellationToken, ValueTask<Capture.CaptureMaintenanceEntry>> enterMaintenance,
         CancellationToken cancellationToken,
@@ -132,7 +143,8 @@ internal sealed class RawIngressReconciler(
                 missingEvidence++;
                 continue;
             }
-            if (!await MatchesCommittedEntryAsync(entry, payloadPath, sidecarPath, inspectionToken).ConfigureAwait(false))
+            if (!await MatchesCommittedEntryAsync(
+                    entry, payloadPath, sidecarPath, _verifyCommittedPayloads ? _openPayload : null, inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "committed-evidence-mismatch", entry.CaptureId);
                 continue;
@@ -173,7 +185,7 @@ internal sealed class RawIngressReconciler(
             }
             var payloadPath = Resolve(manifest.RelativeArtifactPath);
             if (!File.Exists(payloadPath) || !PathsEqual(Path.ChangeExtension(sidecarPath, ".bin"), payloadPath) ||
-                !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, inspectionToken).ConfigureAwait(false))
+                !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, _openPayload, inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "orphan-evidence-mismatch");
                 continue;
@@ -374,12 +386,26 @@ internal sealed class RawIngressReconciler(
         }
     }
 
-    internal static async Task<bool> MatchesCommittedEntryAsync(
+    internal static Task<bool> MatchesCommittedEntryAsync(
         RawIngressJournalEntry entry,
         string payloadPath,
         string sidecarPath,
         CancellationToken cancellationToken)
+        => MatchesCommittedEntryAsync(entry, payloadPath, sidecarPath, OpenPayload, cancellationToken);
+
+    /// <summary>Checks a committed entry's files; with no <paramref name="openPayload"/>, the payload's length only.</summary>
+    private static async Task<bool> MatchesCommittedEntryAsync(
+        RawIngressJournalEntry entry,
+        string payloadPath,
+        string sidecarPath,
+        Func<string, Stream>? openPayload,
+        CancellationToken cancellationToken)
     {
+        // The sidecar must equal the committed manifest, so one of another length is not read.
+        if (new FileInfo(sidecarPath).Length != entry.ManifestJson.Length)
+        {
+            return false;
+        }
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
         if (!sidecar.AsSpan().SequenceEqual(entry.ManifestJson))
         {
@@ -402,24 +428,30 @@ internal sealed class RawIngressReconciler(
                manifest.RelativeArtifactPath == entry.PayloadRelativePath &&
                descriptor.Timing.ExposureStartedUtc == entry.ExposureStartedUtc &&
                descriptor.Timing.DurableIngressUtc == entry.DurableIngressUtc &&
-               await PayloadMatchesAsync(payloadPath, descriptor, cancellationToken).ConfigureAwait(false);
+               (openPayload is null
+                   ? new FileInfo(payloadPath).Length == descriptor.Layout.ByteLength
+                   : await PayloadMatchesAsync(payloadPath, descriptor, openPayload, cancellationToken).ConfigureAwait(false));
     }
 
     private static async Task<bool> PayloadMatchesAsync(
         string payloadPath,
         ReconstructionDescriptor descriptor,
+        Func<string, Stream> openPayload,
         CancellationToken cancellationToken)
     {
         if (new FileInfo(payloadPath).Length != descriptor.Layout.ByteLength)
         {
             return false;
         }
-        using var stream = new FileStream(
-            payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var stream = openPayload(payloadPath);
         var checksum = await PayloadChecksum.ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
         return string.Equals(checksum, descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase);
     }
+
+    internal static Stream OpenPayload(string payloadPath)
+        => new FileStream(
+            payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
 
     private async Task<long> QuarantinePairAsync(
         string? payloadPath,

@@ -217,9 +217,18 @@ binding visit one retained manifest at a time. Reconciliation releases each SQLi
 payload files or repairing state, so payload scanning does not pin a WAL reader
 for the whole history. Compact path and stage-key sets still scale with capture
 count; manifest bytes and decoded scene objects do not accumulate with history.
-Startup continues to read and checksum retained payloads and sidecars, and its
-I/O duration therefore scales with retained bytes. No resource default, schema,
-retention policy, or evidence-validation rule changes.
+Startup compares each committed capture's sidecar with its journaled manifest
+and checks that the payload exists with its committed length. It does not read
+payload bytes, so its I/O does not scale with retained payload bytes. Evidence a
+crash left without a committed journal row is still checksummed in full before it
+is recovered. Processing, replay, window inputs, transients, time-lapses,
+downloads and uploads verify a committed payload's checksum before using it; an
+upload whose payload fails that check is quarantined as
+`payload-checksum-mismatch` without sending it. When processing reports committed
+evidence it cannot use, the next reconciliation checksums every committed payload
+and quarantines a mismatch, as startup did before. Resuming capture after a start
+under the installer's pause runs only the maintenance that start held, not a
+second reconciliation.
 
 The protected deployment-location history, the protected manual-coordinate record
 `manual-deployment-location.v1.protected` that carries the governing local seed

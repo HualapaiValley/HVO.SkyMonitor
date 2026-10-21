@@ -46,6 +46,8 @@ internal sealed partial class RawCaptureIngress :
     private readonly Capture.CaptureMaintenanceGate? _maintenanceGate;
     private int _completedInitializations;
     private bool _maintenanceDeferred;
+    private bool _rawReconciliationRequired = true;
+    private bool _verifyCommittedPayloads;
     private bool _journalValidated;
     private bool _evidenceUnavailable;
     private bool _capacityRevalidationRequired;
@@ -167,13 +169,21 @@ internal sealed partial class RawCaptureIngress :
                 Volatile.Write(ref _journalValidated, true);
                 initializationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
-                var reconciliation = await new RawIngressReconciler(
-                    _options.RawIngressRoot,
-                    _journal,
-                    _telemetry.RecordFileFlush,
-                    _telemetry.RecordDirectorySync,
-                    _lanePolicy.Definitions)
-                     .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false);
+                // Capture opening after a held start reruns only what that start deferred: the raw pass that already ran
+                // in this process runs again only if it left work for later or a failure invalidated it since.
+                var reconcileRaw = Volatile.Read(ref _rawReconciliationRequired);
+                var verifyCommittedPayloads = Volatile.Read(ref _verifyCommittedPayloads);
+                var reconciliation = reconcileRaw
+                    ? await new RawIngressReconciler(
+                        _options.RawIngressRoot,
+                        _journal,
+                        _telemetry.RecordFileFlush,
+                        _telemetry.RecordDirectorySync,
+                        _lanePolicy.Definitions,
+                        _faultInjector.OpenPayloadForVerification,
+                        verifyCommittedPayloads)
+                         .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
+                    : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
                 var projectedSceneBacklog = 0;
                 var heldBy = HeldBy();
                 if (reconciliation.MaintenanceDeferred > 0)
@@ -220,7 +230,7 @@ internal sealed partial class RawCaptureIngress :
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
-                _state.RecordReconciliation(reconciliation);
+                if (reconcileRaw) _state.RecordReconciliation(reconciliation);
                 _logger.RawIngressSqliteSucceeded("checkpoint");
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
@@ -251,12 +261,15 @@ internal sealed partial class RawCaptureIngress :
                     Volatile.Write(ref _evidenceUnavailable, true);
                     throw new InvalidDataException("Raw ingress has committed records with missing evidence.");
                 }
-                _logger.RawIngressReconciled(
-                    reconciliation.Inspected,
-                    reconciliation.Recovered,
-                    reconciliation.Cleaned,
-                    reconciliation.Quarantined,
-                    reconciliation.MissingEvidence);
+                if (reconcileRaw)
+                {
+                    _logger.RawIngressReconciled(
+                        reconciliation.Inspected,
+                        reconciliation.Recovered,
+                        reconciliation.Cleaned,
+                        reconciliation.Quarantined,
+                        reconciliation.MissingEvidence);
+                }
                 if (reconciliation.Quarantined > 0)
                 {
                     _logger.RawIngressQuarantined(reconciliation.Quarantined, reconciliation.QuarantineBytes);
@@ -269,6 +282,15 @@ internal sealed partial class RawCaptureIngress :
                 if (wasUnhealthy)
                 {
                     _logger.RawIngressRecovered();
+                }
+                if (reconcileRaw)
+                {
+                    // A held quarantine or an unrepaired index is found again by the next pass; a held quarantine of a
+                    // payload whose content differs is found only by another verifying pass.
+                    Volatile.Write(ref _rawReconciliationRequired,
+                        reconciliation.MaintenanceDeferred > 0 || reconciliation.IndexProjectionFailures > 0);
+                    if (verifyCommittedPayloads && reconciliation.MaintenanceDeferred == 0)
+                        Volatile.Write(ref _verifyCommittedPayloads, false);
                 }
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
@@ -286,12 +308,14 @@ internal sealed partial class RawCaptureIngress :
             catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
             {
                 // The validated journal has already published its evidence health and retained quarantine.
+                Volatile.Write(ref _rawReconciliationRequired, true);
                 _telemetry.RecordFailure("initialization", "evidence-unavailable");
                 if (allowEvidenceUnavailable) return false;
                 throw;
             }
             catch (Exception exception)
             {
+                Volatile.Write(ref _rawReconciliationRequired, true);
                 var reason = FailureReason(exception);
                 SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "initialization-failed");
                 _telemetry.RecordFailure("initialization", reason);
@@ -673,7 +697,7 @@ internal sealed partial class RawCaptureIngress :
                     // The journal commit cannot be interrupted, but a payload published without its sidecar or its
                     // commit would make every retry of this capture a conflict until the reconciler recovers or
                     // quarantines it, so the next accept re-initializes first.
-                    Volatile.Write(ref _initialized, false);
+                    RequireReconciliation();
                 }
             }
             throw;
@@ -700,7 +724,7 @@ internal sealed partial class RawCaptureIngress :
                 _logger.RawIngressSqliteFailed("commit");
             }
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, reason);
-            Volatile.Write(ref _initialized, false);
+            RequireReconciliation();
             throw;
         }
         finally
@@ -872,6 +896,16 @@ internal sealed partial class RawCaptureIngress :
         SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "committed-evidence-unavailable");
         _telemetry.RecordFailure("processing", "evidence-unavailable");
         _logger.RawIngressRefused("processing", "evidence-unavailable");
+        // A consumer could not use committed evidence, which may be a payload whose content no longer matches its
+        // checksum, so the next pass verifies every committed payload and quarantines it as a startup used to.
+        Volatile.Write(ref _verifyCommittedPayloads, true);
+        RequireReconciliation();
+    }
+
+    /// <summary>Makes the next operation re-initialize, running the raw ingress reconciliation again.</summary>
+    private void RequireReconciliation()
+    {
+        Volatile.Write(ref _rawReconciliationRequired, true);
         Volatile.Write(ref _initialized, false);
     }
 
