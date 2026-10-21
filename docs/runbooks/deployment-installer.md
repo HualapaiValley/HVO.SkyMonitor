@@ -635,9 +635,8 @@ A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
 existing ancestor, not on `/`; when the product root and Docker's data root
 share one filesystem their requirements are added together. An upgrade likewise
-measures the staged archive and room for two copies of the small databases (the
-snapshot and a restore's temporary copy) against the product root's own
-filesystem. Bulk capture data is never copied, so it is never counted.
+measures the staged archive, snapshot, temporary database copy, concurrent trial
+rollback journal and a separate restore-copy allowance against the product root's own filesystem when a migration or retained-state restore requires those phases. Pure image swaps budget only for their archive and headroom. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
 so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
@@ -2084,7 +2083,7 @@ restore reads the whole archive and refuses it (exit `3`) when:
   restore;
 - the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
 - there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
-  database it puts back. A resumed one needs room only for what it has not done: none for staging once the journal
+  database it puts back, with current-size allowances for a carry trial and its rollback journal. A resumed one needs room only for what it has not done: none for staging once the journal
   records the archive staged, and none for the database copies once it records the databases restored.
 
 A `--plan` makes the same checks and writes nothing.
@@ -2340,6 +2339,10 @@ installer plans what each store of the target snapshot receives:
    - the target cannot carry it at all, such as a row the snapshot lacks beyond the lazy-row allowance.
 2. What remains for a store is carried and verified, in one transaction, on a scratch copy of the target store under
    the operation directory. This proves the carry against that store's real CHECK constraints and column types.
+   Before the trial starts, its free-space check includes the scratch database, a current-size rollback journal
+   with page-record overhead, the target snapshot's database-copy allowance, and 256 MiB headroom. The restore
+   allowance is kept while the trial runs. This is a capacity estimate, not a filesystem reservation: triggers can
+   grow the database and other processes can consume space.
 3. A store whose trial fails in any way, or whose own values the installer cannot interpret, is put back without its
    counters. A store not encoded as UTF-8 is one such case. The snapshot's authentication proves its bytes, not that the
    installer can read its values.
@@ -2360,9 +2363,12 @@ and `--resume` restores again. Whatever was not carried is named, with why, on s
 
 ```text
 Warning: the restore of the CameraAgent databases from snapshot <uuid> could not carry the <counter> counter of
-'<store>' (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
+'<store>' with key "<escaped-key>" (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
 snapshot may be handed out again; the restore itself completes.
 ```
+
+Every omitted floor is listed separately, including when a whole store fails. Keys use JSON escaping so control
+characters cannot alter terminal output. The same identities and reasons appear in human and JSON warnings.
 
 The journal keeps the marks themselves, and the plan is made again on every retry, so a mark a retry cannot carry never
 fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger, and the

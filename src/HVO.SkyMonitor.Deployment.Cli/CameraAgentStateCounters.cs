@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
 
@@ -199,6 +200,9 @@ internal static class CameraAgentStateCounters
     /// </summary>
     internal static Action<string> CarryStep { get; set; } = static _ => { };
 
+    /// <summary>The filesystem measured before a trial; tests replace it without filling a real volume.</summary>
+    internal static IHostEnvironment TrialHost { get; set; } = LinuxHostEnvironment.Instance;
+
     /// <summary>What a restore carries into the snapshot it puts back, and what it puts back without carrying, with why.</summary>
     /// <param name="Floors">The floors that were screened against the target snapshot and carried in a trial.</param>
     /// <param name="Uncarried">Each counter or store put back as the snapshot recorded it, and why.</param>
@@ -308,8 +312,10 @@ internal static class CameraAgentStateCounters
     /// <param name="floors">The highest marks recorded and observed.</param>
     /// <param name="snapshotStore">The target snapshot's copy of a store, or null when it records the store as absent.</param>
     /// <param name="trialDirectory">A directory the plan may create, fill and remove.</param>
+    /// <param name="restoreBytes">Space kept for copying the target snapshot back after the trial.</param>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Carrying a counter is best effort; any failure puts that store back without its counters rather than blocking the restore.")]
-    public static CarryPlan PlanCarry(IReadOnlyList<StateCounterFloor> floors, Func<string, string?> snapshotStore, string trialDirectory)
+    public static CarryPlan PlanCarry(
+        IReadOnlyList<StateCounterFloor> floors, Func<string, string?> snapshotStore, string trialDirectory, long restoreBytes = 0)
     {
         ArgumentNullException.ThrowIfNull(floors);
         ArgumentNullException.ThrowIfNull(snapshotStore);
@@ -319,6 +325,7 @@ internal static class CameraAgentStateCounters
         {
             foreach (var store in floors.GroupBy(static floor => floor.Store, StringComparer.Ordinal))
             {
+                IReadOnlyList<StateCounterFloor> pending = [.. store];
                 try
                 {
                     // A store the snapshot records as absent receives nothing; its floors only keep the live store.
@@ -328,15 +335,16 @@ internal static class CameraAgentStateCounters
                         continue;
                     }
                     CarryStep($"screen:{store.Key}");
-                    var (safe, refused) = Screen(target, store.Key, [.. store]);
+                    var (safe, refused) = Screen(target, [.. store]);
                     uncarried.AddRange(refused);
+                    pending = safe;
                     if (safe.Count == 0) continue;
-                    Trial(target, store.Key, safe, trialDirectory);
+                    Trial(target, store.Key, safe, trialDirectory, restoreBytes);
                     carried.AddRange(safe);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    uncarried.Add(($"the counters of '{store.Key}'", exception.Message));
+                    uncarried.AddRange(pending.Select(floor => (Describe(floor), exception.Message)));
                 }
             }
         }
@@ -387,7 +395,7 @@ internal static class CameraAgentStateCounters
     /// carried revision or no revision table to record it in). A floor the target already meets needs no carrying.
     /// </summary>
     private static (List<StateCounterFloor> Safe, List<(string What, string Reason)> Refused) Screen(
-        string target, string relative, IReadOnlyList<StateCounterFloor> floors)
+        string target, IReadOnlyList<StateCounterFloor> floors)
     {
         var safe = new List<StateCounterFloor>();
         var refused = new List<(string What, string Reason)>();
@@ -398,17 +406,21 @@ internal static class CameraAgentStateCounters
             string? reason;
             if (counter is null)
             {
-                refused.Add(($"the '{floor.Counter}' counter of '{relative}'", "the installer does not know this counter"));
+                refused.Add((Describe(floor), "the installer does not know this counter"));
                 continue;
             }
             reason = floor.Value < 0 || floor.Value > MaximumFloor(counter)
                 ? "its value is outside the range a carry can write and verify"
                 : KeyProblem(counter, floor.Key) ?? Uncarriable(connection, counter, floor);
             if (reason is null) safe.Add(floor);
-            else refused.Add(($"the {counter.Name} counter of '{relative}'", reason));
+            else refused.Add((Describe(floor), reason));
         }
         return (safe, refused);
     }
+
+    /// <summary>Names a floor on one terminal-safe line, retaining every character of its key.</summary>
+    internal static string Describe(StateCounterFloor floor)
+        => $"the {JsonEncodedText.Encode(floor.Counter)} counter of '{JsonEncodedText.Encode(floor.Store)}' with key \"{JsonEncodedText.Encode(floor.Key)}\"";
 
     /// <summary>
     /// The highest floor a counter's carry can write and the reader then accept: a state token writes one above its
@@ -454,8 +466,16 @@ internal static class CameraAgentStateCounters
     /// Carries and verifies <paramref name="floors"/> on a scratch copy of the target store, which is then removed. It
     /// throws on any failure; nothing it does touches the snapshot or the live stores.
     /// </summary>
-    private static void Trial(string target, string relative, IReadOnlyList<StateCounterFloor> floors, string trialDirectory)
+    private static void Trial(
+        string target, string relative, IReadOnlyList<StateCounterFloor> floors, string trialDirectory, long restoreBytes)
     {
+        var bytes = new FileInfo(target).Length;
+        // Scratch and its concurrent rollback journal are additional to the copy a restore still needs.
+        // Eight bytes per minimum-size SQLite page cover journal record headers; headroom covers sector headers.
+        // This is a current-size estimate, not a reservation against trigger growth or other filesystem users.
+        var required = checked(2 * bytes + JournalRecordBytes(bytes) + Math.Max(bytes, restoreBytes) + 256L * 1024 * 1024);
+        if (TrialHost.MeasureFileSystem(trialDirectory).AvailableBytes < required)
+            throw new InstallerException("Insufficient free space for the carry trial and its rollback journal while keeping space for the restore.");
         SafeFileSystem.CreateOwnerDirectory(trialDirectory);
         var scratch = Path.Combine(trialDirectory, "store.db");
         RemoveScratch(scratch);
@@ -470,6 +490,8 @@ internal static class CameraAgentStateCounters
             RemoveScratch(scratch);
         }
     }
+
+    internal static long JournalRecordBytes(long databaseBytes) => checked((databaseBytes / 512 + 1) * 8);
 
     private static void RemoveScratch(string scratch)
     {

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
@@ -13,11 +12,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 [UnsupportedOSPlatform("windows")]
 public sealed class SkyCliDeadlineTests
 {
-    /// <summary>Far beyond the one-second deadlines below: a command still running then has no deadline at all.</summary>
+    /// <summary>A real deadlock guard; expiry and assertions use the controllable clock, never elapsed runner time.</summary>
     private static readonly TimeSpan Watchdog = TimeSpan.FromSeconds(20);
 
-    /// <summary>How long after its deadline a command may take to end.</summary>
-    private static readonly TimeSpan Slack = TimeSpan.FromSeconds(4);
+    private static CliHarness CreateHarness() => new() { Time = new ManualTimeProvider(), PollInterval = TimeSpan.Zero };
+
+    private static void Expire(CliHarness harness, int seconds)
+    {
+        var clock = (ManualTimeProvider)harness.Time;
+        var timer = clock.Timers.Single(timer => !timer.Disposed && timer.DueTime == TimeSpan.FromSeconds(seconds));
+        timer.Fire();
+    }
 
     [TestMethod]
     [DataRow("status")]
@@ -38,24 +43,23 @@ public sealed class SkyCliDeadlineTests
     public async Task AnAnswerWhoseBodyNeverArrives_TimesOutAtTheDeadlineAndExitsOneAsync(string command)
     {
         ArgumentNullException.ThrowIfNull(command);
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         using var watchdog = new CancellationTokenSource(Watchdog);
         var args = SkyCliExitCodeTests.Prepare(command, harness, watchdog);
         harness.Api.StallBodies = true;
-        var clock = Stopwatch.StartNew();
+        harness.Api.OnStalledRead = () => Expire(harness, 1);
 
         var result = await harness.RunAsync(watchdog.Token, [.. args, "--timeout", "1"]).ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
         StringAssert.Contains(result.Error, "Timed out after 1 s (--timeout)", StringComparison.Ordinal);
-        Assert.IsLessThan(TimeSpan.FromSeconds(1) + Slack, clock.Elapsed);
         Assert.IsFalse(harness.Api.Requests.Any(static request => request.Method is "PUT" or "POST"), "Nothing was sent after the stalled read.");
     }
 
     [TestMethod]
     public async Task ARestartWhoseReadsHang_EndsAtItsDeadlineNotAfterItAsync()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         harness.Api.OnRequest = request =>
         {
             if (request.PathAndQuery == Fake.InfoRoute && harness.Api.RequestsTo("POST", Fake.RestartRoute).Count > 0)
@@ -64,12 +68,11 @@ public sealed class SkyCliDeadlineTests
             }
         };
         using var watchdog = new CancellationTokenSource(Watchdog);
-        var clock = Stopwatch.StartNew();
+        harness.Api.OnHang = () => Expire(harness, 2);
 
         var result = await harness.RunAsync(watchdog.Token, "restart", "--force", "--timeout", "2").ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
-        Assert.IsLessThan(TimeSpan.FromSeconds(2) + Slack, clock.Elapsed);
         StringAssert.Contains(result.Error, "CameraAgent accepted the restart, but it could not be verified", StringComparison.Ordinal);
         StringAssert.Contains(result.Error, "Timed out after 2 s (--timeout) waiting for CameraAgent to come back", StringComparison.Ordinal);
     }
@@ -77,7 +80,15 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task ARestartThatNeverComesBack_TimesOutAtTheDefaultDeadlineUnlessGivenAnotherAsync()
     {
-        using var harness = new CliHarness { RestartReadsBeforeNewProcess = -1 };
+        using var harness = CreateHarness();
+        harness.RestartReadsBeforeNewProcess = -1;
+        harness.Api.OnRequest = request =>
+        {
+            if (request.PathAndQuery == Fake.InfoRoute && harness.Api.RequestsTo("POST", Fake.RestartRoute).Count > 0)
+            {
+                Expire(harness, 1);
+            }
+        };
 
         var result = await harness.RunAsync("restart", "--force", "--timeout", "1").ConfigureAwait(false);
 
@@ -89,7 +100,7 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task TheDefaultDeadline_IsThirtySecondsAsync()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
 
         var result = await harness.RunAsync("restart", "--force").ConfigureAwait(false);
 
@@ -100,10 +111,11 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task ATimeout_IsReportedInJsonAsTimedOutWithExitOneAsync()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         harness.Api.Hang = true;
         using var watchdog = new CancellationTokenSource(Watchdog);
 
+        harness.Api.OnHang = () => Expire(harness, 1);
         var result = await harness.RunAsync(watchdog.Token, "status", "--json", "--timeout", "1").ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
@@ -115,7 +127,7 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task CtrlC_BeforeTheDeadline_StillExits130Async()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         using var stop = new CancellationTokenSource();
         harness.Api.Hang = true;
         harness.Api.OnRequest = _ => stop.Cancel();
@@ -135,7 +147,7 @@ public sealed class SkyCliDeadlineTests
     public async Task ATimeoutOutOfRange_IsAUsageErrorOnEveryCommandAsync(string commandLine)
     {
         ArgumentNullException.ThrowIfNull(commandLine);
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
 
         var result = await harness.RunAsync(commandLine.Split(' ')).ConfigureAwait(false);
 
@@ -146,7 +158,17 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task TimeSpentAnsweringAPrompt_DoesNotCountAgainstTheDeadlineAsync()
     {
-        using var harness = new CliHarness { Interactive = true, AnswerDelay = TimeSpan.FromMilliseconds(1500) };
+        using var harness = CreateHarness();
+        harness.Interactive = true;
+        var clock = (ManualTimeProvider)harness.Time;
+        var answered = false;
+        harness.Answering = () =>
+        {
+            Assert.AreEqual(Timeout.InfiniteTimeSpan, clock.Timers.Single(timer => !timer.Disposed).DueTime,
+                "The expiry is disabled for the entire time the operator answers.");
+            clock.Now += TimeSpan.FromHours(1);
+            answered = true;
+        };
         harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs(active: "rig-1", pending: null));
         harness.Input.Enqueue("y");
 
@@ -154,14 +176,17 @@ public sealed class SkyCliDeadlineTests
 
         Assert.AreEqual(0, result.ExitCode, result.ToString());
         Assert.HasCount(1, harness.Api.RequestsTo("POST", Fake.RigRoute + "/stage"));
+        Assert.IsTrue(answered);
+        Assert.AreEqual(TimeSpan.FromSeconds(1), clock.Timers.Single().DueTime, "The exact remaining deadline resumes.");
     }
 
     [TestMethod]
     public async Task Watch_AReadWhoseBodyNeverArrives_IsReportedAndTheWatchGoesOnAsync()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         using var stop = new CancellationTokenSource(Watchdog);
         harness.Api.StallBodies = true;
+        harness.Api.OnStalledRead = () => Expire(harness, 1);
         harness.Api.OnRequest = _ =>
         {
             var reads = harness.Api.RequestsTo("GET", Fake.SummaryRoute).Count;
@@ -182,15 +207,14 @@ public sealed class SkyCliDeadlineTests
     [TestMethod]
     public async Task ARequestThatHangs_IsBoundedByTheDeadlineAloneAsync()
     {
-        using var harness = new CliHarness();
+        using var harness = CreateHarness();
         harness.Api.Hang = true;
         using var watchdog = new CancellationTokenSource(Watchdog);
-        var clock = Stopwatch.StartNew();
 
+        harness.Api.OnHang = () => Expire(harness, 2);
         var result = await harness.RunAsync(watchdog.Token, "info", "--timeout", "2").ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
-        Assert.IsGreaterThanOrEqualTo(TimeSpan.FromSeconds(1.9), clock.Elapsed, "No shorter timer ended it first.");
         StringAssert.Contains(result.Error, "Timed out after 2 s (--timeout)", StringComparison.Ordinal);
     }
 }

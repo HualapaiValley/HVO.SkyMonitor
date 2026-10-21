@@ -143,18 +143,25 @@ internal sealed class SkyUiRigPage : SkyUiPage
         return fields;
     }
 
+    private bool CanStage(string? id)
+        => CanChange && Ui.Data.Rigs.HasValue && id is not null && id != Active && Staged is null
+            && SkyJson.Items(Ui.Data.Rigs.Value, "revisions").Any(revision => SkyJson.Text(revision, "revisionId") == id);
+
+    private bool CanApply(string? id)
+        => CanChange && id is not null && id == Staged && Ui.Data.Info.Value?.Restart.Supervised == true;
+
     private void UpdateButtons()
     {
         var chosen = _revisions.SelectedRow?.Key;
-        _stage.Enabled = CanChange && Ui.Data.Rigs.HasValue && chosen is not null && chosen != Active && chosen != Staged && Staged is null;
-        _apply.Enabled = CanChange && Staged is not null && Ui.Data.Info.Value?.Restart.Supervised == true;
-        _changeCamera.Enabled = CanChange && CameraField is { CanWrite: true };
+        _stage.Enabled = CanStage(chosen);
+        _apply.Enabled = CanApply(Staged);
+        _changeCamera.Enabled = CameraField is { } field && SkyUiSettingChange.CanChange(Ui, field.Key);
         Ui.Hint(Help);
     }
 
     private void Stage()
     {
-        if (!_stage.Enabled || _revisions.SelectedRow?.Key is not { } id || Ui.Client is not { } client)
+        if (_revisions.SelectedRow?.Key is not { } id || !CanStage(id) || Ui.Client is not { } client)
         {
             return;
         }
@@ -178,7 +185,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
                 }
 
                 Ui.Say(HvoNotice.Info, $"Rig revision {id} passed CameraAgent's preview against the active schedule.");
-                Ui.OpenPrompt(new SkyUiPromptSpec("Rig stage / Review",
+                Ui.OpenChangePrompt(new SkyUiPromptSpec("Rig stage / Review",
                 [
                     new($"Rig revision {id} passed the preview against schedule revision {SkyJson.Text(preview, "scheduleRevisionId")}."),
                     new("It is unvalidated at runtime: it takes effect when CameraAgent next starts, and its camera may fail to initialize then.", HvoTone.Warning)
@@ -204,18 +211,18 @@ internal sealed class SkyUiRigPage : SkyUiPage
                 })
                 {
                     Acknowledge = "Stage it, unvalidated at runtime, for the next CameraAgent start"
-                });
+                }, () => CanStage(id));
             });
     }
 
     private void Apply()
     {
-        if (!_apply.Enabled || Staged is not { } staged)
+        if (Staged is not { } staged || !CanApply(staged))
         {
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Rig apply / Review",
+        Ui.OpenChangePrompt(new SkyUiPromptSpec("Rig apply / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url} to apply rig revision {staged}?"),
             new("Capture stops until it is back. The interface waits for the new process, then until the rig is active or its camera fails.", HvoTone.Muted)
@@ -230,12 +237,12 @@ internal sealed class SkyUiRigPage : SkyUiPage
                     error is null ? $"Rig revision {staged} is active. CameraAgent restarted at {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}." : string.Empty,
                     "CameraAgent was not restarted"));
             return null;
-        }));
+        }), () => CanApply(staged));
     }
 
     private void ChangeCamera()
     {
-        if (_changeCamera.Enabled && CameraField is { } field)
+        if (CameraField is { } field && SkyUiSettingChange.CanChange(Ui, field.Key))
         {
             SkyUiSettingChange.Open(Ui, field);
         }
