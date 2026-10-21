@@ -102,6 +102,46 @@ FROM build AS final
         self.dockerfile("Dockerfile", "# no build stages\n")
         self.check("no FROM instructions")
 
+    def test_control_characters_are_escaped_and_sdk_is_strict(self):
+        self.dockerfile("bad\n::error title=forged/Dockerfile", "FROM unpinned\x1b]0;title\x07\n")
+        result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(line.startswith("::") for line in result.stderr.splitlines()))
+        self.assertNotIn("\x1b", result.stderr)
+        (self.root / "global.json").write_text(json.dumps({"sdk": {"version": SDK + "\n::error forged"}}))
+        self.check("invalid stable SDK version")
+
+    def test_registry_spelling_cannot_hide_sdk_mismatch(self):
+        self.dockerfile("Dockerfile", f"FROM MCR.MICROSOFT.COM:443/dotnet/sdk:wrong@sha256:{A}\n")
+        self.check("SDK tag must equal global.json")
+
+    def test_docker_hub_spelling_cannot_hide_digest_conflict(self):
+        for first, second in (("ubuntu:24.04", "docker.io/library/ubuntu:24.04"),
+                              ("org/image:1", "DOCKER.IO:443/org/image:1")):
+            with self.subTest(first=first):
+                self.dockerfile("Dockerfile", f"FROM {first}@sha256:{A}\nFROM {second}@sha256:{B}\n")
+                self.check("conflicting digests")
+
+    def test_scratch_and_digest_only_references(self):
+        self.dockerfile("Dockerfile", f"FROM scratch AS empty\nFROM ubuntu@sha256:{A}\nFROM ubuntu@sha256:{B}\n")
+        self.check()
+
+    def test_conflict_names_first_location(self):
+        self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\nFROM ubuntu:24.04@sha256:{A}\nFROM ubuntu:24.04@sha256:{B}\n")
+        self.check("first seen at Dockerfile:1")
+
+    def test_buildkit_continuation_grammar(self):
+        for suffix in ("\\\u00a0", "\\\f", "\\\\"):
+            with self.subTest(suffix=repr(suffix)):
+                self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A} AS base\nRUN echo hello {suffix}\nFROM unpinned\n")
+                self.check("FROM must be pinned")
+        self.dockerfile("Dockerfile", f"FROM \\ \t\r\n ubuntu:24.04@sha256:{A}\r\n")
+        self.check()
+
+    def test_runtime_deps_major_upgrade_is_ignored(self):
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        self.assertRegex(config, r'dependency-name: "dotnet/runtime-deps"\n        update-types:\n          - "version-update:semver-major"')
+
     def test_real_repository_and_dependabot_coverage(self):
         result = subprocess.run([CHECK], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
