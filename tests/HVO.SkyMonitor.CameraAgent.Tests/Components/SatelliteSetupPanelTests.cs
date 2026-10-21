@@ -62,10 +62,11 @@ public sealed class SatelliteSetupPanelTests
 
     private sealed class Service(string reason, string? overridden = null) : ICameraAgentSatelliteSetupUiService
     {
+        private static readonly string[] FeatureGroups = ["orbitalElements", "satellitePlanning"];
         internal List<(string, string, string)> Writes { get; } = [];
         public Task<OperatorUiResult<SatelliteSetupView>> GetAsync(DateTimeOffset startUtc, DateTimeOffset endUtc, CancellationToken cancellationToken)
         {
-            var groups = new[] { "orbitalElements", "satellitePlanning" }.Select(group => new CameraAgentSettingsGroupState(
+            var groups = FeatureGroups.Select(group => new CameraAgentSettingsGroupState(
                 group, "v1", overridden is null, overridden is null ? null : "An override controls this switch.",
                 [new(group + ".enabled", JsonSerializer.SerializeToElement("false"), true,
                     overridden is null ? CameraAgentSettingSource.SettingsFile : Enum.Parse<CameraAgentSettingSource>(overridden),

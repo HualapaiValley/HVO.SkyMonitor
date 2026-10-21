@@ -55,7 +55,7 @@ public sealed class CameraAgentFeatureSettingsTests
         var variable = "HVO_FEATURE_" + Guid.NewGuid().ToString("N") + "_";
         try
         {
-            File.WriteAllText(Path.Combine(root, key.Replace(":", "__", StringComparison.Ordinal)), "true");
+            await File.WriteAllTextAsync(Path.Combine(root, key.Replace(":", "__", StringComparison.Ordinal)), "true").ConfigureAwait(false);
             Environment.SetEnvironmentVariable(variable + key.Replace(":", "__", StringComparison.Ordinal), "true");
             var fileContents = "{\"CameraAgent\":{\"" + key.Split(':')[1] + "\":{\"Enabled\":false}}}";
             using var harness = await CameraAgentSettingsHarness.CreateAsync(configureOverrides: configuration =>
