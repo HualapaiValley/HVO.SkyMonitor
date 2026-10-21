@@ -63,6 +63,15 @@ public sealed class SpaceWeatherOperationsApiKeyTests
                 Assert.IsFalse(json.Contains("space-weather.antiforgery-invalid", StringComparison.Ordinal), json);
             }
 
+            using (var acknowledge = Command("/api/v1/operations/space-weather/acknowledge", new { group = "ALTZZZ/999" }))
+            {
+                using var response = await writer.SendAsync(acknowledge).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.NotFound, response.StatusCode, json);
+                StringAssert.Contains(json, "space-weather.unknown-notice", StringComparison.Ordinal);
+                Assert.IsFalse(json.Contains("space-weather.antiforgery-invalid", StringComparison.Ordinal), json);
+            }
+
             using var reader = Client(read);
             using (var refresh = Command(RefreshPath, new { reason = "read key refresh" }))
             {

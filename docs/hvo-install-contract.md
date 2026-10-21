@@ -387,7 +387,6 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 2, reads 2 to 2 |
 | `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 3, reads 3 to 3 |
 | `orbitalElements` | `raw/.orbital-elements/orbital-elements.db`, with its content files beside it | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): the provider floor and halt must never be rewound |
-
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 
 - The state snapshot of #1340 copies every store here except `orbitalElements` and `spaceWeather`. The space-weather store holds per-product Retry-After floors, backoff and provider/product halts; restoring an older copy would rewind them. Future incompatible schema changes must revisit this exclusion under #1340. The orbital store holds the provider's

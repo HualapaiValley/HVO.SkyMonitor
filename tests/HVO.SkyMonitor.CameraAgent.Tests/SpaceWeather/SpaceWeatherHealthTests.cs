@@ -8,6 +8,34 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 public sealed class SpaceWeatherHealthTests
 {
     [TestMethod]
+    public async Task SimultaneousHealthReasonsKeepTheDocumentedPrecedence()
+    {
+        using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false);
+        var productHalt = true; var providerHalt = true; var drift = true;
+        host.Store.HealthTransform = health =>
+        {
+            var product = health.Products[SwpcProduct.Alerts];
+            return health with
+            {
+                ProviderHalt = providerHalt ? new("forbidden", host.Clock.GetUtcNow()) : null,
+                Products = health.Products.SetItem(SwpcProduct.Alerts, product with
+                {
+                    ProductHalt = productHalt ? new("not-found", host.Clock.GetUtcNow()) : null,
+                    Checkpoint = product.Checkpoint with { ConsecutiveRejected = drift ? 3 : 0 }
+                }),
+                RawBodyBytes = 512L * 1024 * 1024 + 1
+            };
+        };
+        Assert.AreEqual("space-weather.provider-halted", (await host.Health.EvaluateAsync(default).ConfigureAwait(false)).Description);
+        providerHalt = false;
+        Assert.AreEqual("space-weather.product-halted", (await host.Health.EvaluateAsync(default).ConfigureAwait(false)).Description);
+        productHalt = false;
+        Assert.AreEqual("space-weather.format-drift", (await host.Health.EvaluateAsync(default).ConfigureAwait(false)).Description);
+        drift = false;
+        Assert.AreEqual("space-weather.store-oversized", (await host.Health.EvaluateAsync(default).ConfigureAwait(false)).Description);
+    }
+
+    [TestMethod]
     [DataRow("provider-halted")]
     [DataRow("product-halted")]
     [DataRow("alerts-outdated")]

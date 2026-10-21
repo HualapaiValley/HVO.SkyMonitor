@@ -90,6 +90,73 @@ public sealed class CameraAgentSpaceWeatherOperationsEndpointsTests
         Assert.AreEqual(503, response.Code); Assert.DoesNotContain("private-storage-sentinel", response.Body, StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    [DataRow("space-weather.revision-conflict")]
+    [DataRow("space-weather.idempotency-key-reused")]
+    [DataRow("space-weather.resume-halt-changed")]
+    public async Task ConflictsHaveFixedHttpProblemsAndCurrentStatus(string reason)
+    {
+        using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false); using var app = App(host);
+        (int Code, string Body) response;
+        if (reason == "space-weather.resume-halt-changed")
+        {
+            var since = await host.HaltAsync().ConfigureAwait(false);
+            response = await InvokeAsync(app, Resume, JsonSerializer.Serialize(new { scope = "provider", expectedHaltSinceUtc = since.AddTicks(-1) }), "stale-halt").ConfigureAwait(false);
+        }
+        else
+        {
+            await host.RunAsync().ConfigureAwait(false);
+            var group = (await host.ViewAsync().ConfigureAwait(false)).Notices.Groups[0].Identity;
+            var body = JsonSerializer.Serialize(new { group });
+            if (reason == "space-weather.revision-conflict") host.Store.AckConflictOnce = true;
+            else
+            {
+                Assert.AreEqual(200, (await InvokeAsync(app, Acknowledge, body, "conflict-key").ConfigureAwait(false)).Code);
+                host.Clock.Advance(TimeSpan.FromSeconds(1));
+            }
+            response = await InvokeAsync(app, Acknowledge, body, "conflict-key").ConfigureAwait(false);
+        }
+        AssertProblem(response, 409, reason, available: true);
+        using var json = JsonDocument.Parse(response.Body);
+        var status = json.RootElement.GetProperty("currentStatus");
+        Assert.AreEqual((await host.ViewAsync().ConfigureAwait(false)).Revision, status.GetProperty("revision").GetInt64());
+        Assert.AreEqual(host.Clock.GetUtcNow(), status.GetProperty("observedUtc").GetDateTimeOffset());
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task BusyHttpProblemCarriesStatusOrTheStoreUnavailableFallback(bool readFails)
+    {
+        using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false); using var app = App(host);
+        await host.Gate.EnterAsync(default).ConfigureAwait(false);
+        try
+        {
+            var pending = InvokeAsync(app, Acknowledge, "{\"group\":\"ALTZZZ/1\"}", "busy-http");
+            if (readFails) host.Store.ReadFailure = new HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage.SwpcStorageException("busy-secret");
+            host.Clock.Advance(TimeSpan.FromSeconds(5));
+            var response = await pending.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            AssertProblem(response, 503, readFails ? "space-weather.store-unavailable" : "space-weather.busy", available: !readFails);
+            using var json = JsonDocument.Parse(response.Body);
+            Assert.AreEqual(host.Clock.GetUtcNow(), json.RootElement.GetProperty("currentStatus").GetProperty("observedUtc").GetDateTimeOffset());
+            Assert.DoesNotContain("busy-secret", response.Body, StringComparison.Ordinal);
+            Assert.AreEqual(0L, host.Count("swpc_receipts"));
+        }
+        finally { host.Gate.Exit(); }
+    }
+
+    private static void AssertProblem((int Code, string Body) response, int code, string reason, bool available)
+    {
+        Assert.AreEqual(code, response.Code, response.Body);
+        using var json = JsonDocument.Parse(response.Body);
+        var problem = json.RootElement;
+        Assert.AreEqual(code, problem.GetProperty("status").GetInt32());
+        Assert.AreEqual(code == 409 ? "https://tools.ietf.org/html/rfc9110#section-15.5.10" : "https://tools.ietf.org/html/rfc9110#section-15.6.4", problem.GetProperty("type").GetString());
+        Assert.AreEqual(code == 503 ? "Space-weather storage is unavailable." : "The space-weather request could not be completed.", problem.GetProperty("title").GetString());
+        Assert.AreEqual(reason, problem.GetProperty("reasonCode").GetString());
+        Assert.AreEqual(available, problem.GetProperty("currentStatus").GetProperty("storeAvailable").GetBoolean());
+    }
+
     private static WebApplication App(SpaceWeatherTestHost host)
     {
         var builder = WebApplication.CreateBuilder(); builder.Services.AddSingleton(host.Operations);

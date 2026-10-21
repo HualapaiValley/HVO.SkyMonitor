@@ -19,6 +19,48 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 public sealed class SpaceWeatherTelemetryTests
 {
     [TestMethod]
+    public async Task SerializedPublicationsKeepTheLaterHaltObservation()
+    {
+        using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false);
+        var oldView = (await host.ViewAsync().ConfigureAwait(false)) with { ProviderHalt = new("forbidden", host.Clock.GetUtcNow()) };
+        var laterView = oldView with { ProviderHalt = null };
+        var health = await host.Sqlite.ReadHealthAsync(host.Clock.GetUtcNow(), default).ConfigureAwait(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<SwpcStoreView>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        host.Store.ReadOverride = (_, _) =>
+        {
+            if (++reads != 1) return ValueTask.FromResult(laterView);
+            entered.SetResult();
+            return new(release.Task);
+        };
+        // Completed doubles make the second publication finish synchronously on the defective code;
+        // the corrected code parks on the publication lock. No scheduler or elapsed-time assumption.
+        host.Store.HealthOverride = (_, _) => ValueTask.FromResult(health);
+        int? providerHalted = null;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, current) =>
+        {
+            if (instrument.Meter.Name == SpaceWeatherTelemetry.MeterName) current.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<int>((instrument, value, tags, _) =>
+        {
+            if (!instrument.Name.EndsWith(".halted", StringComparison.Ordinal)) return;
+            foreach (var tag in tags)
+                if (tag.Key == "scope" && Equals(tag.Value, "provider")) providerHalted = value;
+        });
+        listener.Start();
+        var first = host.Job.PublishStateAsync(default).AsTask();
+        await entered.Task.ConfigureAwait(false);
+        var second = host.Job.PublishStateAsync(default).AsTask();
+        release.SetResult(oldView);
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        listener.RecordObservableInstruments();
+        Assert.AreEqual(2, reads);
+        Assert.AreEqual(0, providerHalted, "An earlier halted snapshot must never overwrite the later clear snapshot.");
+    }
+
+    [TestMethod]
     public async Task EveryInstrumentUsesClosedTagsAndGaugeCallbacksNeverTouchStorage()
     {
         using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false);

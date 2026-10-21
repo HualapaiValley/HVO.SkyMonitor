@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -117,50 +118,108 @@ public sealed class SpaceWeatherRefreshPerformanceTests
             measurements = Summarize(stages),
             databaseGrowthBytesPerSimulatedDay = growth,
             provisionalCeilings = new { tickP95Ms = 50, allocationMultiplier = 8, workingSetDeltaBytes = 32 * 1024 * 1024, databaseGrowthBytesPerDay = 5 * 1024 * 1024 },
-            result = "First composition baseline. Provisional ceilings are reported, never used to tune frozen storage or policy. Restart rebuild is a new store in the same process; OS page cache is retained. store_bytes telemetry is raw-body bytes; these evidence database sizes include SQLite and sidecars."
+            result = "Offline composition measurement. Provisional ceilings are reported, never used to tune frozen storage or policy. Restart rebuild is a new store in the same process; OS page cache is retained. store_bytes telemetry is raw-body bytes; these evidence database sizes include SQLite and sidecars."
         }).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task CapturePathWithAndWithoutConcurrentMaximumRateRefreshIsMeasured()
     {
-        var stages = new Dictionary<string, List<Sample>>(StringComparer.Ordinal);
-        using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false);
-        var captures = Enum.GetValues<SwpcProduct>().ToDictionary(static product => product, SpaceWeatherTestHost.TestClient.Capture);
-        var alerts = LargeAlerts();
-        host.Client.Body = product => product == SwpcProduct.Alerts ? alerts : captures[product];
-        var baseline = await CaptureSeriesAsync("captureBaseline", stages).ConfigureAwait(false);
-        using var stop = new CancellationTokenSource();
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var concurrent = Task.Run(async () =>
+        const int maximumFrames = 2048;
+        for (var frameCount = 128; frameCount <= maximumFrames; frameCount *= 2)
         {
-            started.TrySetResult();
-            while (!stop.IsCancellationRequested)
+            var stages = new Dictionary<string, List<Sample>>(StringComparer.Ordinal);
+            using var host = new SpaceWeatherTestHost(); await host.InitializeAsync().ConfigureAwait(false);
+            var captures = Enum.GetValues<SwpcProduct>().ToDictionary(static product => product, SpaceWeatherTestHost.TestClient.Capture);
+            var alerts = LargeAlerts();
+            var baseline = await CaptureSeriesAsync("captureBaseline", stages, frameCount).ConfigureAwait(false);
+            using var stop = new CancellationTokenSource();
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var ticks = new ConcurrentQueue<Tick>();
+            var attempts = new ConcurrentQueue<ProviderAttempt>();
+            List<string> tickProducts = [];
+            host.Client.Fetch = (product, _) =>
             {
-                await host.RunAsync(SwpcAttemptTrigger.Manual, stop.Token).ConfigureAwait(false);
-                host.Clock.Advance(TimeSpan.FromSeconds(60));
+                // This stub is entered by the production runner after durable admission, inside RunAsync.
+                var timestamp = Stopwatch.GetTimestamp();
+                tickProducts.Add(product.Token());
+                attempts.Enqueue(new(product.Token(), timestamp));
+                started.TrySetResult();
+                return ValueTask.FromResult(new HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch.SwpcHttpResponse(product,
+                    host.Clock.GetUtcNow(), host.Clock.GetUtcNow(), HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch.SwpcTransportFailure.None,
+                    200, false, HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch.SwpcSource.MediaType(product),
+                    body: product == SwpcProduct.Alerts ? alerts : captures[product]));
+            };
+            var concurrent = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    tickProducts = [];
+                    var start = Stopwatch.GetTimestamp();
+                    await host.RunAsync(SwpcAttemptTrigger.Manual, stop.Token).ConfigureAwait(false);
+                    ticks.Enqueue(new(start, Stopwatch.GetTimestamp(), tickProducts.ToArray()));
+                    host.Clock.Advance(TimeSpan.FromSeconds(60));
+                }
+            });
+            string[] after;
+            try
+            {
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                after = await CaptureSeriesAsync("captureWithMaximumRateRefresh", stages, frameCount).ConfigureAwait(false);
             }
-        });
-        await started.Task.ConfigureAwait(false);
-        var after = await CaptureSeriesAsync("captureWithMaximumRateRefresh", stages).ConfigureAwait(false);
-        await stop.CancelAsync().ConfigureAwait(false);
-        try { await concurrent.ConfigureAwait(false); } catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
-        CollectionAssert.AreEqual(baseline, after, "Identical capture inputs retain exact pixel checksums under refresh contention.");
-        Assert.IsTrue(host.Client.Calls > 0);
-        await WriteAsync("space-weather-capture-isolation.json", new
-        {
-            workload = "Real VirtualSky capture module, 1280x960 Mono16, fixed in-memory empty catalog, no sensor noise, one warmup and 20 captured frames per series; concurrent SWPC manual ticks at the policy's 60-second minimum spacing in compressed time, four configured products and a 1 MiB alerts body.",
-            measurements = Summarize(stages),
-            captureChecksumsEqual = true,
-            framesPerSeries = baseline.Length,
-            providerAttempts = host.Client.Calls,
-            networkRequests = 0,
-            backlog = "No capture or processing slot is acquired by SWPC; one serialized refresh and the existing bounded automation worker.",
-            result = "Process CPU and allocations in the concurrent series include refresh; no existing threshold is changed."
-        }).ConfigureAwait(false);
+            finally
+            {
+                await stop.CancelAsync().ConfigureAwait(false);
+                try { await concurrent.ConfigureAwait(false); } catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+            }
+            CollectionAssert.AreEqual(baseline, after, "Identical capture inputs retain exact pixel checksums under refresh contention.");
+            var frames = stages["captureWithMaximumRateRefresh"];
+            var windowStart = frames[0].StartTimestamp;
+            var windowEnd = frames[^1].EndTimestamp;
+            var overlapped = ticks.Where(tick => tick.StartTimestamp >= windowStart && tick.EndTimestamp <= windowEnd).ToArray();
+            foreach (var tick in overlapped)
+                CollectionAssert.AreEquivalent(Enum.GetValues<SwpcProduct>().Select(static product => product.Token()).ToArray(), tick.Products,
+                    "Each completely overlapping tick must attempt every configured product exactly once.");
+            if (overlapped.Length < 5 && frameCount < maximumFrames)
+            {
+                TestContext.WriteLine($"{frameCount} equal-length frames yielded {overlapped.Length} complete ticks; doubling both series.");
+                continue;
+            }
+            Assert.IsGreaterThanOrEqualTo(5, overlapped.Length,
+                $"Fewer than five complete four-product ticks within {frameCount} measured frames; bounded maximum {maximumFrames} reached.");
+            var seconds = Stopwatch.GetElapsedTime(windowStart, windowEnd).TotalSeconds;
+            var providerAttempts = attempts.Count(attempt => attempt.Timestamp >= windowStart && attempt.Timestamp <= windowEnd);
+            await WriteAsync("space-weather-capture-isolation.json", new
+            {
+                workload = "Real VirtualSky capture module, 1280x960 Mono16, fixed in-memory empty catalog, no sensor noise, one warmup per series; compressed manual ticks with four configured products and 1 MiB alerts. Equal frame counts double from 128 to at most 2048 until five complete ticks overlap.",
+                measurements = Summarize(stages),
+                captureChecksumsEqual = true,
+                framesPerSeries = baseline.Length,
+                maximumFramesPerSeries = maximumFrames,
+                monotonicClockFrequency = Stopwatch.Frequency,
+                measuredWindow = new { startTimestamp = windowStart, endTimestamp = windowEnd, seconds },
+                ticksOverlapped = overlapped.Length,
+                providerAttemptsDuringWindow = providerAttempts,
+                ticksPerSecond = overlapped.Length / seconds,
+                bytesPerTick = alerts.Length + captures.Where(static pair => pair.Key != SwpcProduct.Alerts).Sum(static pair => pair.Value.Length),
+                refreshTicks = ticks.ToArray(),
+                providerAttempts = attempts.ToArray(),
+                networkRequests = 0,
+                attribution = new
+                {
+                    baseline = CaptureAttribution(stages["captureBaseline"]),
+                    concurrent = CaptureAttribution(frames),
+                    processors = Environment.ProcessorCount,
+                    sharedResources = "Process CPU, managed heap and GC. Capture owns its VirtualSky module, empty catalog and ProjectedSceneStore; it does not use the SWPC command/publication gates or SQLite connection. Monitor contention is process-wide, not a lock-attributed profile."
+                },
+                backlog = "No capture or processing slot is acquired by SWPC; one serialized refresh and the existing bounded automation worker.",
+                result = "Only ticks fully inside the measured frame window count. Per-frame and per-tick monotonic timestamps prove overlap; process CPU, GC pauses, collections and monitor contention include refresh. No existing threshold is changed."
+            }).ConfigureAwait(false);
+            return;
+        }
     }
 
-    private static async Task<string[]> CaptureSeriesAsync(string name, Dictionary<string, List<Sample>> stages)
+    private static async Task<string[]> CaptureSeriesAsync(string name, Dictionary<string, List<Sample>> stages, int frameCount)
     {
         var clock = new Fetch.ManualTimeProvider(SpaceWeatherTestHost.Start);
         var module = new VirtualSkyCameraModule(clock, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
@@ -172,7 +231,7 @@ public sealed class SpaceWeatherRefreshPerformanceTests
                 new RigOrientation(90, 0, 0), new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)), CapturePipelineConfig.Empty);
         await module.InitializeAsync(config, default).ConfigureAwait(false);
         var hashes = new List<string>();
-        for (var index = -1; index < 20; index++)
+        for (var index = -1; index < frameCount; index++)
         {
             await MeasureAsync(name, async () =>
             {
@@ -183,6 +242,23 @@ public sealed class SpaceWeatherRefreshPerformanceTests
             }, stages, index >= 0).ConfigureAwait(false);
         }
         return hashes.ToArray();
+    }
+
+    private sealed record Tick(long StartTimestamp, long EndTimestamp, string[] Products);
+    private sealed record ProviderAttempt(string Product, long Timestamp);
+
+    private static object CaptureAttribution(List<Sample> samples)
+    {
+        var wall = Stopwatch.GetElapsedTime(samples[0].StartTimestamp, samples[^1].EndTimestamp).TotalMilliseconds;
+        return new
+        {
+            wallMs = wall,
+            processCpuMs = samples.Sum(static sample => sample.CpuMs),
+            processCpuCores = samples.Sum(static sample => sample.CpuMs) / wall,
+            gcPauseMs = samples.Sum(static sample => sample.GcPauseMs),
+            gcCollections = Enumerable.Range(0, 3).Select(g => samples.Sum(sample => sample.Gc[g])).ToArray(),
+            monitorLockContentions = samples.Sum(static sample => sample.MonitorLockContentions)
+        };
     }
 
     private static byte[] LargeAlerts()
@@ -215,11 +291,14 @@ public sealed class SpaceWeatherRefreshPerformanceTests
     {
         using var process = Process.GetCurrentProcess(); process.Refresh();
         var working = process.WorkingSet64; var cpu = Environment.CpuUsage.TotalTime; var allocated = GC.GetTotalAllocatedBytes(true);
-        var gc = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray(); var start = Stopwatch.GetTimestamp();
+        var gc = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray();
+        var pause = GC.GetTotalPauseDuration(); var contention = Monitor.LockContentionCount;
+        var start = Stopwatch.GetTimestamp();
         await action().ConfigureAwait(false);
-        var elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds; process.Refresh();
+        var end = Stopwatch.GetTimestamp(); var elapsed = Stopwatch.GetElapsedTime(start, end).TotalMilliseconds; process.Refresh();
         var sample = new Sample(elapsed, (Environment.CpuUsage.TotalTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes(true) - allocated,
-            process.WorkingSet64 - working, Enumerable.Range(0, 3).Select(g => GC.CollectionCount(g) - gc[g]).ToArray());
+            process.WorkingSet64 - working, Enumerable.Range(0, 3).Select(g => GC.CollectionCount(g) - gc[g]).ToArray(),
+            start, end, (GC.GetTotalPauseDuration() - pause).TotalMilliseconds, Monitor.LockContentionCount - contention);
         if (record) { if (!stages.TryGetValue(name, out var samples)) stages[name] = samples = []; samples.Add(sample); }
     }
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1859:Use concrete types when possible", Justification = "The anonymous evidence projection is serialized immediately and has no public model.")]
@@ -232,6 +311,8 @@ public sealed class SpaceWeatherRefreshPerformanceTests
             allocatedBytes = Distribution(pair.Value.Select(static x => (double)x.AllocatedBytes)),
             workingSetDeltaBytes = Distribution(pair.Value.Select(static x => (double)x.WorkingSetDeltaBytes)),
             gcCollections = Enumerable.Range(0, 3).Select(g => pair.Value.Sum(s => s.Gc[g])).ToArray(),
+            gcPauseMs = pair.Value.Sum(static sample => sample.GcPauseMs),
+            monitorLockContentions = pair.Value.Sum(static sample => sample.MonitorLockContentions),
             samples = pair.Value
         });
     private static object Distribution(IEnumerable<double> samples)
@@ -244,5 +325,6 @@ public sealed class SpaceWeatherRefreshPerformanceTests
         Directory.CreateDirectory(root); var path = Path.Combine(root, file);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(evidence, JsonOptions)).ConfigureAwait(false); TestContext.AddResultFile(path);
     }
-    private sealed record Sample(double WallMs, double CpuMs, long AllocatedBytes, long WorkingSetDeltaBytes, int[] Gc);
+    private sealed record Sample(double WallMs, double CpuMs, long AllocatedBytes, long WorkingSetDeltaBytes, int[] Gc,
+        long StartTimestamp, long EndTimestamp, double GcPauseMs, long MonitorLockContentions);
 }

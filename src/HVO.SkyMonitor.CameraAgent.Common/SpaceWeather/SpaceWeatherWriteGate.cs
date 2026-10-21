@@ -6,7 +6,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
 /// <summary>
 /// Serializes host commands: entire job runs, resume prechecks and writes, and acknowledgements.
 /// Always acquire this gate before the runner gate; never acquire it while holding the runner gate.
-/// Timed reads remain ungated. SqliteSwpcStore.Retention.cs:15–34 purges expired groups, their
+/// Command publication acquires the job's dedicated publication lock after this gate; never the reverse.
+/// Publication never acquires this command gate. Timed reads remain ungated. SqliteSwpcStore.Retention.cs:15–34 purges expired groups, their
 /// messages/ranks/acknowledgements, orphan markers, completed attempts, receipts and non-LKG raw
 /// history. It never changes a halt, checkpoint or retained group's acknowledgement. A purge
 /// cannot invalidate a halt precheck; it can bump revision or remove an expired group, yielding

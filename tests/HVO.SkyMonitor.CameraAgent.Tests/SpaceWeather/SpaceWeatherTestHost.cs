@@ -94,7 +94,7 @@ internal sealed class SpaceWeatherTestHost : IDisposable
     public void Dispose()
     {
         Worker.StopAsync(default).GetAwaiter().GetResult(); Worker.Dispose();
-        Runner.Dispose(); Automation.Dispose(); Telemetry.Dispose(); Availability.Dispose(); Gate.Dispose(); Sqlite.Dispose();
+        Job.Dispose(); Runner.Dispose(); Automation.Dispose(); Telemetry.Dispose(); Availability.Dispose(); Gate.Dispose(); Sqlite.Dispose();
         if (Directory.Exists(Root)) Directory.Delete(Root, true);
     }
 
@@ -156,6 +156,9 @@ internal sealed class SpaceWeatherTestHost : IDisposable
         internal Exception? RetentionFailure { get; set; }
         internal Exception? ReadFailure { get; set; }
         internal bool AckConflictOnce { get; set; }
+        internal Exception? HealthFailureOnce { get; set; }
+        internal Func<DateTimeOffset, CancellationToken, ValueTask<SwpcStoreView>>? ReadOverride { get; set; }
+        internal Func<DateTimeOffset, CancellationToken, ValueTask<SwpcStoreHealth>>? HealthOverride { get; set; }
         internal int HealthReads { get; private set; }
         internal Func<SwpcStoreHealth, SwpcStoreHealth>? HealthTransform { get; set; }
         public ValueTask InitializeAsync(CancellationToken ct) => inner.InitializeAsync(ct);
@@ -163,6 +166,7 @@ internal sealed class SpaceWeatherTestHost : IDisposable
         {
             Calls.Add("read");
             if (ReadFailure is { } failure) throw failure;
+            if (ReadOverride is { } read) return read(atUtc, ct);
             return inner.ReadAsync(atUtc, ct);
         }
         public ValueTask<SwpcWriteResult> BeginAttemptAsync(SwpcAttemptStart request, CancellationToken ct)
@@ -189,7 +193,13 @@ internal sealed class SpaceWeatherTestHost : IDisposable
         }
         public ValueTask<SwpcDiagnosticsPage> ReadDiagnosticsAsync(SwpcDiagnosticsQuery request, CancellationToken ct) => inner.ReadDiagnosticsAsync(request, ct);
         public async ValueTask<SwpcStoreHealth> ReadHealthAsync(DateTimeOffset atUtc, CancellationToken ct)
-        { HealthReads++; Calls.Add("health"); var health = await inner.ReadHealthAsync(atUtc, ct).ConfigureAwait(false); return HealthTransform?.Invoke(health) ?? health; }
+        {
+            HealthReads++; Calls.Add("health");
+            if (HealthFailureOnce is { } failure) { HealthFailureOnce = null; throw failure; }
+            var health = HealthOverride is { } read ? await read(atUtc, ct).ConfigureAwait(false)
+                : await inner.ReadHealthAsync(atUtc, ct).ConfigureAwait(false);
+            return HealthTransform?.Invoke(health) ?? health;
+        }
         public void Dispose() { }
     }
 }

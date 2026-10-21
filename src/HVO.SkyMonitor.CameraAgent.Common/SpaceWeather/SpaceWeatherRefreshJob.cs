@@ -10,8 +10,9 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
 
 /// <summary>One atomic configured-product loop, composing the frozen policy and storage seams.</summary>
-public sealed class SpaceWeatherRefreshJob
+public sealed class SpaceWeatherRefreshJob : IDisposable
 {
+    private readonly SemaphoreSlim publication = new(1, 1);
     private readonly ISwpcStore store;
     private readonly SwpcAttemptRunner runner;
     private readonly SpaceWeatherAvailability availability;
@@ -107,13 +108,21 @@ public sealed class SpaceWeatherRefreshJob
         return Result(LocalAutomationRunOutcome.Succeeded, "space-weather.succeeded", detail);
     }
 
-    /// <summary>Publishes a cached gauge snapshot from ungated timed reads; failure is type-only and best effort.</summary>
+    /// <summary>
+    /// Serializes the timed view/health reads and cached gauge assignment with a dedicated publication lock.
+    /// Command callers acquire the command gate first, then this lock; publication never acquires the
+    /// command gate. Status, notices, health and diagnostics reads remain independent of both locks.
+    /// Cancellation propagates; other failures are type-only and best effort.
+    /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A metric observation cannot change an already settled durable outcome.")]
     public async ValueTask PublishStateAsync(CancellationToken ct)
     {
         if (!availability.IsAvailable) return;
+        var acquired = false;
         try
         {
+            await publication.WaitAsync(ct).ConfigureAwait(false);
+            acquired = true;
             var now = Now();
             var view = await store.ReadAsync(now, ct).ConfigureAwait(false);
             var health = await store.ReadHealthAsync(now, ct).ConfigureAwait(false);
@@ -121,7 +130,11 @@ public sealed class SpaceWeatherRefreshJob
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception exception) { SpaceWeatherLog.Storage(logger, exception.GetType().Name); }
+        finally { if (acquired) publication.Release(); }
     }
+
+    /// <summary>Releases the publication lock after host work has stopped.</summary>
+    public void Dispose() => publication.Dispose();
 
     /// <summary>Reason codes plus ordinal product=outcome tokens, never provider or exception content.</summary>
     internal static LocalAutomationExecution Result(LocalAutomationRunOutcome outcome, string reason,
