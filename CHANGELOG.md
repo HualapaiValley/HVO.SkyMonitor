@@ -9,6 +9,10 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+
+- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
+
 
 ### Fixed
 
