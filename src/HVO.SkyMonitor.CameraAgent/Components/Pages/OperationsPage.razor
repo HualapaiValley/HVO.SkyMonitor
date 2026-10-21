@@ -43,7 +43,7 @@ else if (_view is not null)
 {
     var summary = _view.Summary;
     var telemetry = summary.CaptureTelemetry.Value;
-    var attention = OperationsAttention.From(_view, _errorMessage is not null);
+    var attention = OperationsAttention.From(_view, _errorMessage is not null, Layout?.SpaceWeatherItems);
     var changes = RecentChanges;
 
     @if (_errorMessage is not null)

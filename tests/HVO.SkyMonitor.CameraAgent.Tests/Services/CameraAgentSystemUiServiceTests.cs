@@ -149,6 +149,26 @@ public sealed class CameraAgentSystemUiServiceTests
     }
 
     [TestMethod]
+    public async Task Health_PresentsSpaceWeatherAsALocalCheckThatCanBeSwitchedOff()
+    {
+        using var fixture = new Fixture();
+        fixture.Report(("space-weather", Entry(HealthStatus.Healthy, availability: "Disabled")));
+
+        var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var check = Check(view, "space-weather");
+        Assert.AreEqual("Space weather", check.Label);
+        Assert.AreEqual("Local", check.Scope);
+        Assert.AreEqual("/operations/space-weather", check.Href);
+        Assert.AreEqual(SystemCheckState.Disabled, check.State);
+
+        fixture.Report(("space-weather", Entry(HealthStatus.Degraded)));
+        var degraded = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(SystemCheckState.Degraded, Check(degraded, "space-weather").State);
+    }
+
+    [TestMethod]
     public async Task Health_WithOnlySwitchedOffChecks_IsHealthy()
     {
         using var fixture = new Fixture();
