@@ -34,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Groundwork for stacking frames captured at different gains: versioned gain-response and normalization-policy contracts with exactly reproducible electrons-per-ADU coefficients for the VirtualSky ASI174MM model and the configured virtual ASI178MC and ASI676 profiles. The policy records the approved choices (electron-space combination at a fixed reference gain, a 4:1 coefficient limit, equal weights and strict exclusion when calibration is missing). Physical cameras report normalization as unavailable, and stacking still requires identical gain. (#1475)
+
 - CameraAgent's new Space weather page lists active, pending, recent and paged SWPC notices with source freshness, drift and halts, and offers Refresh now, Resume and Acknowledge. Each notice keeps SWPC's own activity apart from the relevance at the site's geomagnetic latitude and its daylight limits; relevance is an HVO SkyMonitor estimate, not a NOAA statement, and cloud is not assessed. The Overview adds a compact summary and attention items, Automations offers guided setup of the refresh schedule, the `spaceWeather` settings switch turns the feature on after a restart, and System health lists Space weather. (#1398)
 
 - CameraAgent can refresh NOAA SWPC space-weather alerts, scales, Kp forecast and 3-day forecast locally. Refresh is
