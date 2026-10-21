@@ -85,11 +85,14 @@ public sealed class ProgramOutputTests
     private const string HostSetProductRootUsage = """
         Usage: hvo-sky-install host set-product-root <absolute-path> [options]
 
-        Set the folder this host installs instances under, before any instance exists.
+        Set the folder this host installs instances under, or repair its recorded mount.
 
         Options:
           --json      Write the result, or the error, as JSON.
+          --repair    Re-record the current mount, keeping the product root already named by the host policy.
           -h, --help  Show this help.
+
+        With --repair, re-record the current mount of the same existing product root under the host-policy lock. Verify the backing filesystem first.
         """;
 
     private const string CameraAgentUsage = """

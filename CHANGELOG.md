@@ -9,12 +9,22 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+
+- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
+
+
+### Fixed
+
+- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
+- `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)
+
+- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
+
 - LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
 
 
 ### Added
-
-- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
 
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
 
@@ -82,7 +92,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+- Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
 - Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
 

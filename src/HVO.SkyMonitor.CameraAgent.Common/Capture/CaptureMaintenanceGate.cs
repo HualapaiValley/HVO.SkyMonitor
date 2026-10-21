@@ -36,6 +36,14 @@ public sealed class CaptureMaintenanceGate
             ? coordinator.TryEnterMaintenanceIfInitialized()
             : NoAdmission.Instance;
 
+    /// <summary>The non-initializing entry, including the signal that interrupts a multi-operation pass.</summary>
+    internal CaptureMaintenanceEntry EnterIfInitialized()
+    {
+        if (Volatile.Read(ref _coordinator) is not { } coordinator) return default;
+        var lease = coordinator.TryEnterMaintenanceIfInitialized();
+        return new CaptureMaintenanceEntry(lease, lease is null ? HeldBy : null);
+    }
+
     private sealed class NoAdmission : IDisposable
     {
         public static readonly NoAdmission Instance = new();

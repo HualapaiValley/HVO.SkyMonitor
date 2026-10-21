@@ -257,7 +257,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
     {
         internal int Count { get; private set; }
 
-        public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(IReadOnlySet<string> ownedStageKeys, CancellationToken cancellationToken)
+        public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(IReadOnlySet<string> ownedStageKeys, CancellationToken cancellationToken, CancellationToken interruptionToken = default)
         {
             Count = ownedStageKeys.Count;
             Assert.HasCount(RetainedCaptureCount, ownedStageKeys);
