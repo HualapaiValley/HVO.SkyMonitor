@@ -17,7 +17,10 @@ public sealed class SpaceWeatherHealthCheckTests
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
         var check = json.RootElement.GetProperty("checks").EnumerateArray().Single(check => check.GetProperty("name").GetString() == "space-weather");
         Assert.AreEqual("Healthy", check.GetProperty("status").GetString());
-        Assert.AreEqual("space-weather.disabled", check.GetProperty("data").GetProperty("Reason").GetString());
+        var data = check.GetProperty("data");
+        Assert.AreEqual("space-weather.disabled", data.GetProperty("Reason").GetString());
+        Assert.AreEqual("Disabled", data.GetProperty("Availability").GetString());
+        Assert.AreEqual(2, data.EnumerateObject().Count());
         Assert.DoesNotContain(AssemblyHooks.Fixture.StorageRoot, check.GetRawText(), StringComparison.OrdinalIgnoreCase);
     }
 }

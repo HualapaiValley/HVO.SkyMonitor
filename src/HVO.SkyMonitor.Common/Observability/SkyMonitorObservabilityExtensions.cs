@@ -96,6 +96,10 @@ public static class SkyMonitorObservabilityExtensions
         "NewestElementAgeSeconds", "OldestElementAgeSeconds", "ActivationAgeSeconds", "RetrievalAgeSeconds",
         "LastAttemptOutcome"
     };
+    private static readonly HashSet<string> SpaceWeatherHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "Reason"
+    };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Required", "Active", "ActiveState", "StateVersion", "PendingAcquisitionState",
@@ -288,6 +292,7 @@ public static class SkyMonitorObservabilityExtensions
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
             "orbital-elements" => OrbitalElementsHealthDataKeys,
+            "space-weather" => SpaceWeatherHealthDataKeys,
             "deployment-location" => DeploymentLocationHealthDataKeys,
             "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null
