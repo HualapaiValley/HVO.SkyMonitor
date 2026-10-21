@@ -171,7 +171,9 @@ lists one sources row per product, showing:
 - the consecutive counters and any halt.
 
 It then shows format drift (three or more consecutive rejected bodies), record drift
-and halts. The notice lists follow: active and pending, recent, and paged history.
+on configured products, and halts. A retained halt on a product that is not configured
+is labelled as such and offers no Resume. The notice lists follow: active and pending,
+recent, and paged history.
 "Cloud: not assessed" appears once, and the SWPC credit is shown verbatim.
 
 Each of these states has its own banner:
@@ -263,9 +265,11 @@ event:
 4. Otherwise the row reads "escalated since acknowledged" if the current level's rank
    exceeds the baseline. If it does not, the group is not escalated.
 
-Unknown reads "acknowledged; escalation since then cannot be determined". Such a row
-still counts toward the reach-or-approach attention item when its category qualifies,
-but it is not offered for acknowledgement again.
+An acknowledged row reads "Acknowledged" with the acknowledgement time, followed by
+"escalated since acknowledged" or, for Unknown, "escalation since then cannot be
+determined"; a row that is not escalated adds nothing. An Unknown row counts toward
+the reach-or-approach attention item when its category qualifies, and it is offered
+for acknowledgement again. Acknowledging it afresh records a new acknowledgement time.
 
 ### Commands
 
@@ -284,8 +288,8 @@ Provider policy still decides what is fetched.
 read, without the minute rounding used for display. If the halt has changed, the
 dialog closes and the page rereads.
 
-**Acknowledge** is offered on pending and active rows that are unacknowledged or
-escalated since acknowledgement.
+**Acknowledge** is offered on pending and active rows that are unacknowledged,
+escalated since acknowledgement, or of undeterminable escalation.
 
 Each deliberate command uses a new idempotency key, and repeated clicks while a
 command runs are ignored. The key is kept for a retry in two cases:
@@ -317,10 +321,12 @@ The sidebar badge and the Overview's **Needs attention** list carry these items:
 | "N notices to review" | Other pending or active rows that are unacknowledged or escalated |
 | "Format drift on P" | One per affected product |
 | "Record drift" | An open record-drift episode |
-| "SWPC fetching halted (provider)" / "(P)" | A provider or product halt |
+| "SWPC fetching halted (provider)" / "(P)" | A provider halt, or a halt on a configured product |
 | "Space-weather store unavailable" | The store cannot be read and the feature is on |
 
 There are no items while the feature is off, and a failed read keeps no stale items.
+A failed read while the switch is on shows only the store-unavailable item; a denied
+read shows none.
 The layout rereads on navigation, and on other Operations activity once its last read
 is at least 30 seconds old.
 
