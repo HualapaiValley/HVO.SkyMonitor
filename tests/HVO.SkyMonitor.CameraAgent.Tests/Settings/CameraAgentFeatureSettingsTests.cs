@@ -11,6 +11,7 @@ public sealed class CameraAgentFeatureSettingsTests
     [TestMethod]
     [DataRow("orbitalElements", true)]
     [DataRow("satellitePlanning", false)]
+    [DataRow("spaceWeather", true)]
     public async Task Switches_SaveBooleanToTheOperatorFileAndReportApplicationAsync(string group, bool restart)
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
@@ -43,10 +44,34 @@ public sealed class CameraAgentFeatureSettingsTests
     }
 
     [TestMethod]
+    public async Task SpaceWeatherOff_ReportsItsOwnRunningOptionUntilRestartAsync()
+    {
+        // Orbital refresh starts off and space weather on, so the effective value can only come from SpaceWeather.
+        using var harness = await CameraAgentSettingsHarness.CreateAsync(
+            orbitalInitiallyEnabled: false, spaceWeatherInitiallyEnabled: true).ConfigureAwait(false);
+        var orbital = await harness.GroupAsync("orbitalElements").ConfigureAwait(false);
+        Assert.AreEqual("false", orbital.Settings.Single().Value!.Value.GetString());
+        var group = await harness.GroupAsync("spaceWeather").ConfigureAwait(false);
+        var before = group.Settings.Single();
+        Assert.AreEqual("true", before.Value!.Value.GetString());
+        Assert.AreEqual("false", before.PendingValue!.Value.GetString(), "The settings file still says off, so the running value is pending a restart.");
+
+        var result = await harness.WriteAsync(group.Group, group.Version,
+            new Dictionary<string, object?> { ["spaceWeather.enabled"] = "false" }).ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, result.Outcome);
+        Assert.AreEqual("true", result.Group!.Settings.Single().Value!.Value.GetString());
+        Assert.AreEqual("false", result.Group.Settings.Single().PendingValue!.Value.GetString());
+        Assert.AreEqual("false", (await harness.GroupAsync("orbitalElements").ConfigureAwait(false)).Settings.Single().Value!.Value.GetString());
+    }
+
+    [TestMethod]
     [DataRow("orbitalElements", "Environment")]
     [DataRow("satellitePlanning", "Environment")]
     [DataRow("orbitalElements", "SecretsDirectory")]
     [DataRow("satellitePlanning", "SecretsDirectory")]
+    [DataRow("spaceWeather", "Environment")]
+    [DataRow("spaceWeather", "SecretsDirectory")]
     public async Task Switches_EnvironmentAndSecretsOverrideTheFileAndRefuseWritesAsync(string group, string provider)
     {
         var key = CameraAgentSettingsCatalogue.Find(group + ".enabled")!.ConfigurationKey!;
@@ -64,7 +89,7 @@ public sealed class CameraAgentFeatureSettingsTests
                 ((IConfigurationRoot)configuration).Reload();
                 if (provider == "Environment") configuration.AddEnvironmentVariables(variable);
                 else configuration.AddKeyPerFile(root, optional: false);
-            }, orbitalInitiallyEnabled: true).ConfigureAwait(false);
+            }, orbitalInitiallyEnabled: true, spaceWeatherInitiallyEnabled: true).ConfigureAwait(false);
             var before = await harness.GroupAsync(group).ConfigureAwait(false);
             var setting = before.Settings.Single();
             Assert.AreEqual(provider, setting.Source.ToString());

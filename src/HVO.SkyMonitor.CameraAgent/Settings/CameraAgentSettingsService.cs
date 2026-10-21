@@ -175,6 +175,7 @@ internal sealed partial class CameraAgentSettingsService(
             result = found.Name switch
             {
                 CameraAgentSettingsCatalogue.OrbitalElementsGroup or CameraAgentSettingsCatalogue.SatellitePlanningGroup
+                    or CameraAgentSettingsCatalogue.SpaceWeatherGroup
                     => await WriteFeatureAsync(found, values, current.Version, actor, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SiteGroup => await WriteSiteAsync(found, values, current.Version, actor,
                     cancellationToken).ConfigureAwait(false),
@@ -259,6 +260,7 @@ internal sealed partial class CameraAgentSettingsService(
             return group.Name switch
             {
                 CameraAgentSettingsCatalogue.OrbitalElementsGroup or CameraAgentSettingsCatalogue.SatellitePlanningGroup
+                    or CameraAgentSettingsCatalogue.SpaceWeatherGroup
                     => await ReadFeatureAsync(group, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SiteGroup => await ReadSiteAsync(group, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SkyMapGroup => await ReadFileIntegerAsync(group,

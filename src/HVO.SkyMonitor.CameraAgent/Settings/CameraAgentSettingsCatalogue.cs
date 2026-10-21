@@ -24,6 +24,7 @@ internal static class CameraAgentSettingsCatalogue
     public const string CurrentSkyGroup = "currentSky";
     public const string OrbitalElementsGroup = "orbitalElements";
     public const string SatellitePlanningGroup = "satellitePlanning";
+    public const string SpaceWeatherGroup = "spaceWeather";
 
     public const string SettingsFileStore = "settingsFile";
     public const string DeploymentLocationStore = "deploymentLocation";
@@ -179,6 +180,12 @@ internal static class CameraAgentSettingsCatalogue
         "leap-second files. Nothing is captured or scheduled. Time-data paths and hashes remain hand-configured.",
         CameraAgentSettingApplication.Immediate);
 
+    public static CameraAgentSettingDefinition SpaceWeatherEnabled { get; } = FeatureSwitch(
+        SpaceWeatherGroup, "CameraAgent:SpaceWeather:Enabled", "Space weather",
+        "Allow bounded SWPC space-weather refresh attempts. After restarting, the Space weather page offers guided " +
+        "creation of the refresh automation. Retained notices stay readable when refresh is off; cloud is never assessed.",
+        CameraAgentSettingApplication.Restart);
+
     /// <summary>Groups in display order.</summary>
     public static IReadOnlyList<CameraAgentSettingsGroup> Groups { get; } =
     [
@@ -207,7 +214,9 @@ internal static class CameraAgentSettingsCatalogue
         new(OrbitalElementsGroup, "Orbital refresh", OrbitalRefreshEnabled.Description,
             SettingsFileStore, [OrbitalRefreshEnabled]),
         new(SatellitePlanningGroup, "Satellite planning", SatellitePlanningEnabled.Description,
-            SettingsFileStore, [SatellitePlanningEnabled])
+            SettingsFileStore, [SatellitePlanningEnabled]),
+        new(SpaceWeatherGroup, "Space weather", SpaceWeatherEnabled.Description,
+            SettingsFileStore, [SpaceWeatherEnabled])
     ];
 
     public static IReadOnlyList<CameraAgentSettingDefinition> All { get; } = [.. Groups.SelectMany(group => group.Settings)];

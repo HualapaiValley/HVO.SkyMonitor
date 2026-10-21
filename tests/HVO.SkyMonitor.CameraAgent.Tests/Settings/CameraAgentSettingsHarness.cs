@@ -63,7 +63,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         Func<string, CancellationToken, Task>? beforeStoreWrite = null,
         TimeProvider? timeProvider = null,
         Action<ConfigurationManager>? configureOverrides = null,
-        bool orbitalInitiallyEnabled = false)
+        bool orbitalInitiallyEnabled = false,
+        bool spaceWeatherInitiallyEnabled = false)
     {
         var clock = timeProvider ?? TimeProvider.System;
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
@@ -90,7 +91,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             {
                 RawIngressRoot = root,
                 DisplayName = InstalledName,
-                OrbitalElements = new() { Enabled = orbitalInitiallyEnabled }
+                OrbitalElements = new() { Enabled = orbitalInitiallyEnabled },
+                SpaceWeather = new() { Enabled = spaceWeatherInitiallyEnabled }
             });
             var site = harness.Own(new SettingsFileSiteProfileStore(
                 hostOptions, NullLogger<SettingsFileSiteProfileStore>.Instance, settingsFile));

@@ -12,7 +12,7 @@ internal sealed partial class CameraAgentSettingsService
         var snapshot = settingsFile is null ? null : await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false);
         var source = sources.Find(definition.ConfigurationKey!);
         var configured = sources.Boolean(definition.ConfigurationKey!);
-        var effective = definition.AppliesAfterRestart ? hostOptions?.Value.OrbitalElements.Enabled ?? false : configured;
+        var effective = definition.AppliesAfterRestart ? RunningFeature(group) ?? false : configured;
         var canWrite = snapshot is { Problem: null } && !source.Overridden;
         var reason = snapshot is null ? NoSettingsFileReason
             : snapshot.Problem ?? (source.Overridden ? OverriddenReason(source.Source) : null);
@@ -41,6 +41,13 @@ internal sealed partial class CameraAgentSettingsService
             _ => new(CameraAgentSettingsWriteOutcome.ReadOnly, after, after.ReadOnlyReason ?? result.Snapshot.Problem)
         };
     }
+
+    /// <summary>The value the running host started with, for a switch that applies only after a restart.</summary>
+    private bool? RunningFeature(CameraAgentSettingsGroup group) => group.Name switch
+    {
+        CameraAgentSettingsCatalogue.SpaceWeatherGroup => hostOptions?.Value.SpaceWeather.Enabled,
+        _ => hostOptions?.Value.OrbitalElements.Enabled
+    };
 
     private static string Text(bool value) => value ? "true" : "false";
 }
