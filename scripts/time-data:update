@@ -44,7 +44,21 @@ done
 
 work="$(mktemp -d)"
 readonly work
-trap 'rm -rf -- "$work"' EXIT
+# While armed, any exit (an error, an interrupt or a failed parse) restores the previous snapshot, so the vendored pair
+# is never left half-updated. The parse test disarms it.
+armed=false
+on_exit() {
+    local status=$?
+    if [[ "$armed" == true ]]; then
+        restore
+        printf 'time-data:update: restored the previous snapshot\n' >&2
+    fi
+    rm -rf -- "$work"
+    exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Fetches one approved URL without redirects into a bounded file and prints its Last-Modified header, if any.
 fetch() {
@@ -116,26 +130,35 @@ jq -n --argjson eop "$(entry "$EOP_FILE" \
         "$LEAP_URL" "$leap_modified" "SHA-1 (#h)" "$leap_provider" "$LEAP_URL" "$LEAP_TERMS" "$LEAP_URL")" \
     '{schema: "hvo-bundled-time-data-v1", earthOrientation: $eop, leapSeconds: $leap}' > "$work/provenance.json"
 
-# Keep the previous snapshot so a pair the product cannot parse is never left in place.
+# Keep the previous snapshot so a pair the product cannot parse is never left in place. Copies deliberately take a fresh
+# modification time (no -p): a restored file older than the build outputs would not be copied again by an incremental
+# build, which would then keep the rejected pair.
 mkdir -p "$TARGET" "$work/previous"
 for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
-    [[ ! -f "$TARGET/$file" ]] || cp -p "$TARGET/$file" "$work/previous/$file"
+    [[ ! -f "$TARGET/$file" ]] || cp "$TARGET/$file" "$work/previous/$file"
 done
 restore() {
     local file
     for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
-        if [[ -f "$work/previous/$file" ]]; then cp -p "$work/previous/$file" "$TARGET/$file"; else rm -f -- "$TARGET/$file"; fi
+        rm -f -- "$TARGET/$file.tmp"
+        if [[ -f "$work/previous/$file" ]]; then
+            cp "$work/previous/$file" "$TARGET/$file.tmp"
+            mv -f "$TARGET/$file.tmp" "$TARGET/$file"
+            touch "$TARGET/$file"
+        else
+            rm -f -- "$TARGET/$file"
+        fi
     done
 }
+armed=true
 for file in "$EOP_FILE" "$LEAP_FILE" provenance.json; do
     cp "$work/$file" "$TARGET/$file.tmp"
     mv -f "$TARGET/$file.tmp" "$TARGET/$file"
 done
 
-if ! dotnet test "$TEST_PROJECT" --configuration Release --filter "$TEST_FILTER" --nologo; then
-    restore
-    fail "the product's validators rejected the downloaded pair; the previous snapshot was restored"
-fi
+dotnet test "$TEST_PROJECT" --configuration Release --filter "$TEST_FILTER" --nologo ||
+    fail "the product's validators rejected the downloaded pair"
+armed=false
 
 # A summary for the release notes. The product computes the same facts itself.
 mjd_date() { date -u -d "@$(( ($1 - 40587) * 86400 ))" +%Y-%m-%d; }
