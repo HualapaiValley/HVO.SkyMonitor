@@ -1,6 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -33,13 +33,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private const string DefaultCaptureInterval = "10";
 
     /// <summary>The orbital refresh schedule's suggested interval: four attempts a day, well above the provider floor.</summary>
-    internal const string DefaultOrbitalInterval = "21600";
+    internal const string DefaultOrbitalInterval = ReservedAutomationTasks.OrbitalDefaultInterval;
 
-    internal const string OrbitalIntervalHint =
-        "7,200 to 86,400 seconds; the provider allows at most one attempt every two hours";
+    internal const string OrbitalIntervalHint = ReservedAutomationTasks.OrbitalIntervalHint;
 
-    internal const string OrbitalIdentifierHint =
-        "Reserved for the orbital refresh schedule; this task accepts only this identifier.";
+    internal const string OrbitalIdentifierHint = ReservedAutomationTasks.OrbitalIdentifierHint;
 
     private enum PendingCommandKind
     {
@@ -127,12 +125,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     public string? Setup { get; set; }
 
     private bool _guidedSetupOpened;
-    private bool GuidedOrbitalSetup => string.Equals(Setup, "orbital", StringComparison.Ordinal);
+    /// <summary>The reserved task a <c>?setup=</c> token asks to set up, or null.</summary>
+    private ReservedAutomationTask? GuidedSetup => ReservedAutomationTasks.ForSetup(Setup);
 
     private bool Editing => _editingVersion != 0;
 
-    /// <summary>The orbital refresh task accepts one reserved identifier, its one target and a periodic trigger only.</summary>
-    private bool OrbitalTaskSelected => _taskKindInput == LocalAutomationTaskKind.OrbitalElementsRefresh;
+    /// <summary>A reserved task accepts one reserved identifier, its one target and its one trigger only.</summary>
+    private ReservedAutomationTask? SelectedReservedTask => ReservedAutomationTasks.ForKind(_taskKindInput);
+
+    private bool ReservedTaskSelected => SelectedReservedTask is not null;
 
     /// <summary>The requested definition, when it is a well-formed identifier; anything else is ignored.</summary>
     private string? FocusedDefinitionId => LocalAutomationDefinitionValidator.IsIdentifier(
@@ -194,16 +195,16 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (GuidedOrbitalSetup && !_guidedSetupOpened && !_loading && _automation is not null)
+        if (GuidedSetup is { } setup && !_guidedSetupOpened && !_loading && _automation is not null)
         {
             _guidedSetupOpened = true;
-            if (!_automation.Definitions.Any(item => item.Definition.DefinitionId == OrbitalElementsAutomationAdapter.DefinitionId) &&
-                EditorTasks.Any(item => item.TaskKind == LocalAutomationTaskKind.OrbitalElementsRefresh && item.Available) &&
+            if (!_automation.Definitions.Any(item => item.Definition.DefinitionId == setup.DefinitionId) &&
+                EditorTasks.Any(item => item.TaskKind == setup.Kind && item.Available) &&
                 CreateUnavailableReason is null)
             {
                 ResetForm();
-                _taskKindInput = LocalAutomationTaskKind.OrbitalElementsRefresh;
-                _nameInput = "Orbital elements refresh";
+                _taskKindInput = setup.Kind;
+                _nameInput = setup.SetupName;
                 TaskChanged();
                 OpenDialog(DialogMode.Editor, "automation-name");
                 StateHasChanged();
@@ -239,7 +240,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         => FocusedDefinitionId is { } id && string.Equals(definition.DefinitionId, id, StringComparison.Ordinal);
 
     private static string IconClass(LocalAutomationTaskKind kind)
-        => kind == LocalAutomationTaskKind.OrbitalElementsRefresh ? "orbital" : "environment";
+        => ReservedAutomationTasks.ForKind(kind)?.IconClass ?? "environment";
 
     internal static AutomationView ParseView(string? value) => value switch
     {
@@ -385,28 +386,29 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     }
 
     /// <summary>
-    /// The orbital refresh task fixes its identifier and suggests its own interval. An untouched default follows the
-    /// task it belongs to, and leaving the orbital task releases the reserved identifier. An edit keeps its identity.
+    /// A reserved task fixes its identifier and suggests its own interval. An untouched default follows the task it
+    /// belongs to, and leaving a reserved task releases the reserved identifier. An edit keeps its identity.
     /// </summary>
     private void ApplyTaskDefaults()
     {
-        if (OrbitalTaskSelected)
+        if (SelectedReservedTask is { } reserved)
         {
             if (!Editing)
             {
-                _idInput = OrbitalElementsAutomationAdapter.DefinitionId;
+                _idInput = reserved.DefinitionId;
             }
-            if (_intervalInput is DefaultPeriodicInterval or DefaultCaptureInterval)
+            if (_intervalInput is DefaultPeriodicInterval or DefaultCaptureInterval ||
+                ReservedAutomationTasks.IsDefaultInterval(_intervalInput))
             {
-                _intervalInput = DefaultOrbitalInterval;
+                _intervalInput = reserved.DefaultInterval;
             }
             return;
         }
-        if (!Editing && string.Equals(_idInput.Trim(), OrbitalElementsAutomationAdapter.DefinitionId, StringComparison.Ordinal))
+        if (!Editing && ReservedAutomationTasks.IsReservedIdentifier(_idInput.Trim()))
         {
             _idInput = string.Empty;
         }
-        if (_intervalInput == DefaultOrbitalInterval)
+        if (ReservedAutomationTasks.IsDefaultInterval(_intervalInput))
         {
             _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.CaptureRelative
                 ? DefaultCaptureInterval
@@ -814,15 +816,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return "One run when the retained source window closes and its settle allowance has elapsed. Source-window configuration is supplied by the task definition.";
         }
         var (minimum, maximum) = IntervalBounds(_triggerKindInput);
-        if (OrbitalTaskSelected && _triggerKindInput == LocalAutomationTriggerKind.Periodic)
+        if (SelectedReservedTask is { } reserved && _triggerKindInput == reserved.TriggerKind)
         {
-            // The adapter, not this page, enforces the provider floor, so a value below it is still sent and its
-            // reason is shown exactly as the server returns it.
-            return int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out var orbitalInterval) &&
-                   orbitalInterval >= OrbitalElementsAutomationAdapter.MinimumIntervalSeconds &&
-                   orbitalInterval <= OrbitalElementsAutomationAdapter.MaximumIntervalSeconds
-                ? $"{DescribeTrigger(_triggerKindInput, orbitalInterval)}. {OrbitalIntervalHint}."
-                : $"{OrbitalIntervalHint}.";
+            // The adapter, not this page, enforces the task's own bounds, so a value outside them is still sent and
+            // its reason is shown exactly as the server returns it.
+            return int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out var reservedInterval) &&
+                   reservedInterval >= reserved.MinimumIntervalSeconds &&
+                   reservedInterval <= reserved.MaximumIntervalSeconds
+                ? $"{DescribeTrigger(_triggerKindInput, reservedInterval)}. {reserved.IntervalHint}."
+                : $"{reserved.IntervalHint}.";
         }
         var bounds = _triggerKindInput == LocalAutomationTriggerKind.Periodic
             ? string.Create(Invariant, $"{minimum} to {maximum} seconds")

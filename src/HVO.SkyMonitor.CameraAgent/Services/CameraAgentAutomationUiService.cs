@@ -125,6 +125,13 @@ internal sealed class CameraAgentAutomationUiService(
         {
             return OrbitalOperatorText.Describe(code);
         }
+        // The space-weather refresh schedule's reserved identifier and interval bounds have the same fixed text as the
+        // space-weather page; any other code keeps the generic mapping below.
+        if (result.ReasonCode is { } spaceWeatherCode && spaceWeatherCode.StartsWith("space-weather.", StringComparison.Ordinal) &&
+            SpaceWeatherOperatorText.IsKnown(spaceWeatherCode))
+        {
+            return SpaceWeatherOperatorText.Describe(spaceWeatherCode);
+        }
         return result.ReasonCode switch
         {
             LocalAutomationContract.ExpectedVersionConflictReasonCode =>

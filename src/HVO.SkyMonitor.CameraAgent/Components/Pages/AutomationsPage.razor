@@ -9,10 +9,10 @@
 
 <PageTitle>Automations</PageTitle>
 
-@if (GuidedOrbitalSetup)
+@if (GuidedSetup is { } guided)
 {
-    <div id="orbital-setup-guide" class="ops-note-banner" role="status">
-        <span>Orbital refresh setup: create the reserved automation with a six-hour interval (21,600 seconds; never below 7,200). If it already exists, use its existing card; setup never replaces it. After saving, optionally <a href="/operations/software#software-orbital-heading">open Software &amp; Catalog for the first Refresh now</a>. Creation does not immediately contact the provider. Shared NAT or proxy users share an egress budget; use as few refreshers as needed and intervals well above two hours. <a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/orbital-elements-refresh.md#provider-policy">Read the provider policy before enabling refresh</a>.</span>
+    <div id="@guided.BannerId" class="ops-note-banner" role="status">
+        <span>@guided.Banner</span>
     </div>
 }
 
@@ -246,13 +246,17 @@ else
                         <article id="@CardId(item.DefinitionId)" class="automation-card@(focused ? " focused" : null)" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")" aria-current="@(focused ? "true" : null)">
                             <header>
                                 <span class="automation-icon @IconClass(item.TaskKind)" aria-hidden="true">
-                                    @if (item.TaskKind == LocalAutomationTaskKind.OrbitalElementsRefresh)
+                                    @switch (IconClass(item.TaskKind))
                                     {
-                                        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.2"></circle><ellipse cx="10" cy="10" rx="8" ry="3.4" transform="rotate(-30 10 10)"></ellipse><circle cx="16.2" cy="6.4" r="1.1"></circle></svg>
-                                    }
-                                    else
-                                    {
-                                        <svg viewBox="0 0 20 20"><path d="M8 3.5a2 2 0 0 1 4 0v7.6a4 4 0 1 1-4 0Z"></path><path d="M10 8v6"></path></svg>
+                                        case "orbital":
+                                            <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.2"></circle><ellipse cx="10" cy="10" rx="8" ry="3.4" transform="rotate(-30 10 10)"></ellipse><circle cx="16.2" cy="6.4" r="1.1"></circle></svg>
+                                            break;
+                                        case "space-weather":
+                                            <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.2"></circle><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"></path></svg>
+                                            break;
+                                        default:
+                                            <svg viewBox="0 0 20 20"><path d="M8 3.5a2 2 0 0 1 4 0v7.6a4 4 0 1 1-4 0Z"></path><path d="M10 8v6"></path></svg>
+                                            break;
                                     }
                                 </span>
                                 <div><h3 id="@($"automation-card-{item.DefinitionId}")">@item.Name</h3><p>@TaskDescription(item)</p></div>
@@ -338,8 +342,8 @@ else
                     <legend class="visually-hidden">Local automation definition</legend>
                     <div class="automation-dialog-grid">
                         <label class="ops-field">Identifier
-                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || OrbitalTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
-                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : OrbitalTaskSelected ? OrbitalIdentifierHint : "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
+                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || ReservedTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
+                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : SelectedReservedTask?.IdentifierHint ?? "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
                         </label>
                         <label class="ops-field">Name
                             <input id="automation-name" autocomplete="off" maxlength="@LocalAutomationContract.MaximumNameLength" @bind="_nameInput" @bind:after="FormChanged" />
@@ -353,8 +357,8 @@ else
                             </select>
                         </label>
                         <label class="ops-field">Task target
-                            <select id="automation-target" disabled="@OrbitalTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
-                                @if (!OrbitalTaskSelected)
+                            <select id="automation-target" disabled="@ReservedTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
+                                @if (!ReservedTaskSelected)
                                 {
                                     <option value="">Select a registered target</option>
                                 }
@@ -365,7 +369,7 @@ else
                             </select>
                         </label>
                         <label class="ops-field">Trigger
-                            <select id="automation-trigger" disabled="@OrbitalTaskSelected" @bind="_triggerKindInput" @bind:after="TriggerChanged">
+                            <select id="automation-trigger" disabled="@ReservedTaskSelected" @bind="_triggerKindInput" @bind:after="TriggerChanged">
                                 @foreach (var trigger in CompatibleTriggers())
                                 {
                                     <option value="@trigger">@Split(trigger.ToString())</option>
