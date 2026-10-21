@@ -540,7 +540,11 @@ without executing the nine full shards:
 
 Manual dispatch retains the historical Phase 14 acceptance inventory contract:
 
+Build the current checkout in Release first. The inventory reads compiled enum
+metadata without executing target assemblies.
+
 ```bash
+dotnet build HVO.SkyMonitor.v9.slnx --configuration Release -warnaserror
 ./scripts/test:phase14-acceptance
 ```
 
