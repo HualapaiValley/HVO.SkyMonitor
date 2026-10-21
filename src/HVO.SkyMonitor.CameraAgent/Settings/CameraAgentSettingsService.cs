@@ -65,7 +65,8 @@ internal sealed partial class CameraAgentSettingsService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     CameraAgentOperatorTelemetry telemetry,
     ILogger<CameraAgentSettingsService> logger,
-    OperatorSettingsFile? settingsFile = null)
+    OperatorSettingsFile? settingsFile = null,
+    Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions>? hostOptions = null)
 {
     private const string VirtualSkyModule = "VirtualSky";
     private const string NoSettingsFileReason =
@@ -173,6 +174,8 @@ internal sealed partial class CameraAgentSettingsService(
         {
             result = found.Name switch
             {
+                CameraAgentSettingsCatalogue.OrbitalElementsGroup or CameraAgentSettingsCatalogue.SatellitePlanningGroup
+                    => await WriteFeatureAsync(found, values, current.Version, actor, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SiteGroup => await WriteSiteAsync(found, values, current.Version, actor,
                     cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SkyMapGroup => await WriteFileIntegerAsync(found,
@@ -255,6 +258,8 @@ internal sealed partial class CameraAgentSettingsService(
         {
             return group.Name switch
             {
+                CameraAgentSettingsCatalogue.OrbitalElementsGroup or CameraAgentSettingsCatalogue.SatellitePlanningGroup
+                    => await ReadFeatureAsync(group, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SiteGroup => await ReadSiteAsync(group, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SkyMapGroup => await ReadFileIntegerAsync(group,
                     CameraAgentSettingsCatalogue.MaximumSceneObjects, sceneObjectBound.Current, cancellationToken)
