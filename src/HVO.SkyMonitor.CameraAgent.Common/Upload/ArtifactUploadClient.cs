@@ -55,6 +55,13 @@ public sealed class ArtifactUploadClient(
         }
 
         using var stream = File.OpenRead(path);
+        // Startup checks committed evidence by length only, so the content is verified here, before any byte is sent.
+        var checksum = await PayloadChecksum.ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(checksum, delivery.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            return new(ArtifactUploadDisposition.Quarantine, "payload-checksum-mismatch");
+        }
+        stream.Position = 0;
         using var uploadStream = hostOptions.Value.UploadBandwidthLimitBytesPerSecond > 0
             ? new BandwidthLimitedReadStream(stream, hostOptions.Value.UploadBandwidthLimitBytesPerSecond, timeProvider)
             : null;

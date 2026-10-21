@@ -28,6 +28,23 @@ public sealed class ArtifactUploadClientTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public async Task UploadAsync_PayloadWhoseContentDiffersFromItsChecksum_QuarantinesWithoutRequest()
+    {
+        // Startup checks committed evidence by length only, so the upload verifies the content before sending it.
+        using var root = new TemporaryRoot();
+        var manifest = CreateManifest([1, 2, 3, 4]);
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "payload.bin"), [4, 3, 2, 1]).ConfigureAwait(false);
+        using var client = new HttpClient(new ThrowingHandler()) { BaseAddress = new Uri("http://localhost/") };
+
+        var result = await CreateUploadClient(client).UploadAsync(
+            root.Path, CreateRecord(manifest), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ArtifactUploadDisposition.Quarantine, result.Disposition);
+        Assert.AreEqual("payload-checksum-mismatch", result.Reason);
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public async Task UploadAsync_TransportFailure_ReturnsRetry()
     {
@@ -233,7 +250,7 @@ public sealed class ArtifactUploadClientTests
     private sealed class ThrowingHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => throw new AssertFailedException("No HTTP request should be made for a missing payload.");
+            => throw new AssertFailedException("No HTTP request should be made for a payload that cannot be sent.");
     }
 
     private sealed class TransportFailureHandler : HttpMessageHandler
