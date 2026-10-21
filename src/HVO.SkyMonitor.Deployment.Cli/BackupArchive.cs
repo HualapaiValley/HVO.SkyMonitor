@@ -107,14 +107,14 @@ internal static class BackupArchive
         {
             if (source.Length != item.Size)
             {
-                throw new InstallerException($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
+                throw InstallerException.Formatted($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
             }
             using var hashing = new HashingReadStream(source, item.Size);
             var file = new PaxTarEntry(TarEntryType.RegularFile, item.Name) { Mode = item.Mode, DataStream = hashing };
             await tar.WriteEntryAsync(file, cancellationToken).ConfigureAwait(false);
             if (hashing.BytesRead != item.Size)
             {
-                throw new InstallerException($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
+                throw InstallerException.Formatted($"'{CameraAgentStateDiagnostics.Reason(item.Source!)}' changed size while it was backed up.");
             }
             return new BackupArchiveEntry(item.Name, BackupArchiveEntry.FileType, FormatMode(item.Mode), item.Size, hashing.Sha256());
         }
@@ -262,7 +262,7 @@ internal static class BackupArchive
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new InstallerException($"{CameraAgentStateDiagnostics.Reason(name)} could not be restored: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
+            throw InstallerException.Formatted($"{CameraAgentStateDiagnostics.Reason(name)} could not be restored: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
         }
     }
 
@@ -323,7 +323,7 @@ internal static class BackupArchive
     }
 
     private static InstallerException Invalid(string reason)
-        => InstallerException.Refused($"The backup is not one the installer can restore: {reason}. Nothing was changed.");
+        => InstallerException.RefusedFormatted($"The backup is not one the installer can restore: {reason}. Nothing was changed.");
 }
 
 /// <summary>One thing a backup holds: a folder, or a file read from <see cref="Source"/>, under its archive name.</summary>

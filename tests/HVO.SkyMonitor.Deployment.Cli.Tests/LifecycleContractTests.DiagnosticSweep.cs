@@ -22,7 +22,7 @@ public sealed partial class LifecycleContractTests
         string[] files =
         [
             "CameraAgentStateSnapshot.cs", "CameraAgentLifecycleManager.Backup.cs",
-            "CameraAgentLifecycleManager.Restore.cs", "BackupArchive.cs", "BackupInventory.cs"
+            "CameraAgentLifecycleManager.Restore.cs", "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs"
         ];
         var failures = new List<string>();
         foreach (var file in files)
@@ -31,7 +31,7 @@ public sealed partial class LifecycleContractTests
             var rendered = 0;
             // Include helper-returned archive refusals and composed recovery/cleanup/credential warnings as well as throws.
             foreach (Match site in Regex.Matches(source,
-                         """new InstallerException\(|InstallerException\.Refused\(|throw Invalid\(|return \$"|parts\.Add\(|new InstallationWarning\(|await ShowCredentialWarningAsync\(|var (?:warning|kept) = string.Create\(|return string.Create\(""",
+                         """new InstallerException\(|InstallerException\.(?:Formatted|RefusedFormatted|Refused)\(|throw Invalid\(|return \$"|parts\.Add\(|changes\.Add\(|new InstallationWarning\(|await ShowCredentialWarningAsync\(|var (?:warning|kept) = string.Create\(|return string.Create\(""",
                          RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
             {
                 var position = site.Index;
@@ -79,14 +79,16 @@ public sealed partial class LifecycleContractTests
     // The real SQLite, archive, filesystem and credential tests verify the actual runtime paths separately.
     private static string Diagnostic1476Expression(string expression)
     {
-        if (expression.StartsWith("CameraAgentStateDiagnostics.Reason(", StringComparison.Ordinal) &&
+        if ((expression.StartsWith("CameraAgentStateDiagnostics.Reason(", StringComparison.Ordinal) ||
+             expression.StartsWith("CameraAgentStateDiagnostics.Field(", StringComparison.Ordinal) ||
+             expression.StartsWith("CameraAgentStateDiagnostics.Failure(", StringComparison.Ordinal)) &&
             Diagnostic1476WholeCall(expression))
             return CameraAgentStateDiagnostics.Reason(HostileDiagnostic1476Name);
         if (expression.StartsWith("Redaction.SafeDiagnostic(", StringComparison.Ordinal) &&
             Diagnostic1476WholeCall(expression))
             return Redaction.SafeDiagnostic(HostileDiagnostic1476Name);
-        if (expression is "string.Join(\"; \", outcome.Changes.Select(CameraAgentStateDiagnostics.Reason))" or
-            "string.Join(\", \", changed.Select(CameraAgentStateDiagnostics.Reason))")
+        if (expression is "string.Join(\"; \", outcome.Changes)" or
+            "string.Join(\", \", changed)")
             return string.Join("; ", new[] { HostileDiagnostic1476Name, HostileDiagnostic1476Name }.Select(CameraAgentStateDiagnostics.Reason));
 
         // These are compositions of already formatted fragments; formatting them again would corrupt Describe keys.
@@ -102,7 +104,8 @@ public sealed partial class LifecycleContractTests
         if (expression is "instanceId:D" or "record.InstanceId:D" or "SchemaVersion" or "manifest.SchemaVersion" or
             "archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ" or "archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ" or
             "snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ" or "snapshot.SnapshotId:D" or "FormatBytes(required)" or
-            "FormatBytes(measured.AvailableBytes + reclaimed)" or "RestoredOwnerSettings.AdminEmailSetting" or "what")
+            "FormatBytes(measured.AvailableBytes + reclaimed)" or "RestoredOwnerSettings.AdminEmailSetting" or "what" or "held" or
+            "(holder.Email && holder.Name ? \"them\" : \"it\")")
             return "safe-scalar";
         return HostileDiagnostic1476Name;
     }

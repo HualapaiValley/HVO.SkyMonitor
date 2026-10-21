@@ -202,7 +202,7 @@ public sealed partial class LifecycleContractTests
         var kept = restored.Warnings!.Single(static warning => warning.Code == "restore-live-owner-settings-kept");
         StringAssert.Contains(kept.Message, "account new-owner, the live owner", StringComparison.Ordinal);
         StringAssert.Contains(kept.Message,
-            System.Text.Json.JsonEncodedText.Encode("account owner held the live owner's sign-in name; it gave it up as 'removed-owner'").ToString(), StringComparison.Ordinal);
+            "account owner held the live owner's sign-in name; it gave it up as 'removed-owner'", StringComparison.Ordinal);
     }
 
     /// <summary>

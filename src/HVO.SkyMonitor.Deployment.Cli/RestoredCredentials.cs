@@ -61,7 +61,7 @@ internal static class RestoredCredentials
             keys += Execute(restored, transaction,
                 "DELETE FROM AspNetUserTokens WHERE UserId = $user AND LoginProvider = $provider AND Name = $name;",
                 ("$user", userId), ("$provider", ApiKeyProvider), ("$name", name));
-            changes.Add($"API key {name} of account {userId} revoked again");
+            changes.Add($"API key {CameraAgentStateDiagnostics.Field(name)} of account {CameraAgentStateDiagnostics.Field(userId)} revoked again");
         }
         foreach (var (id, account) in before.Accounts.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
         {
@@ -71,7 +71,7 @@ internal static class RestoredCredentials
                 if (revoked > 0)
                 {
                     authority += revoked;
-                    changes.Add($"account {id} no longer exists in the live store: its password, roles, claims and site ownership are revoked, and it is locked out");
+                    changes.Add($"account {CameraAgentStateDiagnostics.Field(id)} no longer exists in the live store: its password, roles, claims and site ownership are revoked, and it is locked out");
                 }
                 continue;
             }
@@ -81,26 +81,26 @@ internal static class RestoredCredentials
                  !Equals(account.GetValueOrDefault("PasswordHash"), liveAccount.GetValueOrDefault("PasswordHash"))))
             {
                 reset += Update(restored, transaction, id, credentials.Select(column => (column, liveAccount[column])).ToArray());
-                changes.Add($"account {id} keeps the password and security stamp the live instance had");
+                changes.Add($"account {CameraAgentStateDiagnostics.Field(id)} keeps the password and security stamp the live instance had");
             }
             if (account.GetValueOrDefault("IsSiteOwner") is long owner && owner != 0 && liveAccount.GetValueOrDefault("IsSiteOwner") is long liveOwner && liveOwner == 0)
             {
                 authority += Update(restored, transaction, id, [("IsSiteOwner", 0L)]);
-                changes.Add($"account {id} is no longer the site owner, as the live instance had demoted it");
+                changes.Add($"account {CameraAgentStateDiagnostics.Field(id)} is no longer the site owner, as the live instance had demoted it");
             }
         }
         foreach (var (userId, roleId) in before.Roles.Except(live.Roles).Where(role => live.Accounts.ContainsKey(role.UserId)).Order())
         {
             authority += Execute(restored, transaction, "DELETE FROM AspNetUserRoles WHERE UserId = $user AND RoleId = $role;",
                 ("$user", userId), ("$role", roleId));
-            changes.Add($"role {roleId} of account {userId} removed again");
+            changes.Add($"role {CameraAgentStateDiagnostics.Field(roleId)} of account {CameraAgentStateDiagnostics.Field(userId)} removed again");
         }
         foreach (var (userId, type, value) in before.Claims.Except(live.Claims).Where(claim => live.Accounts.ContainsKey(claim.UserId)).Order())
         {
             authority += Execute(restored, transaction,
                 "DELETE FROM AspNetUserClaims WHERE UserId = $user AND ClaimType IS $type AND ClaimValue IS $value;",
                 ("$user", userId), ("$type", type), ("$value", value));
-            changes.Add($"claim {type}={value} of account {userId} removed again");
+            changes.Add($"claim {CameraAgentStateDiagnostics.Field(type)}={CameraAgentStateDiagnostics.Field(value)} of account {CameraAgentStateDiagnostics.Field(userId)} removed again");
         }
         transaction.Commit();
         return new Outcome(keys, reset, authority, changes);
@@ -196,7 +196,7 @@ internal static class RestoredCredentials
                 if (present.Contains("ConcurrencyStamp")) update.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
                 Update(restored, transaction, holder.Id, [.. update]);
                 var given = update.FirstOrDefault(static entry => entry.Column == "UserName").Value;
-                changes.Add($"account {holder.Id} held the live owner's {held} only in the backup; it takes the identity the live store gives it, '{given}'");
+                changes.Add($"account {CameraAgentStateDiagnostics.Field(holder.Id)} held the live owner's {held} only in the backup; it takes the identity the live store gives it, '{CameraAgentStateDiagnostics.Field(Convert.ToString(given, CultureInfo.InvariantCulture))}'");
                 continue;
             }
             var freed = FreeUserName(restored, transaction, holder.Id);
@@ -205,7 +205,7 @@ internal static class RestoredCredentials
             if (present.Contains("ConcurrencyStamp")) update.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
             Update(restored, transaction, holder.Id, [.. update]);
             RevokeAccount(restored, transaction, before, holder.Id, before.Accounts[holder.Id]);
-            changes.Add($"account {holder.Id} held the live owner's {held}; it gave {(holder.Email && holder.Name ? "them" : "it")} up as '{freed}' and is locked out");
+            changes.Add($"account {CameraAgentStateDiagnostics.Field(holder.Id)} held the live owner's {held}; it gave {(holder.Email && holder.Name ? "them" : "it")} up as '{CameraAgentStateDiagnostics.Field(freed)}' and is locked out");
         }
         var columns = AccountColumns.Where(column => owner.ContainsKey(column) && present.Contains(column)).ToArray();
         using (var insert = Command(restored, transaction,
@@ -218,7 +218,7 @@ internal static class RestoredCredentials
             insert.ExecuteNonQuery();
         }
         transaction.Commit();
-        changes.Add($"account {id}, the live owner, which the backup does not hold, was brought over from the live instance with its live credentials");
+        changes.Add($"account {CameraAgentStateDiagnostics.Field(id)}, the live owner, which the backup does not hold, was brought over from the live instance with its live credentials");
         return changes;
     }
 

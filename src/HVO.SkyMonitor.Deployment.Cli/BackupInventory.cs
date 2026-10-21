@@ -70,7 +70,7 @@ internal static class BackupInventory
                         omitted.Add(entry);
                         break;
                     default:
-                        throw InstallerException.Refused(
+                        throw InstallerException.RefusedFormatted(
                             $"The instance holds '{CameraAgentStateDiagnostics.Reason(entry)}', which is neither a file nor a folder, so it cannot be backed up. Move it out of {CameraAgentStateDiagnostics.Reason(paths.InstanceRoot)}, then run the backup again.");
                 }
             }
@@ -134,7 +134,7 @@ internal static class BackupInventory
         {
             var node = NativeLinux.GetNodeIdentity(file);
             if ((node.Type & TypeMask) != RegularFileType)
-                throw new InstallerException($"The database snapshot holds '{CameraAgentStateDiagnostics.Reason(Path.GetFileName(file))}', which is not a file.");
+                throw InstallerException.Formatted($"The database snapshot holds '{CameraAgentStateDiagnostics.Reason(Path.GetFileName(file))}', which is not a file.");
             yield return new BackupItem(prefix + Path.GetFileName(file), file, Directory: false, node.Mode & (UnixFileMode)0x1FF, new FileInfo(file).Length);
         }
     }
