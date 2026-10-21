@@ -94,7 +94,7 @@ public sealed class CalibrationLibraryStoreConflictException : InvalidOperationE
 
 [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
     Justification = "Injected telemetry is owned by the dependency injection container.")]
-public sealed class SqliteCalibrationLibraryStore(
+public sealed partial class SqliteCalibrationLibraryStore(
     IRawCaptureIngress rawCaptureIngress,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
