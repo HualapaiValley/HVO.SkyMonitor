@@ -1,6 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Settings;
-using Microsoft.Extensions.Configuration;
 using HVO.SkyMonitor.Common.Configuration;
+using Microsoft.Extensions.Configuration;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 

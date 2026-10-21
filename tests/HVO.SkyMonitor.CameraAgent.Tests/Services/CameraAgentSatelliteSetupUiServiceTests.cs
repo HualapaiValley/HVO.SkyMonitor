@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Settings;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -111,6 +112,6 @@ public sealed class CameraAgentSatelliteSetupUiServiceTests
     {
         public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(
             new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "owner"),
-                new(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)], "test"))));
+                new(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)], IdentityConstants.ApplicationScheme))));
     }
 }
