@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
+
 - Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
 
 - CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
@@ -39,6 +41,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- LogicHost camera-scoped operations history under `/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`: graph assignments (`processing-graph-assignments?targetHost=`), central executions with a node-paged inspector, jobs by capture with an inspector whose attempts, inputs and outputs page separately, delivery proposals with their stored terminal and latest facts and a fact page, and transient-event associations. Every collection is keyset paged (`take` 1–50, opaque `cursor`), covers retired and replaced installations, requires current membership of the camera's observatory, and rejects a continuation reused for another camera, list or filter. "Staged" appears only as a labelled, timestamp-free derivation: an Accepted proposal that was never activated or whose latest lifecycle fact is a rollback. `GET /api/internal/processing-graphs/revision-summaries` pages the global graph catalog beyond its latest 100 revisions without definition documents. (#1237)
 
 - Groundwork for stacking frames captured at different gains: versioned gain-response and normalization-policy contracts with exactly reproducible electrons-per-ADU coefficients for the VirtualSky ASI174MM model and the configured virtual ASI178MC and ASI676 profiles. The policy records the approved choices (electron-space combination at a fixed reference gain, a 4:1 coefficient limit, equal weights and strict exclusion when calibration is missing). Physical cameras report normalization as unavailable, and stacking still requires identical gain. (#1475)
 
@@ -93,6 +97,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- A space-weather refresh uses less CPU and memory. Measured on a stress tick with a 1 MiB alerts body, it allocates
+  about 14 MiB instead of 115 MiB and takes about a third of the time. A simulated day of refreshes uses about 40% of
+  the CPU and a sixth of the allocation. The store keeps its schema, stored formats and fingerprints, and still
+  verifies every stored body's checksum on each read. (#1489)
 - Release CameraAgent images trial per-architecture, framework-dependent non-composite ReadyToRun; native release jobs verify application headers, layout and identical hashes from two clean publishes. Developer and advisory image builds retain IL defaults. (#1473)
 
 - Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store

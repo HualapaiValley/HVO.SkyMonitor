@@ -67,7 +67,7 @@ public sealed class SwpcStoreFixtureTests
                         var selected = outcome == "updated" ? SwpcFetchOutcome.Updated : outcome == "unchanged" ? SwpcFetchOutcome.Unchanged : SwpcFetchOutcome.StaleSnapshot;
                         var result = await store.ExecuteAsync(at, (db, tx) =>
                         {
-                            var merged = SqliteSwpcStore.SaveSnapshot(db, tx, snapshot, selected, at);
+                            var merged = store.SaveSnapshot(db, tx, snapshot, selected, at);
                             return (View: store.ReadView(db, tx, at), merged.Diagnostics);
                         }, CancellationToken.None).ConfigureAwait(false);
                         view = result.View; diagnostics = result.Diagnostics;
@@ -135,12 +135,12 @@ public sealed class SwpcStoreFixtureTests
                 parsed.StampUtc, new(null, null), [.. bytes], new SwpcScalesBody(parsed));
         }
         var first = Snapshot(raw); var second = Snapshot(raw + "\n");
-        await store.ExecuteAsync(at, (db, tx) => SqliteSwpcStore.SaveSnapshot(db, tx, first, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
-        await store.ExecuteAsync(at, (db, tx) => SqliteSwpcStore.SaveSnapshot(db, tx, second, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
+        await store.ExecuteAsync(at, (db, tx) => store.SaveSnapshot(db, tx, first, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
+        await store.ExecuteAsync(at, (db, tx) => store.SaveSnapshot(db, tx, second, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
         // Returning to historical content creates another publication sharing the first raw blob.
-        await store.ExecuteAsync(at, (db, tx) => SqliteSwpcStore.SaveSnapshot(db, tx, first, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
+        await store.ExecuteAsync(at, (db, tx) => store.SaveSnapshot(db, tx, first, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
         var alerts = SwpcStoreTests.Alerts(SwpcStoreTests.Message(), at);
-        await store.ExecuteAsync(at, (db, tx) => SqliteSwpcStore.SaveSnapshot(db, tx, alerts, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
+        await store.ExecuteAsync(at, (db, tx) => store.SaveSnapshot(db, tx, alerts, SwpcFetchOutcome.Updated, at), CancellationToken.None).ConfigureAwait(false);
         // Exercise the production algorithm with small real blobs, without allocating 256 MiB.
         var protectedBytes = first.DecodedByteCount + alerts.DecodedByteCount;
         var trimmed = await store.ExecuteAsync(null, (db, tx) => SqliteSwpcStore.PruneRaw(db, tx, at, protectedBytes), CancellationToken.None).ConfigureAwait(false);

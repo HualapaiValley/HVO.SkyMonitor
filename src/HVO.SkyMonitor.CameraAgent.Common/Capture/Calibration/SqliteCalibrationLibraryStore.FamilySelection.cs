@@ -154,13 +154,15 @@ public sealed partial class SqliteCalibrationLibraryStore
     /// Re-confirms the masters of a frozen selection when work that uses them is claimed: each is still a master of a
     /// published bundle with the frozen kind and payload hash, its payload hashes to it, and its bundle's committed
     /// evidence passes the check <see cref="SelectFamilyMastersAsync"/> applies. Returns null, or the stable reason
-    /// the first master fails. Confirmation bypasses the file-metadata cache so unchanged length and timestamp
-    /// cannot hide corrupt bytes. Conditions and effective windows were settled when the selection was frozen and
-    /// are not evaluated again.
+    /// the first master fails. Each payload is always hashed again. By default the bundle evidence check bypasses the
+    /// file-metadata cache so unchanged length and timestamp cannot hide corrupt bytes; a caller that confirms on
+    /// every window may pass <paramref name="forceEvidenceValidation"/> false to reuse it. Conditions and effective
+    /// windows were settled when the selection was frozen and are not evaluated again.
     /// </summary>
     internal async Task<string?> ConfirmFamilyMastersAsync(
         IReadOnlyList<CalibrationFamilyMasterV1> masters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceEvidenceValidation = true)
     {
         ArgumentNullException.ThrowIfNull(masters);
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -205,7 +207,36 @@ public sealed partial class SqliteCalibrationLibraryStore
             }
         }
         return await VerifyFamilyBundleEvidenceAsync(
-            Array.ConvertAll(stored, static master => master!), cancellationToken, forceValidation: true).ConfigureAwait(false);
+            Array.ConvertAll(stored, static master => master!), cancellationToken, forceEvidenceValidation).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the bundle snapshot of each library master in <paramref name="artifactIds"/>, once per bundle, in one
+    /// read transaction. An ID the library does not hold as a master is omitted, so the
+    /// consumer reports it missing. Evidence is not validated here; loading the bundle validates it.
+    /// </summary>
+    internal async Task<IReadOnlyList<CalibrationLibraryBundleSnapshot>> ReadFamilyMasterBundlesAsync(
+        IReadOnlyCollection<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        var bundles = new Dictionary<string, PersistedBundle>(StringComparer.Ordinal);
+        var snapshots = new List<CalibrationLibraryBundleSnapshot>();
+        foreach (var artifactId in artifactIds)
+        {
+            if (await ReadFamilyMasterAsync(connection, transaction, artifactId, bundles, cancellationToken)
+                    .ConfigureAwait(false) is { } master &&
+                !snapshots.Any(snapshot => string.Equals(
+                    snapshot.BundleIdentitySha256, master.Bundle.BundleIdentitySha256, StringComparison.Ordinal)))
+            {
+                snapshots.Add(master.Bundle);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return snapshots;
     }
 
     /// <summary>
@@ -349,6 +380,11 @@ public sealed partial class SqliteCalibrationLibraryStore
                     StringComparison.OrdinalIgnoreCase)
                 ? null
                 : CalibrationFamilyReasonCodes.MasterCorrupt;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // A pruned payload is missing, not unreadable (#1475).
+            return CalibrationFamilyReasonCodes.MasterMissing;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {

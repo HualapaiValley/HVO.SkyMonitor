@@ -1,24 +1,35 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-/// <summary>Creates a rolling linear 16-bit combined artifact after every compatible capture.</summary>
+/// <summary>
+/// Creates a rolling linear 16-bit combined artifact after every compatible capture. With
+/// <see cref="RollingCombinationProcessingStepOptions.Recipe"/> set to the mixed-gain recipe it stacks raw frames
+/// through a frozen normalization plan instead (#1475); otherwise a gain change breaks the window.
+/// </summary>
 internal sealed class RollingCombinationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     RollingCombinationProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep, IWindowCaptureProcessingGraphStep
 {
+    private static readonly IReadOnlySet<FrameArtifactRole> StackRoles =
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined };
+
+    // The mixed-gain recipe calibrates each raw frame with its own gain's masters, so it accepts raw frames only.
+    private static readonly IReadOnlySet<FrameArtifactRole> RawRole = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
     private readonly Queue<ProcessingArtifact> _window = new();
 
     internal int BufferedFrameCount => _window.Count;
 
     public bool Enabled => Options.Enabled;
 
-    public string RecipeName => BuiltInProcessingRecipes.RollingMean;
+    public string RecipeName => MixedGain ? BuiltInProcessingRecipes.MixedGainNormalizedMean : BuiltInProcessingRecipes.RollingMean;
 
     public FrameArtifactRole OutputRole => FrameArtifactRole.Combined;
 
@@ -26,8 +37,7 @@ internal sealed class RollingCombinationCaptureProcessingStep(
 
     public string? OutputMediaType => "application/x-hvo-linear-frame";
 
-    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined };
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles => MixedGain ? RawRole : StackRoles;
 
     public int MaximumInputCount => Options.WindowSize;
 
@@ -40,6 +50,8 @@ internal sealed class RollingCombinationCaptureProcessingStep(
     public IReadOnlyList<int> RequiredPositions => Options.WindowKind == ProcessingGraphWindowKind.Centered
         ? Enumerable.Range(-(Options.WindowSize / 2), Options.WindowSize).ToArray()
         : [];
+
+    private bool MixedGain => string.Equals(Options.Recipe, BuiltInProcessingRecipes.MixedGainNormalizedMean, StringComparison.Ordinal);
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
@@ -68,6 +80,24 @@ internal sealed class RollingCombinationCaptureProcessingStep(
                     context.ReconstructionDescriptor, sourceProduct).RecipeIdentitySha256,
             Payload = sourceArtifact.Frame.PixelData.ToArray()
         };
+        // The mixed-gain recipe executes under the node's frozen normalization plan, frozen here on first execution
+        // and reused on every retry, with the masters it selects (#1475).
+        var normalization = MixedGain
+            ? await adapter.PrepareNormalizationAsync(
+                context,
+                new NormalizationWindowShape(
+                    Options.WindowKind,
+                    RequiredPositions,
+                    MinimumInputCount,
+                    Options.MaximumAgeMilliseconds,
+                    Options.MaximumIntegrationMilliseconds),
+                cancellationToken).ConfigureAwait(false)
+            : GainNormalizationPreparation.None;
+        if (normalization.Outcome is { } preparationOutcome)
+        {
+            context.AddProcessingOutcome(preparationOutcome);
+            return;
+        }
         var durableHistory = context.GetHistoricalInputs();
         IEnumerable<ProcessingArtifact> priorInputs = context.ProcessingExecution is not null
             ? durableHistory
@@ -75,7 +105,7 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         var compatibleHistory = priorInputs
             .Where(source => source.ArtifactId != current.ArtifactId)
             .Reverse()
-            .TakeWhile(source => IsCompatible(source, current))
+            .TakeWhile(source => IsCompatible(source, current, normalization.Plan))
             .Reverse();
         var candidateWindow = context.ProcessingExecution is null
             ? compatibleHistory.Append(current).TakeLast(Options.WindowSize).ToList()
@@ -105,17 +135,28 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         var stackMetadata = sourceArtifact.Frame.Metadata.Extra is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(sourceArtifact.Frame.Metadata.Extra, StringComparer.Ordinal);
-        stackMetadata["stackCount"] = product.SourceArtifactIds.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // A mixed-gain product also names the calibration masters it used; only the stacked frames count.
+        var windowIds = candidateWindow.Select(static source => source.ArtifactId).ToHashSet();
+        var stackCount = product.SourceArtifactIds.Count(windowIds.Contains);
+        stackMetadata["stackCount"] = stackCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
         stackMetadata["totalIntegrationMilliseconds"] = product.TotalIntegration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
         var combinedFrame = CameraAgentRecipeExecutionAdapter.CreateFrame(product, sourceArtifact.Frame, "RollingCombination");
         var artifact = context.AddDerivative(FrameArtifactRole.Combined,
             combinedFrame with { Metadata = combinedFrame.Metadata with { Extra = stackMetadata } },
-            $"rolling-mean-v1-n{product.SourceArtifactIds.Count}",
+            MixedGain ? $"mixed-gain-normalized-mean-v1-n{stackCount}" : $"rolling-mean-v1-n{stackCount}",
             product.SourceArtifactIds,
             CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
         context.AssociateProcessingProduct(artifact, product);
 
-        ProcessingExecutionRequest CreateRequest(IReadOnlyList<ProcessingArtifact> inputs) => new(
+        ProcessingExecutionRequest CreateRequest(IReadOnlyList<ProcessingArtifact> inputs) => MixedGain
+            ? new(
+                BuiltInProcessingRecipes.MixedGainNormalizedMean,
+                JsonSerializer.SerializeToElement(new MixedGainNormalizedMeanOptions()),
+                ProcessingInputSelector.Raw(current.Variant),
+                [.. inputs, .. normalization.Masters],
+                Options.OutputVariant,
+                AuxiliaryInputs: normalization.PlanInput is null ? null : [normalization.PlanInput])
+            : new(
             BuiltInProcessingRecipes.RollingMean,
             JsonSerializer.SerializeToElement(new RollingMeanOptions(
                 Options.WindowSize,
@@ -130,13 +171,23 @@ internal sealed class RollingCombinationCaptureProcessingStep(
             },
             inputs,
             Options.OutputVariant);
-
-        static bool IsCompatible(ProcessingArtifact candidate, ProcessingArtifact current) =>
-            candidate.Role == current.Role &&
-            string.Equals(candidate.Variant, current.Variant, StringComparison.Ordinal) &&
-            candidate.Layout == current.Layout &&
-            candidate.Compatibility == current.Compatibility;
     }
+
+    /// <summary>
+    /// The rolling window boundary. Gain is part of the compatibility, so a gain change breaks the window. Only under
+    /// a frozen normalization plan (#1475) do raw frames that differ in gain alone compare equal, through
+    /// <see cref="GainNormalizationCompatibility.Normalize"/>; a change of any other axis, or of the plan's family,
+    /// policy or response, still breaks it.
+    /// </summary>
+    internal static bool IsCompatible(ProcessingArtifact candidate, ProcessingArtifact current, NormalizationPlanV1? plan) =>
+        candidate.Role == current.Role &&
+        string.Equals(candidate.Variant, current.Variant, StringComparison.Ordinal) &&
+        candidate.Layout == current.Layout &&
+        (plan is null
+            ? candidate.Compatibility == current.Compatibility
+            : candidate.Role == FrameArtifactRole.Raw &&
+              GainNormalizationCompatibility.Normalize(candidate.Compatibility, plan) ==
+              GainNormalizationCompatibility.Normalize(current.Compatibility, plan));
 }
 
 public sealed class RollingCombinationProcessingStepOptions
@@ -156,4 +207,12 @@ public sealed class RollingCombinationProcessingStepOptions
 
     [Required(AllowEmptyStrings = false)]
     public string OutputVariant { get; init; } = "rolling-mean";
+
+    /// <summary>
+    /// Null for the rolling mean, or <c>mixed-gain-normalized-mean</c> to stack raw frames across gain changes through
+    /// a frozen normalization plan (#1475). Omitted from serialized options when null.
+    /// </summary>
+    [AllowedValues(null, BuiltInProcessingRecipes.MixedGainNormalizedMean)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Recipe { get; init; }
 }

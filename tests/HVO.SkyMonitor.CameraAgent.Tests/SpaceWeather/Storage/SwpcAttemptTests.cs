@@ -84,6 +84,31 @@ public sealed class SwpcAttemptTests
     }
 
     [TestMethod]
+    public async Task RolledBackRowsAreNotServedWhenTheNextCommitReusesTheirSequenceAndSnapshotId()
+    {
+        using var store = Open();
+        var begun = await Begin(store).ConfigureAwait(false);
+        var rolledBack = Completion(begun.Request, begun.Result, SwpcStoreTests.Alerts(SwpcStoreTests.Message(detail: "rolled-back")));
+        // The failed commit decodes its own message and snapshot before the projection throws.
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.CompleteAttemptAsync(rolledBack, context =>
+        {
+            Assert.Contains("rolled-back", Assert.ContainsSingle(context.AfterMerge.Notices.Versions).Version.Message.NormalizedText);
+            throw new InvalidOperationException("injected");
+        }, CancellationToken.None).AsTask()).ConfigureAwait(false);
+        var kept = SwpcStoreTests.Alerts(SwpcStoreTests.Message(detail: "kept"));
+        Assert.AreEqual(SwpcWriteStatus.Applied, (await store.CompleteAttemptAsync(rolledBack with { Candidate = kept, BytesRead = kept.DecodedByteCount },
+            Project, CancellationToken.None).ConfigureAwait(false)).Status);
+        var view = await store.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false);
+        var version = Assert.ContainsSingle(view.Notices.Versions).Version;
+        Assert.AreEqual(1L, version.IngestSequence, "The kept message reuses the rolled-back ingest sequence.");
+        Assert.Contains("kept", version.Message.NormalizedText);
+        Assert.Contains("kept", Assert.ContainsSingle(view.Notices.Groups).Versions[0].Message.NormalizedText);
+        var lkg = view.Products[SwpcProduct.Alerts].LastKnownGood!;
+        Assert.AreEqual(kept.Sha256, lkg.Sha256);
+        CollectionAssert.AreEqual(kept.DecodedBody.ToArray(), lkg.DecodedBody.ToArray());
+    }
+
+    [TestMethod]
     public async Task CancellationAfterProjectionRollsBackTheEntireCommit()
     {
         using var store = Open(); var begun = await Begin(store).ConfigureAwait(false); using var cancelled = new CancellationTokenSource();

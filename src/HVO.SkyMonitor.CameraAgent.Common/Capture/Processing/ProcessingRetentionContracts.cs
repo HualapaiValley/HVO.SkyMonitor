@@ -71,14 +71,21 @@ internal sealed class CompositeProcessingRetentionHolds(
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var videos = timeLapses is null ? [] : await timeLapses.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         // The masters of every active calibration family stay held whatever their bundle's own retention_hold, until the
-        // family is deactivated. The families store is read under its own gate, never the library's.
-        var families = calibrationFamilies is null || !calibrationLibrary.OwnsStorageRoot(storageRoot)
-            ? []
-            : await calibrationLibrary.GetMasterRetentionHoldsUnderLifecycleLockAsync(
-                storageRoot,
-                await calibrationFamilies.GetActiveMasterArtifactIdsAsync(cancellationToken).ConfigureAwait(false),
-                cancellationToken).ConfigureAwait(false);
-        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(families).Distinct().ToArray();
+        // family is deactivated. So do the masters a frozen normalization plan names, even once their family is
+        // superseded, while its execution is pending or running and then while its node's outputs are kept (#1475).
+        // The families store and the processing store are each read under their own gate, never the library's.
+        IReadOnlyList<ProcessingRetentionHold> masters = [];
+        if (calibrationLibrary.OwnsStorageRoot(storageRoot))
+        {
+            var familyMasters = calibrationFamilies is null
+                ? []
+                : await calibrationFamilies.GetActiveMasterArtifactIdsAsync(cancellationToken).ConfigureAwait(false);
+            var planMasters = await persistence.GetNormalizationPlanMasterArtifactIdsAsync(storageRoot, cancellationToken)
+                .ConfigureAwait(false);
+            masters = await calibrationLibrary.GetMasterRetentionHoldsUnderLifecycleLockAsync(
+                storageRoot, [.. familyMasters.Union(planMasters)], cancellationToken).ConfigureAwait(false);
+        }
+        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(masters).Distinct().ToArray();
     }
 
     public ValueTask<int> ExpireOutputsAsync(
