@@ -21,6 +21,9 @@ public sealed partial class EnvironmentalObservationPerformanceTests
     [TestCategory("Manual")]
     public async Task Issue1557_MaximumLineage_RecordsProductionBaseline()
     {
+        Assert.AreEqual("1", Environment.GetEnvironmentVariable("HVO_ISSUE_1557_EVIDENCE"),
+            "Suppress fixture recurring workers for process resource attribution.");
+        Assert.IsTrue(GCSettings.IsServerGC, "Run with DOTNET_gcServer=1 to match the production host GC mode.");
         var root = FindRepositoryRoot();
         var source = await EvidenceSourceIdentity.CaptureAsync(root,
             typeof(EnvironmentalObservationPerformanceTests), typeof(EnvironmentalObservationIngestService))
