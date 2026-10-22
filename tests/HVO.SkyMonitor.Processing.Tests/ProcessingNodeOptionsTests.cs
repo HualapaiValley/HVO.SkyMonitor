@@ -86,7 +86,7 @@ public sealed class ProcessingNodeOptionsTests
         CollectionAssert.AreEqual(ProcessingGraphJson.SerializeCanonical(saved),
             ProcessingGraphJson.SerializeCanonical(roundTripped));
         Assert.AreEqual(saved.Revision, roundTripped.Revision);
-        for (var index = 0; index < saved.Nodes.Count; index++)
+        for (var index = 0; index < saved.Nodes.Length; index++)
         {
             Assert.AreEqual(saved.Nodes[index].StepVersion, roundTripped.Nodes[index].StepVersion);
             Assert.AreEqual(saved.Nodes[index].EffectiveOptions.GetRawText(),
