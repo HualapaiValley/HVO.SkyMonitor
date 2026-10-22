@@ -23,6 +23,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     private bool bindPresentation;
     private Guid? captureId;
     private Task<AuthenticationState>? authenticationState;
+    private CameraCurrentSelection? currentSelection;
     private long presentationGeneration;
     private long baseImageAttempt;
     private CancellationTokenSource? presentationSaveCancellation;
@@ -49,7 +50,10 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     internal CentralLayeredPresentation? Presentation { get; private set; }
     internal MarkupString PresentationSvg => new(Encoding.UTF8.GetString(Presentation?.Svg ?? []));
     internal string? MaterializationMessage { get; private set; }
-    internal string? SelectedPreviewPath => CurrentSelection is { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection &&
+    internal string? SelectedPreviewPath => principal is not null &&
+        CentralArtifactCredentialAccess.HasOwnerCredential(principal) &&
+        Detail is { } authorized && CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) &&
+        CurrentSelection is { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection &&
         selected.CaptureId == CaptureId && Detail?.Artifacts.Any(artifact => artifact.ArtifactId == artifactId &&
             artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
             artifact.ObjectState == Data.CentralArtifactObjectState.Available &&
@@ -70,7 +74,8 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         // A refreshed detail for the same exact capture and the same authentication state keeps its presentation,
         // layer and image state. Sign-out or another actor starts over, so nothing read or saved for the previous
         // actor survives.
-        if (captureId == requestedCaptureId && ReferenceEquals(authenticationState, requestedAuthenticationState))
+        if (captureId == requestedCaptureId && ReferenceEquals(authenticationState, requestedAuthenticationState) &&
+            ReferenceEquals(currentSelection, CurrentSelection))
         {
             return;
         }
@@ -78,6 +83,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         // that is superseded while it waits can never restore its own actor or presentation over a newer one.
         captureId = requestedCaptureId;
         authenticationState = requestedAuthenticationState;
+        currentSelection = CurrentSelection;
         principal = null;
         var generation = ++presentationGeneration;
         IsSavingPresentation = false;
@@ -109,7 +115,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
             if (generation == presentationGeneration &&
                 presentation is { Status: CentralLayeredPresentationStatus.Found, Presentation: { } found } &&
                 found.CaptureId == exactCaptureId &&
-                (CurrentSelection is null || found.BaseArtifactId == CurrentSelection.ArtifactId))
+                (CurrentSelection is null || SelectedPreviewPath is not null && found.BaseArtifactId == CurrentSelection.ArtifactId))
             {
                 Presentation = found;
                 bindPresentation = true;

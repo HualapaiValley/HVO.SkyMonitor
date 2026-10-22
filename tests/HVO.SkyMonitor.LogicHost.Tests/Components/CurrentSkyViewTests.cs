@@ -143,6 +143,24 @@ public sealed class CurrentSkyViewTests
         }
     }
 
+    [TestMethod]
+    [DataRow("matching")]
+    [DataRow("foreignCapture")]
+    [DataRow("foreignBase")]
+    public void LayeredPresentation_MustMatchBothSelectedCaptureAndBase(string scenario)
+    {
+        using var context = CreateContext(out _, out _);
+        var presentations = (Presentations)context.Services.GetRequiredService<ICentralLayeredPresentationService>();
+        presentations.Result = new(CentralLayeredPresentationStatus.Found,
+            new(scenario == "foreignCapture" ? Guid.NewGuid() : Capture, Guid.NewGuid(),
+                scenario == "foreignBase" ? Guid.NewGuid() : Artifact, "image/png", "manifest", "presentation", "svg",
+                1, 1, [], "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"u8.ToArray()));
+        var cut = Render(context);
+        cut.Find("img").GetAttribute("src").Should().Be(scenario == "matching"
+            ? $"/api/v1.0/captures/{Capture:D}/presentation/base" : "/selected-preview");
+        cut.FindAll("svg").Should().HaveCount(scenario == "matching" ? 1 : 0);
+    }
+
     private static IRenderedComponent<CurrentSkyView> Render(BunitContext context) => context.Render<CurrentSkyView>(p =>
         p.Add(c => c.ObservatoryId, Observatory).Add(c => c.CameraId, Camera));
 
@@ -196,8 +214,9 @@ public sealed class CurrentSkyViewTests
     }
     private sealed class Presentations : ICentralLayeredPresentationService
     {
+        internal CentralLayeredPresentationResult Result { get; set; } = new(CentralLayeredPresentationStatus.Unavailable);
         public Task<CentralLayeredPresentationResult> GetAsync(Guid captureId, ClaimsPrincipal principal, CancellationToken cancellationToken = default)
-            => Task.FromResult(new CentralLayeredPresentationResult(CentralLayeredPresentationStatus.Unavailable));
+            => Task.FromResult(Result);
     }
     private sealed class Materializer : ICentralPresentationMaterializer
     {
