@@ -24,7 +24,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the image ID and OCI archive; a repeatability check retains both builds and diagnoses differences. #1299
+- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the image ID and OCI archive; a repeatability check retains both builds and diagnoses differences. (#1299)
 
 - Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
 

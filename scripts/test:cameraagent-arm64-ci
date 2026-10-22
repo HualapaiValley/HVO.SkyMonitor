@@ -253,7 +253,7 @@ if [[ $# -ne 1 || ! -d "$BUNDLE" || -L "$BUNDLE" ]]; then
     exit 2
 fi
 
-for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat timeout wc; do
+for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat tar tee timeout wc; do
     require_command "$command"
 done
 
@@ -544,12 +544,16 @@ docker build --pull --platform linux/arm64 --build-arg "HVO_SOURCE_REVISION=$(<"
     --build-arg "SOURCE_DATE_EPOCH=$(git -C "$REPO_ROOT" show -s --format=%ct "$(<"$RESULTS/source-revision.txt")")" \
     --build-arg "DOTNET_SDK_IMAGE=$SDK_IMAGE_DIGEST" \
     --build-arg "DOTNET_ASPNET_IMAGE=$ASPNET_IMAGE_DIGEST" \
-    --provenance=false --sbom=false --output type=docker,rewrite-timestamp=true \
+    --provenance=false --sbom=false --output "type=docker,dest=$TEMP_ROOT/image.tar,rewrite-timestamp=true" \
     --label "$OWNERSHIP_LABEL" --tag "$IMAGE_TAG" \
-    --iidfile "$RESULTS/image-id.txt" \
     --file "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" \
     > "$RESULTS/docker-build.log"
-IMAGE_ID="$(<"$RESULTS/image-id.txt")"
+image_config="$(tar -xOf "$TEMP_ROOT/image.tar" manifest.json | jq -er 'if length == 1 then .[0].Config else empty end')"
+image_config_digest="$(tar -xOf "$TEMP_ROOT/image.tar" "$image_config" | sha256sum)"
+IMAGE_ID="sha256:${image_config_digest%% *}"
+docker load --input "$TEMP_ROOT/image.tar" > "$RESULTS/docker-load.log"
+rm -f -- "$TEMP_ROOT/image.tar"
+printf '%s\n' "$IMAGE_ID" | tee "$RESULTS/image-id.txt"
 readonly IMAGE_ID
 [[ "$IMAGE_ID" == sha256:* ]] || fail "Docker did not produce a content-addressed image ID"
 docker image inspect "$IMAGE_ID" > "$RESULTS/image-inspect.json"

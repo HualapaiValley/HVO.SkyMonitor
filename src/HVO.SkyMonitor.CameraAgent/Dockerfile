@@ -18,46 +18,48 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8d
 
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
-WORKDIR /src
+# BuildKit stamps WORKDIR mkdir operations with SOURCE_DATE_EPOCH even before its ARG declaration.
+# Keep restore at / with absolute COPY destinations so epoch-only changes preserve the restore cache.
+WORKDIR /
 # Explicit release-image opt-in; Compose, advisory and developer builds publish IL by default.
 ARG HVO_READY_TO_RUN=false
 ARG HVO_CREATED
 ARG TARGETARCH
-ARG SOURCE_DATE_EPOCH
-COPY scripts/release:cameraagent-publish scripts/release:cameraagent-publish
-COPY scripts/cameraagent-release.targets scripts/cameraagent-release.targets
+COPY scripts/release:cameraagent-publish /src/scripts/release:cameraagent-publish
+COPY scripts/cameraagent-release.targets /src/scripts/cameraagent-release.targets
 
 # Copy solution and project files needed for restore
-COPY Directory.Build.props ./
-COPY Directory.Build.targets ./
-COPY Directory.Packages.props ./
-COPY .editorconfig ./
-COPY global.json ./
-COPY HVO.SkyMonitor.v9.slnx ./
-COPY THIRD-PARTY-NOTICES.md ./
-COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj src/HVO.SkyMonitor.AgentCore/
-COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj src/HVO.SkyMonitor.Astronomy/
-COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj src/HVO.SkyMonitor.Catalog.Sqlite/
-COPY src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj src/HVO.SkyMonitor.Fleet.Contracts/
-COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj src/HVO.SkyMonitor.Imaging/
-COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj src/HVO.SkyMonitor.Processing/
-COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
-COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj src/HVO.SkyMonitor.CameraAgent.Common/
-COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj src/HVO.SkyMonitor.CameraAgent.Replay/
-COPY src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj src/HVO.SkyMonitor.CameraAgent.ReplayRunner/
-COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
-COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
+COPY Directory.Build.props /src/
+COPY Directory.Build.targets /src/
+COPY Directory.Packages.props /src/
+COPY .editorconfig /src/
+COPY global.json /src/
+COPY HVO.SkyMonitor.v9.slnx /src/
+COPY THIRD-PARTY-NOTICES.md /src/
+COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj /src/src/HVO.SkyMonitor.AgentCore/
+COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj /src/src/HVO.SkyMonitor.Astronomy/
+COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj /src/src/HVO.SkyMonitor.Catalog.Sqlite/
+COPY src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj /src/src/HVO.SkyMonitor.Fleet.Contracts/
+COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj /src/src/HVO.SkyMonitor.Imaging/
+COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj /src/src/HVO.SkyMonitor.Processing/
+COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj /src/src/HVO.SkyMonitor.Common/
+COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj /src/src/HVO.SkyMonitor.CameraAgent.Common/
+COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj /src/src/HVO.SkyMonitor.CameraAgent.Replay/
+COPY src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj /src/src/HVO.SkyMonitor.CameraAgent.ReplayRunner/
+COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj /src/src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
+COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj /src/src/HVO.SkyMonitor.CameraAgent/
 
 # Restore project dependencies into a source-independent cache layer.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
-RUN ./scripts/release:cameraagent-publish restore
+RUN cd /src && dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && ./scripts/release:cameraagent-publish restore
 
 # Copy source code
-COPY src/ src/
+COPY src/ /src/src/
 
 # Restore again after Razor sources are present so implicit framework assets are discovered.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
-RUN ./scripts/release:cameraagent-publish restore
+RUN cd /src && dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && ./scripts/release:cameraagent-publish restore
+
 
 # Build and publish. Every published assembly carries the informational version <version>+<revision>; .dockerignore
 # excludes .git, so the SDK cannot derive the revision itself. The identity is declared after restore and the source
@@ -66,6 +68,7 @@ RUN ./scripts/release:cameraagent-publish restore
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
 ARG HVO_VERSION
 ARG HVO_SOURCE_REVISION
+ARG SOURCE_DATE_EPOCH
 RUN case "${HVO_SOURCE_REVISION}" in \
         unknown) ;; \
         *[!0-9a-f]*) false ;; \
@@ -107,6 +110,7 @@ WORKDIR /app
 # Freeze package bytes for both native architectures. Advance this snapshot with dependency updates;
 # never replace it with a moving mirror, even when the base-image digest remains pinned.
 RUN sed -i -E 's@https?://[^ ]*(archive.ubuntu.com/ubuntu/?|security.ubuntu.com/ubuntu/?|ports.ubuntu.com/ubuntu-ports/?)@https://snapshot.ubuntu.com/ubuntu/20261021T000000Z@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && awk '/^URIs:/ { count++; if (NF < 2) bad=1; for (i=2; i<=NF; i++) if ($i !~ /^https:\/\/snapshot\.ubuntu\.com\/ubuntu\/[0-9]+T[0-9]+Z\/?$/) bad=1 } END { exit (count == 0 || bad) }' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends curl libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/cache/ldconfig/aux-cache \

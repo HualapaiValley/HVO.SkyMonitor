@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproducible CameraAgent build from this checkout. Other arguments are buildx options.
-# --output is optional (defaults to loading Docker); supported types: docker, oci, image, local.
+# --output is optional (defaults to a rewritten archive followed by docker load).
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 commit="$(git -C "$root" rev-parse HEAD)"
@@ -10,7 +10,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --commit) commit="${2:?--commit requires a commit}"; shift 2 ;;
         --output) output="${2:?--output requires an exporter}"; shift 2 ;;
-        --load | --push | --file | -f | --output=*)
+        --load | --push | --file | -f | --output=* | -o*)
             echo 'Use --output type=docker, type=image,push=true or type=oci; the CameraAgent Dockerfile is fixed.' >&2
             exit 64 ;;
         *) arguments+=("$1"); shift ;;
@@ -21,11 +21,30 @@ commit="$(git -C "$root" rev-parse --verify "${commit}^{commit}")"
     echo 'Check out --commit before building its image.' >&2; exit 64;
 }
 epoch="$(git -C "$root" show -s --format=%ct "$commit")"
+temporary=''
+trap '[[ -z "$temporary" ]] || rm -rf -- "$temporary"' EXIT
+load_archive=''
+[[ ",$output," != *,unpack=* ]] || { echo 'Unpacking is incompatible with timestamp rewriting.' >&2; exit 64; }
 case "$output" in
     type=local,*) ;; # BuildKit applies SOURCE_DATE_EPOCH to local exports itself.
-    type=docker | type=docker,* | type=oci,* | type=image | type=image,*) output+=',rewrite-timestamp=true' ;;
+    type=docker | type=docker,*)
+        if [[ ",$output," != *,dest=* ]]; then
+            temporary="$(mktemp -d)"
+            load_archive="$temporary/image.tar"
+            output+=",dest=$load_archive"
+        fi
+        output+=',rewrite-timestamp=true' ;;
+    type=oci,*) output+=',rewrite-timestamp=true' ;;
+    type=image | type=image,*) output+=',unpack=false,rewrite-timestamp=true' ;;
     *) echo 'Unsupported image exporter.' >&2; exit 64 ;;
 esac
-exec docker buildx build "${arguments[@]}" --file "$root/src/HVO.SkyMonitor.CameraAgent/Dockerfile" \
+docker buildx build "${arguments[@]}" --file "$root/src/HVO.SkyMonitor.CameraAgent/Dockerfile" \
     --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "HVO_SOURCE_REVISION=$commit" \
     --provenance=false --sbom=false --output "$output" "$root"
+if [[ -n "$load_archive" ]]; then
+    config="$(tar -xOf "$load_archive" manifest.json | jq -er 'if length == 1 then .[0].Config else empty end')"
+    image_id="$(tar -xOf "$load_archive" "$config" | sha256sum)"
+    image_id="sha256:${image_id%% *}"
+    docker load --input "$load_archive"
+    printf '%s\n' "$image_id"
+fi

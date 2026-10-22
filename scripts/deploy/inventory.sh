@@ -167,6 +167,12 @@ deploy_validate_inventory() {
        (($mode == "isolated" and all(.catalogs[]; .kind == "production" or .allowFixture == true)) or $mode == "persistent")
     ' "$inventory" >/dev/null 2>&1 || deploy_fail validate inventory "schema-or-value-invalid" || return 1
 
+    # The docker driver implicitly unpacks image exports, which conflicts with CameraAgent timestamp rewriting.
+    if jq -e '.images.distributionMode == "registry" and .images.builder.driver == "docker"' "$inventory" >/dev/null; then
+        deploy_fail validate inventory cameraagent-registry-requires-docker-container
+        return 1
+    fi
+
     local target_count unique_count collision_count unknown_route
     target_count="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) | length' "$inventory")"
     unique_count="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) | unique | length' "$inventory")"

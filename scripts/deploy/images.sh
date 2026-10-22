@@ -215,33 +215,49 @@ deploy_images_observe_registry() {
         rm -f "$raw"
         return 2
     fi
-    jq -e 'type == "object" and .schemaVersion == 2 and (.manifests | type == "array" and length > 0)' "$raw" >/dev/null 2>&1 ||
+    jq -e 'type == "object" and .schemaVersion == 2 and
+      ((.manifests | type == "array" and length > 0) or
+       ((.mediaType == "application/vnd.oci.image.manifest.v1+json" or .mediaType == "application/vnd.docker.distribution.manifest.v2+json") and
+        (.config.digest | strings | test("^sha256:[0-9a-f]{64}$")) and (.layers | type == "array")))' "$raw" >/dev/null 2>&1 ||
       { rm -f "$raw"; deploy_fail images "$component" invalid-registry-manifest; return 1; }
     manifest_json="$(docker buildx imagetools inspect --builder "$builder" --format '{{json .Manifest}}' "$repository:$tag" 2>/dev/null)" ||
       { rm -f "$raw"; deploy_fail images "$component" parent-digest-inspect-failed; return 1; }
     manifest_digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$manifest_json" 2>/dev/null)" ||
       { rm -f "$raw"; deploy_fail images "$component" parent-digest-invalid; return 1; }
-    jq -e --argjson formatted "$manifest_json" '.manifests == $formatted.manifests' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
-    jq -e '
-      all(.manifests[];
-        ((.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64") and
-          (.digest | test("^sha256:[0-9a-f]{64}$"))) or
-         (.platform.os == "unknown" and .platform.architecture == "unknown" and
-          .annotations["vnd.docker.reference.type"] == "attestation-manifest" and
-          (.annotations["vnd.docker.reference.digest"] | test("^sha256:[0-9a-f]{64}$")))))' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" unexpected-registry-descriptor; return 1; }
-    selected="$(jq -c '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) |
-      {architecture:.platform.architecture,digest:.digest}] | sort_by(.architecture)' "$raw")" || { rm -f "$raw"; return 1; }
-    jq -ne --argjson expected "$platforms_json" --argjson selected "$selected" '
-      ($selected | length) == ($expected | length) and
-      ([$selected[].architecture] | unique | sort) == $expected and
-      ([$selected[].digest] | unique | length) == ($selected | length)' >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
-    jq -e --argjson selected "$selected" '
-      all(.manifests[] | select(.platform.os == "unknown");
-        .annotations["vnd.docker.reference.digest"] as $parent | any($selected[]; .digest == $parent))' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" attestation-parent-mismatch; return 1; }
+    if jq -e 'has("manifests")' "$raw" >/dev/null; then
+        jq -e --argjson formatted "$manifest_json" '.manifests == $formatted.manifests' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
+        jq -e '
+          all(.manifests[];
+            ((.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64") and
+              (.digest | test("^sha256:[0-9a-f]{64}$"))) or
+             (.platform.os == "unknown" and .platform.architecture == "unknown" and
+              .annotations["vnd.docker.reference.type"] == "attestation-manifest" and
+              (.annotations["vnd.docker.reference.digest"] | test("^sha256:[0-9a-f]{64}$")))))' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" unexpected-registry-descriptor; return 1; }
+        selected="$(jq -c '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) |
+          {architecture:.platform.architecture,digest:.digest}] | sort_by(.architecture)' "$raw")" || { rm -f "$raw"; return 1; }
+        jq -ne --argjson expected "$platforms_json" --argjson selected "$selected" '
+          ($selected | length) == ($expected | length) and
+          ([$selected[].architecture] | unique | sort) == $expected and
+          ([$selected[].digest] | unique | length) == ($selected | length)' >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
+        jq -e --argjson selected "$selected" '
+          all(.manifests[] | select(.platform.os == "unknown");
+            .annotations["vnd.docker.reference.digest"] as $parent | any($selected[]; .digest == $parent))' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" attestation-parent-mismatch; return 1; }
+    else
+        # A one-platform build without attestations is a manifest. Its platform lives in the config, not a descriptor.
+        # buildx's .Manifest is only a descriptor here; bind its digest/media type to the raw bytes we just read.
+        local raw_digest
+        raw_digest="$(sha256sum "$raw")"; raw_digest="sha256:${raw_digest%% *}"
+        jq -e --arg digest "$raw_digest" --argjson formatted "$manifest_json" '
+          $formatted.digest == $digest and $formatted.mediaType == .mediaType' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
+        architecture="$(jq -er 'if length == 1 then .[0] else empty end' <<< "$platforms_json")" ||
+          { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
+        selected="$(jq -cn --arg architecture "$architecture" --arg digest "$manifest_digest" '[{architecture:$architecture,digest:$digest}]')"
+    fi
     rm -f "$raw"
     source_reference="$repository:$tag"
     while IFS= read -r descriptor; do

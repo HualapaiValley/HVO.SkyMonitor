@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -35,15 +36,122 @@ class ImageReproducibility(unittest.TestCase):
             epoch = subprocess.check_output(['git', 'show', '-s', '--format=%ct', revision], cwd=ROOT, text=True).strip()
             env = dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}', SOURCE_DATE_EPOCH='123')
             result = subprocess.run(['bash', str(ROOT / 'scripts/build:cameraagent-image'),
-                                     '--commit', revision, '--platform', 'linux/amd64'],
+                                     '--commit', revision, '--platform', 'linux/amd64',
+                                     '--output', 'type=oci,dest=/tmp/contract.oci.tar'],
                                     env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             args = json.loads(result.stdout)
             self.assertIn(f'SOURCE_DATE_EPOCH={epoch}', args)
             self.assertIn(f'HVO_SOURCE_REVISION={revision}', args)
-            self.assertIn('type=docker,rewrite-timestamp=true', args)
+            self.assertIn('type=oci,dest=/tmp/contract.oci.tar,rewrite-timestamp=true', args)
             self.assertIn('--provenance=false', args)
             self.assertIn('--sbom=false', args)
+
+    def test_loading_export_uses_rewritten_archive_and_prints_config_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            config = b'{"architecture":"amd64","os":"linux"}'
+            expected_id = 'sha256:' + hashlib.sha256(config).hexdigest()
+            docker = directory / 'docker'
+            docker.write_text('''#!/usr/bin/env python3
+import hashlib, io, json, os, pathlib, sys, tarfile
+args = sys.argv[1:]
+with open(os.environ['CALL_LOG'], 'a') as log:
+    log.write(json.dumps(args) + '\\n')
+if args[:2] == ['buildx', 'build']:
+    output = args[args.index('--output') + 1]
+    options = dict(item.split('=', 1) for item in output.split(','))
+    if options.get('type') != 'docker' or 'dest' not in options or options.get('unpack') == 'true':
+        sys.exit('exporter option "rewrite-timestamp" conflicts with "unpack"')
+    assert options['rewrite-timestamp'] == 'true'
+    config = b'{"architecture":"amd64","os":"linux"}'
+    name = 'blobs/sha256/' + hashlib.sha256(config).hexdigest()
+    with tarfile.open(options['dest'], 'w') as archive:
+        for member, data in {'manifest.json': json.dumps([{'Config': name}]).encode(), name: config}.items():
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+elif args[0] == 'load':
+    assert pathlib.Path(args[args.index('--input') + 1]).is_file()
+else:
+    sys.exit('unexpected Docker call')
+''')
+            docker.chmod(0o755)
+            env = dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}', CALL_LOG=str(directory / 'calls'))
+            result = subprocess.run(['bash', str(ROOT / 'scripts/build:cameraagent-image'), '--platform', 'linux/amd64'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(expected_id, result.stdout)
+            calls = [json.loads(line) for line in (directory / 'calls').read_text().splitlines()]
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][0], 'load')
+            self.assertFalse(Path(calls[1][calls[1].index('--input') + 1]).exists(), 'temporary archive was not removed')
+
+    def test_builder_rejects_short_output_overrides(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            docker = Path(temporary) / 'docker'
+            docker.write_text('#!/bin/sh\nexit 0\n')
+            docker.chmod(0o755)
+            for option in ('-o', '-otype=docker', '-o=type=docker'):
+                with self.subTest(option=option):
+                    result = subprocess.run(['bash', str(ROOT / 'scripts/build:cameraagent-image'), option, 'type=local,dest=/tmp'],
+                                            text=True, capture_output=True,
+                                            env=dict(os.environ, PATH=f'{temporary}:{os.environ["PATH"]}'))
+                    self.assertEqual(result.returncode, 64, result.stderr)
+
+    def test_arm64_advisory_loads_archive_before_using_config_id(self):
+        script = (ROOT / 'scripts/test:cameraagent-arm64-ci').read_text()
+        build = script[script.index('docker build --pull --platform linux/arm64'):script.index('readonly IMAGE_ID')]
+        self.assertRegex(build, r'--output [^\n]*type=docker,dest=')
+        self.assertIn('rewrite-timestamp=true', build)
+        self.assertIn('docker load --input', build)
+        self.assertIn('manifest.json', build)
+        self.assertIn('sha256sum', build)
+        self.assertNotIn('--iidfile', build)
+
+    def test_source_epoch_is_declared_after_all_restores_before_publish(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        build = dockerfile.split('AS build\n', 1)[1].split('FROM scratch', 1)[0]
+        restores = [match.start() for match in re.finditer(r'^RUN .*restore', build, re.M)]
+        epoch = build.index('ARG SOURCE_DATE_EPOCH')
+        self.assertGreater(epoch, max(restores))
+        self.assertLess(epoch, build.index('RUN case "${HVO_SOURCE_REVISION}"'))
+
+    def test_restore_avoids_epoch_sensitive_workdir_creation(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        build = dockerfile.split('AS build\n', 1)[1].split('FROM scratch', 1)[0]
+        last_restore = max(match.start() for match in re.finditer(r'^RUN .*restore', build, re.M))
+        workdirs = re.findall(r'^WORKDIR (.+)$', build[:last_restore], re.M)
+        self.assertTrue(all(path == '/' for path in workdirs), workdirs)
+
+    def test_snapshot_rewrite_fails_closed_before_apt(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        command = dockerfile.split('RUN sed ', 1)[1].split('&& apt-get', 1)[0]
+        command = ('sed ' + command).replace('\\\n', '').strip().removesuffix('&&').strip()
+        for uris, success in (
+                ('http://archive.ubuntu.com/ubuntu/\nhttp://security.ubuntu.com/ubuntu/', True),
+                ('http://ports.ubuntu.com/ubuntu-ports/', True),
+                ('http://mirrors.example.net/ubuntu/', False),
+                ('http://archive.ubuntu.com/ubuntu/\nhttp://mirrors.example.net/ubuntu/', False),
+                ('https://snapshot.ubuntu.com.evil.test/ubuntu/', False),
+                ('https://snapshot.ubuntu.com/ubuntu/20261021T000000Z http://mirrors.example.net/ubuntu/', False),
+                ('', False)):
+            with self.subTest(uris=uris), tempfile.TemporaryDirectory() as temporary:
+                sources = Path(temporary) / 'ubuntu.sources'
+                sources.write_text(''.join(f'Types: deb\nURIs: {uri}\nSuites: noble\n\n' for uri in uris.splitlines()))
+                result = subprocess.run(['sh', '-c', command.replace('/etc/apt/sources.list.d/ubuntu.sources', str(sources))],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+
+    def test_snapshot_has_release_owner_and_monthly_update_cadence(self):
+        runbook = (ROOT / 'docs/runbooks/releases.md').read_text()
+        self.assertIn('CameraAgent release owner', runbook)
+        self.assertIn('every base-image digest update', runbook)
+        self.assertIn('at least monthly', runbook)
+
+    def test_changelog_issue_reference_is_parenthesized(self):
+        line = next(line for line in (ROOT / 'CHANGELOG.md').read_text().splitlines() if '#1299' in line)
+        self.assertTrue(line.endswith('(#1299)'), line)
 
     def test_il_publish_normalizes_generated_dates_without_changing_created_label(self):
         with tempfile.TemporaryDirectory() as temporary:
