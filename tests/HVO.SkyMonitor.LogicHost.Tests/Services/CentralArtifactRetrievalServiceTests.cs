@@ -254,6 +254,30 @@ public sealed class CentralArtifactRetrievalServiceTests
     }
 
     [TestMethod]
+    public async Task DownloadAuthorization_ExpiredGrantCannotBeReusedAndFreshGrantIsExact()
+    {
+        var now = new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
+        await using var db = CreateContext();
+        var data = Seed(db);
+        await db.SaveChangesAsync();
+        using var telemetry = new CentralArtifactRetrievalTelemetry();
+        var actor = Principal(new Claim(ClaimTypes.NameIdentifier, "owner-1"));
+        var issuer = new CentralArtifactRetrievalService(db, new FixedTimeProvider(now), telemetry,
+            NullLogger<CentralArtifactRetrievalService>.Instance);
+        var grant = await issuer.IssueDownloadAuthorizationAsync(data.Artifact, actor, null, CancellationToken.None);
+        grant.Should().NotBeNull();
+        var afterExpiry = new CentralArtifactRetrievalService(db, new FixedTimeProvider(now.AddMinutes(1)), telemetry,
+            NullLogger<CentralArtifactRetrievalService>.Instance);
+        (await afterExpiry.ValidateDownloadAuthorizationAsync(data.Artifact, actor, null,
+            grant!.AuthorizationId, grant.Token, CancellationToken.None)).Should().BeFalse();
+        var renewed = await afterExpiry.IssueDownloadAuthorizationAsync(data.Artifact, actor, null, CancellationToken.None);
+        renewed.Should().NotBeNull();
+        renewed!.AuthorizationId.Should().NotBe(grant.AuthorizationId);
+        (await afterExpiry.ValidateDownloadAuthorizationAsync(data.Artifact, actor, null,
+            renewed.AuthorizationId, renewed.Token, CancellationToken.None)).Should().BeTrue();
+    }
+
+    [TestMethod]
     public async Task DownloadAuthorization_IsRequiredForEveryHumanRoleButNotSystemWorkers()
     {
         await using var db = CreateContext();
