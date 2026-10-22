@@ -27,8 +27,12 @@ public sealed class AnnotationMeasuredAssociationBindingTests
         var product = MeasuredStellarAssociationFixtures.AllEligible(scene);
         var measured = primary with
         {
-            ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Metadata, Variant = "measured",
-            RecipeIdentitySha256 = new string('B', 64), Layout = null, ProductKind = ProcessingProductKind.Metadata,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Metadata,
+            Variant = "measured",
+            RecipeIdentitySha256 = new string('B', 64),
+            Layout = null,
+            ProductKind = ProcessingProductKind.Metadata,
             MediaType = StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType,
             SchemaVersion = MeasuredStellarAssociationsV1.CurrentSchemaVersion,
             Payload = MeasuredStellarAssociationJson.Serialize(product),
@@ -46,9 +50,12 @@ public sealed class AnnotationMeasuredAssociationBindingTests
         if (scenario is "neither" or "scene-only") primary = primary with { CaptureId = null };
         var sceneArtifact = measured with
         {
-            ArtifactId = Guid.NewGuid(), Variant = "scene", RecipeIdentitySha256 = new string('C', 64),
+            ArtifactId = Guid.NewGuid(),
+            Variant = "scene",
+            RecipeIdentitySha256 = new string('C', 64),
             MediaType = StructuredProcessingProductContracts.ProjectedSceneMediaType,
-            SchemaVersion = scene.SchemaVersion, Payload = ProjectedSceneJson.Serialize(scene),
+            SchemaVersion = scene.SchemaVersion,
+            Payload = ProjectedSceneJson.Serialize(scene),
             ContentIdentitySha256 = scenario == "scene" ? new string('0', 64) : scene.SceneIdentitySha256
         };
         List<ProcessingArtifact> inputs = [primary, measured];
