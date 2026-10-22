@@ -2159,7 +2159,10 @@ stay where they are (install contract section 6):
    and each copy must pass `PRAGMA integrity_check` and match its source's user version, schema and per-table row
    counts. A manifest binds the files by SHA-256, and the journal records the manifest's hash before the candidate
    may start. The orbital-elements store (`state/raw/.orbital-elements/`) is deliberately never snapshotted, so
-   putting a snapshot back never rewinds its provider floor or halt (install contract section 6).
+   putting a snapshot back never rewinds its provider floor or halt (install contract section 6). Nor is the
+   calibration-family store (`state/raw/.calibration-families/`): no earlier release opens it, and a snapshot an
+   earlier installer took, which does not list it, must still verify. A full backup archives it with the instance's
+   other files.
 3. The candidate starts and must pass the same health and installation-identity checks as before.
 4. If it fails, the candidate is stopped, the snapshot (if any) is put back, and the previous image starts on the
    restored databases. A write-ahead log or journal the candidate left beside a store is removed first, so it can
@@ -2173,8 +2176,8 @@ from its container path through the writable bind mounts (`/app/data/raw` to `st
 `state/archive`, `/app/App_Data` to `state/identity`). A root outside every persisted mount holds nothing that
 survives the container, so there is nothing to snapshot. A root that is not an absolute, normalized container path
 refuses the upgrade before anything changes. The unit tests compare this inventory by location with the stores the
-CameraAgent actually creates, less the orbital-elements store (`CameraAgentStateInventoryTests` and
-`PreviousReleaseStoreReadabilityTests`).
+CameraAgent actually creates, less the stores the snapshot leaves out: orbital elements, space weather and calibration
+families (`CameraAgentStateInventoryTests` and `PreviousReleaseStoreReadabilityTests`).
 
 **A store under a root named after the snapshot is removed by the restore.** A capture schedule created through the API
 after the snapshot can name a new storage root, and its outbox there has nothing in the snapshot to go back to.
