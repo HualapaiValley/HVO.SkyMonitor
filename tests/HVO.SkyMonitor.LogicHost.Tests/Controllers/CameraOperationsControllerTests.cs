@@ -77,11 +77,15 @@ public sealed class CameraOperationsControllerTests
         {
             context.Add(new CentralProcessingGraphRevision
             {
-                Name = "catalog", Revision = index.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                DefinitionJson = "{\"large\":true}", DefinitionIdentitySha256 = new string('d', 64),
-                PortablePlanIdentitySha256 = new string('p', 64), CreatedByUserId = "platform",
+                Name = "catalog",
+                Revision = index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                DefinitionJson = "{\"large\":true}",
+                DefinitionIdentitySha256 = new string('d', 64),
+                PortablePlanIdentitySha256 = new string('p', 64),
+                CreatedByUserId = "platform",
                 // Equal creation times in groups of four exercise the identity tie-breaker.
-                CreatedAtUtc = now.AddMinutes(-(index / 4)), PublishedAtUtc = index % 3 == 0 ? now : null,
+                CreatedAtUtc = now.AddMinutes(-(index / 4)),
+                PublishedAtUtc = index % 3 == 0 ? now : null,
                 RetiredAtUtc = index % 5 == 0 ? now : null
             });
         }

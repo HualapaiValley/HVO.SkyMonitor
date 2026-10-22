@@ -163,13 +163,19 @@ public sealed class CameraOperationsReadTests
         {
             var dedicated = new Observatory
             {
-                OwnerUserId = owner.Id, Name = $"Camera-ops-key-{Guid.NewGuid():N}", TimeZoneId = "UTC",
-                CreatedAtUtc = DateTimeOffset.UtcNow, IsActive = true
+                OwnerUserId = owner.Id,
+                Name = $"Camera-ops-key-{Guid.NewGuid():N}",
+                TimeZoneId = "UTC",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                IsActive = true
             };
             db.Add(dedicated);
             db.ObservatoryMemberships.Add(new ObservatoryMembership
             {
-                ObservatoryId = dedicated.Id, UserId = owner.Id, Role = ObservatoryMembershipRole.Owner, AddedAtUtc = DateTimeOffset.UtcNow
+                ObservatoryId = dedicated.Id,
+                UserId = owner.Id,
+                Role = ObservatoryMembershipRole.Owner,
+                AddedAtUtc = DateTimeOffset.UtcNow
             });
             await db.SaveChangesAsync().ConfigureAwait(false);
             observatory = dedicated.Id;
@@ -438,9 +444,15 @@ internal sealed class CameraOperationsSeed
         {
             db.Add(new CentralProcessingGraphAssignment
             {
-                RevisionId = revision.Id, TargetHost = host, Scope = assignmentScope, ObservatoryId = observatoryId,
-                LogicalCameraId = cameraId, EffectiveFromUtc = now.AddDays(-30), CreatedAtUtc = now.AddDays(-30),
-                ActorUserId = ownerId, ReasonCode = "camera-operations"
+                RevisionId = revision.Id,
+                TargetHost = host,
+                Scope = assignmentScope,
+                ObservatoryId = observatoryId,
+                LogicalCameraId = cameraId,
+                EffectiveFromUtc = now.AddDays(-30),
+                CreatedAtUtc = now.AddDays(-30),
+                ActorUserId = ownerId,
+                ReasonCode = "camera-operations"
             });
         }
         await db.SaveChangesAsync().ConfigureAwait(false);
@@ -485,24 +497,37 @@ internal sealed class CameraOperationsSeed
                             {
                                 db.Add(new CentralDerivativeJobAttempt
                                 {
-                                    CentralDerivativeJobId = job.Id, AttemptNumber = attempt, WorkerId = "worker",
-                                    LeaseAcquiredAtUtc = now, LeaseExpiresAtUtc = now.AddMinutes(5),
-                                    Outcome = CentralDerivativeAttemptOutcome.RetryableFailure, ReasonCode = "retry"
+                                    CentralDerivativeJobId = job.Id,
+                                    AttemptNumber = attempt,
+                                    WorkerId = "worker",
+                                    LeaseAcquiredAtUtc = now,
+                                    LeaseExpiresAtUtc = now.AddMinutes(5),
+                                    Outcome = CentralDerivativeAttemptOutcome.RetryableFailure,
+                                    ReasonCode = "retry"
                                 });
                             }
                             var requirement = new CentralDerivativeJobInputRequirement
                             {
-                                CentralDerivativeJobId = job.Id, Ordinal = 0, BindingName = "primary",
-                                SourceKind = CentralDerivativeInputSourceKind.Artifact, IsRequired = true,
-                                ExpectedAgentId = frame.AgentId, ExpectedCentralArtifactId = raw.Id,
-                                ResolutionState = CentralDerivativeInputResolutionState.Resolved, ResolvedAtUtc = now
+                                CentralDerivativeJobId = job.Id,
+                                Ordinal = 0,
+                                BindingName = "primary",
+                                SourceKind = CentralDerivativeInputSourceKind.Artifact,
+                                IsRequired = true,
+                                ExpectedAgentId = frame.AgentId,
+                                ExpectedCentralArtifactId = raw.Id,
+                                ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+                                ResolvedAtUtc = now
                             };
                             db.Add(requirement);
                             db.Add(new CentralDerivativeJobInput
                             {
-                                CentralDerivativeJobId = job.Id, CentralDerivativeJobInputRequirementId = requirement.Id,
-                                Ordinal = 0, CentralArtifactId = raw.Id, CompatibilitySha256 = new string('0', 64),
-                                ByteLength = raw.ByteLength, SelectedAtUtc = now
+                                CentralDerivativeJobId = job.Id,
+                                CentralDerivativeJobInputRequirementId = requirement.Id,
+                                Ordinal = 0,
+                                CentralArtifactId = raw.Id,
+                                CompatibilitySha256 = new string('0', 64),
+                                ByteLength = raw.ByteLength,
+                                SelectedAtUtc = now
                             });
                         }
                     }
@@ -564,8 +589,12 @@ internal sealed class CameraOperationsSeed
                             seed.Jobs.Add(node.Id);
                             db.Add(new CentralDerivativeJobOutput
                             {
-                                CentralDerivativeJobId = node.Id, Ordinal = 0, Role = FrameArtifactRole.Preview, Variant = "default",
-                                ProductKind = ProcessingProductKind.PixelData, ContractJson = "{}",
+                                CentralDerivativeJobId = node.Id,
+                                Ordinal = 0,
+                                Role = FrameArtifactRole.Preview,
+                                Variant = "default",
+                                ProductKind = ProcessingProductKind.PixelData,
+                                ContractJson = "{}",
                                 ContractIdentitySha256 = CentralDerivativeJobOutput.ComputeContractIdentitySha256("{}")
                             });
                         }
@@ -592,8 +621,11 @@ internal sealed class CameraOperationsSeed
                 var kind = index % 2 == 0 ? "Accepted" : "Superseded";
                 db.Add(new CentralProcessingGraphDeliveryFact
                 {
-                    ProposalId = proposal.Id, Kind = kind, Source = kind == "Accepted" ? "CameraAgent" : "LogicHost",
-                    OccurredAtUtc = proposal.IssuedAtUtc, RecordedAtUtc = proposal.IssuedAtUtc.AddSeconds(1),
+                    ProposalId = proposal.Id,
+                    Kind = kind,
+                    Source = kind == "Accepted" ? "CameraAgent" : "LogicHost",
+                    OccurredAtUtc = proposal.IssuedAtUtc,
+                    RecordedAtUtc = proposal.IssuedAtUtc.AddSeconds(1),
                     ReasonCode = kind == "Accepted" ? null : "effective-delivery-tuple-changed"
                 });
                 if (target == camera && index == 0)
@@ -603,8 +635,11 @@ internal sealed class CameraOperationsSeed
                     {
                         db.Add(new CentralProcessingGraphDeliveryFact
                         {
-                            ProposalId = proposal.Id, Kind = "Retrieved", Source = "CameraAgent",
-                            OccurredAtUtc = proposal.IssuedAtUtc, RecordedAtUtc = proposal.IssuedAtUtc
+                            ProposalId = proposal.Id,
+                            Kind = "Retrieved",
+                            Source = "CameraAgent",
+                            OccurredAtUtc = proposal.IssuedAtUtc,
+                            RecordedAtUtc = proposal.IssuedAtUtc
                         });
                     }
                 }
@@ -635,8 +670,11 @@ internal sealed class CameraOperationsSeed
     private static LogicalCamera NewCamera(Guid observatoryId, string ownerId, DateTimeOffset now)
         => new()
         {
-            ObservatoryId = observatoryId, Name = $"Operations camera {Guid.NewGuid():N}", Slug = Guid.NewGuid().ToString("N"),
-            CreatedAtUtc = now.AddDays(-60), CreatedByUserId = ownerId
+            ObservatoryId = observatoryId,
+            Name = $"Operations camera {Guid.NewGuid():N}",
+            Slug = Guid.NewGuid().ToString("N"),
+            CreatedAtUtc = now.AddDays(-60),
+            CreatedByUserId = ownerId
         };
 
     private static LogicalCameraInstallation NewInstallation(
@@ -644,9 +682,14 @@ internal sealed class CameraOperationsSeed
         DateTimeOffset? retired, Guid? replaces)
         => new()
         {
-            LogicalCameraId = camera.Id, RegistrationId = registration.Id, InstallationPublicId = Guid.NewGuid(),
-            AssignedAtUtc = assigned, RetiredAtUtc = retired, ReplacesInstallationId = replaces,
-            AssignedByUserId = ownerId, RetiredByUserId = retired is null ? null : ownerId,
+            LogicalCameraId = camera.Id,
+            RegistrationId = registration.Id,
+            InstallationPublicId = Guid.NewGuid(),
+            AssignedAtUtc = assigned,
+            RetiredAtUtc = retired,
+            ReplacesInstallationId = replaces,
+            AssignedByUserId = ownerId,
+            RetiredByUserId = retired is null ? null : ownerId,
             AssignmentReasonCode = replaces is null ? "initial" : "replacement",
             RetirementReasonCode = retired is null ? null : "replaced"
         };
@@ -654,31 +697,51 @@ internal sealed class CameraOperationsSeed
     private static CentralFrame NewFrame(LogicalCameraInstallation installation, DeviceRegistration registration, DateTimeOffset capturedAt)
         => new()
         {
-            RegistrationId = registration.Id, LogicalCameraInstallationId = installation.Id,
-            DevicePublicId = registration.DevicePublicId!.Value, ObservatoryId = registration.ObservatoryId,
-            AgentId = registration.DeviceId, FrameId = Guid.NewGuid(), CapturedAtUtc = capturedAt,
-            FirstReceivedAtUtc = capturedAt, RigId = "rig-1"
+            RegistrationId = registration.Id,
+            LogicalCameraInstallationId = installation.Id,
+            DevicePublicId = registration.DevicePublicId!.Value,
+            ObservatoryId = registration.ObservatoryId,
+            AgentId = registration.DeviceId,
+            FrameId = Guid.NewGuid(),
+            CapturedAtUtc = capturedAt,
+            FirstReceivedAtUtc = capturedAt,
+            RigId = "rig-1"
         };
 
     private static CentralArtifact NewArtifact(CentralFrame frame, DeviceRegistration registration)
         => new()
         {
-            CentralFrameId = frame.Id, DevicePublicId = registration.DevicePublicId!.Value, ArtifactId = Guid.NewGuid(),
-            Role = FrameArtifactRole.Raw, RecipeVersion = "raw-v1", ManifestSchemaVersion = "v2",
-            MediaType = "application/octet-stream", ByteLength = 1, ChecksumSha256 = new string('b', 64),
+            CentralFrameId = frame.Id,
+            DevicePublicId = registration.DevicePublicId!.Value,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Raw,
+            RecipeVersion = "raw-v1",
+            ManifestSchemaVersion = "v2",
+            MediaType = "application/octet-stream",
+            ByteLength = 1,
+            ChecksumSha256 = new string('b', 64),
             StorageReference = $"object://skymonitor-artifacts/camera-ops-{Guid.NewGuid():N}",
-            ReceivedAtUtc = frame.CapturedAtUtc, IdempotencyKey = Guid.NewGuid().ToString("N"),
-            ObjectState = CentralArtifactObjectState.Available, ReconstructionState = CentralReconstructionState.Complete
+            ReceivedAtUtc = frame.CapturedAtUtc,
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
         };
 
     private static CentralDerivativeJob NewJob(CentralArtifact source, DateTimeOffset createdAt)
         => new()
         {
-            SourceCentralArtifactId = source.Id, TargetRole = FrameArtifactRole.Preview, TargetRecipeVersion = "preview-v1",
-            TargetVariant = "default", RecipeName = "preview", RequestedRecipeIdentitySha256 = new string('1', 64),
+            SourceCentralArtifactId = source.Id,
+            TargetRole = FrameArtifactRole.Preview,
+            TargetRecipeVersion = "preview-v1",
+            TargetVariant = "default",
+            RecipeName = "preview",
+            RequestedRecipeIdentitySha256 = new string('1', 64),
             ExpectedRecipeIdentitySha256 = new string('1', 64),
             RequestIdentitySha256 = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
-            Status = CentralDerivativeJobStatus.Pending, MaxAttempts = 3, AvailableAtUtc = createdAt,
-            CreatedAtUtc = createdAt, UpdatedAtUtc = createdAt
+            Status = CentralDerivativeJobStatus.Pending,
+            MaxAttempts = 3,
+            AvailableAtUtc = createdAt,
+            CreatedAtUtc = createdAt,
+            UpdatedAtUtc = createdAt
         };
 }

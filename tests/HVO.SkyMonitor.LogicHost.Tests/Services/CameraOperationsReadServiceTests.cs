@@ -169,7 +169,10 @@ public sealed class CameraOperationsReadServiceTests
         }
         world.Db.Add(new ObservatoryMembership
         {
-            UserId = "b-only", ObservatoryId = a.Observatory, Role = ObservatoryMembershipRole.Viewer, AddedAtUtc = Now
+            UserId = "b-only",
+            ObservatoryId = a.Observatory,
+            Role = ObservatoryMembershipRole.Viewer,
+            AddedAtUtc = Now
         });
         await world.Db.SaveChangesAsync().ConfigureAwait(false);
         var service = world.Service();
@@ -566,9 +569,14 @@ public sealed class CameraOperationsReadServiceTests
             var globalRevision = world.AddRevision();
             world.Db.Add(new CentralProcessingGraphAssignment
             {
-                RevisionId = globalRevision.Id, Revision = globalRevision, TargetHost = CentralProcessingGraphTargetHost.Central,
-                Scope = CentralProcessingGraphAssignmentScope.GlobalDefault, EffectiveFromUtc = Now.AddDays(-3),
-                CreatedAtUtc = Now.AddDays(-3), ActorUserId = "platform", ReasonCode = "global"
+                RevisionId = globalRevision.Id,
+                Revision = globalRevision,
+                TargetHost = CentralProcessingGraphTargetHost.Central,
+                Scope = CentralProcessingGraphAssignmentScope.GlobalDefault,
+                EffectiveFromUtc = Now.AddDays(-3),
+                CreatedAtUtc = Now.AddDays(-3),
+                ActorUserId = "platform",
+                ReasonCode = "global"
             });
             // Production seals graph topology at expansion and only then selects concrete inputs.
             await world.Db.SaveChangesAsync().ConfigureAwait(false);
@@ -700,32 +708,47 @@ public sealed class CameraOperationsReadServiceTests
             var record = new CentralTransientEventRecord { AgentId = "agent", EventId = Guid.NewGuid(), EventCreatedUtc = createdAt };
             var version = new CentralTransientEventVersionRecord
             {
-                EventVersionId = Guid.NewGuid(), CentralTransientEventId = record.Id, Version = 1,
-                State = TransientEventState.Provisional, VersionCreatedUtc = createdAt, FirstObservedUtc = createdAt, LastObservedUtc = createdAt
+                EventVersionId = Guid.NewGuid(),
+                CentralTransientEventId = record.Id,
+                Version = 1,
+                State = TransientEventState.Provisional,
+                VersionCreatedUtc = createdAt,
+                FirstObservedUtc = createdAt,
+                LastObservedUtc = createdAt
             };
             var observationId = Guid.NewGuid();
             var sourceArtifact = AddArtifact(sourceCapture, FrameArtifactRole.Raw);
             Db.AddRange(record, version,
                 new CentralTransientObservationSourceReference
                 {
-                    ObservationId = observationId, CentralArtifactId = sourceArtifact.Id, ArtifactId = sourceArtifact.ArtifactId
+                    ObservationId = observationId,
+                    CentralArtifactId = sourceArtifact.Id,
+                    ArtifactId = sourceArtifact.ArtifactId
                 },
                 new CentralTransientObservationRecord
                 {
-                    ObservationId = observationId, CentralTransientEventId = record.Id, SourceReferenceId = observationId
+                    ObservationId = observationId,
+                    CentralTransientEventId = record.Id,
+                    SourceReferenceId = observationId
                 },
                 new CentralTransientEventCurrent
                 {
-                    CentralTransientEventId = record.Id, LatestEventVersionId = version.EventVersionId, LatestVersion = 1,
-                    ActiveAssessmentId = Guid.NewGuid(), ReviewState = CentralTransientReviewState.NeedsReview,
-                    EffectiveClassification = TransientClassification.Meteor, UpdatedUtc = createdAt
+                    CentralTransientEventId = record.Id,
+                    LatestEventVersionId = version.EventVersionId,
+                    LatestVersion = 1,
+                    ActiveAssessmentId = Guid.NewGuid(),
+                    ReviewState = CentralTransientReviewState.NeedsReview,
+                    EffectiveClassification = TransientClassification.Meteor,
+                    UpdatedUtc = createdAt
                 });
             if (backgroundCapture is not null)
             {
                 var background = AddArtifact(backgroundCapture, FrameArtifactRole.Raw);
                 Db.Add(new CentralTransientObservationBackgroundReference
                 {
-                    ObservationId = observationId, CentralArtifactId = background.Id, ArtifactId = background.ArtifactId
+                    ObservationId = observationId,
+                    CentralArtifactId = background.Id,
+                    ArtifactId = background.ArtifactId
                 });
             }
             return record.Id;
@@ -755,9 +778,16 @@ public sealed class CameraOperationsReadServiceTests
             {
                 Db.Add(new CentralProcessingGraphAssignment
                 {
-                    RevisionId = revision.Id, Revision = revision, TargetHost = host, Scope = scope,
-                    ObservatoryId = observatory.Id, LogicalCameraId = cameraId, EffectiveFromUtc = Now.AddDays(-1),
-                    CreatedAtUtc = Now.AddDays(-1), ActorUserId = "member", ReasonCode = "scoped"
+                    RevisionId = revision.Id,
+                    Revision = revision,
+                    TargetHost = host,
+                    Scope = scope,
+                    ObservatoryId = observatory.Id,
+                    LogicalCameraId = cameraId,
+                    EffectiveFromUtc = Now.AddDays(-1),
+                    CreatedAtUtc = Now.AddDays(-1),
+                    ActorUserId = "member",
+                    ReasonCode = "scoped"
                 });
             }
 
@@ -768,9 +798,17 @@ public sealed class CameraOperationsReadServiceTests
             var execution = AddExecution(retired, revision, anchor, camera, Now.AddHours(-4));
             Db.Add(new CentralProcessingGraphExecutionSource
             {
-                Execution = execution, ExecutionId = execution.Id, Ordinal = 0, SourceId = "raw",
-                CentralArtifactId = anchor.Id, ArtifactId = anchor.ArtifactId, ArtifactChecksumSha256 = anchor.ChecksumSha256,
-                ArtifactByteLength = 10, SelectionEvidenceJson = "{}", SelectionEvidenceSha256 = Hash(), SelectedAtUtc = Now.AddHours(-4)
+                Execution = execution,
+                ExecutionId = execution.Id,
+                Ordinal = 0,
+                SourceId = "raw",
+                CentralArtifactId = anchor.Id,
+                ArtifactId = anchor.ArtifactId,
+                ArtifactChecksumSha256 = anchor.ChecksumSha256,
+                ArtifactByteLength = 10,
+                SelectionEvidenceJson = "{}",
+                SelectionEvidenceSha256 = Hash(),
+                SelectedAtUtc = Now.AddHours(-4)
             });
             CentralDerivativeJob? firstNode = null;
             for (var ordinal = 0; ordinal < 2; ordinal++)
@@ -793,23 +831,36 @@ public sealed class CameraOperationsReadServiceTests
             {
                 Db.Add(new CentralDerivativeJobAttempt
                 {
-                    CentralDerivativeJobId = firstNode.Id, AttemptNumber = attempt, WorkerId = "worker",
-                    LeaseAcquiredAtUtc = Now.AddHours(-3), LeaseExpiresAtUtc = Now.AddHours(-2),
+                    CentralDerivativeJobId = firstNode.Id,
+                    AttemptNumber = attempt,
+                    WorkerId = "worker",
+                    LeaseAcquiredAtUtc = Now.AddHours(-3),
+                    LeaseExpiresAtUtc = Now.AddHours(-2),
                     Outcome = CentralDerivativeAttemptOutcome.RetryableFailure
                 });
             }
             var resolved = new CentralDerivativeJobInputRequirement
             {
-                CentralDerivativeJobId = firstNode.Id, Job = firstNode, Ordinal = 0, BindingName = "primary",
-                SourceKind = CentralDerivativeInputSourceKind.Artifact, IsRequired = true,
-                ResolutionState = CentralDerivativeInputResolutionState.Resolved, ExpectedCentralArtifactId = anchor.Id,
+                CentralDerivativeJobId = firstNode.Id,
+                Job = firstNode,
+                Ordinal = 0,
+                BindingName = "primary",
+                SourceKind = CentralDerivativeInputSourceKind.Artifact,
+                IsRequired = true,
+                ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+                ExpectedCentralArtifactId = anchor.Id,
                 ResolvedAtUtc = Now.AddHours(-4)
             };
             Db.Add(resolved);
             Db.Add(new CentralDerivativeJobOutput
             {
-                CentralDerivativeJobId = firstNode.Id, Job = firstNode, Ordinal = 0, Role = FrameArtifactRole.Preview,
-                Variant = "default", ProductKind = ProcessingProductKind.PixelData, ContractJson = "{}",
+                CentralDerivativeJobId = firstNode.Id,
+                Job = firstNode,
+                Ordinal = 0,
+                Role = FrameArtifactRole.Preview,
+                Variant = "default",
+                ProductKind = ProcessingProductKind.PixelData,
+                ContractJson = "{}",
                 ContractIdentitySha256 = Hash()
             });
             // An execution's anchor capture always belongs to the execution's own installation.
@@ -825,8 +876,12 @@ public sealed class CameraOperationsReadServiceTests
             var superseded = AddProposal(current, Now.AddHours(-2));
             Db.Add(new CentralProcessingGraphDeliveryFact
             {
-                ProposalId = superseded.Id, Kind = "Superseded", Source = "LogicHost", OccurredAtUtc = Now.AddHours(-1),
-                RecordedAtUtc = Now.AddHours(-1), ReasonCode = "effective-delivery-tuple-changed"
+                ProposalId = superseded.Id,
+                Kind = "Superseded",
+                Source = "LogicHost",
+                OccurredAtUtc = Now.AddHours(-1),
+                RecordedAtUtc = Now.AddHours(-1),
+                ReasonCode = "effective-delivery-tuple-changed"
             });
             AddProposal(otherInstallation, Now);
 
@@ -841,9 +896,14 @@ public sealed class CameraOperationsReadServiceTests
             var job = Db.ChangeTracker.Entries<CentralDerivativeJob>().Single(entry => entry.Entity.Id == site.Job).Entity;
             Db.Add(new CentralDerivativeJobInputRequirement
             {
-                CentralDerivativeJobId = job.Id, Job = job, Ordinal = 1, BindingName = "auxiliary",
-                SourceKind = CentralDerivativeInputSourceKind.Artifact, IsRequired = false,
-                ResolutionState = CentralDerivativeInputResolutionState.Resolved, ExpectedCentralArtifactId = other.Anchor.Id,
+                CentralDerivativeJobId = job.Id,
+                Job = job,
+                Ordinal = 1,
+                BindingName = "auxiliary",
+                SourceKind = CentralDerivativeInputSourceKind.Artifact,
+                IsRequired = false,
+                ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+                ExpectedCentralArtifactId = other.Anchor.Id,
                 ResolvedAtUtc = Now.AddHours(-4)
             });
             return 1;
@@ -855,8 +915,13 @@ public sealed class CameraOperationsReadServiceTests
                 .Single(entry => entry.Entity.CentralDerivativeJobId == site.Job && entry.Entity.Ordinal == ordinal).Entity;
             Db.Add(new CentralDerivativeJobInput
             {
-                CentralDerivativeJobId = site.Job, CentralDerivativeJobInputRequirementId = requirement.Id, Requirement = requirement,
-                Ordinal = ordinal, CentralArtifactId = artifact.Id, ByteLength = 10, SelectedAtUtc = Now.AddHours(-4)
+                CentralDerivativeJobId = site.Job,
+                CentralDerivativeJobInputRequirementId = requirement.Id,
+                Requirement = requirement,
+                Ordinal = ordinal,
+                CentralArtifactId = artifact.Id,
+                ByteLength = 10,
+                SelectedAtUtc = Now.AddHours(-4)
             });
         }
 
@@ -866,9 +931,16 @@ public sealed class CameraOperationsReadServiceTests
             var registration = new DeviceRegistration { ObservatoryId = camera.ObservatoryId, DeviceId = $"device-{++_sequence}" };
             var installation = new LogicalCameraInstallation
             {
-                LogicalCamera = camera, LogicalCameraId = camera.Id, Registration = registration, RegistrationId = registration.Id,
-                InstallationPublicId = Guid.NewGuid(), AssignedAtUtc = assigned, RetiredAtUtc = retired,
-                ReplacesInstallationId = replaces, AssignedByUserId = "member", AssignmentReasonCode = "test"
+                LogicalCamera = camera,
+                LogicalCameraId = camera.Id,
+                Registration = registration,
+                RegistrationId = registration.Id,
+                InstallationPublicId = Guid.NewGuid(),
+                AssignedAtUtc = assigned,
+                RetiredAtUtc = retired,
+                ReplacesInstallationId = replaces,
+                AssignedByUserId = "member",
+                AssignmentReasonCode = "test"
             };
             Db.AddRange(registration, installation);
             return installation;
@@ -878,8 +950,13 @@ public sealed class CameraOperationsReadServiceTests
         {
             var revision = new CentralProcessingGraphRevision
             {
-                Name = $"graph-{++_sequence}", Revision = "1", DefinitionJson = "{}", DefinitionIdentitySha256 = Hash(),
-                PortablePlanIdentitySha256 = Hash(), CreatedAtUtc = Now.AddDays(-10), PublishedAtUtc = Now.AddDays(-9),
+                Name = $"graph-{++_sequence}",
+                Revision = "1",
+                DefinitionJson = "{}",
+                DefinitionIdentitySha256 = Hash(),
+                PortablePlanIdentitySha256 = Hash(),
+                CreatedAtUtc = Now.AddDays(-10),
+                PublishedAtUtc = Now.AddDays(-9),
                 CreatedByUserId = "platform"
             };
             Db.Add(revision);
@@ -890,9 +967,12 @@ public sealed class CameraOperationsReadServiceTests
         {
             var proposal = new CentralProcessingGraphDeliveryProposal
             {
-                LogicalCameraInstallationId = installation.Id, RegistrationId = installation.RegistrationId,
-                InstallationPublicId = installation.InstallationPublicId, CapabilitySnapshotSha256 = Hash(),
-                IssuedAtUtc = issuedAt, ExpiresAtUtc = issuedAt.AddHours(1)
+                LogicalCameraInstallationId = installation.Id,
+                RegistrationId = installation.RegistrationId,
+                InstallationPublicId = installation.InstallationPublicId,
+                CapabilitySnapshotSha256 = Hash(),
+                IssuedAtUtc = issuedAt,
+                ExpiresAtUtc = issuedAt.AddHours(1)
             };
             Db.Add(proposal);
             return proposal;
