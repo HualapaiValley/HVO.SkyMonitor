@@ -46,14 +46,16 @@ public sealed class CameraAgentRecipeExecutionAdapter
 
     /// <summary>
     /// The frozen normalization plan and masters the mixed-gain recipe executes with for the current node (#1475), or
-    /// none when this host supplies no plans, so the recipe skips the window.
+    /// none when this host supplies no plans, so the recipe skips the window. The plan is frozen for
+    /// <paramref name="shape"/>.
     /// </summary>
     internal ValueTask<GainNormalizationPreparation> PrepareNormalizationAsync(
         CaptureProcessingContext context,
+        NormalizationWindowShape shape,
         CancellationToken cancellationToken)
         => _normalization is null
             ? ValueTask.FromResult(GainNormalizationPreparation.None)
-            : _normalization().PrepareAsync(context, cancellationToken);
+            : _normalization().PrepareAsync(context, cancellationToken, shape);
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(
         ProcessingExecutionRequest request,

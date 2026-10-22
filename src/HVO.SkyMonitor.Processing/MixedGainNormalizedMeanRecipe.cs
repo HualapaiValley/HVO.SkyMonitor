@@ -37,6 +37,18 @@ public static class GainNormalizationCompatibility
         => string.Equals(recipeName, BuiltInProcessingRecipes.MixedGainNormalizedMean, StringComparison.Ordinal) &&
            string.Equals(semanticVersion, RecipeSemanticVersion, StringComparison.Ordinal);
 
+    /// <summary>
+    /// True for the recipes whose products may carry a normalized compatibility: the mixed-gain recipe, which assigns
+    /// it, and the rolling mean at the version that averages normalized inputs only when every one is a combined
+    /// product sharing it, so it propagates an identity it never assigns.
+    /// </summary>
+    public static bool MayCarryNormalizedGain(string? recipeName, string? semanticVersion)
+        => IsNormalizationRecipe(recipeName, semanticVersion) ||
+           (string.Equals(recipeName, BuiltInProcessingRecipes.RollingMean, StringComparison.Ordinal) &&
+            string.Equals(semanticVersion, RollingMeanSemanticVersion, StringComparison.Ordinal));
+
+    private const string RollingMeanSemanticVersion = "1.0.0";
+
     /// <summary>True when the compatibility carries a normalized gain segment rather than an actual gain.</summary>
     public static bool IsNormalized(ProcessingCompatibilityIdentity compatibility)
     {

@@ -443,8 +443,12 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         }
     }
 
+    /// <summary>
+    /// No eligible input fails the plan. An older input past the ratio bound ends the window instead of failing it, so
+    /// the primary is still stacked (PR-1530 F5).
+    /// </summary>
     [TestMethod]
-    public async Task PrepareAsync_FailsWhenNoInputIsEligibleOrTheRatioBoundIsExceeded()
+    public async Task PrepareAsync_FailsWhenNoInputIsEligibleAndEndsTheWindowAtTheRatioBound()
     {
         var root = CreateRoot();
         try
@@ -464,17 +468,60 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                     inputs, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(NormalizationPlanFreezer.NoEligibleInput, unrelated.ReasonCode);
 
-            var bound = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
-                await NormalizationPlanFreezer.PrepareAsync(
-                    store, family,
-                    GainNormalizationPolicyV1.Approved with { MaximumCoefficientRatioMilli = 1000 },
-                    VirtualResponse(), inputs, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            Assert.AreEqual(GainNormalizationReasonCodes.CoefficientRatioExceeded, bound.ReasonCode);
+            var bound = await NormalizationPlanFreezer.PrepareAsync(
+                store, family,
+                GainNormalizationPolicyV1.Approved with { MaximumCoefficientRatioMilli = 1000 },
+                VirtualResponse(), inputs, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(NormalizationPlanInputDispositions.Selected, bound.Inputs[0].Disposition);
+            Assert.AreEqual(NormalizationPlanInputDispositions.Excluded, bound.Inputs[1].Disposition);
+            Assert.AreEqual(GainNormalizationReasonCodes.CoefficientRatioExceeded, bound.Inputs[1].ExclusionReason);
 
             var single = await NormalizationPlanFreezer.PrepareAsync(
                 store, family, GainNormalizationPolicyV1.Approved with { MaximumCoefficientRatioMilli = 1000 },
                 VirtualResponse(), inputs[..1], CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(1, single.Inputs.Count);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// Age is measured from the primary even when the primary has no member, so an older input past the maximum age
+    /// never stands in for it (PR-1530 F4).
+    /// </summary>
+    [TestMethod]
+    public async Task PrepareAsync_MeasuresAgeFromAnIneligiblePrimary()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFamilyFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var family = fixture.Family(fixture.Member(LowGain));
+            var primary = fixture.Lights[HighGain];
+            var older = fixture.Lights[LowGain] with
+            {
+                Timing = fixture.Lights[LowGain].Timing with
+                {
+                    ExposureStartedUtc = primary.Timing.ExposureStartedUtc.AddSeconds(-10)
+                }
+            };
+            ProcessingFrozenRawInput[] inputs = [FrozenInput(primary, 0), FrozenInput(older, -1)];
+
+            var unbounded = await NormalizationPlanFreezer.PrepareAsync(
+                store, family, GainNormalizationPolicyV1.Approved, VirtualResponse(), inputs,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(NormalizationPlanInputDispositions.Excluded, unbounded.Inputs[0].Disposition);
+            Assert.AreEqual(NormalizationPlanInputDispositions.Selected, unbounded.Inputs[1].Disposition);
+
+            var aged = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
+                await NormalizationPlanFreezer.PrepareAsync(
+                    store, family, GainNormalizationPolicyV1.Approved, VirtualResponse(), inputs, CancellationToken.None,
+                    NormalizationWindowShape.Trailing with { MaximumAgeMilliseconds = 1000 }).ConfigureAwait(false))
+                .ConfigureAwait(false);
+            Assert.AreEqual(NormalizationPlanFreezer.NoEligibleInput, aged.ReasonCode);
         }
         finally
         {

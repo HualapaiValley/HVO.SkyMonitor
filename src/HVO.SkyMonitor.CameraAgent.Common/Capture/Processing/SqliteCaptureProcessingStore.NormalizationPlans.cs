@@ -249,35 +249,78 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     /// <summary>
-    /// The library master artifact IDs named by every normalization plan frozen for a pending or running execution
-    /// (#1475). Retention holds these masters whatever their bundle or family state, so a superseded family's masters
-    /// stay while work that froze them can still run; a terminal execution no longer holds them. A plan that is
-    /// corrupt fails the read, so retention fails closed rather than releasing masters it cannot account for.
+    /// The library master artifact IDs named by the frozen normalization plans that still need them (#1475): every plan
+    /// of a pending or running execution, and, once an execution ends, the plan of each node whose outputs it still
+    /// records. Retention holds these masters whatever their bundle or family state, so a superseded family's masters
+    /// stay while work that froze them can still run and while a product made from them is kept; they are released when
+    /// the node's last output is removed. A plan that is corrupt fails the read, so retention fails closed rather than
+    /// releasing masters it cannot account for.
     /// </summary>
     internal async ValueTask<IReadOnlyList<Guid>> ReadNormalizationPlanMasterArtifactIdsAsync(
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT frozen_plan_json FROM processing_executions
-            WHERE status IN ('Pending', 'Running') AND instr(frozen_plan_json, $member) > 0
-            ORDER BY execution_id;
-            """;
-        command.Parameters.AddWithValue("$member", Encoding.UTF8.GetBytes($"\"{NormalizationPlansMember}\""));
-        var ids = new HashSet<Guid>();
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: true);
+#pragma warning restore CA1849
+        // The literal member name finds every plan the reader accepts, which rejects an escaped one.
+        var member = Encoding.UTF8.GetBytes($"\"{NormalizationPlansMember}\"");
+        var heldNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        using (var command = connection.CreateCommand())
         {
-            foreach (var frozen in ReadNormalizationPlans((byte[])reader.GetValue(0), nodeId: null))
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT DISTINCT association.execution_id, association.node_id
+                FROM processing_execution_outputs association
+                JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                WHERE execution.status NOT IN ('Pending', 'Running') AND instr(execution.frozen_plan_json, $member) > 0;
+                """;
+            command.Parameters.AddWithValue("$member", member);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                ids.UnionWith(frozen.Plan.Inputs
-                    .Where(static input => input.Masters is not null)
-                    .SelectMany(static input => input.Masters!)
-                    .Select(static master => master.ArtifactId));
+                var executionId = reader.GetString(0);
+                if (!heldNodes.TryGetValue(executionId, out var nodes))
+                {
+                    heldNodes.Add(executionId, nodes = new HashSet<string>(StringComparer.Ordinal));
+                }
+                nodes.Add(reader.GetString(1));
             }
         }
+        var ids = new HashSet<Guid>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT execution.execution_id, execution.status IN ('Pending', 'Running'), execution.frozen_plan_json
+                FROM processing_executions execution
+                WHERE instr(execution.frozen_plan_json, $member) > 0 AND (execution.status IN ('Pending', 'Running') OR
+                    EXISTS (SELECT 1 FROM processing_execution_outputs association
+                            WHERE association.execution_id = execution.execution_id))
+                ORDER BY execution.execution_id;
+                """;
+            command.Parameters.AddWithValue("$member", member);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var active = reader.GetBoolean(1);
+                heldNodes.TryGetValue(reader.GetString(0), out var nodes);
+                // Every plan is read, so a corrupt one fails the hold even when its node holds nothing.
+                foreach (var frozen in ReadNormalizationPlans((byte[])reader.GetValue(2), nodeId: null))
+                {
+                    if (!active && nodes?.Contains(frozen.NodeId) != true)
+                    {
+                        continue;
+                    }
+                    ids.UnionWith(frozen.Plan.Inputs
+                        .Where(static input => input.Masters is not null)
+                        .SelectMany(static input => input.Masters!)
+                        .Select(static master => master.ArtifactId));
+                }
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return [.. ids.Order()];
     }
 
@@ -291,7 +334,9 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     /// <summary>
     /// Reads the frozen plans of one node, or of every node when <paramref name="nodeId"/> is null. Every entry's shape
-    /// is checked; each plan returned must be canonical and hash to its recorded identity.
+    /// is checked; each plan returned must be canonical and hash to its recorded identity. The plans member must be
+    /// written once with its literal name, as this store writes it: an escaped or repeated name is rejected, so the
+    /// retention hold, which finds plans by that name, never misses a plan this reader would accept.
     /// </summary>
     private static List<FrozenNormalizationPlan> ReadNormalizationPlans(byte[] frozenJson, string? nodeId)
     {
@@ -302,6 +347,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 throw new InvalidDataException("The frozen execution plan is not a JSON object.");
             }
+            RequireLiteralPlansMember(frozenJson);
             var found = new List<FrozenNormalizationPlan>();
             if (!document.RootElement.TryGetProperty(NormalizationPlansMember, out var plans))
             {
@@ -343,6 +389,27 @@ internal sealed partial class SqliteCaptureProcessingStore
         catch (JsonException exception)
         {
             throw new InvalidDataException("The frozen execution plan is corrupt.", exception);
+        }
+    }
+
+    // The document has already parsed as an object, so only its top-level member names are walked.
+    private static void RequireLiteralPlansMember(byte[] frozenJson)
+    {
+        var reader = new Utf8JsonReader(frozenJson);
+        reader.Read();
+        var seen = false;
+        while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+        {
+            if (reader.ValueTextEquals(NormalizationPlansMember))
+            {
+                if (reader.ValueIsEscaped || seen)
+                {
+                    throw new InvalidDataException("The frozen normalization plans member is not written once by name.");
+                }
+                seen = true;
+            }
+            reader.Read();
+            reader.Skip();
         }
     }
 

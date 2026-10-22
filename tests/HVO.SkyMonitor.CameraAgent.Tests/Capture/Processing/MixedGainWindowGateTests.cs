@@ -88,7 +88,7 @@ public sealed class MixedGainWindowGateTests
     }
 
     [TestMethod]
-    public void OutputSelector_AdmitsANormalizedCompatibilityOnlyFromTheMixedGainRecipe()
+    public void OutputSelector_AdmitsANormalizedCompatibilityOnlyFromTheMixedGainRecipeOrItsRollingMean()
     {
         var ordinary = CameraAgentRecipeExecutionAdapter.CreateCompatibility(Light(10));
         var normalized = CameraAgentRecipeExecutionAdapter.CreateCompatibility(Light(10), Plan(FamilySha256));
@@ -96,7 +96,12 @@ public sealed class MixedGainWindowGateTests
         var rollingMean = Recipe(BuiltInProcessingRecipes.RollingMean, "1.0.0");
 
         Assert.IsTrue(ProcessingOutputWindowSelector.IsCompatible(normalized, normalized, mixedGain));
-        Assert.IsFalse(ProcessingOutputWindowSelector.IsCompatible(normalized, normalized, rollingMean),
+        Assert.IsTrue(ProcessingOutputWindowSelector.IsCompatible(normalized, normalized, rollingMean),
+            "the rolling mean averages normalized products only when every one shares the identity, so it propagates it");
+        Assert.IsFalse(ProcessingOutputWindowSelector.IsCompatible(
+            normalized, normalized, Recipe(BuiltInProcessingRecipes.RollingMean, "1.0.1")));
+        Assert.IsFalse(ProcessingOutputWindowSelector.IsCompatible(
+            normalized, normalized, Recipe(BuiltInProcessingRecipes.ReferenceCalibration, "1.0.0")),
             "another recipe cannot claim a normalized gain");
         Assert.IsFalse(ProcessingOutputWindowSelector.IsCompatible(
             normalized, normalized, Recipe(BuiltInProcessingRecipes.MixedGainNormalizedMean, "1.0.1")));

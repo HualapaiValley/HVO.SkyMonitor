@@ -15,7 +15,10 @@ internal sealed class NormalizationPlanFreezer(
     SqliteCaptureProcessingStore processing,
     SqliteCalibrationLibraryStore calibration)
 {
-    /// <summary>No input of the window has an applicable member, checked masters and an in-range coefficient.</summary>
+    /// <summary>
+    /// No input of the window has an applicable member, checked masters and an in-range coefficient within the window's
+    /// maximum age of the primary.
+    /// </summary>
     public const string NoEligibleInput = "normalization.plan.no-eligible-input";
 
     /// <summary>
@@ -24,10 +27,26 @@ internal sealed class NormalizationPlanFreezer(
     /// </summary>
     public const string NonRightAlignedResponse = "normalization.plan.non-right-aligned-response";
 
+    /// <summary>The input started further from the primary than the window's configured maximum age.</summary>
+    public const string MaximumAgeExceeded = "normalization.plan.maximum-age-exceeded";
+
+    /// <summary>Selecting the input would take the window past its configured maximum integration.</summary>
+    public const string MaximumIntegrationExceeded = "normalization.plan.maximum-integration-exceeded";
+
+    /// <summary>A newer input of a trailing window already ended it, so this older input is outside the window.</summary>
+    public const string BeyondWindowBoundary = "normalization.plan.beyond-window-boundary";
+
+    /// <summary>
+    /// The plan does not select every position the window requires, or selects fewer inputs than its minimum, so the
+    /// window is not produced.
+    /// </summary>
+    public const string WindowIncomplete = "normalization.plan.window-incomplete";
+
     /// <summary>
     /// Returns the node's frozen plan, freezing one first when there is none. <paramref name="familyJson"/> is the
     /// active family's canonical bytes; a family that does not parse fails explicitly.
-    /// <paramref name="forceEvidenceValidation"/> is passed to <see cref="ConfirmAsync"/>.
+    /// <paramref name="forceEvidenceValidation"/> is passed to <see cref="ConfirmAsync"/>, and
+    /// <paramref name="shape"/> to <see cref="PrepareAsync"/>.
     /// </summary>
     internal async ValueTask<FrozenNormalizationPlan> FreezeAsync(
         ProcessingExecutionContext execution,
@@ -36,7 +55,8 @@ internal sealed class NormalizationPlanFreezer(
         GainNormalizationPolicyV1 policy,
         GainResponse response,
         CancellationToken cancellationToken,
-        bool forceEvidenceValidation = true)
+        bool forceEvidenceValidation = true,
+        NormalizationWindowShape? shape = null)
     {
         if (await ReadConfirmedAsync(execution, nodeId, cancellationToken, forceEvidenceValidation)
                 .ConfigureAwait(false) is { } frozen)
@@ -47,7 +67,7 @@ internal sealed class NormalizationPlanFreezer(
             ?? throw new NormalizationPlanException(CalibrationFamilyReasonCodes.InvalidFamily);
         var inputs = await processing.ReadFrozenExecutionRawInputsAsync(execution.ExecutionId, nodeId, cancellationToken)
             .ConfigureAwait(false);
-        var plan = await PrepareAsync(calibration, family, policy, response, inputs, cancellationToken)
+        var plan = await PrepareAsync(calibration, family, policy, response, inputs, cancellationToken, shape)
             .ConfigureAwait(false);
         return await processing.FreezeNormalizationPlanAsync(
             calibration, execution, nodeId, plan, cancellationToken, forceEvidenceValidation).ConfigureAwait(false);
@@ -78,11 +98,17 @@ internal sealed class NormalizationPlanFreezer(
 
     /// <summary>
     /// Builds the plan for frozen inputs in window order. The response must identify the family and every capture's
-    /// sensor, or the window fails with an identity mismatch. An input is excluded, with its stable reason, when the family
-    /// selects no checked masters for it, its gain has no coefficient, or its layout differs from the first selected
-    /// input's or from the response's code mapping. The plan fails when no input remains or the remaining
-    /// coefficients exceed the policy's ratio bound; choosing a window inside the bound is the caller's. A response
-    /// whose stored codes are not right-aligned fails the whole window.
+    /// sensor, or the window fails with an identity mismatch. An input is ineligible, and excluded with its stable
+    /// reason, when the family selects no checked masters for it, its gain has no coefficient, or its layout differs
+    /// from the response's code mapping. The eligible inputs are then taken nearest the primary first, as the rolling
+    /// mean takes them: an input whose layout differs from the first one taken is excluded, and so is one that starts
+    /// further from the primary than <paramref name="shape"/>'s maximum age, would take the window past its maximum
+    /// integration, or would take the selected coefficients past the policy's ratio bound. In a trailing window the
+    /// first input past a bound ends the window, so every older input is excluded too; a centered window excludes
+    /// each input on its own, and whether what remains fills it is the caller's to check. The selection therefore
+    /// stays inside the bound, and an older input past it never takes an eligible primary with it. The plan fails
+    /// when no eligible input lies within the maximum age. A response whose stored codes are not right-aligned fails
+    /// the whole window.
     /// </summary>
     internal static async ValueTask<NormalizationPlanV1> PrepareAsync(
         SqliteCalibrationLibraryStore calibration,
@@ -90,7 +116,8 @@ internal sealed class NormalizationPlanFreezer(
         GainNormalizationPolicyV1 policy,
         GainResponse response,
         IReadOnlyList<ProcessingFrozenRawInput> inputs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        NormalizationWindowShape? shape = null)
     {
         ArgumentNullException.ThrowIfNull(calibration);
         ArgumentNullException.ThrowIfNull(family);
@@ -120,13 +147,14 @@ internal sealed class NormalizationPlanFreezer(
         {
             throw new NormalizationPlanException(reference.ReasonCode!);
         }
+        shape ??= NormalizationWindowShape.Trailing;
         var entries = new NormalizationPlanInputV1[inputs.Count];
-        FrameLayoutDescriptor? layout = null;
+        var eligible = new (CalibrationFamilyMasterSelection Selection, GainCoefficientV1 Coefficient)?[inputs.Count];
         for (var ordinal = 0; ordinal < inputs.Count; ordinal++)
         {
             var input = inputs[ordinal];
             var descriptor = input.Descriptor;
-            var excluded = new NormalizationPlanInputV1(
+            entries[ordinal] = new NormalizationPlanInputV1(
                 ordinal,
                 input.WindowPosition,
                 descriptor.Capture.CaptureId,
@@ -146,47 +174,67 @@ internal sealed class NormalizationPlanFreezer(
                 .ConfigureAwait(false);
             if (selection.Selection is not { } selected)
             {
-                entries[ordinal] = excluded with { ExclusionReason = selection.ReasonCode };
+                entries[ordinal] = entries[ordinal] with { ExclusionReason = selection.ReasonCode };
                 continue;
             }
             if (descriptor.Layout.StoredCodeTransform != response.Descriptor.StoredCodeTransform ||
                 descriptor.Layout.SampleDepthBits != response.Descriptor.NativeSampleDepthBits)
             {
-                entries[ordinal] = excluded with { ExclusionReason = GainNormalizationReasonCodes.UnsupportedCodeMapping };
-                continue;
-            }
-            if (layout is not null && descriptor.Layout != layout)
-            {
-                entries[ordinal] = excluded with { ExclusionReason = CalibrationFamilyReasonCodes.ReadoutMismatch };
+                entries[ordinal] = entries[ordinal] with { ExclusionReason = GainNormalizationReasonCodes.UnsupportedCodeMapping };
                 continue;
             }
             var coefficient = response.ResolveCoefficient(descriptor.Controls.EffectiveGain);
             if (coefficient.Coefficient is not { } resolved)
             {
-                entries[ordinal] = excluded with { ExclusionReason = coefficient.ReasonCode };
+                entries[ordinal] = entries[ordinal] with { ExclusionReason = coefficient.ReasonCode };
+                continue;
+            }
+            eligible[ordinal] = (selected, resolved);
+        }
+        // Nearest the primary first, older before newer at equal distance, as the rolling mean walks back from it.
+        var walk = Enumerable.Range(0, inputs.Count)
+            .OrderBy(ordinal => Math.Abs(inputs[ordinal].WindowPosition))
+            .ThenBy(ordinal => inputs[ordinal].WindowPosition)
+            .ToArray();
+        var primaryStartedUtc = inputs[walk[0]].Descriptor.Timing.ExposureStartedUtc;
+        FrameLayoutDescriptor? layout = null;
+        var coefficients = new List<GainCoefficientV1>(inputs.Count);
+        var integration = TimeSpan.Zero;
+        var ended = false;
+        foreach (var ordinal in walk)
+        {
+            if (eligible[ordinal] is not { } candidate)
+            {
+                continue;
+            }
+            var descriptor = inputs[ordinal].Descriptor;
+            var reason = ended
+                ? BeyondWindowBoundary
+                : layout is not null && descriptor.Layout != layout
+                    ? CalibrationFamilyReasonCodes.ReadoutMismatch
+                    : WindowBoundReason(descriptor, candidate.Coefficient);
+            if (reason is not null)
+            {
+                entries[ordinal] = entries[ordinal] with { ExclusionReason = reason };
+                ended |= shape.Kind == ProcessingGraphWindowKind.Trailing &&
+                    !string.Equals(reason, CalibrationFamilyReasonCodes.ReadoutMismatch, StringComparison.Ordinal);
                 continue;
             }
             layout ??= descriptor.Layout;
-            entries[ordinal] = excluded with
+            coefficients.Add(candidate.Coefficient);
+            integration += descriptor.Controls.EffectiveExposure;
+            entries[ordinal] = entries[ordinal] with
             {
                 Disposition = NormalizationPlanInputDispositions.Selected,
-                MemberId = selected.MemberId,
-                Masters = [.. selected.Masters.Select(static master =>
+                MemberId = candidate.Selection.MemberId,
+                Masters = [.. candidate.Selection.Masters.Select(static master =>
                     new NormalizationPlanMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256, master.Exposure))],
-                Coefficient = resolved
+                Coefficient = candidate.Coefficient
             };
         }
-        var coefficients = entries
-            .Where(static entry => entry.Coefficient is not null)
-            .Select(static entry => entry.Coefficient!)
-            .ToArray();
-        if (coefficients.Length == 0)
+        if (coefficients.Count == 0)
         {
             throw new NormalizationPlanException(NoEligibleInput);
-        }
-        if (GainNormalizationContract.EvaluateCoefficientBound(policy, coefficients) is { } boundReason)
-        {
-            throw new NormalizationPlanException(boundReason);
         }
         return new NormalizationPlanV1(
             NormalizationPlanV1.CurrentSchemaVersion,
@@ -198,6 +246,27 @@ internal sealed class NormalizationPlanFreezer(
             layout!,
             NormalizationKernelV1.Linear16(response.Descriptor),
             entries);
+
+        // Age is measured from the primary even when the primary itself is ineligible; the integration and ratio
+        // bounds never exclude the first input taken.
+        string? WindowBoundReason(ReconstructionDescriptor descriptor, GainCoefficientV1 coefficient)
+        {
+            if (shape.MaximumAgeMilliseconds is { } maximumAge &&
+                (descriptor.Timing.ExposureStartedUtc - primaryStartedUtc).Duration().TotalMilliseconds > maximumAge)
+            {
+                return MaximumAgeExceeded;
+            }
+            if (coefficients.Count == 0)
+            {
+                return null;
+            }
+            if (shape.MaximumIntegrationMilliseconds is { } maximumIntegration &&
+                (integration + descriptor.Controls.EffectiveExposure).TotalMilliseconds > maximumIntegration)
+            {
+                return MaximumIntegrationExceeded;
+            }
+            return GainNormalizationContract.EvaluateCoefficientBound(policy, [.. coefficients, coefficient]);
+        }
     }
 
     /// <summary>
@@ -225,5 +294,32 @@ internal sealed class NormalizationPlanFreezer(
         {
             throw new NormalizationPlanException(reason);
         }
+    }
+}
+
+/// <summary>
+/// The window a normalization plan is frozen for (#1475): its kind, the positions it must keep, the fewest inputs it
+/// may hold, and its age and integration bounds, as the step that consumes the plan declares them.
+/// </summary>
+internal sealed record NormalizationWindowShape(
+    ProcessingGraphWindowKind Kind,
+    IReadOnlyList<int> RequiredPositions,
+    int MinimumInputCount,
+    double? MaximumAgeMilliseconds,
+    double? MaximumIntegrationMilliseconds)
+{
+    /// <summary>A trailing window with no required position and no age or integration bound.</summary>
+    public static NormalizationWindowShape Trailing { get; } =
+        new(ProcessingGraphWindowKind.Trailing, [], 1, null, null);
+
+    /// <summary>Whether <paramref name="plan"/> selects every required position and at least the fewest inputs.</summary>
+    public bool IsFilledBy(NormalizationPlanV1 plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var selected = plan.Inputs
+            .Where(static input => input.Disposition == NormalizationPlanInputDispositions.Selected)
+            .Select(static input => input.WindowPosition)
+            .ToHashSet();
+        return selected.Count >= MinimumInputCount && RequiredPositions.All(selected.Contains);
     }
 }

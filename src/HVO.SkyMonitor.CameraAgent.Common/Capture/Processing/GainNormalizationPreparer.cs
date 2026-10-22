@@ -18,14 +18,17 @@ internal sealed class GainNormalizationPreparer(
 {
     /// <summary>
     /// Returns the plan, its masters and the plan input for the current durable node, or the outcome the node records
-    /// instead: skipped when no family is active, a terminal failure with the stable reason otherwise. Outside a
-    /// durable execution there is no plan to freeze, and the recipe skips the window.
+    /// instead: skipped when no family is active or the plan does not fill <paramref name="shape"/>, a terminal failure
+    /// with the stable reason otherwise. Outside a durable execution there is no plan to freeze, and the recipe skips
+    /// the window.
     /// </summary>
     public async ValueTask<GainNormalizationPreparation> PrepareAsync(
         CaptureProcessingContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        NormalizationWindowShape? shape = null)
     {
         ArgumentNullException.ThrowIfNull(context);
+        shape ??= NormalizationWindowShape.Trailing;
         if (context.ProcessingExecution is not { } execution || context.CurrentNodeId is not { } nodeId ||
             context.ReconstructionDescriptor is not { } descriptor)
         {
@@ -58,7 +61,8 @@ internal sealed class GainNormalizationPreparer(
                     GainNormalizationPolicyV1.Approved,
                     selection.Response!,
                     cancellationToken,
-                    forceEvidenceValidation: false).ConfigureAwait(false);
+                    forceEvidenceValidation: false,
+                    shape).ConfigureAwait(false);
             }
         }
         catch (NormalizationPlanException exception)
@@ -71,6 +75,13 @@ internal sealed class GainNormalizationPreparer(
             // Corrupt frozen evidence fails the window; nothing is re-derived from live state.
             return GainNormalizationPreparation.Failed(ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidNormalizationPlan, GainNormalizationCompatibility.PlanInputName));
+        }
+
+        // An input the plan excludes never fills a position, so a centered window that lost one is not produced.
+        if (!shape.IsFilledBy(frozen.Plan))
+        {
+            return GainNormalizationPreparation.Failed(ProcessingOutcome.Skipped(
+                NormalizationPlanFreezer.WindowIncomplete, GainNormalizationCompatibility.PlanInputName));
         }
 
         var masterIds = frozen.Plan.Inputs

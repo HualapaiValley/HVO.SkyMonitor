@@ -11,14 +11,16 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 /// <summary>
-/// A VirtualSky window that crosses a gain step, stacked by the mixed-gain recipe through the real ingress, standard
-/// lane and host adapter with the active family composed of the agent's own virtual reference acquisitions (#1524).
+/// VirtualSky windows that cross a gain step, stacked by the mixed-gain recipe through the real ingress, standard
+/// lane, replay worker and host adapter with the active family composed of the agent's own virtual reference
+/// acquisitions (#1524).
 /// </summary>
 [TestClass]
 public sealed class MixedGainRollingWindowEndToEndTests
@@ -28,6 +30,7 @@ public sealed class MixedGainRollingWindowEndToEndTests
     private const double HighGain = 100;
     private static readonly DateTimeOffset FixtureUtc = new(2026, 2, 1, 3, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan LightExposure = TimeSpan.FromMilliseconds(32);
+    private static readonly int[] PrimaryOnly = [0];
 
     private static readonly VirtualCalibrationLightOptions VirtualCalibration = new()
     {
@@ -42,7 +45,203 @@ public sealed class MixedGainRollingWindowEndToEndTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task AWindowAcrossAGainStepIsFrozenExecutedThroughTheAdapterAndStoredWithItsPlan()
+    public Task AWindowAcrossAGainStepIsFrozenExecutedThroughTheAdapterAndStoredWithItsPlan()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
+        {
+            CollectionAssert.AreEqual(
+                new[] { CaptureLaneHandlerOutcome.Completed, CaptureLaneHandlerOutcome.Completed },
+                run.Drains.Select(static drain => drain.Outcome).ToArray());
+            var low = run.Receipts[0];
+            var light = run.Receipts[1].Manifest.Descriptor;
+            var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
+            Assert.HasCount(1, node.Outputs);
+
+            // The window's execution froze its plan across the gain step, and the stored product is what it planned.
+            var frozen = await run.ReadPlanAsync(1, NodeId).ConfigureAwait(false);
+            Assert.AreEqual(run.FamilyIdentitySha256, frozen.Plan.CalibrationFamilyIdentitySha256);
+            var selected = Selected(frozen.Plan);
+            CollectionAssert.AreEqual(new[] { -1, 0 }, selected.Select(static input => input.WindowPosition).ToArray());
+            CollectionAssert.AreEqual(new[] { LowGain, HighGain }, selected.Select(static input => input.Gain).ToArray());
+            CollectionAssert.AreEqual(
+                new[] { low.Manifest.Descriptor.Artifact.ArtifactId, light.Artifact.ArtifactId },
+                selected.Select(static input => input.ArtifactId).ToArray());
+            var masters = selected.SelectMany(static input => input.Masters!).Select(static master => master.ArtifactId)
+                .ToArray();
+            CollectionAssert.AreEquivalent(
+                run.Bundles.Values.SelectMany(LibraryMasters).Select(static master => master.ArtifactId).ToArray(),
+                masters);
+            CollectionAssert.AreEquivalent(
+                selected.Select(static input => input.ArtifactId).Concat(masters).ToArray(),
+                node.Outputs[0].Descriptor!.Artifact.SourceArtifactIds.ToArray());
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_CompletedExecutionKeepsReferencedMasters()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
+        {
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, (await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false)).Status);
+            var masters = run.Bundles.Values.SelectMany(LibraryMasters).Select(static master => master.ArtifactId).Order().ToArray();
+            Assert.HasCount(8, masters);
+            var holds = run.Provider.GetRequiredService<IProcessingRetentionHolds>();
+            async Task<Guid[]> HeldMastersAsync()
+                => (await holds.GetRetentionHoldsAsync(run.Root, CancellationToken.None).ConfigureAwait(false))
+                    .Select(static hold => hold.ArtifactId).Intersect(masters).Order().ToArray();
+
+            // The family is superseded and no bundle holds its own artifacts, so only the completed executions' frozen
+            // plans can hold the masters their stored products were calibrated with.
+            Assert.IsTrue((await run.Provider.GetRequiredService<CalibrationFamilyActivationService>().DeactivateAsync(
+                new CalibrationFamilyDeactivationRequest(
+                    "mixed-gain-deactivate", run.Family.AgentId, run.Family.RigId, "operator", null),
+                CancellationToken.None).ConfigureAwait(false)).IsAccepted);
+            await ClearBundleRetentionHoldsAsync(run.Root).ConfigureAwait(false);
+            CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false),
+                "a completed execution's stored product still references its plan's masters");
+
+            // Once the products that reference them are removed, the masters are released.
+            _ = await ((IProcessingOutputExpiration)holds).ExpireOutputsAsync(
+                run.Root, DateTimeOffset.UtcNow.AddDays(1), new HashSet<string>(StringComparer.Ordinal),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(1), NodeId, CancellationToken.None).ConfigureAwait(false),
+                "expiry removes the products");
+            Assert.IsEmpty(await HeldMastersAsync().ConfigureAwait(false));
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_CenteredWindowMustRetainEveryRequiredPosition()
+        => RunAsync([LowGain, HighGain, 90], [LowGain, HighGain], [MixedGainStep()], async run =>
+        {
+            var operations = run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var revision = await operations.CreateRevisionAsync(
+                "centered-mixed-gain", "v1",
+                Pipeline(run.Root, [MixedGainStep(windowSize: 3, nodeId: "centered", windowKind: "Centered")]),
+                "centered-create-key", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            _ = await operations.ValidateRevisionAsync(
+                revision.RevisionId, "centered-validate-key", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            var replay = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    run.CaptureId(1), revision.RevisionId, run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId,
+                    TriggerReference: "centered-replay"),
+                "centered-replay-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+            var detail = await RunReplayAsync(run, replay.Execution.ExecutionId).ConfigureAwait(false);
+
+            // The family has no member for the +1 frame's gain, so the plan excludes it. A centered window requires every
+            // position, and an excluded frame does not fill one.
+            var frozen = await run.Store.ReadNormalizationPlanAsync(replay.Execution.ExecutionId, "centered", CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(frozen);
+            CollectionAssert.AreEqual(new[] { -1, 0 }, Selected(frozen.Plan).Select(static input => input.WindowPosition).ToArray());
+            var node = detail.Nodes.Single(static state => state.NodeId == "centered");
+            Assert.AreEqual("Skipped", node.Status, node.Reason);
+            Assert.AreEqual(NormalizationPlanFreezer.WindowIncomplete, node.Reason);
+            Assert.IsEmpty(node.Outputs);
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_RealMixedGainProductsCanFeedRollingMean()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep(), MeanStep("mean", NodeId, 2)], async run =>
+        {
+            var products = new List<Guid>();
+            for (var index = 0; index < 2; index++)
+            {
+                var mixed = await run.ReadNodeAsync(index, NodeId).ConfigureAwait(false);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, mixed.Status, mixed.Reason);
+                products.Add(mixed.Outputs.Single().ArtifactId);
+            }
+
+            // Two windows freeze two plans, so their products' recipe identities differ, but both are on the scale the
+            // family, policy and response fix, which their shared normalized compatibility names.
+            var mean = await run.ReadNodeAsync(1, "mean").ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, mean.Status, mean.Reason);
+            CollectionAssert.AreEquivalent(products, mean.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds.ToArray());
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_MixedGainSelectionHonoursMaximumAge()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep(maximumAgeMilliseconds: 1000)], async run =>
+        {
+            // The frames are five seconds apart, so the older one is outside the configured age.
+            var plan = (await run.ReadPlanAsync(1, NodeId).ConfigureAwait(false)).Plan;
+            CollectionAssert.AreEqual(PrimaryOnly, Selected(plan).Select(static input => input.WindowPosition).ToArray());
+            Assert.AreEqual(
+                NormalizationPlanFreezer.MaximumAgeExceeded,
+                plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
+            var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, node.Reason);
+            Assert.Contains(run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_MixedGainSelectionHonoursMaximumIntegration()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep(maximumIntegrationMilliseconds: 32)], async run =>
+        {
+            // Each light integrates 32 ms, so the configured 32 ms admits the primary alone.
+            var plan = (await run.ReadPlanAsync(1, NodeId).ConfigureAwait(false)).Plan;
+            CollectionAssert.AreEqual(PrimaryOnly, Selected(plan).Select(static input => input.WindowPosition).ToArray());
+            Assert.AreEqual(
+                NormalizationPlanFreezer.MaximumIntegrationExceeded,
+                plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
+            var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, node.Reason);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_RatioBoundaryRestartsAtPrimary()
+        => RunAsync([LowGain, 300], [LowGain, 300], [MixedGainStep()], async run =>
+        {
+            // 82 and 300 are about 12x apart, past the 4x bound: the window restarts at the primary, which is eligible.
+            var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, node.Reason);
+            var plan = (await run.ReadPlanAsync(1, NodeId).ConfigureAwait(false)).Plan;
+            CollectionAssert.AreEqual(PrimaryOnly, Selected(plan).Select(static input => input.WindowPosition).ToArray());
+            Assert.AreEqual(
+                GainNormalizationReasonCodes.CoefficientRatioExceeded,
+                plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task Review1530_SelectorKeepsValidNormalizedRollingProducts()
+        => RunAsync(
+            [LowGain, HighGain],
+            [LowGain, HighGain],
+            [MixedGainStep(), MeanStep("mean-1", NodeId, 1), MeanStep("mean-2", "mean-1", 2)],
+            async run =>
+            {
+                var products = new List<Guid>();
+                for (var index = 0; index < 2; index++)
+                {
+                    var first = await run.ReadNodeAsync(index, "mean-1").ConfigureAwait(false);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, first.Status, first.Reason);
+                    products.Add(first.Outputs.Single().ArtifactId);
+                }
+
+                // A rolling mean of mixed-gain products carries their normalized compatibility on, and a later window
+                // over those means keeps both.
+                var second = await run.ReadNodeAsync(1, "mean-2").ConfigureAwait(false);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, second.Status, second.Reason);
+                CollectionAssert.AreEquivalent(products, second.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds.ToArray());
+            });
+
+    /// <summary>
+    /// Acquires the agent's own references at each family gain, accepts one VirtualSky light per capture gain five
+    /// seconds apart, activates the family composed of those references and drains every capture through the standard
+    /// lane under the configured window steps, then runs <paramref name="assert"/>.
+    /// </summary>
+    private static async Task RunAsync(
+        double[] captureGains,
+        double[] familyGains,
+        CaptureProcessingStepConfig[] windowSteps,
+        Func<Run, Task> assert)
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -50,7 +249,7 @@ public sealed class MixedGainRollingWindowEndToEndTests
         try
         {
             using var provider = CreateProvider(root);
-            var configuration = CreateConfiguration(root);
+            var configuration = CreateConfiguration(root, windowSteps);
             ((CameraAgentConfigurationAccessor)provider.GetRequiredService<ICameraAgentConfigurationAccessor>())
                 .SetConfiguration(configuration);
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
@@ -60,9 +259,9 @@ public sealed class MixedGainRollingWindowEndToEndTests
             var library = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             _ = await library.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
-            // The agent acquires its own references at each gain of the step.
+            // The agent acquires its own references at each gain of the family.
             var acquisition = provider.GetRequiredService<VirtualCalibrationAcquisitionCoordinator>();
-            foreach (var gain in new[] { LowGain, HighGain })
+            foreach (var gain in familyGains)
             {
                 var job = await acquisition.AcquireAsync(AcquisitionRequest(gain), CancellationToken.None)
                     .ConfigureAwait(false);
@@ -80,17 +279,19 @@ public sealed class MixedGainRollingWindowEndToEndTests
                 provider.GetRequiredService<IConstellationTopology>(),
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-            var low = await ingress.AcceptAsync(
-                configuration, await CreateSubmissionAsync(module, 0, LowGain).ConfigureAwait(false), CancellationToken.None)
-                .ConfigureAwait(false);
-            var high = await ingress.AcceptAsync(
-                configuration, await CreateSubmissionAsync(module, 1, HighGain).ConfigureAwait(false), CancellationToken.None)
-                .ConfigureAwait(false);
-            Assert.IsNotNull(low);
-            Assert.IsNotNull(high);
+            var receipts = new List<RawCaptureReceipt>(captureGains.Length);
+            for (var index = 0; index < captureGains.Length; index++)
+            {
+                var receipt = await ingress.AcceptAsync(
+                    configuration,
+                    await CreateSubmissionAsync(module, index, captureGains[index]).ConfigureAwait(false),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(receipt);
+                receipts.Add(receipt);
+            }
 
             // The operator activates one family whose members are those acquisitions.
-            var light = high.Manifest.Descriptor;
+            var light = receipts[^1].Manifest.Descriptor;
             var family = Family(light, bundles);
             var stored = await provider.GetRequiredService<SqliteCalibrationFamilyStore>()
                 .StoreAsync(family, CancellationToken.None).ConfigureAwait(false);
@@ -106,41 +307,13 @@ public sealed class MixedGainRollingWindowEndToEndTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(activated.IsAccepted);
 
-            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
-            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
-
-            var captureId = light.Capture.CaptureId;
-            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-            var node = await store.ReadNodeAsync(captureId, NodeId, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(node);
-            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
-            Assert.HasCount(1, node.Outputs);
-
-            // The window's execution froze its plan across the gain step, and the stored product is what it planned.
-            var execution = (await operations.ReadExecutionsAsync(
-                    ProcessingGraphExecutionClass.Live, 256, CancellationToken.None).ConfigureAwait(false))
-                .Single(state => state.CaptureId == captureId);
-            var frozen = await store.ReadNormalizationPlanAsync(execution.ExecutionId, NodeId, CancellationToken.None)
+            var drains = new List<CaptureLaneHandlerResult>(receipts.Count);
+            foreach (var _ in receipts)
+            {
+                drains.Add(await DrainOneAsync(provider, configuration).ConfigureAwait(false));
+            }
+            await assert(new Run(provider, root, receipts, bundles, family, stored.IdentitySha256, drains))
                 .ConfigureAwait(false);
-            Assert.IsNotNull(frozen);
-            Assert.AreEqual(stored.IdentitySha256, frozen.Plan.CalibrationFamilyIdentitySha256);
-            var selected = frozen.Plan.Inputs
-                .Where(static input => input.Disposition == NormalizationPlanInputDispositions.Selected)
-                .OrderBy(static input => input.WindowPosition)
-                .ToArray();
-            CollectionAssert.AreEqual(new[] { -1, 0 }, selected.Select(static input => input.WindowPosition).ToArray());
-            CollectionAssert.AreEqual(new[] { LowGain, HighGain }, selected.Select(static input => input.Gain).ToArray());
-            CollectionAssert.AreEqual(
-                new[] { low.Manifest.Descriptor.Artifact.ArtifactId, light.Artifact.ArtifactId },
-                selected.Select(static input => input.ArtifactId).ToArray());
-            var masters = selected.SelectMany(static input => input.Masters!).Select(static master => master.ArtifactId)
-                .ToArray();
-            CollectionAssert.AreEquivalent(
-                bundles.Values.SelectMany(LibraryMasters).Select(static master => master.ArtifactId).ToArray(),
-                masters);
-            CollectionAssert.AreEquivalent(
-                selected.Select(static input => input.ArtifactId).Concat(masters).ToArray(),
-                node.Outputs[0].Descriptor!.Artifact.SourceArtifactIds.ToArray());
         }
         finally
         {
@@ -148,6 +321,7 @@ public sealed class MixedGainRollingWindowEndToEndTests
             {
                 await module.DisposeAsync().ConfigureAwait(false);
             }
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, recursive: true);
@@ -155,7 +329,108 @@ public sealed class MixedGainRollingWindowEndToEndTests
         }
     }
 
-    private static async Task DrainOneAsync(ServiceProvider provider, CameraModuleConfig configuration)
+    private sealed record Run(
+        ServiceProvider Provider,
+        string Root,
+        IReadOnlyList<RawCaptureReceipt> Receipts,
+        IReadOnlyDictionary<double, CalibrationLibraryBundleV1> Bundles,
+        CalibrationFamilyV1 Family,
+        string FamilyIdentitySha256,
+        IReadOnlyList<CaptureLaneHandlerResult> Drains)
+    {
+        public SqliteCaptureProcessingStore Store => Provider.GetRequiredService<SqliteCaptureProcessingStore>();
+
+        public Guid CaptureId(int index) => Receipts[index].Manifest.Descriptor.Capture.CaptureId;
+
+        public async Task<DurableProcessingNode> ReadNodeAsync(int index, string nodeId)
+            => await Store.ReadNodeAsync(CaptureId(index), nodeId, CancellationToken.None).ConfigureAwait(false)
+               ?? throw new AssertFailedException($"Capture {index} has no {nodeId} node.");
+
+        public async Task<FrozenNormalizationPlan> ReadPlanAsync(int index, string nodeId)
+        {
+            var execution = (await Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 256, CancellationToken.None).ConfigureAwait(false))
+                .Single(state => state.CaptureId == CaptureId(index));
+            return await Store.ReadNormalizationPlanAsync(execution.ExecutionId, nodeId, CancellationToken.None)
+                       .ConfigureAwait(false)
+                   ?? throw new AssertFailedException($"Capture {index} froze no {nodeId} plan.");
+        }
+    }
+
+    private static NormalizationPlanInputV1[] Selected(NormalizationPlanV1 plan)
+        => [.. plan.Inputs
+            .Where(static input => input.Disposition == NormalizationPlanInputDispositions.Selected)
+            .OrderBy(static input => input.WindowPosition)];
+
+    private static CaptureProcessingStepConfig MixedGainStep(
+        int windowSize = 2,
+        string nodeId = NodeId,
+        string windowKind = "Trailing",
+        double? maximumAgeMilliseconds = null,
+        double? maximumIntegrationMilliseconds = null)
+    {
+        var options = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["windowSize"] = windowSize,
+            ["windowKind"] = windowKind,
+            ["recipe"] = BuiltInProcessingRecipes.MixedGainNormalizedMean,
+            ["outputVariant"] = "mixed-gain"
+        };
+        if (maximumAgeMilliseconds is { } age)
+        {
+            options["maximumAgeMilliseconds"] = age;
+        }
+        if (maximumIntegrationMilliseconds is { } integration)
+        {
+            options["maximumIntegrationMilliseconds"] = integration;
+        }
+        return new CaptureProcessingStepConfig(
+            "RollingCombination", nodeId, Options: JsonSerializer.SerializeToElement(options), DependsOn: ["$raw"]);
+    }
+
+    private static CaptureProcessingStepConfig MeanStep(string nodeId, string dependsOn, int windowSize)
+        => new(
+            "RollingCombination",
+            nodeId,
+            Options: JsonSerializer.SerializeToElement(new { windowSize, outputVariant = nodeId }),
+            DependsOn: [dependsOn]);
+
+    private static async Task<ProcessingGraphExecutionDetail> RunReplayAsync(Run run, Guid executionId)
+    {
+        var operations = run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        var worker = run.Provider.GetRequiredService<ProcessingReplayWorker>();
+        await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (true)
+            {
+                var detail = await operations.ReadExecutionDetailAsync(executionId, timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(detail);
+                if (detail.Execution.Status is not (ProcessingGraphExecutionStatus.Pending or ProcessingGraphExecutionStatus.Running))
+                {
+                    return detail;
+                }
+                await Task.Delay(25, timeout.Token).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ClearBundleRetentionHoldsAsync(string root)
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE calibration_library_bundles SET retention_hold = 0;";
+        Assert.IsGreaterThan(0, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    private static async Task<CaptureLaneHandlerResult> DrainOneAsync(ServiceProvider provider, CameraModuleConfig configuration)
     {
         var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
         var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
@@ -166,9 +441,9 @@ public sealed class MixedGainRollingWindowEndToEndTests
         var handler = provider.GetServices<ICaptureLaneHandler>().Single(
             static candidate => candidate.Lane == "standard");
         var result = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
         await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
         provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().NotifyLiveWorkChanged();
+        return result;
     }
 
     private static VirtualCalibrationAcquisitionRequestV1 AcquisitionRequest(double gain)
@@ -262,7 +537,7 @@ public sealed class MixedGainRollingWindowEndToEndTests
         return services.BuildServiceProvider();
     }
 
-    private static CameraModuleConfig CreateConfiguration(string root)
+    private static CameraModuleConfig CreateConfiguration(string root, CaptureProcessingStepConfig[] windowSteps)
     {
         var sensor = new SensorProfile(
             "MixedGainWindow", 64, 48, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16,
@@ -303,27 +578,22 @@ public sealed class MixedGainRollingWindowEndToEndTests
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), LightExposure, LightExposure, LowGain, LowGain),
                 ProfileVersion: "mixed-gain-window-rig-v1",
                 Readout: readout),
-            new CapturePipelineConfig(
-                [
-                    new CaptureProcessingStepConfig(
-                        "RollingCombination",
-                        NodeId,
-                        Options: JsonSerializer.SerializeToElement(new
-                        {
-                            windowSize = 2,
-                            recipe = BuiltInProcessingRecipes.MixedGainNormalizedMean,
-                            outputVariant = "mixed-gain"
-                        }),
-                        DependsOn: ["$raw"]),
-                    new CaptureProcessingStepConfig(
-                        "ProjectedScene", "scene", DependsOn: ["$raw"],
-                        Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal)),
-                    new CaptureProcessingStepConfig(
-                        "Storage", "storage", Order: 100, DependsOn: ["scene"],
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }))
-                ],
-                CapturePipelineSchemaVersions.ExplicitV2,
-                CapturePipelineDependencyPolicy.RejectEnabledDependent),
+            Pipeline(root, windowSteps),
             "mixed-gain-window-agent");
     }
+
+    // A scene-bearing capture's graph keeps its one projected scene and storage beside the window steps.
+    private static CapturePipelineConfig Pipeline(string root, CaptureProcessingStepConfig[] windowSteps)
+        => new(
+            [
+                .. windowSteps,
+                new CaptureProcessingStepConfig(
+                    "ProjectedScene", "scene", DependsOn: ["$raw"],
+                    Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal)),
+                new CaptureProcessingStepConfig(
+                    "Storage", "storage", Order: 100, DependsOn: ["scene"],
+                    Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }))
+            ],
+            CapturePipelineSchemaVersions.ExplicitV2,
+            CapturePipelineDependencyPolicy.RejectEnabledDependent);
 }

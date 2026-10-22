@@ -71,9 +71,9 @@ internal sealed class CompositeProcessingRetentionHolds(
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var videos = timeLapses is null ? [] : await timeLapses.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         // The masters of every active calibration family stay held whatever their bundle's own retention_hold, until the
-        // family is deactivated. So do the masters a pending or running execution's frozen normalization plan names,
-        // even once their family is superseded, until that execution ends (#1475). The families store and the
-        // processing store are each read under their own gate, never the library's.
+        // family is deactivated. So do the masters a frozen normalization plan names, even once their family is
+        // superseded, while its execution is pending or running and then while its node's outputs are kept (#1475).
+        // The families store and the processing store are each read under their own gate, never the library's.
         IReadOnlyList<ProcessingRetentionHold> masters = [];
         if (calibrationLibrary.OwnsStorageRoot(storageRoot))
         {

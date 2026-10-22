@@ -249,8 +249,9 @@ internal static class ProcessingOutputWindowSelector
 
     /// <summary>
     /// A derived window member must have the producer's exact compatibility. A normalized gain (#1475) hides the
-    /// members' gains, so it is admitted only from an output the mixed-gain recipe produced; any other recipe's
-    /// output claiming one is rejected, and every other window keeps gain as a boundary.
+    /// members' gains, so it is admitted only from an output of the mixed-gain recipe or of the rolling mean that
+    /// averaged such outputs; any other recipe's output claiming one is rejected, and every other window keeps gain as
+    /// a boundary.
     /// </summary>
     internal static bool IsCompatible(
         ProcessingCompatibilityIdentity expected,
@@ -258,7 +259,7 @@ internal static class ProcessingOutputWindowSelector
         RecipeIdentityDescriptor candidateRecipe)
         => candidate == expected &&
            (!GainNormalizationCompatibility.IsNormalized(candidate) ||
-            GainNormalizationCompatibility.IsNormalizationRecipe(candidateRecipe.Name, candidateRecipe.SemanticVersion));
+            GainNormalizationCompatibility.MayCarryNormalizedGain(candidateRecipe.Name, candidateRecipe.SemanticVersion));
 
     private static bool Matches(ProcessingGraphInputContract contract, DurableProcessingOutput output)
     {

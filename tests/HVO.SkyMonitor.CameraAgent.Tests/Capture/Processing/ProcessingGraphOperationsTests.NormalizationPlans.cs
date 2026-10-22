@@ -471,6 +471,47 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
+    [TestMethod]
+    public async Task Review1530_EscapedPlanMemberIsRejectedRatherThanReadableButUnheld()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-plan-escaped-member");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        try
+        {
+            using var provider = CreateProvider(root, PlanSettings, clock);
+            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
+                .ConfigureAwait(false);
+            var frozenJson = Encoding.UTF8.GetString(await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId)
+                .ConfigureAwait(false));
+            Assert.HasCount(fixture.Bundle.Artifacts.Count, await fixture.Store.ReadNormalizationPlanMasterArtifactIdsAsync(
+                CancellationToken.None).ConfigureAwait(false), "the running plan holds its masters");
+
+            // An escaped spelling of the member is the same JSON member, but retention finds plans by the literal name.
+            // A plan only one reader can see must be readable by none, so it neither runs nor needs its masters held.
+            foreach (var rewritten in new[]
+                     {
+                         frozenJson.Replace("\"normalizationPlans\":", "\"\\u006eormalizationPlans\":", StringComparison.Ordinal),
+                         frozenJson.Replace("\"normalizationPlans\":", "\"normalizationPlans\":[],\"normalizationPlans\":", StringComparison.Ordinal)
+                     })
+            {
+                Assert.AreNotEqual(frozenJson, rewritten);
+                await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, Encoding.UTF8.GetBytes(rewritten))
+                    .ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                    await fixture.Store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None)
+                        .ConfigureAwait(false)).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static readonly Dictionary<string, string?> PlanSettings = new()
     {
         ["CameraAgent:ProcessingGraphs:ReplayLeaseSeconds"] = "3",

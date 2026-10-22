@@ -83,7 +83,15 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         // The mixed-gain recipe executes under the node's frozen normalization plan, frozen here on first execution
         // and reused on every retry, with the masters it selects (#1475).
         var normalization = MixedGain
-            ? await adapter.PrepareNormalizationAsync(context, cancellationToken).ConfigureAwait(false)
+            ? await adapter.PrepareNormalizationAsync(
+                context,
+                new NormalizationWindowShape(
+                    Options.WindowKind,
+                    RequiredPositions,
+                    MinimumInputCount,
+                    Options.MaximumAgeMilliseconds,
+                    Options.MaximumIntegrationMilliseconds),
+                cancellationToken).ConfigureAwait(false)
             : GainNormalizationPreparation.None;
         if (normalization.Outcome is { } preparationOutcome)
         {

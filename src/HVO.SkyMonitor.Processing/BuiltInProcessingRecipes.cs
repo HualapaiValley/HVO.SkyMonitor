@@ -1038,8 +1038,8 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel ||
                 layout.StoredCodeTransform != firstLayout.StoredCodeTransform ||
                 layout.LevelCodeSpace != firstLayout.LevelCodeSpace || layout.Readout != firstLayout.Readout) ||
-            selected.Any(source => source.Compatibility != firstCompatibility
-                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)) ||
+            selected.Any(source => source.Compatibility != firstCompatibility) ||
+            !RecipeIsSharedOrNormalized(selected, firstRecipeIdentity) ||
             !GainIsUniformOrNormalized(selected))
         {
             layouts = [];
@@ -1049,6 +1049,14 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
         layouts = values;
         return true;
     }
+
+    // Inputs must share one recipe identity. Successive mixed-gain products each name their own frozen plan, so their
+    // identities differ (#1475); they average only when every input carries the one normalized compatibility already
+    // checked, whose family, policy and response fix the reference scale they share.
+    private static bool RecipeIsSharedOrNormalized(List<ProcessingArtifact> selected, string? firstRecipeIdentity)
+        => selected.All(source => string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)) ||
+           selected.All(static source => source.Role == FrameArtifactRole.Combined &&
+               GainNormalizationCompatibility.IsNormalized(source.Compatibility));
 
     // The arithmetic mean never combines gains (#1475). Only a mixed-gain product carries a normalized gain, and it is
     // already combined, so a frame or calibrated input claiming one is rejected; any other inputs must share one gain.
