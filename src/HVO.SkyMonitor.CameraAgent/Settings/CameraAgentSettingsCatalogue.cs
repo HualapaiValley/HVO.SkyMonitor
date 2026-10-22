@@ -25,6 +25,7 @@ internal static class CameraAgentSettingsCatalogue
     public const string OrbitalElementsGroup = "orbitalElements";
     public const string SatellitePlanningGroup = "satellitePlanning";
     public const string SpaceWeatherGroup = "spaceWeather";
+    public const string TimeDataRefreshGroup = "timeDataRefresh";
 
     public const string SettingsFileStore = "settingsFile";
     public const string DeploymentLocationStore = "deploymentLocation";
@@ -176,8 +177,16 @@ internal static class CameraAgentSettingsCatalogue
 
     public static CameraAgentSettingDefinition SatellitePlanningEnabled { get; } = FeatureSwitch(
         SatellitePlanningGroup, "CameraAgent:SatellitePlanning:Enabled", "Satellite planning",
-        "Allow diagnostic pass planning from local orbital snapshots and explicitly pinned Earth-orientation and " +
-        "leap-second files. Nothing is captured or scheduled. Time-data paths and hashes remain hand-configured.",
+        "Allow diagnostic pass planning from local orbital snapshots and verified Earth-orientation and leap-second " +
+        "data: the pair bundled with this release, a newer refreshed pair, or a hand-configured override. Nothing is " +
+        "captured or scheduled.",
+        CameraAgentSettingApplication.Immediate);
+
+    public static CameraAgentSettingDefinition TimeDataRefreshEnabled { get; } = FeatureSwitch(
+        TimeDataRefreshGroup, "CameraAgent:SatellitePlanning:TimeDataRefreshEnabled", "Time-data refresh",
+        "Allow an at-most-daily download of newer Earth-orientation (IERS/USNO finals2000A) and leap-second (IERS) files " +
+        "from their approved HTTPS endpoints. Each pair is checked against the providers' checksums and parsed before " +
+        "it is adopted; a failed refresh keeps the current pair. Runs only as the reserved time-data automation.",
         CameraAgentSettingApplication.Immediate);
 
     public static CameraAgentSettingDefinition SpaceWeatherEnabled { get; } = FeatureSwitch(
@@ -215,6 +224,8 @@ internal static class CameraAgentSettingsCatalogue
             SettingsFileStore, [OrbitalRefreshEnabled]),
         new(SatellitePlanningGroup, "Satellite planning", SatellitePlanningEnabled.Description,
             SettingsFileStore, [SatellitePlanningEnabled]),
+        new(TimeDataRefreshGroup, "Time-data refresh", TimeDataRefreshEnabled.Description,
+            SettingsFileStore, [TimeDataRefreshEnabled]),
         new(SpaceWeatherGroup, "Space weather", SpaceWeatherEnabled.Description,
             SettingsFileStore, [SpaceWeatherEnabled])
     ];
