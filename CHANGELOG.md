@@ -42,6 +42,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Operators can filter and page a logical camera’s retained archive, open an exact capture across installation replacements, and return to the same page and item with explicit unavailable-content and bounded-trace states. #1536
+
 - CameraAgent’s graph editor offers constellation colour and line thickness controls linked from Current Sky, with immutable draft revisions, validation, activation and rollback. (#1533)
 
 - LogicHost Current Sky shows the latest eligible retained capture for an authorized observatory and logical camera, with bounded search, independent capture/receipt times, and content/access revalidation. (#1535)
