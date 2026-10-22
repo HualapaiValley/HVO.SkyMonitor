@@ -15,6 +15,12 @@ SDK = "mcr.microsoft.com/dotnet/sdk"
 INSTRUCTIONS = set("ADD ARG CMD COPY ENTRYPOINT ENV EXPOSE FROM HEALTHCHECK LABEL MAINTAINER ONBUILD RUN SHELL STOPSIGNAL USER VOLUME WORKDIR".split())
 
 
+class DockerfileSyntaxError(ValueError):
+    def __init__(self, line, message):
+        super().__init__(message)
+        self.line = line
+
+
 def discover_dockerfiles(root):
     """One inventory for the guard and its Dependabot coverage contract."""
     paths = subprocess.check_output(
@@ -28,25 +34,129 @@ def discover_dockerfiles(root):
     return sorted({p for p in paths if p and matches(p)})
 
 
+def heredoc_words(value):
+    """Split raw shell words, retaining quotes/escapes and whitespace after <<.
+
+    BuildKit discovers heredocs from whole words, not shell redirection operators:
+    cat<<EOF and "<<EOF" do not introduce bodies, but 3<<'EOF' does.
+    """
+    word, quote = "", ""
+    position = 0
+    while position < len(value):
+        char = value[position]
+        if char == "\\" and quote != "'":
+            if position + 1 == len(value):
+                raise ValueError("unsupported heredoc escape")
+            word += value[position:position + 2]
+            position += 2
+            continue
+        if quote:
+            word += char
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+            word += char
+        elif char.isspace():
+            # BuildKit's shell lexer keeps whitespace immediately after <<.
+            if word.endswith("<<"):
+                while position < len(value) and value[position].isspace():
+                    word += value[position]
+                    position += 1
+                continue
+            if word:
+                yield word
+                word = ""
+        else:
+            word += char
+        position += 1
+    if quote:
+        raise ValueError("unterminated heredoc quote")
+    if word:
+        yield word
+
+
+def heredocs(line):
+    words = line.split(None, 1)
+    if not words:
+        raise ValueError("unsupported Dockerfile whitespace")
+    instruction, value = words[0].upper(), words[1] if len(words) > 1 else ""
+    if instruction == "ONBUILD":
+        child = value.split(None, 1)
+        if child and child[0].upper() == "ONBUILD":
+            raise ValueError("unsupported nested ONBUILD")
+        return heredocs(value) if value else []
+    if instruction not in {"RUN", "COPY", "ADD"} or "<<" not in value:
+        return []
+    # Flags precede the shell/JSON argument. JSON arguments cannot own heredocs.
+    argument = re.sub(r"^(?:--\S+\s+)*", "", value)
+    if argument.startswith("["):
+        try:
+            array = json.loads(argument)
+        except ValueError as error:
+            raise ValueError("unsupported heredoc JSON form") from error
+        if not isinstance(array, list) or not all(isinstance(item, str) for item in array):
+            raise ValueError("unsupported heredoc JSON form")
+        return []
+    if "${" in value:
+        raise ValueError("unsupported expansion in heredoc instruction")
+    result = []
+    for word in heredoc_words(value):
+        if not re.match(r"^[0-9]*<<", word):
+            continue
+        match = re.fullmatch(r"[0-9]*<<(-?)\s*([^<]+)", word)
+        if not match:
+            raise ValueError("unsupported heredoc syntax")
+        delimiter = match[2]
+        # Expansion syntax has a different shell lexer; do not guess a boundary.
+        if "$" in delimiter or "`" in delimiter:
+            raise ValueError("unsupported heredoc delimiter expansion")
+        lexer = shlex.shlex(delimiter, posix=True)
+        lexer.whitespace += "".join(char for char in delimiter if char.isspace())
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        names = list(lexer)
+        if len(names) != 1 or not names[0]:
+            raise ValueError("unsupported heredoc delimiter")
+        result.append((names[0], bool(match[1])))
+    return result
+
+
 def logical_lines(path):
     pending = ""
     start = 0
-    for number, line in enumerate(path.read_bytes().decode("utf-8-sig").split("\n"), 1):
+    lines = iter(enumerate(path.read_bytes().decode("utf-8-sig").split("\n"), 1))
+    for number, line in lines:
         line = line.removesuffix("\r")
         if not line.strip(" \t") or line.lstrip(" \t").startswith("#"):
             if re.match(r"\s*#\s*escape\s*=\s*`", line, re.I):
-                raise ValueError("unsupported Dockerfile escape directive")
+                raise DockerfileSyntaxError(number, "unsupported Dockerfile escape directive")
             continue
-        if not pending:
+        if not start:
             start = number
-        pending += line.strip(" \t")
-        if re.search(r"(?:^|[^\\])\\[ \t]*$", line):
-            pending = pending[:-1] + " "
+        continuation = re.search(r"(?:^|[^\\])\\[ \t]*$", line)
+        # Concatenate exactly: an escape can split even a heredoc delimiter.
+        pending += re.sub(r"\\[ \t]*$", "", line) if continuation else line
+        if continuation:
             continue
+        try:
+            bodies = heredocs(pending)
+        except ValueError as error:
+            raise DockerfileSyntaxError(start, str(error)) from error
+        for delimiter, chomp in bodies:
+            for _, payload in lines:
+                terminator = payload.rstrip("\r")
+                if chomp:
+                    terminator = terminator.lstrip("\t")
+                if terminator == delimiter:
+                    break
+            else:
+                raise DockerfileSyntaxError(start, f"unterminated heredoc: {delimiter}")
         yield start, pending
         pending = ""
-    if pending:
-        raise ValueError(f"line {start}: unfinished continuation")
+        start = 0
+    if start:
+        raise DockerfileSyntaxError(start, "unfinished continuation")
 
 
 def expand(value, arguments):
@@ -132,6 +242,8 @@ def check(root):
                     stages.add(alias)
             if not found_from:
                 raise ValueError("no FROM instructions")
+        except DockerfileSyntaxError as error:
+            errors.append(f"{name}:{error.line}: {error}")
         except ValueError as error:
             errors.append(f"{location}: {error}")
     if errors:

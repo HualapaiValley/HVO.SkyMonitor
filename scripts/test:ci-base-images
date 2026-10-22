@@ -138,6 +138,79 @@ FROM build AS final
         self.dockerfile("Dockerfile", f"FROM \\ \t\r\n ubuntu:24.04@sha256:{A}\r\n")
         self.check()
 
+    def test_heredoc_payload_is_not_an_instruction(self):
+        for instruction in ("RUN", "COPY", "ADD", "ONBUILD RUN"):
+            for marker in ("EOF", "'EOF'", '"EOF"', 'E"O"F', r"E\OF"):
+                with self.subTest(instruction=instruction, marker=marker):
+                    destination = " /payload" if instruction in ("COPY", "ADD") else ""
+                    self.dockerfile("Dockerfile", "FROM scratch\n"
+                                    f"{instruction} <<{marker}{destination}\n"
+                                    "FROM unpinned\n# escape=`\nFR0M payload\\\n\nEOF\n")
+                    self.check()
+
+    def test_multiple_heredocs_tabs_crlf_and_later_from_location(self):
+        self.dockerfile("Dockerfile", "FROM scratch\r\nRUN cat 3<<'FIRST' <<-SECOND\r\n"
+                        "FROM payload-one\r\nFIRST\r\n\tFROM payload-two\r\n\tSECOND\r\n"
+                        "FROM unpinned\r\n")
+        self.check("Dockerfile:7: FROM must be pinned")
+
+    def test_heredoc_continuation_and_empty_body(self):
+        self.dockerfile("Dockerfile", "FROM scratch\nRUN <<E\\\nOF\nEOF\n"
+                        "COPY \\\n <<-END /payload\n\tFROM payload\n\tEND\n")
+        self.check()
+
+    def test_payload_stage_alias_cannot_exempt_a_real_from(self):
+        self.dockerfile("Dockerfile", "FROM scratch\nRUN <<EOF\n"
+                        "FROM scratch AS imaginary\nEOF\nFROM imaginary\n")
+        self.check("Dockerfile:5: FROM must be pinned")
+
+    def test_heredoc_terminators_are_exact(self):
+        for near_miss in (" EOF", "EOF ", "\tEOF", "EOF\\", "# EOF"):
+            with self.subTest(near_miss=repr(near_miss)):
+                self.dockerfile("Dockerfile", "FROM scratch\nRUN <<EOF\n"
+                                f"{near_miss}\nFROM payload\nEOF\nFROM unpinned\n")
+                self.check("Dockerfile:6: FROM must be pinned")
+
+    def test_unterminated_heredoc_fails_at_opener(self):
+        for opener in ("RUN <<EOF", "COPY <<'EOF' /payload", "RUN <<A <<B"):
+            with self.subTest(opener=opener):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{opener}\nFROM payload\nA\n")
+                self.check("Dockerfile:2: unterminated heredoc")
+
+    def test_quoted_json_and_ineligible_heredoc_text_cannot_hide_from(self):
+        for line in ('RUN echo "<<EOF"', r"RUN echo \<<EOF", 'RUN ["echo", "<<EOF"]',
+                     'COPY ["<<EOF", "/payload"]', "ENV TEXT=<<EOF", "RUN cat<<EOF"):
+            with self.subTest(line=line):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\n")
+                self.check("Dockerfile:3: FROM must be pinned")
+
+    def test_malformed_or_unsupported_heredoc_fails_safely(self):
+        for line in ("RUN <<'EOF", "RUN <<", "RUN <<<EOF", "RUN <<${END:-EOF}",
+                     "RUN echo ${X:- <<EOF}", "ONBUILD onbuild RUN <<EOF"):
+            with self.subTest(line=line):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\nEOF\n")
+                self.check("Dockerfile:2:")
+
+    def test_continuation_retains_first_physical_source_line(self):
+        self.dockerfile("Dockerfile", "FROM scratch\n\\\nRUN <<EOF\nFROM payload\n")
+        self.check("Dockerfile:2: unterminated heredoc")
+        self.dockerfile("Dockerfile", "FROM scratch\n\\\n")
+        self.check("Dockerfile:2: unfinished continuation")
+
+    def test_independent_buildkit_parser_fixtures(self):
+        parse = runpy.run_path(str(CHECK))["logical_lines"]
+        cases = json.loads((ROOT / "tests/fixtures/ci-base-images-buildkit/cases.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                self.dockerfile("Dockerfile", case["dockerfile"])
+                if case["instructions"] is None:
+                    with self.assertRaisesRegex(ValueError, "unterminated heredoc"):
+                        list(parse(self.root / "Dockerfile"))
+                else:
+                    actual = [[number, line.split()[0].upper()]
+                              for number, line in parse(self.root / "Dockerfile")]
+                    self.assertEqual(actual, case["instructions"])
+
     def test_runtime_deps_major_upgrade_is_ignored(self):
         config = (ROOT / ".github/dependabot.yml").read_text()
         self.assertRegex(config, r'dependency-name: "dotnet/runtime-deps"\n        update-types:\n          - "version-update:semver-major"')
