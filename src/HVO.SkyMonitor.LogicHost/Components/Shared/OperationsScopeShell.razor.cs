@@ -36,6 +36,7 @@ public sealed partial class OperationsScopeShell : ComponentBase, IAsyncDisposab
     [Parameter] public string? ObservatoryPage { get; set; }
     [Parameter] public string? CameraPage { get; set; }
     [Parameter] public string? NavigationFocus { get; set; }
+    [Parameter] public string? ActiveSection { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Inject] private IServiceScopeFactory ScopeFactory { get; set; } = default!;
     [Inject] private AuthenticationStateProvider Authentication { get; set; } = default!;

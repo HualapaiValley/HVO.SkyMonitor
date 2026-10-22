@@ -1,0 +1,8 @@
+.current-sky { min-width: 0; overflow-wrap: anywhere; }
+.current-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+.current-toolbar button, .current-sky > button { min-height: 44px; white-space: normal; }
+.current-freshness { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .25rem 1rem; margin-top: 1rem; }
+.current-freshness dd { margin: 0; }
+.current-sky summary { min-height: 44px; cursor: pointer; }
+.current-sky :is(button, summary):focus-visible { outline: 3px solid var(--hvo-info, #70d7ef); outline-offset: 3px; }
+@media (max-width: 480px) { .current-freshness { grid-template-columns: minmax(0, 1fr); } }

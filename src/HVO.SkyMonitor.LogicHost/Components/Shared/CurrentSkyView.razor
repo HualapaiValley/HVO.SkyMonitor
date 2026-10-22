@@ -1,0 +1,33 @@
+<section class="current-sky" @ref="root" aria-labelledby="current-sky-heading" aria-busy="@(loading ? "true" : "false")">
+    <div class="current-toolbar">
+        <h2 id="current-sky-heading">Current Sky</h2>
+        <button type="button" class="btn btn-outline-info" disabled="@loading" @onclick="RefreshAsync">Refresh Current Sky</button>
+    </div>
+    <p role="status">@message</p>
+    @if (selection?.NextCursor is not null && !loading)
+    {
+        <button type="button" class="btn btn-outline-light" @onclick="ContinueAsync">Search older retained captures</button>
+    }
+    @if (detail is { } exact)
+    {
+        <dl class="current-freshness">
+            <dt>Captured</dt><dd>@exact.Capture.CapturedAtUtc.ToString("u")</dd>
+            <dt>First received</dt><dd>@exact.Capture.FirstReceivedAtUtc.ToString("u")</dd>
+        </dl>
+        <p>Capture time and receipt time are independent. This retained image does not establish current fleet health.</p>
+        <CascadingValue Value="detail" IsFixed="false">
+            <CascadingValue Value="selection" IsFixed="false">
+                <ExactCaptureViewer @key="generation" CaptureId="exact.Capture.CaptureId" ReadOnly="true" />
+            </CascadingValue>
+        </CascadingValue>
+        <details>
+            <summary>Retained content availability</summary>
+            <ul>
+                @foreach (var artifact in exact.Artifacts)
+                {
+                    <li>@artifact.Role: @artifact.ObjectState / @artifact.ReconstructionState @artifact.StateReasonCode</li>
+                }
+            </ul>
+        </details>
+    }
+</section>
