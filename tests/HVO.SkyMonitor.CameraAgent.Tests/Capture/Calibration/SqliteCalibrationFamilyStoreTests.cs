@@ -312,7 +312,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
                 File.Copy(database, withoutWal);
                 using (var databaseOnly = new SqliteConnection($"Data Source={withoutWal};Pooling=False"))
                 {
-                    databaseOnly.Open();
+                    await databaseOnly.OpenAsync(CancellationToken.None).ConfigureAwait(false);
                     Assert.AreEqual(0, Scalar(databaseOnly, "SELECT count(*) FROM calibration_family_activations;"));
                 }
             }
