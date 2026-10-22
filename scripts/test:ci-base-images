@@ -191,6 +191,13 @@ FROM build AS final
                 self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\nEOF\n")
                 self.check("Dockerfile:2:")
 
+    def test_F1_bare_chomp_operator_cannot_hide_real_from(self):
+        for opener in ("RUN cat <<- EOF", "RUN cat <<-", "RUN cat 3<<- EOF"):
+            with self.subTest(opener=opener):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{opener}\n"
+                                "FROM unpinned\n-\nFROM scratch\n")
+                self.check("Dockerfile:2: unsupported heredoc syntax")
+
     def test_continuation_retains_first_physical_source_line(self):
         self.dockerfile("Dockerfile", "FROM scratch\n\\\nRUN <<EOF\nFROM payload\n")
         self.check("Dockerfile:2: unterminated heredoc")

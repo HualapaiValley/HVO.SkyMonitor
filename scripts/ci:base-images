@@ -104,8 +104,10 @@ def heredocs(line):
     for word in heredoc_words(value):
         if not re.match(r"^[0-9]*<<", word):
             continue
-        match = re.fullmatch(r"[0-9]*<<(-?)\s*([^<]+)", word)
-        if not match:
+        # Match an empty tail first so a bare <<- cannot backtrack into a
+        # delimiter named '-'. Unsupported operators must not consume bodies.
+        match = re.fullmatch(r"[0-9]*<<(-?)\s*([^<]*)", word)
+        if not match or not match[2].strip():
             raise ValueError("unsupported heredoc syntax")
         delimiter = match[2]
         # Expansion syntax has a different shell lexer; do not guess a boundary.
