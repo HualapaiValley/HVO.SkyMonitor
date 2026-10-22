@@ -27,8 +27,8 @@ public sealed record GainNormalizedMeanInput(
     long ElectronsPerAduScaled);
 
 /// <summary>
-/// A packed little-endian linear 16-bit mean at the reference coefficient, with the number of valid samples behind
-/// each photosite and a mask of photosites that had none.
+/// A packed little-endian linear 16-bit mean at the reference coefficient and output scale, with the number of valid
+/// samples behind each photosite and a mask of photosites that had none.
 /// </summary>
 public sealed record GainNormalizedMeanResult(
     int Width,
@@ -42,6 +42,7 @@ public sealed record GainNormalizedMeanResult(
     int NoCoverageCount,
     int ClippedLowCount,
     int ClippedHighCount,
+    int OutputScale,
     string AlgorithmVersion);
 
 /// <summary>
@@ -51,7 +52,8 @@ public sealed record GainNormalizedMeanResult(
 /// <remarks>
 /// <para>
 /// For input <c>i</c> and photosite <c>p</c>, <c>E_i(p) = k_i × (L_i(p) − B_i(p) − D_i(p)) / F_i(p)</c>, and the
-/// output code is <c>Σ E_i(p) / (n(p) × k_reference)</c> over the <c>n(p)</c> valid samples. A sample contributes
+/// output code is <c>s × Σ E_i(p) / (n(p) × k_reference)</c> over the <c>n(p)</c> valid samples, where <c>s</c> is the
+/// integer output scale: at <c>s = 16</c> one output code is a sixteenth of a reference-gain stored code. A sample contributes
 /// neither signal nor weight when it is marked defective, when its stored light code is at or above its saturation
 /// code, or when its flat is not between 1 and <see cref="MaximumFlatScaledValue"/> (10^-6 to 16.0).
 /// </para>
@@ -59,8 +61,10 @@ public sealed record GainNormalizedMeanResult(
 /// The arithmetic is integer only. The corrected signal stays signed, within ±131070 codes, so negative noise reaches
 /// the mean. Each sample's electrons are rounded once to a 10^-12 e⁻ grid, ties to even, and stay below 1.32 × 10^29
 /// grid units in magnitude. Up to <see cref="MaximumInputCount"/> of them sum below 8.7 × 10^33, so an <see cref="Int128"/> sum
-/// cannot overflow for any legal input; the arithmetic is checked anyway. The mean is rounded once to an output code,
-/// ties to even, then clamped to UInt16, and each clamp is counted. Integer sums are exact, so the result does not
+/// cannot overflow for any legal input, and scaled by at most <see cref="MaximumOutputScale"/> they stay below
+/// 2.3 × 10^36; the arithmetic is checked anyway. The scaled mean is rounded once to an output code, ties to even,
+/// then clamped to UInt16: a negative mean is written as 0 and one above 65535 as 65535, never wrapped, and each
+/// clamp is counted. Integer sums are exact, so the result does not
 /// depend on reduction order or working size; inputs are summed in their given order.
 /// </para>
 /// <para>
@@ -70,17 +74,19 @@ public sealed record GainNormalizedMeanResult(
 /// </remarks>
 public static class Linear16GainNormalizedMean
 {
-    public const string AlgorithmVersion = "linear16-gain-normalized-mean-v1";
+    public const string AlgorithmVersion = "linear16-gain-normalized-mean-v2";
     public const string FlatRepresentationVersion = "unity-flat-fixed-e6-v1";
     public const int FlatScale = 1_000_000;
     public const int MaximumFlatScaledValue = 16 * FlatScale;
     public const int MaximumDarkMagnitude = ushort.MaxValue;
     public const int MaximumInputCount = ushort.MaxValue;
     public const int DefaultWorkingPhotosites = 65_536;
+    public const int MaximumOutputScale = 256;
 
     /// <summary>
     /// Computes the mean in working blocks of at most <paramref name="workingPhotosites"/> photosites, which bounds
-    /// the working memory and never changes the result. Source buffers are borrowed and never modified.
+    /// the working memory and never changes the result. Cancellation is observed before each input of each block.
+    /// Source buffers are borrowed and never modified.
     /// </summary>
     public static GainNormalizedMeanResult Compute(
         int width,
@@ -88,6 +94,7 @@ public static class Linear16GainNormalizedMean
         CameraPixelFormat pixelFormat,
         IReadOnlyList<GainNormalizedMeanInput> inputs,
         long referenceElectronsPerAduScaled,
+        int outputScale,
         int workingPhotosites = DefaultWorkingPhotosites,
         CancellationToken cancellationToken = default)
     {
@@ -104,6 +111,8 @@ public static class Linear16GainNormalizedMean
             throw new ArgumentOutOfRangeException(nameof(height), "The frame is too large for one 16-bit buffer.");
         }
         ArgumentOutOfRangeException.ThrowIfLessThan(workingPhotosites, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(outputScale, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(outputScale, MaximumOutputScale);
         if (!ElectronsPerAduFixedPoint.IsValid(referenceElectronsPerAduScaled))
         {
             throw new ArgumentOutOfRangeException(nameof(referenceElectronsPerAduScaled));
@@ -149,6 +158,7 @@ public static class Linear16GainNormalizedMean
                 var counts = validCounts.AsSpan(start, length);
                 for (var inputIndex = 0; inputIndex < inputs.Count; inputIndex++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     Accumulate(inputs[inputIndex], start, sums, counts);
                 }
 
@@ -164,7 +174,7 @@ public static class Linear16GainNormalizedMean
                     else
                     {
                         var mean = DivideRoundingToEven(
-                            sums[index],
+                            checked(sums[index] * outputScale),
                             checked(counts[index] * (Int128)referenceElectronsPerAduScaled));
                         if (mean < 0)
                         {
@@ -201,6 +211,7 @@ public static class Linear16GainNormalizedMean
             noCoverageCount,
             clippedLowCount,
             clippedHighCount,
+            outputScale,
             AlgorithmVersion);
     }
 

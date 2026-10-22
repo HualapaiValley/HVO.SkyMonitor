@@ -148,7 +148,7 @@ public sealed class Linear16GainNormalizedMeanTests
             .Select(index => index % 2 == 0 ? even : odd)
             .ToArray();
 
-        var result = Linear16GainNormalizedMean.Compute(4, 1, CameraPixelFormat.Mono16, inputs, MaximumCoefficient);
+        var result = Linear16GainNormalizedMean.Compute(4, 1, CameraPixelFormat.Mono16, inputs, MaximumCoefficient, 1);
 
         CollectionAssert.AreEqual(new ushort[] { 65534, 65535, 0, 32767 }, Codes(result));
         CollectionAssert.AreEqual(Enumerable.Repeat(ushort.MaxValue, 4).ToArray(), result.ValidCounts.ToArray());
@@ -244,7 +244,7 @@ public sealed class Linear16GainNormalizedMeanTests
         const long reference = 7_900_000_000_000;
         var inputs = RandomFixture(width * height);
 
-        var baseline = Linear16GainNormalizedMean.Compute(width, height, CameraPixelFormat.Mono16, inputs, reference);
+        var baseline = Linear16GainNormalizedMean.Compute(width, height, CameraPixelFormat.Mono16, inputs, reference, 1);
 
         foreach (var workingPhotosites in new[] { 1, 2, 7, 64, 406, 407, Linear16GainNormalizedMean.DefaultWorkingPhotosites, 1 })
         {
@@ -254,6 +254,7 @@ public sealed class Linear16GainNormalizedMeanTests
                 CameraPixelFormat.Mono16,
                 inputs,
                 reference,
+                1,
                 workingPhotosites);
             CollectionAssert.AreEqual(baseline.PixelData.ToArray(), repeated.PixelData.ToArray());
             CollectionAssert.AreEqual(baseline.ValidCounts.ToArray(), repeated.ValidCounts.ToArray());
@@ -290,12 +291,15 @@ public sealed class Linear16GainNormalizedMeanTests
             flat: [Unity, Unity, Unity, Unity, Unity, Unity, Unity, 0],
             saturationCode: 4095);
 
-        var result = Linear16GainNormalizedMean.Compute(4, 2, CameraPixelFormat.BayerRggb16, [a, b], OneElectron);
+        var result = Linear16GainNormalizedMean.Compute(4, 2, CameraPixelFormat.BayerRggb16, [a, b], OneElectron, 1);
 
         CollectionAssert.AreEqual(new ushort[] { 600, 800, 200, 500, 600, 400, 300, 100 }, Codes(result));
         CollectionAssert.AreEqual(new ushort[] { 2, 1, 1, 2, 2, 1, 2, 1 }, result.ValidCounts.ToArray());
+        Assert.AreEqual(4, result.Width);
+        Assert.AreEqual(2, result.Height);
         Assert.AreEqual(CameraPixelFormat.BayerRggb16, result.PixelFormat);
         Assert.AreEqual(8, result.StrideBytes);
+        Assert.AreEqual(1, result.OutputScale);
     }
 
     [TestMethod]
@@ -318,12 +322,136 @@ public sealed class Linear16GainNormalizedMeanTests
     }
 
     [TestMethod]
+    [DataRow(3, 0)]
+    [DataRow(4, 1)]
+    [DataRow(50, 8)]
+    [DataRow(53, 8)]
+    [DataRow(54, 9)]
+    [DataRow(100, 16)]
+    public void Compute_ScalesTheReferenceGainCodeBeforeTheSingleRounding(int signal, int expectedCode)
+    {
+        // At scale 16 and the ASI174 reference k = 7.9 e-/ADU, a gain-400 sample (0.079 e-/ADU) of s ADU is
+        // 16 × 0.079 × s / 7.9 = 0.16 × s codes. Unscaled, 50 and 54 ADU would both encode as 1 code.
+        var result = Scaled(7_900_000_000_000, 16, Input(79_000_000_000, [(ushort)(64 + signal)], [64]));
+
+        CollectionAssert.AreEqual(new[] { (ushort)expectedCode }, Codes(result));
+        Assert.AreEqual(16, result.OutputScale);
+        Assert.AreEqual(Linear16GainNormalizedMean.AlgorithmVersion, result.AlgorithmVersion);
+    }
+
+    [TestMethod]
+    public void Compute_ClampsTheScaledMeanAtBothEndsOfTheRangeWithoutWrapping()
+    {
+        // At k = k_reference and scale 16: 4095 × 16 = 65520 fits; 4096 × 16 = 65536 clamps to 65535 rather than
+        // wrapping to 0; -1 × 16 clamps to 0 rather than wrapping to 65520.
+        var result = Scaled(
+            OneElectron,
+            16,
+            Input(OneElectron, [4095, 4096, 0, 1000], [0, 0, 1, 1000], dark: [0, 0, 0, 1]));
+
+        CollectionAssert.AreEqual(new ushort[] { 65520, 65535, 0, 0 }, Codes(result));
+        Assert.AreEqual(1, result.ClippedHighCount);
+        Assert.AreEqual(2, result.ClippedLowCount);
+
+        var unscaled = Scaled(OneElectron, 1, Input(OneElectron, [4096], [0]));
+        CollectionAssert.AreEqual(new ushort[] { 4096 }, Codes(unscaled));
+        Assert.AreEqual(0, unscaled.ClippedHighCount);
+    }
+
+    [TestMethod]
+    public void Compute_RoundsTheScaledMeanHalfToEvenAtTheTopCode()
+    {
+        // The largest unsaturated signal is 65534 - 0 - (-65535) = 131069 ADU. At k = 1/32 e-/ADU and scale 16 it is
+        // 65534.5 codes, a tie that rounds to the even 65534. At k = 1/16, 65535 ADU is exactly 65535 codes and
+        // 65536 ADU is 65536; their mean, 65535.5, rounds to the even 65536 and clamps to 65535.
+        var fine = Input(OneElectron / 32, [65534, 0, 0], [0, 0, 0], dark: [-65535, 0, 0], defects: [0, 1, 1]);
+        var first = Input(OneElectron / 16, [0, 65534, 65534], [0, 0, 0], dark: [0, -1, -1], defects: [1, 0, 0]);
+        var second = Input(OneElectron / 16, [0, 0, 65534], [0, 0, 0], dark: [0, 0, -2], defects: [1, 1, 0]);
+
+        var result = Scaled(OneElectron, 16, fine, first, second);
+
+        CollectionAssert.AreEqual(new ushort[] { 65534, 65535, 65535 }, Codes(result));
+        CollectionAssert.AreEqual(new ushort[] { 1, 1, 2 }, result.ValidCounts.ToArray());
+        Assert.AreEqual(1, result.ClippedHighCount);
+        Assert.AreEqual(0, result.ClippedLowCount);
+    }
+
+    [TestMethod]
+    public void Compute_KeepsNegativeExcursionsSignedThroughTheScaledMean()
+    {
+        // (-30 + 50) / 2 × 16 = 160 rather than (0 + 50) / 2 × 16 = 400; (-30 + 10) / 2 × 16 = -160 clamps to 0.
+        var result = Scaled(
+            OneElectron,
+            16,
+            Input(OneElectron, [70, 70], [100, 100]),
+            Input(OneElectron, [150, 110], [100, 100]));
+
+        CollectionAssert.AreEqual(new ushort[] { 160, 0 }, Codes(result));
+        Assert.AreEqual(1, result.ClippedLowCount);
+    }
+
+    [TestMethod]
+    public void Compute_ObservesCancellationBetweenTheInputsOfOneBlock()
+    {
+        // One block covers the whole frame, so only a check between inputs can stop before the second input.
+        using var cancellation = new CancellationTokenSource();
+        var touched = new List<int>();
+        using var firstLight = new ObservedMemory([100, 100], () =>
+        {
+            touched.Add(0);
+            cancellation.Cancel();
+        });
+        using var secondLight = new ObservedMemory([100, 100], () => touched.Add(1));
+        var first = Input(OneElectron, [100, 100], [0, 0]) with { Light = firstLight.AsMemory() };
+        var second = Input(OneElectron, [100, 100], [0, 0]) with { Light = secondLight.AsMemory() };
+
+        Assert.ThrowsExactly<OperationCanceledException>(() => Linear16GainNormalizedMean.Compute(
+            2,
+            1,
+            CameraPixelFormat.Mono16,
+            [first, second],
+            OneElectron,
+            1,
+            cancellationToken: cancellation.Token));
+        Assert.AreEqual("0", string.Join(",", touched));
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(-1)]
+    [DataRow(Linear16GainNormalizedMean.MaximumOutputScale + 1)]
+    public void Compute_RejectsAnOutputScaleOutsideTheLegalRange(int outputScale)
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => Linear16GainNormalizedMean.Compute(
+            1,
+            1,
+            CameraPixelFormat.Mono16,
+            [Input(OneElectron, [100], [0])],
+            OneElectron,
+            outputScale));
+    }
+
+    [TestMethod]
+    public void Compute_StaysExactAtTheLargestOutputScale()
+    {
+        // The largest per-sample electrons at the largest scale: 65535 samples of 1.31069e29 grid units, times 256.
+        var input = Input(MaximumCoefficient, [65534], [0], dark: [-65535], flat: [1]);
+        var inputs = Enumerable.Repeat(input, Linear16GainNormalizedMean.MaximumInputCount).ToArray();
+
+        var result = Linear16GainNormalizedMean.Compute(
+            1, 1, CameraPixelFormat.Mono16, inputs, MaximumCoefficient, Linear16GainNormalizedMean.MaximumOutputScale);
+
+        CollectionAssert.AreEqual(new ushort[] { 65535 }, Codes(result));
+        Assert.AreEqual(1, result.ClippedHighCount);
+    }
+
+    [TestMethod]
     public void Compute_RejectsInvalidArguments()
     {
         var valid = Input(OneElectron, [100, 100], [0, 0]);
 
         Assert.ThrowsExactly<ArgumentNullException>(
-            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono16, null!, OneElectron));
+            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono16, null!, OneElectron, 1));
         Assert.ThrowsExactly<ArgumentException>(() => Compute([], width: 2));
         Assert.ThrowsExactly<ArgumentException>(() => Compute([valid, null!], width: 2));
         Assert.ThrowsExactly<ArgumentException>(() => Compute([valid], width: 1));
@@ -333,15 +461,15 @@ public sealed class Linear16GainNormalizedMeanTests
         Assert.ThrowsExactly<ArgumentException>(() => Compute([valid with { DefectMask = new byte[1] }], width: 2));
         Assert.ThrowsExactly<ArgumentException>(() => Compute([valid with { SaturationCode = 0 }], width: 2));
         Assert.ThrowsExactly<ArgumentException>(
-            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono8, [valid], OneElectron));
+            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono8, [valid], OneElectron, 1));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
-            () => Linear16GainNormalizedMean.Compute(0, 1, CameraPixelFormat.Mono16, [valid], OneElectron));
+            () => Linear16GainNormalizedMean.Compute(0, 1, CameraPixelFormat.Mono16, [valid], OneElectron, 1));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
-            () => Linear16GainNormalizedMean.Compute(2, 0, CameraPixelFormat.Mono16, [valid], OneElectron));
+            () => Linear16GainNormalizedMean.Compute(2, 0, CameraPixelFormat.Mono16, [valid], OneElectron, 1));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
-            () => Linear16GainNormalizedMean.Compute(int.MaxValue, 2, CameraPixelFormat.Mono16, [valid], OneElectron));
+            () => Linear16GainNormalizedMean.Compute(int.MaxValue, 2, CameraPixelFormat.Mono16, [valid], OneElectron, 1));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
-            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono16, [valid], OneElectron, workingPhotosites: 0));
+            () => Linear16GainNormalizedMean.Compute(2, 1, CameraPixelFormat.Mono16, [valid], OneElectron, 1, workingPhotosites: 0));
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         Assert.ThrowsExactly<OperationCanceledException>(
@@ -351,6 +479,7 @@ public sealed class Linear16GainNormalizedMeanTests
                 CameraPixelFormat.Mono16,
                 [valid],
                 OneElectron,
+                1,
                 cancellationToken: cancellation.Token));
     }
 
@@ -372,13 +501,17 @@ public sealed class Linear16GainNormalizedMeanTests
             electronsPerAdu);
 
     private static GainNormalizedMeanResult Mono(long reference, params GainNormalizedMeanInput[] inputs)
-        => Linear16GainNormalizedMean.Compute(inputs[0].Light.Length, 1, CameraPixelFormat.Mono16, inputs, reference);
+        => Linear16GainNormalizedMean.Compute(inputs[0].Light.Length, 1, CameraPixelFormat.Mono16, inputs, reference, 1);
+
+    private static GainNormalizedMeanResult Scaled(long reference, int outputScale, params GainNormalizedMeanInput[] inputs)
+        => Linear16GainNormalizedMean.Compute(
+            inputs[0].Light.Length, 1, CameraPixelFormat.Mono16, inputs, reference, outputScale);
 
     private static GainNormalizedMeanResult Compute(
         GainNormalizedMeanInput[] inputs,
         long reference = OneElectron,
         int width = 1)
-        => Linear16GainNormalizedMean.Compute(width, 1, CameraPixelFormat.Mono16, inputs, reference);
+        => Linear16GainNormalizedMean.Compute(width, 1, CameraPixelFormat.Mono16, inputs, reference, 1);
 
     private static ushort[] Codes(GainNormalizedMeanResult result)
     {
@@ -474,6 +607,28 @@ public sealed class Linear16GainNormalizedMeanTests
             quotient += remainder.Sign;
         }
         return quotient;
+    }
+
+    /// <summary>Memory whose span access runs a callback, so a test can act between two inputs of one block.</summary>
+    private sealed class ObservedMemory(ushort[] values, Action onAccess) : System.Buffers.MemoryManager<ushort>
+    {
+        public Memory<ushort> AsMemory() => CreateMemory(values.Length);
+
+        public override Span<ushort> GetSpan()
+        {
+            onAccess();
+            return values;
+        }
+
+        public override System.Buffers.MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 
     private sealed class XorShift(ulong seed)

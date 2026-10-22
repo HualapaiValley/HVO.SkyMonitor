@@ -24,7 +24,8 @@ public static class NormalizationPlanInputDispositions
 /// <summary>
 /// The arithmetic a plan is reproduced with: the kernel version and the precision, rounding, reduction order,
 /// saturation, no-coverage and output-encoding rules it applies. <see cref="SaturationCode"/> is the lowest stored
-/// light code treated as saturated, before any correction.
+/// light code treated as saturated, before any correction. <see cref="OutputScale"/> multiplies the reference-gain
+/// code before the single output rounding, so one output code is <c>1/OutputScale</c> of a reference-gain code.
 /// </summary>
 public sealed record NormalizationKernelV1(
     [property: JsonRequired] string AlgorithmVersion,
@@ -35,7 +36,8 @@ public sealed record NormalizationKernelV1(
     [property: JsonRequired] string SaturationPolicy,
     [property: JsonRequired] int SaturationCode,
     [property: JsonRequired] string NoCoveragePolicy,
-    [property: JsonRequired] string OutputEncoding)
+    [property: JsonRequired] string OutputEncoding,
+    [property: JsonRequired] int OutputScale)
 {
     public const string SignedElectronsE12Int128V1 = "signed-electrons-e12-int128-v1";
     public const string HalfEvenPerSampleAndOutputV1 = "half-even-per-sample-and-output-v1";
@@ -43,6 +45,9 @@ public sealed record NormalizationKernelV1(
     public const string NativeFullScaleStoredCodeV1 = "native-full-scale-stored-code-v1";
     public const string ZeroCodeWithMaskV1 = "zero-code-with-mask-v1";
     public const string Linear16ReferenceCoefficientV1 = "linear16-reference-coefficient-v1";
+
+    /// <summary>The fixed output scale of the mixed-gain recipe: sixteen output codes per reference-gain code.</summary>
+    public const int ReferenceGainOutputScale = 16;
 
     /// <summary>
     /// The <see cref="Linear16GainNormalizedMean"/> kernel for frames with this response's code mapping. A stored code
@@ -63,9 +68,21 @@ public sealed record NormalizationKernelV1(
                 ? (1 << response.NativeSampleDepthBits) - 1
                 : ushort.MaxValue,
             ZeroCodeWithMaskV1,
-            Linear16ReferenceCoefficientV1);
+            Linear16ReferenceCoefficientV1,
+            ReferenceGainOutputScale);
     }
 }
+
+/// <summary>
+/// One master of a per-input selection as the plan freezes it: the family master's kind, library artifact and payload
+/// hash, and the library exposure the recipe scales the dark and flat corrections by. Every reference to one artifact
+/// in a plan freezes the same values.
+/// </summary>
+public sealed record NormalizationPlanMasterV1(
+    [property: JsonRequired] string Kind,
+    [property: JsonRequired] Guid ArtifactId,
+    [property: JsonRequired] string PayloadSha256,
+    [property: JsonRequired] TimeSpan Exposure);
 
 /// <summary>
 /// One input of the frozen window, in window order: its frozen identities and hashes, its actual capture conditions,
@@ -86,7 +103,7 @@ public sealed record NormalizationPlanInputV1(
     [property: JsonRequired] string Disposition,
     [property: JsonRequired] string? ExclusionReason,
     [property: JsonRequired] string? MemberId,
-    [property: JsonRequired] IReadOnlyList<CalibrationFamilyMasterV1>? Masters,
+    [property: JsonRequired] IReadOnlyList<NormalizationPlanMasterV1>? Masters,
     [property: JsonRequired] GainCoefficientV1? Coefficient);
 
 /// <summary>
@@ -176,6 +193,10 @@ public static class NormalizationPlanContract
         {
             return Failure("inputs");
         }
+        if (!ConsistentMasters(inputs))
+        {
+            return Failure("inputs.masters");
+        }
         var coefficients = inputs
             .Where(static input => input.Disposition == NormalizationPlanInputDispositions.Selected)
             .Select(static input => input.Coefficient!)
@@ -215,7 +236,8 @@ public static class NormalizationPlanContract
                 if (input.ExclusionReason is not null || !Token(input.MemberId) ||
                     input.Masters is not { Count: 4 } masters || masters.Any(static master => master is null) ||
                     !masters.Select(static master => master.Kind).SequenceEqual(MasterKindOrder) ||
-                    masters.Any(static master => master.ArtifactId == Guid.Empty || !Sha256(master.PayloadSha256)))
+                    masters.Any(static master => master.ArtifactId == Guid.Empty || !Sha256(master.PayloadSha256) ||
+                        master.Exposure <= TimeSpan.Zero))
                 {
                     return Failure("inputs.selection");
                 }
@@ -230,6 +252,26 @@ public static class NormalizationPlanContract
             default:
                 return Failure("inputs.disposition");
         }
+    }
+
+    /// <summary>Whether every reference to one master artifact freezes the same kind, payload hash and exposure.</summary>
+    private static bool ConsistentMasters(IReadOnlyList<NormalizationPlanInputV1> inputs)
+    {
+        var first = new Dictionary<Guid, NormalizationPlanMasterV1>();
+        foreach (var master in inputs.Where(static input => input.Masters is not null).SelectMany(static input => input.Masters!))
+        {
+            if (!first.TryGetValue(master.ArtifactId, out var frozen))
+            {
+                first.Add(master.ArtifactId, master);
+            }
+            else if (!string.Equals(frozen.Kind, master.Kind, StringComparison.Ordinal) ||
+                     !string.Equals(frozen.PayloadSha256, master.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
+                     frozen.Exposure != master.Exposure)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>The bias, dark, flat and defect order of a per-input selection.</summary>

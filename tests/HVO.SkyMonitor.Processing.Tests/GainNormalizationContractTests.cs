@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -144,7 +145,10 @@ public sealed class GainNormalizationContractTests
 
         Assert.AreEqual(GainResponseProvenance.VirtualSimulationTruth, descriptor.Provenance);
         Assert.AreEqual(Asi174MmSensorModel.Version, descriptor.ResponseModelVersion);
-        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(sensor), descriptor.SensorProfileSha256);
+        // The response must name the sensor exactly as raw capture descriptors do: their default-serializer shape.
+        Assert.AreEqual(
+            CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(sensor)),
+            descriptor.SensorProfileSha256);
         Assert.AreEqual(0d, descriptor.MinimumGainControl);
         Assert.AreEqual(400d, descriptor.MaximumGainControl);
         Assert.IsNull(descriptor.HighConversionGainControl);
@@ -372,7 +376,7 @@ public sealed class GainNormalizationContractTests
         var first = ResolveAvailable(GainResponseSourceKind.VirtualAsi174MmModel, sensor, null);
         var second = ResolveAvailable(GainResponseSourceKind.VirtualAsi174MmModel, Asi174Sensor(), null);
         var bytes = GainNormalizationContractJson.Serialize(first.Descriptor);
-        var sensorSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(sensor);
+        var sensorSha256 = SensorProfileIdentity.ComputeSha256(sensor);
 
         Assert.AreEqual(
             "{\"coefficientRepresentation\":\"electrons-per-adu-fixed-e12-v1\",\"containerDepthBits\":16," +

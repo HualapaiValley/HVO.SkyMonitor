@@ -7,8 +7,10 @@ using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
-/// <summary>One checked master of a per-input family selection: its kind, library artifact and payload hash.</summary>
-internal sealed record CalibrationFamilySelectedMaster(string Kind, Guid ArtifactId, string PayloadSha256);
+/// <summary>
+/// One checked master of a per-input family selection: its kind, library artifact, payload hash and library exposure.
+/// </summary>
+internal sealed record CalibrationFamilySelectedMaster(string Kind, Guid ArtifactId, string PayloadSha256, TimeSpan Exposure);
 
 /// <summary>
 /// The per-input calibration-family selection (#1475): the family identity, the member chosen for the input, and the
@@ -135,7 +137,7 @@ public sealed partial class SqliteCalibrationLibraryStore
                 return FamilyExcluded(reason);
             }
             selected[index] = new CalibrationFamilySelectedMaster(
-                master.Artifact.Kind, master.Artifact.ArtifactId, master.Artifact.PayloadSha256);
+                master.Artifact.Kind, master.Artifact.ArtifactId, master.Artifact.PayloadSha256, master.Artifact.Exposure);
         }
         if (await VerifyFamilyBundleEvidenceAsync(
             Array.ConvertAll(stored, static master => master!), cancellationToken).ConfigureAwait(false) is { } evidenceReason)

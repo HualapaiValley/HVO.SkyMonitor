@@ -341,7 +341,7 @@ public static class GainResponseResolver
         var descriptor = GainNormalizationContractJson.Normalize(new GainResponseDescriptorV1(
             GainResponseDescriptorV1.CurrentSchemaVersion,
             GainResponseProvenance.VirtualSimulationTruth,
-            CaptureContractJson.ComputeCanonicalJsonSha256(sensor),
+            SensorProfileIdentity.ComputeSha256(sensor),
             modelVersion,
             gainUnits,
             minimumGain,

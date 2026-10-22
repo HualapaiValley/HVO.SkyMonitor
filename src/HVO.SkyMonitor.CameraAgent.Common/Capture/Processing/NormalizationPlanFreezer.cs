@@ -140,7 +140,7 @@ internal sealed class NormalizationPlanFreezer(
                 Disposition = NormalizationPlanInputDispositions.Selected,
                 MemberId = selected.MemberId,
                 Masters = [.. selected.Masters.Select(static master =>
-                    new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))],
+                    new NormalizationPlanMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256, master.Exposure))],
                 Coefficient = resolved
             };
         }
@@ -183,6 +183,7 @@ internal sealed class NormalizationPlanFreezer(
             .Where(static input => input.Masters is not null)
             .SelectMany(static input => input.Masters!)
             .DistinctBy(static master => master.ArtifactId)
+            .Select(static master => new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))
             .ToArray();
         if (await calibration.ConfirmFamilyMastersAsync(masters, cancellationToken).ConfigureAwait(false) is { } reason)
         {

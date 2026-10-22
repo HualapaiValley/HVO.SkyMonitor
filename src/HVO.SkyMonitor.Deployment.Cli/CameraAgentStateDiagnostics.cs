@@ -39,11 +39,14 @@ internal static class CameraAgentStateDiagnostics
     /// Decoration in the name, which the redactor removes, does not make an ordinary name read as a credential, and the decision
     /// rests on the name alone, so a sequence the name ends inside cannot reach into the value. The name is a credential if it
     /// reads as one without its controls, or as the redactor matches it, with every control but decoration in place (#1491).
+    /// The redactor leaves its own marker as it is, so the name is probed with each marker as a plain word: a name that already
+    /// reads as redacted still reads as a credential (#1509).
     /// </summary>
     public static string Assignment(string? name, string? value)
     {
-        var probe = Redaction.WithoutControlSequences(name ?? string.Empty) + "=value";
-        var matched = Redaction.WithoutDecoration(name ?? string.Empty) + "=value";
+        var plain = (name ?? string.Empty).Replace("<redacted>", "redacted", StringComparison.Ordinal);
+        var probe = Redaction.WithoutControlSequences(plain) + "=value";
+        var matched = Redaction.WithoutDecoration(plain) + "=value";
         var credential = Redaction.SafeDiagnostic(probe) != probe || Redaction.Redact(matched) != Redaction.WithoutControlSequences(matched);
         return Reason(!string.IsNullOrEmpty(value) && credential ? $"{name}=<redacted>" : $"{name}={value}");
     }

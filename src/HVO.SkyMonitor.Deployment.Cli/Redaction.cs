@@ -8,10 +8,17 @@ internal static class Redaction
     // db_password, client_secret, accessToken and x-api-key all match (#1491). The boundary after it keeps tokenid ordinary.
     private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]key|_access_key)?|private[-_]?key|api[-_]?key)\\b";
 
+    // The second passes also take a secret key whose words are joined by -, _ or nothing, so SecretKey and secret-access-key
+    // match but secretkeeper does not (#1509).
+    private const string SecondCredentialWord = "(?:passwords?|token|secret(?:[-_]?(?:access[-_]?)?key)?|private[-_]?key|api[-_]?key)\\b";
+
     private const string KeyWords = CredentialWord + "|authorization|bearer";
 
     // Space-only assignments accept explicit snake/kebab compounds, but not arbitrary words ending in a credential word.
     private const string SpacedKey = "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]\\x9C?" + CredentialWord + "|\\b" + CredentialWord + ")";
+
+    private const string SecondSpacedKey =
+        "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]\\x9C?" + SecondCredentialWord + "|\\b" + SecondCredentialWord + ")";
 
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
@@ -61,6 +68,17 @@ internal static class Redaction
     private static readonly System.Text.RegularExpressions.Regex NestedValue = LinearPattern(
         $"""(?i)((?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{CredentialWord}["']?\s*[=:]\s*|\x9C*{SpacedKey}\s+)+)[^"',;\s\x7D]+""");
 
+    // The second passes read the first passes' output, so they can only hide more of it (#1509). A quoted value may also follow
+    // its key after whitespace alone, which may be a tab, a no-break space or a NEL rather than a plain space.
+    private static readonly System.Text.RegularExpressions.Regex SecondQuotedCredential = LinearPattern(
+        $"""(?i)({SecondCredentialWord}["']?\s*[=:\s]\s*)(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)*["']""");
+
+    private static readonly System.Text.RegularExpressions.Regex SecondUnquotedValue = LinearPattern(
+        "(?i)((?:authorization|" + SecondCredentialWord + ")[\\\"']?\\s*[=:]\\s*[\\\"']?)[^\\\"',;\\s}]+");
+
+    private static readonly System.Text.RegularExpressions.Regex SecondSpacedValue = LinearPattern(
+        "(?i)(" + SecondSpacedKey + "\\s+)[^ ,;]+");
+
     // ESC and the C1 controls, each of which may start a control sequence.
     private static readonly System.Buffers.SearchValues<char> Introducers = System.Buffers.SearchValues.Create(
         "\u001B\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008A\u008B\u008C\u008D\u008E\u008F" +
@@ -70,7 +88,8 @@ internal static class Redaction
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [QuotedCredential, KeyWord, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue, UnquotedValue, SpacedValue, NestedValue];
+        [QuotedCredential, KeyWord, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue, UnquotedValue, SpacedValue, NestedValue,
+            SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue];
 
     public static string SafeDiagnostic(string value)
     {
@@ -94,14 +113,19 @@ internal static class Redaction
         if (text.AsSpan().ContainsAny(Introducers)) text = WithoutUserInformation(text);
         text = WithoutUserInformation(WithoutDecoration(text));
         // Preserve inner keys until their quoted/nested values are hidden, including after a decoration boundary (#1499).
-        text = RedactQuotedCredentials(text);
+        text = RedactQuotedCredentials(text, QuotedCredential, joined: false);
         text = NestedValue.Replace(text, "$1<redacted>");
         text = AuthorizationValue.Replace(text, "$1<redacted>");
         text = BearerValue.Replace(text, "$1<redacted>");
         text = DoubleQuotedValue.Replace(text, "$1<redacted>$2");
         text = SingleQuotedValue.Replace(text, "$1<redacted>$2");
         text = UnquotedValue.Replace(text, "$1<redacted>");
-        text = SpacedValue.Replace(text, "$1<redacted>");
+        text = RedactSpacedValues(text, SpacedValue);
+        // The second passes find keys and values the first passes did not. They replace text only, and only in what the first
+        // passes left, so a key they find around a value the first passes hid cannot show that value again (#1509).
+        text = RedactQuotedCredentials(text, SecondQuotedCredential, joined: true);
+        text = SecondUnquotedValue.Replace(text, "$1<redacted>");
+        text = RedactSpacedValues(text, SecondSpacedValue);
         return WithoutControls(text);
     }
 
@@ -186,12 +210,14 @@ internal static class Redaction
 
     /// <summary>
     /// Redacts a quoted credential value, consuming escaped/doubled quotes as content, or an unterminated value through the
-    /// end of the diagnostic. The value's quotes are kept and any control sequence before it is dropped.
+    /// end of the diagnostic. The value's quotes are kept and any control sequence before it is dropped. When
+    /// <paramref name="joined"/> is set, text joined to the closing quote, including another quoted part, is the same shell
+    /// word, so it is hidden with the value and dropped (#1509).
     /// </summary>
-    private static string RedactQuotedCredentials(string value)
+    private static string RedactQuotedCredentials(string value, System.Text.RegularExpressions.Regex pattern, bool joined)
     {
         // Both the nonbacktracking prefix search and the forward-only value scan are linear in the input length.
-        var match = QuotedCredential.Match(value);
+        var match = pattern.Match(value);
         if (!match.Success) return value;
         var result = new System.Text.StringBuilder();
         var consumed = 0;
@@ -200,28 +226,83 @@ internal static class Redaction
             result.Append(value.AsSpan(consumed, match.Index - consumed));
             var quote = value[match.Index + match.Length - 1];
             result.Append(match.Groups[1].Value).Append(quote).Append("<redacted>");
-            var position = match.Index + match.Length;
-            while (position < value.Length)
-            {
-                var character = value[position++];
-                if (character == '\\')
-                {
-                    if (position < value.Length) position++;
-                }
-                else if (character == quote)
-                {
-                    if (position < value.Length && value[position] == quote) position++;
-                    else
-                    {
-                        result.Append(quote);
-                        break;
-                    }
-                }
-            }
-            consumed = position;
-            match = QuotedCredential.Match(value, consumed);
+            var closing = ClosingQuote(value, match.Index + match.Length, quote);
+            if (closing >= 0) result.Append(quote);
+            consumed = closing < 0 ? value.Length : joined ? JoinedEnd(value, closing + 1) : closing + 1;
+            match = pattern.Match(value, consumed);
         }
         return result.Append(value.AsSpan(consumed)).ToString();
+    }
+
+    /// <summary>
+    /// Replaces each space-only value as <c>$1&lt;redacted&gt;</c> would. A value that starts with a quote is also hidden through
+    /// its closing quote and the text joined to it, so a tab before a quoted value cannot leave its later words shown. Each
+    /// match is the one the plain replacement makes, and the hidden text is the union of the two, so no less is hidden (#1509).
+    /// A match whose key is already hidden adds only its own value: each extension then starts after the text hidden so far,
+    /// so no character is scanned for two of them and the scans stay linear (PR-1521-R2 F3).
+    /// </summary>
+    private static string RedactSpacedValues(string text, System.Text.RegularExpressions.Regex pattern)
+    {
+        var match = pattern.Match(text);
+        if (!match.Success) return text;
+        var result = new System.Text.StringBuilder(text.Length);
+        var shown = 0;
+        var hidden = 0;
+        while (match.Success)
+        {
+            var value = match.Index + match.Groups[1].Length;
+            var end = match.Index + match.Length;
+            if (match.Index >= hidden && text[value] is '"' or '\'')
+            {
+                var closing = ClosingQuote(text, value + 1, text[value]);
+                end = Math.Max(end, closing < 0 ? text.Length : JoinedEnd(text, closing + 1));
+            }
+            if (match.Index >= hidden)
+            {
+                if (hidden > shown) result.Append("<redacted>");
+                result.Append(text.AsSpan(Math.Max(shown, hidden), value - Math.Max(shown, hidden)));
+                shown = value;
+            }
+            hidden = Math.Max(hidden, end);
+            match = match.NextMatch();
+        }
+        if (hidden > shown) result.Append("<redacted>");
+        return result.Append(text.AsSpan(Math.Max(shown, hidden))).ToString();
+    }
+
+    /// <summary>The closing quote of a value that starts at <paramref name="position"/>, or -1 if the value is unterminated.</summary>
+    private static int ClosingQuote(string value, int position, char quote)
+    {
+        while (position < value.Length)
+        {
+            var character = value[position++];
+            if (character == '\\')
+            {
+                if (position < value.Length) position++;
+            }
+            else if (character == quote)
+            {
+                if (position < value.Length && value[position] == quote) position++;
+                else return position - 1;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>Where the text joined to a closing quote ends: at whitespace, a comma, a semicolon or a closing brace.</summary>
+    private static int JoinedEnd(string value, int position)
+    {
+        while (position < value.Length && !char.IsWhiteSpace(value[position]) && value[position] is not (',' or ';' or '}'))
+        {
+            var character = value[position++];
+            if (character is '"' or '\'')
+            {
+                var closing = ClosingQuote(value, position, character);
+                if (closing < 0) return value.Length;
+                position = closing + 1;
+            }
+        }
+        return position;
     }
 
     public static string SafeDiagnostics(string value)
