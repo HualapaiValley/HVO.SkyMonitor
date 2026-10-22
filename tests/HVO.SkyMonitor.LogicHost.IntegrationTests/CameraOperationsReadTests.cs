@@ -226,7 +226,7 @@ public sealed class CameraOperationsReadPerformanceTests
             ["jobs-first"] = (async () => await service.ListJobsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 6, 4_000),
             ["jobs-deep-keyset"] = (async () => await service.ListJobsAsync(principal, seed.Observatory, seed.Camera, 50, deepJobs.NextCursor).ConfigureAwait(false), 6, 4_000),
             ["job-inspector"] = (async () => await service.GetJobAsync(principal, seed.Observatory, seed.Camera, seed.InspectedJob, 50).ConfigureAwait(false), 6, 2_000),
-            ["proposals-first"] = (async () => await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 4, 4_000),
+            ["proposals-first"] = (async () => await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 5, 2_000),
             ["proposal-facts"] = (async () => await service.ListProposalFactsAsync(principal, seed.Observatory, seed.Camera, seed.FactProposal, 50, null).ConfigureAwait(false), 4, 2_000),
             ["event-associations"] = (async () => await service.ListEventAssociationsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 6, 4_000)
         };

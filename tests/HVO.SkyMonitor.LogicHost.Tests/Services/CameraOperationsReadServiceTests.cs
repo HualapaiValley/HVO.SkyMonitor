@@ -461,9 +461,16 @@ public sealed class CameraOperationsReadServiceTests
         var assignments = CameraOperationsReadService.AssignmentHistory(
             db, observatory, camera, CentralProcessingGraphTargetHost.Central, Now, Guid.NewGuid()).Take(26).ToQueryString();
         StringAssert.Contains(assignments, "UNION ALL");
+        // Proposal and fact reads pin their existing indexes so rows read never follow the network's history.
         var facts = CameraOperationsReadService.PageFacts(db, [Guid.NewGuid(), Guid.NewGuid()]).ToQueryString();
         Assert.DoesNotContain("ROW_NUMBER", facts);
-        Assert.DoesNotContain("TOP(", facts);
+        StringAssert.Contains(facts, "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId]))");
+        StringAssert.Contains(CameraOperationsReadService.ProposalFacts(db, Guid.NewGuid()).Take(51).ToQueryString(),
+            "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId]))");
+        var proposals = CameraOperationsReadService.ProposalHistory(db, installations
+            .Select(id => new CameraOperationsReadService.InstallationKey(id, Guid.NewGuid(), Guid.NewGuid())).ToArray(),
+            Now, Guid.NewGuid(), 26)!.ToQueryString();
+        Assert.AreEqual(installations.Length, proposals.Split("FORCESEEK(").Length - 1, proposals);
         var events = new CameraOperationsReadService(db, new EphemeralDataProtectionProvider())
             .EventAssociations("member", null, observatory, camera, [Guid.NewGuid()], Guid.NewGuid()).Take(3).ToQueryString();
         StringAssert.Contains(events, "UNION");

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
@@ -89,10 +90,21 @@ internal sealed partial class CameraOperationsReadService
     /// <summary>
     /// Every stored fact of the given proposals, newest recorded first within each proposal, through the existing
     /// (ProposalId, RecordedAtUtc, Id) index. Rows read are the page's own facts, never the whole fact history.
+    /// On SQL Server the seek is forced: on a compact fact table the optimizer otherwise prefers a clustered scan
+    /// whose rows read grow with every proposal in the network.
     /// </summary>
     internal static IQueryable<ProcessingGraphDeliveryFactView> PageFacts(ApplicationDbContext db, List<Guid> proposalIds)
-        => db.CentralProcessingGraphDeliveryFacts.AsNoTracking()
-            .Where(fact => proposalIds.Contains(fact.ProposalId))
+    {
+        var facts = db.Database.IsSqlServer()
+            ? db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
+                SELECT fact.*
+                FROM OPENJSON({JsonSerializer.Serialize(proposalIds)}) WITH ([Id] uniqueidentifier '$') AS page
+                INNER JOIN [CentralProcessingGraphDeliveryFacts] AS fact
+                    WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId])))
+                    ON fact.[ProposalId] = page.[Id]
+                """).AsNoTracking()
+            : db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => proposalIds.Contains(fact.ProposalId));
+        return facts
             .OrderBy(fact => fact.ProposalId)
             .ThenByDescending(fact => fact.RecordedAtUtc)
             .ThenByDescending(fact => fact.Id)
@@ -100,6 +112,35 @@ internal sealed partial class CameraOperationsReadService
                 fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
                 fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
                 fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256));
+    }
+
+    /// <summary>One proposal's facts through a forced (ProposalId, RecordedAtUtc, Id) seek on SQL Server.</summary>
+    internal static IQueryable<CentralProcessingGraphDeliveryFact> ProposalFacts(ApplicationDbContext db, Guid proposalId)
+        => db.Database.IsSqlServer()
+            ? db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
+                SELECT fact.*
+                FROM [CentralProcessingGraphDeliveryFacts] AS fact
+                    WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId])))
+                WHERE fact.[ProposalId] = {proposalId}
+                """).AsNoTracking()
+            : db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => fact.ProposalId == proposalId);
+
+    /// <summary>
+    /// One retained installation's proposals through a forced (RegistrationId, LogicalCameraInstallationId,
+    /// IssuedAtUtc, Id) seek on SQL Server, for the same reason as <see cref="PageFacts"/>.
+    /// </summary>
+    private static IQueryable<CentralProcessingGraphDeliveryProposal> InstallationProposals(
+        ApplicationDbContext db, InstallationKey installation)
+        => db.Database.IsSqlServer()
+            ? db.CentralProcessingGraphDeliveryProposals.FromSqlInterpolated($"""
+                SELECT proposal.*
+                FROM [CentralProcessingGraphDeliveryProposals] AS proposal
+                    WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryProposals_RegistrationId_LogicalCameraInstallationId_IssuedAtUtc_Id]([RegistrationId], [LogicalCameraInstallationId])))
+                WHERE proposal.[RegistrationId] = {installation.RegistrationId}
+                    AND proposal.[LogicalCameraInstallationId] = {installation.Id}
+                """).AsNoTracking()
+            : db.CentralProcessingGraphDeliveryProposals.AsNoTracking().Where(item =>
+                item.RegistrationId == installation.RegistrationId && item.LogicalCameraInstallationId == installation.Id);
 
     private static bool IsTerminal(string kind)
         => kind is nameof(ProcessingGraphDeliveryFactKind.Accepted) or nameof(ProcessingGraphDeliveryFactKind.Rejected) or
@@ -119,7 +160,7 @@ internal sealed partial class CameraOperationsReadService
         var proposal = CameraProposals(owner, observatoryId, cameraId).Where(item => item.Id == proposalId);
         if (!await proposal.AnyAsync(cancellationToken).ConfigureAwait(false)) return null;
         var position = Decode(cursor, owner, observatoryId, cameraId, "facts", proposalId);
-        var facts = db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => fact.ProposalId == proposalId);
+        var facts = ProposalFacts(db, proposalId);
         if (position is not null)
         {
             var time = position.Time;
@@ -147,20 +188,17 @@ internal sealed partial class CameraOperationsReadService
     internal static IQueryable<CentralProcessingGraphDeliveryProposal>? ProposalHistory(
         ApplicationDbContext db, IReadOnlyList<InstallationKey> installations,
         DateTimeOffset? afterTime, Guid? afterId, int limit)
-    {
-        var proposals = db.CentralProcessingGraphDeliveryProposals.AsNoTracking();
-        if (afterTime is { } time && afterId is { } id)
-            proposals = proposals.Where(item => item.IssuedAtUtc <= time &&
-                (item.IssuedAtUtc < time || item.Id.CompareTo(id) < 0));
-        return PerInstallation(installations, installation => proposals
-                .Where(item => item.RegistrationId == installation.RegistrationId &&
-                    item.LogicalCameraInstallationId == installation.Id &&
-                    item.InstallationPublicId == installation.InstallationPublicId)
-                .OrderByDescending(item => item.IssuedAtUtc).ThenByDescending(item => item.Id)
-                .Take(limit))
+        => PerInstallation(installations, installation =>
+            {
+                var proposals = InstallationProposals(db, installation)
+                    .Where(item => item.InstallationPublicId == installation.InstallationPublicId);
+                if (afterTime is { } time && afterId is { } id)
+                    proposals = proposals.Where(item => item.IssuedAtUtc <= time &&
+                        (item.IssuedAtUtc < time || item.Id.CompareTo(id) < 0));
+                return proposals.OrderByDescending(item => item.IssuedAtUtc).ThenByDescending(item => item.Id).Take(limit);
+            })
             ?.OrderByDescending(item => item.IssuedAtUtc).ThenByDescending(item => item.Id)
             .Take(limit);
-    }
 
     /// <summary>The retained installation relationship, not current registration or assignment, authorizes a proposal.</summary>
     private IQueryable<CentralProcessingGraphDeliveryProposal> CameraProposals(string owner, Guid observatoryId, Guid cameraId)
