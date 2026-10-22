@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -430,11 +431,17 @@ public sealed class CelesTrakGpClientTests
     [DataRow("truncated-trailer", "gzip-")]
     [DataRow("truncated-deflate", "gzip-")]
     [DataRow("trailing-garbage", "gzip-")]
-    [DataRow("second-member", "gzip-size-mismatch")]
+    [DataRow("second-member", "gzip-trailing-bytes")]
+    [DataRow("trailing-bytes-forged-isize", "gzip-trailing-bytes")]
+    [DataRow("empty-member-then-member", "gzip-trailing-bytes")]
+    [DataRow("truncated-member-forged-isize", "gzip-truncated")]
     public async Task InvalidGzipIsRejected(string shape, string detailPrefix)
     {
         var payload = CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.ValidFixture);
         var valid = CelesTrakGpTestData.Gzip(payload);
+        var forgedSuffix = new byte[8];
+        "GARB"u8.CopyTo(forgedSuffix);
+        BinaryPrimitives.WriteUInt32LittleEndian(forgedSuffix.AsSpan(4), (uint)payload.Length);
         var wire = shape switch
         {
             "plain-json-labelled-gzip" => payload,
@@ -447,6 +454,12 @@ public sealed class CelesTrakGpClientTests
             "truncated-deflate" => valid[..(valid.Length / 2)],
             "trailing-garbage" => [.. valid, .. "GARBAGE!"u8.ToArray()],
             "second-member" => [.. valid, .. CelesTrakGpTestData.Gzip("[]"u8.ToArray())],
+            // Each of these ends in four bytes equal to the length a lenient decode of the whole wire produces.
+            "trailing-bytes-forged-isize" => [.. valid, .. forgedSuffix],
+            "empty-member-then-member" => [0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0, 0x03, 0x03, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, .. valid],
+            // A final stored block declares 32 bytes but only 12 follow, and those 12 end by forging ISIZE=12.
+            "truncated-member-forged-isize" => [0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0, 0xFF, 0x01, 0x20, 0x00, 0xDF, 0xFF,
+                65, 65, 65, 65, 65, 65, 65, 65, 12, 0, 0, 0],
             _ => throw new ArgumentOutOfRangeException(nameof(shape))
         };
 

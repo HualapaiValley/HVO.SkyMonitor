@@ -312,21 +312,25 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
     }
 
     /// <summary>
-    /// Decodes one gzip member under <paramref name="maximum"/>. The decoder silently accepts a truncated member and
-    /// ignores bytes after a member, so the trailer's ISIZE (decoded length modulo 2^32, little-endian) must equal
-    /// the decoded length; a corrupt CRC or header raises <see cref="InvalidDataException"/>.
+    /// Decodes exactly one gzip member under <paramref name="maximum"/>. The header is parsed here, raw deflate receives
+    /// only the bytes between the header and the final eight, and the deflate stream must end exactly where those eight
+    /// trailer bytes begin; the trailer's CRC-32 and ISIZE are then verified against the bytes actually decoded. A
+    /// truncated member, a concatenated member and trailing bytes are rejected even when the final four bytes equal the
+    /// decoded length. The raw bound is enforced while decoding, before any framing verdict.
     /// </summary>
     internal static DecodeOutcome DecodeGzip(byte[] wire, int maximum, CancellationToken token)
     {
-        if (wire.Length < GzipMinimumLength || wire[0] != 0x1F || wire[1] != 0x8B || wire[2] != 0x08)
+        if (wire.Length < GzipMinimumLength || !CelesTrakGpGzipMember.TryReadHeader(
+                wire.AsSpan(0, wire.Length - CelesTrakGpGzipMember.TrailerLength), out var headerLength))
         {
             return DecodeOutcome.Reject("orbital.gzip-invalid", "gzip-header");
         }
-        var declaredSize = BinaryPrimitives.ReadUInt32LittleEndian(wire.AsSpan(wire.Length - 4));
+        var trailerStart = wire.Length - CelesTrakGpGzipMember.TrailerLength;
+        var declaredSize = BinaryPrimitives.ReadUInt32LittleEndian(wire.AsSpan(trailerStart + 4));
+        using var input = new CelesTrakGpGzipMember.DeflateInput(wire, headerLength, trailerStart - headerLength);
         try
         {
-            using var source = new MemoryStream(wire, writable: false);
-            using var gzip = new GZipStream(source, CompressionMode.Decompress);
+            using var inflater = new DeflateStream(input, CompressionMode.Decompress, leaveOpen: true);
             var buffer = new byte[Math.Clamp(declaredSize, 1u, (uint)maximum)];
             var length = 0;
             while (true)
@@ -334,7 +338,7 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
                 token.ThrowIfCancellationRequested();
                 if (length == buffer.Length)
                 {
-                    var extra = gzip.ReadByte();
+                    var extra = inflater.ReadByte();
                     if (extra < 0)
                     {
                         break;
@@ -348,12 +352,25 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
                     buffer[length++] = (byte)extra;
                     continue;
                 }
-                var read = gzip.Read(buffer, length, buffer.Length - length);
+                var read = inflater.Read(buffer, length, buffer.Length - length);
                 if (read == 0)
                 {
                     break;
                 }
                 length += read;
+            }
+            if (input.Starved)
+            {
+                return DecodeOutcome.Reject("orbital.gzip-invalid", "gzip-truncated");
+            }
+            if (!input.FinalByteDelivered)
+            {
+                return DecodeOutcome.Reject("orbital.gzip-invalid", "gzip-trailing-bytes");
+            }
+            if (BinaryPrimitives.ReadUInt32LittleEndian(wire.AsSpan(trailerStart)) !=
+                CelesTrakGpGzipMember.ComputeCrc32(buffer.AsSpan(0, length)))
+            {
+                return DecodeOutcome.Reject("orbital.gzip-invalid", "gzip-crc-mismatch");
             }
             if ((uint)length != declaredSize)
             {
@@ -368,7 +385,8 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
         }
         catch (InvalidDataException)
         {
-            return DecodeOutcome.Reject("orbital.gzip-invalid", "gzip-stream");
+            // A strict inflater reports exhausted input as invalid data; the input knows whether that is what happened.
+            return DecodeOutcome.Reject("orbital.gzip-invalid", input.Starved ? "gzip-truncated" : "gzip-stream");
         }
     }
 
