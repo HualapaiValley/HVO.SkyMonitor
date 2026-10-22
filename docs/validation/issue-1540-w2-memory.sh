@@ -208,6 +208,8 @@ jq -n --arg mode "$mode" --arg script "$(sha256sum "$script" | cut -d' ' -f1)" -
       logicalProcessors: $cpus, memTotal: $memory, sdk: $sdk, workload: "w2-night", scenario: "steady",
       runtimeProfile: "production-defaults", pairs: $pairs, order: [$first, $second], arms: ($a + $b), runs: $runs}' \
     >"$out/index.json" || fatal "could not write index"
+# The find predicate excludes the output manifest, so it cannot hash its own output.
+# shellcheck disable=SC2094
 (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS)
 echo "pack $out failed=$failed"
 exit "$failed"
