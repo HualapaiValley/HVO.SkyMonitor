@@ -27,3 +27,8 @@ Errors and warnings follow one of these routes. Redaction always precedes escapi
 checks direct error writers and closes the formatted-owner list. The hostile
 interpolation sweep covers the composed sources; real SQLite and top-level tests
 exercise human and JSON paths. New direct writers must be classified and tested.
+
+Space-only compound keys use identifier segments beginning with a letter,
+separated by `_` or `-` (for example `db_password` and `x-api-key`). This keeps
+credential values containing numeric prose segments from becoming nested keys.
+Explicit `=`/`:` keys retain the existing suffix-based matching.

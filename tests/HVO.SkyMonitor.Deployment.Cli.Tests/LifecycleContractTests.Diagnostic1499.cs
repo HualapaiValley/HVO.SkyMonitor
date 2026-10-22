@@ -8,48 +8,119 @@ public sealed partial class LifecycleContractTests
 {
     private const string Diagnostic1499Secret = "review-1491-secret";
 
-    public static IEnumerable<object[]> Diagnostic1499Cases()
-    {
-        string s = Diagnostic1499Secret;
-        (string Input, string Expected)[] cases =
-        [
-            ("SECRET_KEY=" + s, "SECRET_KEY=<redacted>"),
-            ("aws_secret_access_key=" + s, "aws_secret_access_key=<redacted>"),
-            ("secret_key=\"a " + s + " b\"", "secret_key=\"<redacted>\""),
-            ("private_key=\"a " + s + " b\"", "private_key=\"<redacted>\""),
-            ("passwords=\"a " + s + " b\"", "passwords=\"<redacted>\""),
-            ("db_password " + s, "db_password <redacted>"),
-            ("x-api-key " + s, "x-api-key <redacted>"),
-            ("api-key=password " + s, "api-key=<redacted> <redacted>"),
-            ("x-api-key: token " + s, "x-api-key: <redacted> <redacted>"),
-            ("api_key=client_secret: " + s, "api_key=<redacted> <redacted>"),
-            ("password=token " + s, "password=<redacted> <redacted>"),
-            ("api_key=client_secret: password token " + s, "api_key=<redacted> password <redacted> <redacted>"),
-            ("see\u001b[1mBearer token=\"a " + s + " b\"", "seeBearer <redacted>\"<redacted>\""),
-            ("see\u001b[1mBearer password='a " + s + " b'", "seeBearer <redacted>"),
-            ("x\u001b[1mauthorization: token=\"a " + s + " b\"", "xauthorization: <redacted>\"<redacted>\""),
-            // Ordinary words and prose retain their values. Delimited compound keys are explicit; arbitrary suffixes are not.
-            ("tokenid=\"kept value\"", "tokenid=\"kept value\""),
-            ("secret-santa=\"kept value\"", "secret-santa=\"kept value\""),
-            ("turnkey=\"kept value\"", "turnkey=\"kept value\""),
-            ("tokenid kept value", "tokenid kept value"),
-            ("secret-santa kept value", "secret-santa kept value"),
-            ("turnkey kept value", "turnkey kept value"),
-            ("a securitytoken describes a field", "a securitytoken describes a field"),
-            ("the passwordless column and secretive wording", "the passwordless column and secretive wording"),
-            // The boundary before a bare key must survive the F10 correction too.
-            ("see\u001b[1mtoken " + s, "seetoken <redacted>"),
-        ];
-        foreach (var (input, expected) in cases)
-            foreach (var json in new[] { false, true })
-                foreach (var sqlite in new[] { false, true })
-                    yield return [json, sqlite, input, expected];
-    }
+    // Read the statically discoverable rows again for the differential corpus; do not maintain a second fixture list.
+    private static IEnumerable<object[]> Diagnostic1499Cases()
+        => typeof(LifecycleContractTests).GetMethod(nameof(Diagnostic1499_KeysAreRedactedThroughBothOutputPaths))!
+            .GetCustomAttributes(typeof(DataRowAttribute), inherit: false).Cast<DataRowAttribute>()
+            .Select(row => row.Data.Select(value => value!).ToArray());
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DoNotParallelize]
-    [DynamicData(nameof(Diagnostic1499Cases))]
+    [DataRow(false, false, "SECRET_KEY=" + Diagnostic1499Secret, "SECRET_KEY=<redacted>")]
+    [DataRow(false, true, "SECRET_KEY=" + Diagnostic1499Secret, "SECRET_KEY=<redacted>")]
+    [DataRow(true, false, "SECRET_KEY=" + Diagnostic1499Secret, "SECRET_KEY=<redacted>")]
+    [DataRow(true, true, "SECRET_KEY=" + Diagnostic1499Secret, "SECRET_KEY=<redacted>")]
+    [DataRow(false, false, "aws_secret_access_key=" + Diagnostic1499Secret, "aws_secret_access_key=<redacted>")]
+    [DataRow(false, true, "aws_secret_access_key=" + Diagnostic1499Secret, "aws_secret_access_key=<redacted>")]
+    [DataRow(true, false, "aws_secret_access_key=" + Diagnostic1499Secret, "aws_secret_access_key=<redacted>")]
+    [DataRow(true, true, "aws_secret_access_key=" + Diagnostic1499Secret, "aws_secret_access_key=<redacted>")]
+    [DataRow(false, false, "secret_key=\"a " + Diagnostic1499Secret + " b\"", "secret_key=\"<redacted>\"")]
+    [DataRow(false, true, "secret_key=\"a " + Diagnostic1499Secret + " b\"", "secret_key=\"<redacted>\"")]
+    [DataRow(true, false, "secret_key=\"a " + Diagnostic1499Secret + " b\"", "secret_key=\"<redacted>\"")]
+    [DataRow(true, true, "secret_key=\"a " + Diagnostic1499Secret + " b\"", "secret_key=\"<redacted>\"")]
+    [DataRow(false, false, "private_key=\"a " + Diagnostic1499Secret + " b\"", "private_key=\"<redacted>\"")]
+    [DataRow(false, true, "private_key=\"a " + Diagnostic1499Secret + " b\"", "private_key=\"<redacted>\"")]
+    [DataRow(true, false, "private_key=\"a " + Diagnostic1499Secret + " b\"", "private_key=\"<redacted>\"")]
+    [DataRow(true, true, "private_key=\"a " + Diagnostic1499Secret + " b\"", "private_key=\"<redacted>\"")]
+    [DataRow(false, false, "passwords=\"a " + Diagnostic1499Secret + " b\"", "passwords=\"<redacted>\"")]
+    [DataRow(false, true, "passwords=\"a " + Diagnostic1499Secret + " b\"", "passwords=\"<redacted>\"")]
+    [DataRow(true, false, "passwords=\"a " + Diagnostic1499Secret + " b\"", "passwords=\"<redacted>\"")]
+    [DataRow(true, true, "passwords=\"a " + Diagnostic1499Secret + " b\"", "passwords=\"<redacted>\"")]
+    [DataRow(false, false, "db_password " + Diagnostic1499Secret, "db_password <redacted>")]
+    [DataRow(false, true, "db_password " + Diagnostic1499Secret, "db_password <redacted>")]
+    [DataRow(true, false, "db_password " + Diagnostic1499Secret, "db_password <redacted>")]
+    [DataRow(true, true, "db_password " + Diagnostic1499Secret, "db_password <redacted>")]
+    [DataRow(false, false, "x-api-key " + Diagnostic1499Secret, "x-api-key <redacted>")]
+    [DataRow(false, true, "x-api-key " + Diagnostic1499Secret, "x-api-key <redacted>")]
+    [DataRow(true, false, "x-api-key " + Diagnostic1499Secret, "x-api-key <redacted>")]
+    [DataRow(true, true, "x-api-key " + Diagnostic1499Secret, "x-api-key <redacted>")]
+    [DataRow(false, false, "api-key=password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, true, "api-key=password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, false, "api-key=password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, true, "api-key=password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, false, "x-api-key: token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(false, true, "x-api-key: token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(true, false, "x-api-key: token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(true, true, "x-api-key: token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(false, false, "api_key=client_secret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(false, true, "api_key=client_secret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(true, false, "api_key=client_secret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(true, true, "api_key=client_secret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(false, false, "password=token " + Diagnostic1499Secret, "password=<redacted> <redacted>")]
+    [DataRow(false, true, "password=token " + Diagnostic1499Secret, "password=<redacted> <redacted>")]
+    [DataRow(true, false, "password=token " + Diagnostic1499Secret, "password=<redacted> <redacted>")]
+    [DataRow(true, true, "password=token " + Diagnostic1499Secret, "password=<redacted> <redacted>")]
+    [DataRow(false, false, "api-key=db_password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, true, "api-key=db_password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, false, "api-key=db_password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, true, "api-key=db_password " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, false, "api_key=client_secret: db_password " + Diagnostic1499Secret, "api_key=<redacted> db_password <redacted>")]
+    [DataRow(false, true, "api_key=client_secret: db_password " + Diagnostic1499Secret, "api_key=<redacted> db_password <redacted>")]
+    [DataRow(true, false, "api_key=client_secret: db_password " + Diagnostic1499Secret, "api_key=<redacted> db_password <redacted>")]
+    [DataRow(true, true, "api_key=client_secret: db_password " + Diagnostic1499Secret, "api_key=<redacted> db_password <redacted>")]
+    [DataRow(false, false, "api_key=client_secret: password token " + Diagnostic1499Secret, "api_key=<redacted> password <redacted> <redacted>")]
+    [DataRow(false, true, "api_key=client_secret: password token " + Diagnostic1499Secret, "api_key=<redacted> password <redacted> <redacted>")]
+    [DataRow(true, false, "api_key=client_secret: password token " + Diagnostic1499Secret, "api_key=<redacted> password <redacted> <redacted>")]
+    [DataRow(true, true, "api_key=client_secret: password token " + Diagnostic1499Secret, "api_key=<redacted> password <redacted> <redacted>")]
+    [DataRow(false, false, "see\u001b[1mBearer token=\"a " + Diagnostic1499Secret + " b\"", "seeBearer <redacted>\"<redacted>\"")]
+    [DataRow(false, true, "see\u001b[1mBearer token=\"a " + Diagnostic1499Secret + " b\"", "seeBearer <redacted>\"<redacted>\"")]
+    [DataRow(true, false, "see\u001b[1mBearer token=\"a " + Diagnostic1499Secret + " b\"", "seeBearer <redacted>\"<redacted>\"")]
+    [DataRow(true, true, "see\u001b[1mBearer token=\"a " + Diagnostic1499Secret + " b\"", "seeBearer <redacted>\"<redacted>\"")]
+    [DataRow(false, false, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
+    [DataRow(false, true, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
+    [DataRow(true, false, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
+    [DataRow(true, true, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
+    [DataRow(false, false, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    [DataRow(false, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    [DataRow(true, false, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    [DataRow(true, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    [DataRow(false, false, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
+    [DataRow(false, true, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
+    [DataRow(true, false, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
+    [DataRow(true, true, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
+    [DataRow(false, false, "secret-santa=\"kept value\"", "secret-santa=\"kept value\"")]
+    [DataRow(false, true, "secret-santa=\"kept value\"", "secret-santa=\"kept value\"")]
+    [DataRow(true, false, "secret-santa=\"kept value\"", "secret-santa=\"kept value\"")]
+    [DataRow(true, true, "secret-santa=\"kept value\"", "secret-santa=\"kept value\"")]
+    [DataRow(false, false, "turnkey=\"kept value\"", "turnkey=\"kept value\"")]
+    [DataRow(false, true, "turnkey=\"kept value\"", "turnkey=\"kept value\"")]
+    [DataRow(true, false, "turnkey=\"kept value\"", "turnkey=\"kept value\"")]
+    [DataRow(true, true, "turnkey=\"kept value\"", "turnkey=\"kept value\"")]
+    [DataRow(false, false, "tokenid kept value", "tokenid kept value")]
+    [DataRow(false, true, "tokenid kept value", "tokenid kept value")]
+    [DataRow(true, false, "tokenid kept value", "tokenid kept value")]
+    [DataRow(true, true, "tokenid kept value", "tokenid kept value")]
+    [DataRow(false, false, "secret-santa kept value", "secret-santa kept value")]
+    [DataRow(false, true, "secret-santa kept value", "secret-santa kept value")]
+    [DataRow(true, false, "secret-santa kept value", "secret-santa kept value")]
+    [DataRow(true, true, "secret-santa kept value", "secret-santa kept value")]
+    [DataRow(false, false, "turnkey kept value", "turnkey kept value")]
+    [DataRow(false, true, "turnkey kept value", "turnkey kept value")]
+    [DataRow(true, false, "turnkey kept value", "turnkey kept value")]
+    [DataRow(true, true, "turnkey kept value", "turnkey kept value")]
+    [DataRow(false, false, "a securitytoken describes a field", "a securitytoken describes a field")]
+    [DataRow(false, true, "a securitytoken describes a field", "a securitytoken describes a field")]
+    [DataRow(true, false, "a securitytoken describes a field", "a securitytoken describes a field")]
+    [DataRow(true, true, "a securitytoken describes a field", "a securitytoken describes a field")]
+    [DataRow(false, false, "the passwordless column and secretive wording", "the passwordless column and secretive wording")]
+    [DataRow(false, true, "the passwordless column and secretive wording", "the passwordless column and secretive wording")]
+    [DataRow(true, false, "the passwordless column and secretive wording", "the passwordless column and secretive wording")]
+    [DataRow(true, true, "the passwordless column and secretive wording", "the passwordless column and secretive wording")]
+    [DataRow(false, false, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
+    [DataRow(false, true, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
+    [DataRow(true, false, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
+    [DataRow(true, true, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
     public async Task Diagnostic1499_KeysAreRedactedThroughBothOutputPaths(bool json, bool sqlite, string diagnostic, string expected)
     {
         if (sqlite)
