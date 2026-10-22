@@ -16,8 +16,47 @@ public sealed record MixedGainNormalizedMeanOptions();
 public static class GainNormalizationCompatibility
 {
     public const string CurrentSchemaVersion = "hvo-gain-normalization-compatibility-v1";
+
+    /// <summary>
+    /// The window compatibility label that lets a raw window cross a gain change. A graph may declare it only on a node
+    /// whose recipe is the mixed-gain recipe (<see cref="IsNormalizationRecipe"/>); every other window keeps gain.
+    /// </summary>
+    public const string WindowLabel = "gain-normalization";
+
+    /// <summary>The only recipe version that may admit a gain difference.</summary>
+    public const string RecipeSemanticVersion = "1.0.0";
+
     private const string GainSegment = "gain=";
     private const string NormalizedGainPrefix = "normalized:";
+
+    /// <summary>True only for the mixed-gain recipe at the version that defines this compatibility contract.</summary>
+    public static bool IsNormalizationRecipe(string? recipeName, string? semanticVersion)
+        => string.Equals(recipeName, BuiltInProcessingRecipes.MixedGainNormalizedMean, StringComparison.Ordinal) &&
+           string.Equals(semanticVersion, RecipeSemanticVersion, StringComparison.Ordinal);
+
+    /// <summary>True when the compatibility carries a normalized gain segment rather than an actual gain.</summary>
+    public static bool IsNormalized(ProcessingCompatibilityIdentity compatibility)
+    {
+        ArgumentNullException.ThrowIfNull(compatibility);
+        return compatibility.SetpointRegime is { } regime &&
+            regime.Split(';').Any(static segment => segment.StartsWith(GainSegment + NormalizedGainPrefix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The compatibility a frame has under a frozen plan: the calibration axis becomes the plan's family and the gain
+    /// segment becomes the plan's normalization identity. Two frames that differ only in gain become equal; any other
+    /// difference, or another plan's family, policy or response, stays a boundary.
+    /// </summary>
+    public static ProcessingCompatibilityIdentity Normalize(ProcessingCompatibilityIdentity compatibility, NormalizationPlanV1 plan)
+    {
+        ArgumentNullException.ThrowIfNull(compatibility);
+        ArgumentNullException.ThrowIfNull(plan);
+        return compatibility with
+        {
+            Calibration = plan.CalibrationFamilyIdentitySha256,
+            SetpointRegime = NormalizeSetpointRegime(compatibility.SetpointRegime, ComputeIdentitySha256(plan))
+        };
+    }
 
     public static string ComputeIdentitySha256(
         string calibrationFamilyIdentitySha256,
@@ -117,7 +156,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
 
     public ProcessingRecipeDefinition Definition { get; } = new(
         BuiltInProcessingRecipes.MixedGainNormalizedMean,
-        "1.0.0",
+        GainNormalizationCompatibility.RecipeSemanticVersion,
         "mixed-gain-normalized-mean-v1",
         ProcessingOperationKind.Window);
 
@@ -264,14 +303,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
         }
 
         var primaryLight = lights[Array.FindIndex(selected, static input => input.WindowPosition == 0)];
-        var normalizationIdentity = GainNormalizationCompatibility.ComputeIdentitySha256(plan);
-        var compatibility = primaryLight.Compatibility with
-        {
-            Calibration = plan.CalibrationFamilyIdentitySha256,
-            SetpointRegime = GainNormalizationCompatibility.NormalizeSetpointRegime(
-                primaryLight.Compatibility.SetpointRegime,
-                normalizationIdentity)
-        };
+        var compatibility = GainNormalizationCompatibility.Normalize(primaryLight.Compatibility, plan);
         var product = ProcessingRecipeSupport.CreateProduct(
             FrameArtifactRole.Combined,
             request.OutputVariant,

@@ -19,6 +19,12 @@ internal sealed class NormalizationPlanFreezer(
     public const string NoEligibleInput = "normalization.plan.no-eligible-input";
 
     /// <summary>
+    /// The gain response's stored codes are not right-aligned native samples (for example full-range-scaled 12-bit
+    /// codes). The fixed ×16 output scale is defined over right-aligned codes only, so such a window is not planned.
+    /// </summary>
+    public const string NonRightAlignedResponse = "normalization.plan.non-right-aligned-response";
+
+    /// <summary>
     /// Returns the node's frozen plan, freezing one first when there is none. <paramref name="familyJson"/> is the
     /// active family's canonical bytes; a family that does not parse fails explicitly.
     /// </summary>
@@ -54,7 +60,8 @@ internal sealed class NormalizationPlanFreezer(
     /// sensor, or the window fails with an identity mismatch. An input is excluded, with its stable reason, when the family
     /// selects no checked masters for it, its gain has no coefficient, or its layout differs from the first selected
     /// input's or from the response's code mapping. The plan fails when no input remains or the remaining
-    /// coefficients exceed the policy's ratio bound; choosing a window inside the bound is the caller's.
+    /// coefficients exceed the policy's ratio bound; choosing a window inside the bound is the caller's. A response
+    /// whose stored codes are not right-aligned fails the whole window.
     /// </summary>
     internal static async ValueTask<NormalizationPlanV1> PrepareAsync(
         SqliteCalibrationLibraryStore calibration,
@@ -82,6 +89,10 @@ internal sealed class NormalizationPlanFreezer(
                 response.Descriptor.SensorProfileSha256, input.Descriptor.Profiles.Sensor.Sha256, StringComparison.OrdinalIgnoreCase)))
         {
             throw new NormalizationPlanException(CalibrationFamilyReasonCodes.IdentityMismatch);
+        }
+        if (response.Descriptor.StoredCodeTransform != FrameStoredCodeTransform.RightAlignedV1)
+        {
+            throw new NormalizationPlanException(NonRightAlignedResponse);
         }
         var reference = GainNormalizationContract.ResolveReference(policy, response);
         if (reference.Coefficient is not { } referenceCoefficient)

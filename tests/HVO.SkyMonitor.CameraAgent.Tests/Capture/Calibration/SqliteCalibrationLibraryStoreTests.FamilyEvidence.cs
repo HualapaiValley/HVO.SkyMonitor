@@ -395,6 +395,50 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task PrepareAsync_RejectsAResponseWhoseStoredCodesAreNotRightAligned()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFamilyFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            // Full-range-scaled 12-bit codes: the fixed ×16 output scale is defined over right-aligned codes only.
+            var resolution = GainResponseResolver.Resolve(
+                GainResponseSourceKind.VirtualAsi174MmModel,
+                CreateVirtualConfiguration().Rig.Sensor,
+                CreateVirtualConfiguration().Rig.Readout! with
+                {
+                    SampleDepthBits = 12,
+                    StoredCodeTransform = FrameStoredCodeTransform.FullRangeScaledV1,
+                    WhiteLevel = 4095
+                });
+            Assert.IsTrue(resolution.IsAvailable, resolution.ReasonCode);
+            var response = resolution.Response!;
+            Assert.AreEqual(FrameStoredCodeTransform.FullRangeScaledV1, response.Descriptor.StoredCodeTransform);
+            var sensor = response.Descriptor.SensorProfileSha256;
+            var family = fixture.Family(fixture.Member(LowGain), fixture.Member(HighGain)) with { SensorProfileSha256 = sensor };
+            ProcessingFrozenRawInput[] inputs =
+            [
+                .. new[] { fixture.Lights[HighGain], fixture.Lights[LowGain] }.Select((light, index) => FrozenInput(
+                    light with { Profiles = light.Profiles with { Sensor = light.Profiles.Sensor with { Sha256 = sensor } } },
+                    -index))
+            ];
+
+            var failure = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
+                await NormalizationPlanFreezer.PrepareAsync(
+                    store, family, GainNormalizationPolicyV1.Approved, response, inputs, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(NormalizationPlanFreezer.NonRightAlignedResponse, failure.ReasonCode);
+            Assert.AreEqual("normalization.plan.non-right-aligned-response", failure.ReasonCode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task PrepareAsync_FailsWhenNoInputIsEligibleOrTheRatioBoundIsExceeded()
     {
         var root = CreateRoot();

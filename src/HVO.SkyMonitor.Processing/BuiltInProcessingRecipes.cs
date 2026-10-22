@@ -1039,7 +1039,8 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 layout.StoredCodeTransform != firstLayout.StoredCodeTransform ||
                 layout.LevelCodeSpace != firstLayout.LevelCodeSpace || layout.Readout != firstLayout.Readout) ||
             selected.Any(source => source.Compatibility != firstCompatibility
-                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)))
+                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)) ||
+            !GainIsUniformOrNormalized(selected))
         {
             layouts = [];
             return false;
@@ -1047,6 +1048,21 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
 
         layouts = values;
         return true;
+    }
+
+    // The arithmetic mean never combines gains (#1475). Only a mixed-gain product carries a normalized gain, and it is
+    // already combined, so a frame or calibrated input claiming one is rejected; any other inputs must share one gain.
+    private static bool GainIsUniformOrNormalized(List<ProcessingArtifact> selected)
+    {
+        if (selected.Any(static source => GainNormalizationCompatibility.IsNormalized(source.Compatibility)))
+        {
+            return selected.All(static source => source.Role == FrameArtifactRole.Combined);
+        }
+        return selected
+            .Where(static source => source.Conditions is not null)
+            .Select(static source => source.Conditions!.Gain)
+            .Distinct()
+            .Count() <= 1;
     }
 }
 

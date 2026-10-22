@@ -302,6 +302,14 @@ public sealed class CameraAgentRecipeExecutionAdapter
             descriptor.Profiles.Processing.Sha256,
             descriptor.Location?.IdentitySha256);
 
+    /// <summary>
+    /// The capture's compatibility under a frozen normalization plan (#1475): its gain segment becomes the plan's
+    /// normalization identity and its calibration axis the plan's family. Only the mixed-gain recipe uses this; every
+    /// other caller keeps <see cref="CreateCompatibility(ReconstructionDescriptor)"/>, where gain stays a boundary.
+    /// </summary>
+    internal static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor, NormalizationPlanV1 plan)
+        => GainNormalizationCompatibility.Normalize(CreateCompatibility(descriptor), plan);
+
     private static double? TryGetLevel(IReadOnlyDictionary<string, string>? metadata, string key) =>
         metadata is not null && metadata.TryGetValue(key, out var value) &&
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result)

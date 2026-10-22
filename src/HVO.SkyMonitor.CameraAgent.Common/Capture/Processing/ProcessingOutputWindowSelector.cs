@@ -136,7 +136,7 @@ internal static class ProcessingOutputWindowSelector
         var expectedCompatibility = producerCompatibility
             ?? CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
         var selected = candidates
-            .Where(output => output.Compatibility == expectedCompatibility &&
+            .Where(output => IsCompatible(expectedCompatibility, output.Compatibility, output.Artifact.Recipe) &&
                              contracts.Any(contract => Matches(contract, output)))
             .Take(maximumHistory)
             .Select(static output => (output.OutputIdentitySha256, output.CaptureSequence, output.PayloadRelativePath))
@@ -246,6 +246,19 @@ internal static class ProcessingOutputWindowSelector
             .FirstOrDefault(output => contracts.Any(contract => Matches(contract, output)))
             ?.Compatibility;
     }
+
+    /// <summary>
+    /// A derived window member must have the producer's exact compatibility. A normalized gain (#1475) hides the
+    /// members' gains, so it is admitted only from an output the mixed-gain recipe produced; any other recipe's
+    /// output claiming one is rejected, and every other window keeps gain as a boundary.
+    /// </summary>
+    internal static bool IsCompatible(
+        ProcessingCompatibilityIdentity expected,
+        ProcessingCompatibilityIdentity candidate,
+        RecipeIdentityDescriptor candidateRecipe)
+        => candidate == expected &&
+           (!GainNormalizationCompatibility.IsNormalized(candidate) ||
+            GainNormalizationCompatibility.IsNormalizationRecipe(candidateRecipe.Name, candidateRecipe.SemanticVersion));
 
     private static bool Matches(ProcessingGraphInputContract contract, DurableProcessingOutput output)
     {

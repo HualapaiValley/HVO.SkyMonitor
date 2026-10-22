@@ -535,6 +535,89 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             GainNormalizationCompatibility.NormalizeSetpointRegime("gain=0;gain=60", identity));
     }
 
+    [TestMethod]
+    public void OnlyTheMixedGainRecipeVersionNormalizesGainAndEveryOtherAxisStillCounts()
+    {
+        var layout = Layout(4, 2);
+        var member = Member(layout, Fill(8, 0), Fill(8, 0), Fill(8, 1), Fill(8, 0));
+        var plan = Plan(layout, [new(Light(layout, Fill(8, 0), ReferenceGain), ReferenceGain, member)]);
+        var normalized = GainNormalizationCompatibility.Normalize(Compatibility(HigherGain), plan);
+
+        Assert.AreEqual(normalized, GainNormalizationCompatibility.Normalize(Compatibility(ReferenceGain), plan));
+        Assert.AreEqual(FamilySha256, normalized.Calibration);
+        Assert.IsTrue(GainNormalizationCompatibility.IsNormalized(normalized));
+        Assert.IsFalse(GainNormalizationCompatibility.IsNormalized(Compatibility(HigherGain)));
+        Assert.AreNotEqual(
+            normalized,
+            GainNormalizationCompatibility.Normalize(Compatibility(HigherGain) with { Mask = "other-mask" }, plan));
+        Assert.IsTrue(GainNormalizationCompatibility.IsNormalizationRecipe(BuiltInProcessingRecipes.MixedGainNormalizedMean, "1.0.0"));
+        Assert.IsFalse(GainNormalizationCompatibility.IsNormalizationRecipe(BuiltInProcessingRecipes.MixedGainNormalizedMean, "1.0.1"));
+        Assert.IsFalse(GainNormalizationCompatibility.IsNormalizationRecipe(BuiltInProcessingRecipes.RollingMean, "1.0.0"));
+        Assert.IsFalse(GainNormalizationCompatibility.IsNormalizationRecipe(null, null));
+    }
+
+    [TestMethod]
+    public async Task TheRollingMeanNeverCombinesGainsButStacksProductsOfOnePlan()
+    {
+        var layout = Layout(4, 2);
+        var reference = Light(layout, Fill(8, 100), ReferenceGain);
+        var higher = Light(layout, Fill(8, 300), HigherGain);
+        var member = Member(layout, Fill(8, 0), Fill(8, 0), Fill(8, 1), Fill(8, 0));
+        var plan = Plan(layout, [new(reference, ReferenceGain, member), new(higher, HigherGain, member)]);
+        var otherPlan = plan with { CalibrationFamilyIdentitySha256 = new string('C', 64) };
+        var normalized = GainNormalizationCompatibility.Normalize(reference.Compatibility, plan);
+        var raw = ProcessingInputSelector.Raw("source");
+
+        // Raw frames at two gains differ in compatibility, and raw frames whose conditions differ in gain are refused
+        // even when their compatibility was made equal.
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(raw, [reference, higher]))).ReasonCode);
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(raw, [reference, higher with { Compatibility = reference.Compatibility }]))).ReasonCode);
+        // A raw frame never carries a normalized gain; only an already-combined mixed-gain product does.
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(
+                raw, [reference with { Compatibility = normalized }, higher with { Compatibility = normalized }]))).ReasonCode);
+        // Raw frames at one gain still stack.
+        var sameGain = await ExecuteAsync(RollingRequest(raw, [reference, Light(layout, Fill(8, 300), ReferenceGain)]));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, sameGain.Status, sameGain.ReasonCode);
+
+        var combined = ProcessingInputSelector.Combined(OutputVariant);
+        var first = reference with
+        {
+            Role = FrameArtifactRole.Combined,
+            Variant = OutputVariant,
+            Compatibility = normalized,
+            Conditions = null
+        };
+        var second = higher with
+        {
+            Role = FrameArtifactRole.Combined,
+            Variant = OutputVariant,
+            Compatibility = normalized,
+            Conditions = null
+        };
+        var stacked = await ExecuteAsync(RollingRequest(combined, [first, second]));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, stacked.Status, stacked.ReasonCode);
+        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single().Payload.Span));
+        Assert.AreEqual(normalized, stacked.Products.Single().Compatibility);
+        // Products of different plans are never averaged together.
+        var mixedPlans = await ExecuteAsync(RollingRequest(
+            combined, [first, second with { Compatibility = GainNormalizationCompatibility.Normalize(higher.Compatibility, otherPlan) }]));
+        Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, mixedPlans.ReasonCode);
+    }
+
+    private static ProcessingExecutionRequest RollingRequest(ProcessingInputSelector selector, IReadOnlyList<ProcessingArtifact> inputs)
+        => new(
+            BuiltInProcessingRecipes.RollingMean,
+            JsonSerializer.SerializeToElement(new RollingMeanOptions()),
+            selector,
+            inputs,
+            "rolling-mean");
+
     private static SingleInput SingleInputFixture()
     {
         var layout = Layout(4, 2);

@@ -652,7 +652,16 @@ internal sealed partial class CaptureProcessingPersistence(
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
                     entry.Descriptor.Timing.ExposureStartedUtc,
                     entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    entry.Descriptor.Controls.EffectiveExposure),
+                Conditions: new ProcessingCaptureConditions(
+                    entry.Descriptor.Controls.EffectiveGain,
+                    entry.Descriptor.Controls.EffectiveOffset,
+                    entry.Descriptor.Controls.EffectiveTemperatureC))
+            {
+                // The capture evidence a frozen normalization plan binds each light to.
+                CaptureId = entry.Descriptor.Capture.CaptureId,
+                DescriptorIdentitySha256 = entry.DescriptorSha256
+            });
         }
         return artifacts;
     }
