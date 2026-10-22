@@ -11,6 +11,15 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
+    public void ConstellationSettingsLinkTargetsTheActiveGraphOverlaySection()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var cut = context.Render<CurrentSkyPage>();
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=constellations#constellations']"));
+    }
+
+    [TestMethod]
     [DataRow("Available", "35.33°, -113.99° / 1100 m")]
     [DataRow("NotRetained", "Location not retained for this capture")]
     [DataRow("Unavailable", "Historical location unavailable")]
