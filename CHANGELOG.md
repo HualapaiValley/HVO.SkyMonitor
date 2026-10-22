@@ -13,8 +13,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. (#1474)
 
-- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
-
 - Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
 
 - Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
@@ -25,6 +23,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
 
 - CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
 
@@ -126,6 +126,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
+
+- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
 
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
