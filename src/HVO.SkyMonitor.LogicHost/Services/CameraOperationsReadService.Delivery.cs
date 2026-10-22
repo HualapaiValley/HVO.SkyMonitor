@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -82,8 +83,8 @@ internal sealed partial class CameraOperationsReadService
 
     /// <summary>
     /// The terminal, latest and latest-lifecycle facts of each given proposal. On SQL Server these are three bounded
-    /// reads: the filtered unique terminal index, and a forced (ProposalId, RecordedAtUtc, Id) TOP 1 seek per
-    /// proposal for the other two. The delivery service records Retrieved once at issue and the single terminal fact
+    /// reads: a forced (ProposalId, RecordedAtUtc, Id) TOP 1 seek per proposal for the latest lifecycle and latest
+    /// facts, and the filtered unique terminal index, reconciled by <see cref="ReconcileSummary"/>. The delivery service records Retrieved once at issue and the single terminal fact
     /// before any activation or rollback, so the lifecycle seek passes at most those two rows. Other providers
     /// evaluate the same rules over the proposals' facts.
     /// </summary>
@@ -100,13 +101,38 @@ internal sealed partial class CameraOperationsReadService
                 group.First(),
                 group.FirstOrDefault(fact => IsLifecycle(fact.Kind))));
         }
-        var terminal = await ProjectFacts(TerminalFacts(db, ids)).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var latest = await ProjectFacts(LatestFacts(db, ids, lifecycleOnly: false)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        // Three statements can observe three moments while facts are appended. Read in append order (lifecycle,
+        // latest, terminal) so each later read sees everything an earlier one saw, then reconcile to one moment.
         var lifecycle = await ProjectFacts(LatestFacts(db, ids, lifecycleOnly: true)).ToListAsync(cancellationToken).ConfigureAwait(false);
-        return ids.ToDictionary(id => id, id => new SummaryFacts(
+        var latest = await ProjectFacts(LatestFacts(db, ids, lifecycleOnly: false)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var terminal = await ProjectFacts(TerminalFacts(db, ids)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return ids.ToDictionary(id => id, id => ReconcileSummary(
             terminal.SingleOrDefault(fact => fact.ProposalId == id),
             latest.SingleOrDefault(fact => fact.ProposalId == id),
             lifecycle.SingleOrDefault(fact => fact.ProposalId == id)));
+    }
+
+    /// <summary>
+    /// Makes one summary internally consistent when its facts were read by separate statements while facts were
+    /// appended. Facts are append-only, a terminal fact precedes any activation or rollback, and lifecycle facts are
+    /// recorded in order, so the newest lifecycle fact observed is the latest one, and the latest fact is the newest
+    /// of everything observed. Ties order as SQL Server orders uniqueidentifier values, matching the fact page.
+    /// </summary>
+    internal static SummaryFacts ReconcileSummary(
+        ProcessingGraphDeliveryFactView? terminal, ProcessingGraphDeliveryFactView? latest,
+        ProcessingGraphDeliveryFactView? lifecycle)
+    {
+        if (latest is not null && IsLifecycle(latest.Kind)) lifecycle = Newest(lifecycle, latest);
+        latest = Newest(Newest(latest, lifecycle), terminal);
+        return new(terminal, latest, lifecycle);
+
+        static ProcessingGraphDeliveryFactView? Newest(ProcessingGraphDeliveryFactView? left, ProcessingGraphDeliveryFactView? right)
+            => left is null ? right
+                : right is null ? left
+                : right.RecordedAtUtc > left.RecordedAtUtc ||
+                    right.RecordedAtUtc == left.RecordedAtUtc && new SqlGuid(right.Id).CompareTo(new SqlGuid(left.Id)) > 0
+                    ? right
+                    : left;
     }
 
     /// <summary>The single stored terminal fact of each proposal, through the filtered unique terminal index.</summary>
@@ -154,7 +180,7 @@ internal sealed partial class CameraOperationsReadService
     private static bool IsLifecycle(string kind)
         => kind is nameof(ProcessingGraphDeliveryFactKind.Activated) or nameof(ProcessingGraphDeliveryFactKind.RolledBack);
 
-    private sealed record SummaryFacts(
+    internal sealed record SummaryFacts(
         ProcessingGraphDeliveryFactView? Terminal,
         ProcessingGraphDeliveryFactView? Latest,
         ProcessingGraphDeliveryFactView? Lifecycle);

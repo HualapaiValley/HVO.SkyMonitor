@@ -363,6 +363,36 @@ public sealed class CameraOperationsReadServiceTests
     }
 
     [TestMethod]
+    public void ReconcileSummaryKeepsLatestAtLeastAsNewAsEveryFactObservedInTheSameSummary()
+    {
+        // Review F5: the summary's fact reads are separate statements; appends between them must not leave a latest fact
+        // older than the lifecycle fact, or a lifecycle fact older than a later lifecycle fact read as latest.
+        var proposal = Guid.NewGuid();
+        ProcessingGraphDeliveryFactView Fact(string kind, int minute)
+            => new(Guid.NewGuid(), proposal, kind, "CameraAgent", Now.AddMinutes(minute), Now.AddMinutes(minute),
+                null, null, null, null, null);
+        var accepted = Fact("Accepted", 0);
+        var activated = Fact("Activated", 1);
+        var rolledBack = Fact("RolledBack", 2);
+
+        // Lifecycle read saw RolledBack; the earlier latest read still saw Activated (the reviewer's interleaving).
+        var stale = CameraOperationsReadService.ReconcileSummary(accepted, activated, rolledBack);
+        Assert.AreEqual(rolledBack, stale.Latest);
+        Assert.AreEqual(rolledBack, stale.Lifecycle);
+        // Latest read saw a lifecycle fact newer than the earlier lifecycle read.
+        var newer = CameraOperationsReadService.ReconcileSummary(accepted, rolledBack, activated);
+        Assert.AreEqual(rolledBack, newer.Latest);
+        Assert.AreEqual(rolledBack, newer.Lifecycle);
+        // A terminal fact read last but newer than the latest read becomes the latest fact; nothing else moves.
+        var settled = CameraOperationsReadService.ReconcileSummary(accepted, Fact("Retrieved", -1), null);
+        Assert.AreEqual(accepted, settled.Latest);
+        Assert.IsNull(settled.Lifecycle);
+        // Consistent reads are returned unchanged.
+        var consistent = CameraOperationsReadService.ReconcileSummary(accepted, rolledBack, rolledBack);
+        Assert.AreEqual(new CameraOperationsReadService.SummaryFacts(accepted, rolledBack, rolledBack), consistent);
+    }
+
+    [TestMethod]
     public async Task ProposalFactsContinueBeyondTheFirstPageInStableOrder()
     {
         await using var world = await World.CreateAsync(ObservatoryMembershipRole.Viewer).ConfigureAwait(false);

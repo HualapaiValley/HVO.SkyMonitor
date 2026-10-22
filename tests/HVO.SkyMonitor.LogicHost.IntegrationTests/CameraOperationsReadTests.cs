@@ -200,6 +200,38 @@ public sealed class CameraOperationsReadTests
         rowsRead.Should().BeLessThan(500, "three proposals' summaries read a bounded number of facts, not 2,003");
     }
 
+    [TestMethod]
+    [DataRow("lifecycle")]
+    [DataRow("latest")]
+    [DataRow("terminal")]
+    public async Task SqlServer_ProposalSummariesStayConsistentWhenLifecycleFactsAreAppendedDuringTheRead(string after)
+    {
+        // Review F5: a RolledBack fact committed by another connection between the summary's fact reads must not yield a
+        // summary whose latest fact predates its latest lifecycle fact, or a lifecycle fact that is not the latest one.
+        var seed = await CameraOperationsSeed.CreateAsync(captures: 2, jobEvery: 1, executions: 1, proposals: 1,
+            lifecycleFacts: 1).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var connectionString = services.GetRequiredService<ApplicationDbContext>().Database.GetConnectionString()!;
+        var appender = new AppendRollbackAfterSummaryRead(after, seed.FactProposal, connectionString);
+        await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(connectionString).AddInterceptors(appender).Options);
+        var service = new CameraOperationsReadService(db, services.GetRequiredService<IDataProtectionProvider>());
+        var page = await service.ListProposalsAsync(CameraOperationsSeed.Principal(seed.OwnerId), seed.Observatory,
+            seed.Camera, 50, null).ConfigureAwait(false);
+        appender.Appended.Should().BeTrue(after);
+        var summary = page.Items.Single(item => item.Proposal.Id == seed.FactProposal);
+        summary.TerminalFact!.Kind.Should().Be("Accepted", after);
+        var latest = summary.LatestFact!;
+        var lifecycle = summary.LatestLifecycleFact!;
+        (latest.RecordedAtUtc > lifecycle.RecordedAtUtc ||
+            latest.RecordedAtUtc == lifecycle.RecordedAtUtc &&
+            new System.Data.SqlTypes.SqlGuid(latest.Id).CompareTo(new System.Data.SqlTypes.SqlGuid(lifecycle.Id)) >= 0)
+            .Should().BeTrue($"{after}: latest {latest.Kind}@{latest.RecordedAtUtc:O} predates lifecycle {lifecycle.Kind}@{lifecycle.RecordedAtUtc:O}");
+        if (latest.Kind is "Activated" or "RolledBack") latest.Id.Should().Be(lifecycle.Id, after);
+        (summary.DerivedStatus is not null).Should().Be(lifecycle.Kind == "RolledBack", after);
+    }
+
     internal static async Task<HttpClient> CreateScopedKeyClientAsync(Guid? observatory)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -347,6 +379,52 @@ public sealed class CameraOperationsReadPerformanceTests
         violations.Should().BeEmpty();
     }
 
+}
+
+/// <summary>
+/// Commits a RolledBack fact for one proposal through a separate connection once the chosen summary fact read has
+/// been consumed, so the next summary read observes a newer history than the previous one did.
+/// </summary>
+internal sealed class AppendRollbackAfterSummaryRead(string after, Guid proposalId, string connectionString) : DbCommandInterceptor
+{
+    private readonly Dictionary<DbDataReader, string> _readers = [];
+
+    internal bool Appended { get; private set; }
+
+    public override ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+        DbDataReader result, CancellationToken cancellationToken = default)
+    {
+        var text = command.CommandText;
+        var stage = !text.Contains("CentralProcessingGraphDeliveryFacts", StringComparison.Ordinal) ? null
+            : text.Contains("N'Activated', N'RolledBack'", StringComparison.Ordinal) ? "lifecycle"
+            : text.Contains("N'Accepted', N'Rejected'", StringComparison.Ordinal) ? "terminal"
+            : text.Contains("CROSS APPLY", StringComparison.Ordinal) ? "latest"
+            : null;
+        if (stage is not null) _readers[result] = stage;
+        return ValueTask.FromResult(result);
+    }
+
+    public override async ValueTask<InterceptionResult> DataReaderClosingAsync(DbCommand command,
+        DataReaderClosingEventData eventData, InterceptionResult result)
+    {
+        if (!Appended && _readers.TryGetValue(eventData.DataReader, out var stage) && stage == after)
+        {
+            Appended = true;
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using var insert = connection.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO [CentralProcessingGraphDeliveryFacts]
+                    ([Id], [ProposalId], [Kind], [OccurredAtUtc], [RecordedAtUtc], [Source])
+                SELECT NEWID(), @proposal, N'RolledBack', DATEADD(minute, 1, MAX([RecordedAtUtc])),
+                    DATEADD(minute, 1, MAX([RecordedAtUtc])), N'CameraAgent'
+                FROM [CentralProcessingGraphDeliveryFacts] WHERE [ProposalId] = @proposal
+                """;
+            insert.Parameters.Add(new SqlParameter("@proposal", System.Data.SqlDbType.UniqueIdentifier) { Value = proposalId });
+            await insert.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        return result;
+    }
 }
 
 /// <summary>Replays captured production commands with SET STATISTICS XML/IO to report rows read and plans.</summary>
