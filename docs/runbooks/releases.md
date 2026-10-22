@@ -39,6 +39,40 @@ image size and native publish time. Take a separate EventPipe trace to attribute
 benefit justifies its cost. Hosted arm64 repeatability and Pi performance are release evidence, not a result supplied by
 an x64 development run.
 
+## Reproducing a CameraAgent image
+
+Use `scripts/build:cameraagent-image --platform linux/amd64 --tag cameraagent:<commit>` on a native x64 host
+(or `linux/arm64` on native ARM64). It stamps `HVO_SOURCE_REVISION` and derives `SOURCE_DATE_EPOCH` with
+`git show -s --format=%ct HEAD`, ignoring a caller's environment source date. The checkout must contain the exact
+commit's files for a reproducible release; the helper also permits local edits for development.
+Its default Docker exporter loads the image. Use `--output type=oci,dest=/absolute/path/image.oci.tar` for an archive.
+BuildKit 0.13 or newer is required: [its source-date contract](https://github.com/moby/buildkit/blob/v0.26.1/docs/build-repro.md)
+sets config/history creation times, and `rewrite-timestamp=true` clamps COPY/publish layer mtimes. The release workflow,
+`release:assets`, the native ARM64 advisory and both deployment exporters pass the same settings. BuildKit attestations are disabled on these
+CameraAgent paths because they contain build-run metadata. Keep the same BuildKit version, platform, pinned base images,
+build arguments, file permissions and exporter options when comparing builds.
+The Dockerfile sets every published file/directory mtime to the source date before COPY: exporter clamping alone leaves
+older checkout mtimes intact, so a reused checkout could otherwise differ from a fresh checkout of the same commit.
+
+The runtime package repository is frozen at the Dockerfile's Ubuntu snapshot (both architectures); advance that snapshot
+with dependency updates to adopt package fixes. Installation logs, apt state/cache, dpkg backup state and ldconfig's
+auxiliary cache are removed in the installing layer. These contain wall-clock or machine-specific data that mtime rewriting
+cannot change. The image helper also imports the existing asset-date target for IL builds using the source date.
+An explicit `HVO_CREATED` still takes precedence for static endpoint dates and remains the release's created label;
+`SOURCE_DATE_EPOCH` does not fill an empty development created label or change any installer identity/state labels.
+Raw `docker build`, Compose and development smoke harnesses do not select these exporter options automatically; use the
+helper for identity comparisons, or supply `--build-arg SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)` and
+`--output type=docker,rewrite-timestamp=true` explicitly.
+
+Run `scripts/release:check-cameraagent-image --platform linux/amd64 --evidence /tmp/cameraagent-repro` on a native host.
+The directory must not exist and should be outside the checkout. The check makes two full `--no-cache` OCI builds with
+the same tag/output path and compares the image config and manifest digests, layer descriptors and complete archive
+SHA-256. Both archives, inventories and inputs remain available, including on failure. Diagnostics distinguish config fields,
+layer bytes and OCI tar layout/metadata; a difference fails the check even when the image ID matches. Add
+`--ready-to-run --created <UTC> --version <version>` to check release arguments. A clean IL result does not qualify R2R
+or another architecture. No cross-platform equality is expected. Network access to pinned dependencies and the snapshot
+service is required; unpinned custom base overrides and local source changes are different build inputs.
+
 ## The product version
 
 `VersionPrefix` in `Directory.Build.props` is the only product version: the version the next release carries.

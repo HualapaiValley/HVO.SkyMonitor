@@ -156,9 +156,15 @@ deploy_images_validate_inspect() {
 deploy_images_build_archive() {
     local component="$1" dockerfile="$2" architecture="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" artifact_root="${10}" builder="${11}"
     local temporary="$artifact_root/.${component}-${architecture}.${run_id}.tmp.tar" config config_name config_digest archive_digest final
+    local source_date_epoch output_options=""
     local -a build_args=()
     # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
-    [[ "$component" != cameraAgent ]] || build_args=(--build-arg "HVO_SOURCE_REVISION=$revision")
+    if [[ "$component" == cameraAgent ]]; then
+        source_date_epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$revision")" || return 1
+        build_args=(--build-arg "HVO_SOURCE_REVISION=$revision" --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+            --provenance=false --sbom=false)
+        output_options=",rewrite-timestamp=true"
+    fi
     if [[ -e "$temporary" || -L "$temporary" ]]; then
         [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%u:%h' "$temporary" 2>/dev/null)" == "$(id -u):1" ]] ||
           { deploy_fail images "$component-$architecture" unsafe-temporary; return 1; }
@@ -168,7 +174,7 @@ deploy_images_build_archive() {
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \
-      --tag "$repository:$tag" --output "type=docker,dest=$temporary" "$REPO_ROOT" >/dev/null 2>&1 ||
+      --tag "$repository:$tag" --output "type=docker,dest=$temporary$output_options" "$REPO_ROOT" >/dev/null 2>&1 ||
       { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" build-failed; return 1; }
     chmod 600 "$temporary" || return 1
     config_name="$(tar -xOf "$temporary" manifest.json 2>/dev/null | jq -er 'if type == "array" and length == 1 then .[0].Config else empty end')" ||
@@ -256,9 +262,15 @@ deploy_images_observe_registry() {
 deploy_images_resolve_registry() {
     local component="$1" dockerfile="$2" platforms_json="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" builder="${10}"
     local platforms status
+    local source_date_epoch output_options=""
     local -a build_args=()
     # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
-    [[ "$component" != cameraAgent ]] || build_args=(--build-arg "HVO_SOURCE_REVISION=$revision")
+    if [[ "$component" == cameraAgent ]]; then
+        source_date_epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$revision")" || return 1
+        build_args=(--build-arg "HVO_SOURCE_REVISION=$revision" --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+            --provenance=false --sbom=false)
+        output_options=",rewrite-timestamp=true"
+    fi
     if deploy_images_observe_registry "$component" "$platforms_json" "$repository" "$tag" "$revision" "$tree" "$created" "$sdk" "$builder"; then
         return 0
     else
@@ -266,11 +278,16 @@ deploy_images_resolve_registry() {
     fi
     [[ "$status" == 2 ]] || return "$status"
     platforms="$(jq -r 'map("linux/" + .) | join(",")' <<< "$platforms_json")"
+    if [[ "$component" == cameraAgent ]]; then
+        build_args+=(--output "type=image,push=true$output_options")
+    else
+        build_args+=(--push)
+    fi
     if ! docker buildx build --builder "$builder" --platform "$platforms" --file "$REPO_ROOT/$dockerfile" "${build_args[@]}" \
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \
-      --tag "$repository:$tag" --push "$REPO_ROOT" >/dev/null 2>&1; then
+      --tag "$repository:$tag" "$REPO_ROOT" >/dev/null 2>&1; then
         if deploy_images_observe_registry "$component" "$platforms_json" "$repository" "$tag" "$revision" "$tree" "$created" "$sdk" "$builder"; then
             return 0
         fi

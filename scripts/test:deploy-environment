@@ -649,7 +649,9 @@ if [[ "$1" == buildx && "$2" == build ]]; then
   while (( $# > 0 )); do
     case "$1" in
       --builder) builder=$2; shift 2 ;;
-      --output) destination="${2#type=docker,dest=}"; shift 2 ;;
+      --output)
+        if [[ "$2" == type=docker,dest=* ]]; then destination="${2#type=docker,dest=}"; destination="${destination%%,*}"; fi
+        shift 2 ;;
       --platform) platforms="$2"; shift 2 ;;
       --tag) repository="$2"; shift 2 ;;
       --label)

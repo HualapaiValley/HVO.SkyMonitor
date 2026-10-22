@@ -101,6 +101,7 @@ notes_error="$(./scripts/release:notes --check "$version" 2>&1)" || fail "${note
 # Every release ships the notices of what it bundles, as an asset of their own: a single-file installer carries Terminal.Gui
 # and the packages it brings in, Onigwrap's native Oniguruma library among them, and cannot carry their notices beside it.
 [[ -s THIRD-PARTY-NOTICES.md ]] || fail "THIRD-PARTY-NOTICES.md, the release's third-party notices, is missing or empty."
+source_date_epoch="$(git show -s --format=%ct "$commit")"
 created="${created:-$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)}"
 [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
     fail "--created must be a UTC time such as 2026-10-17T18:00:00Z."
@@ -174,9 +175,10 @@ else
         --build-arg "HVO_VERSION=$version" \
         --build-arg "HVO_SOURCE_REVISION=$commit" \
         --build-arg "HVO_CREATED=$created" \
+        --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
         --provenance=false \
         --sbom=false \
-        --output "type=oci,dest=$image_oci" \
+        --output "type=oci,dest=$image_oci,rewrite-timestamp=true" \
         . >&2
 fi
 

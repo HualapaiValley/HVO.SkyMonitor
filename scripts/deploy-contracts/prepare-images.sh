@@ -55,7 +55,8 @@ jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root ==
 # Every CameraAgent build passes the revision its label names, so the published assemblies carry it too (#1297).
 # The LogicHost Dockerfile declares no build argument and receives none.
 assert_image_build_revision_arguments() {
-    local builds camera_builds logic_builds build
+    local builds camera_builds logic_builds build epoch
+    epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$REVISION")"
     builds="$(grep $'^docker\tbuildx\tbuild\t' "$LOG")" || fail 'No image build was recorded.'
     camera_builds="$(grep -F $'\tio.hvoskymonitor.component=cameraAgent\t' <<< "$builds")" || fail 'No CameraAgent image build was recorded.'
     logic_builds="$(grep -F $'\tio.hvoskymonitor.component=logicHost\t' <<< "$builds")" || fail 'No LogicHost image build was recorded.'
@@ -64,6 +65,9 @@ assert_image_build_revision_arguments() {
           fail 'A CameraAgent image build did not pass its source revision as HVO_SOURCE_REVISION.'
         [[ "$build" == *$'\t--label\torg.opencontainers.image.revision='"$REVISION"$'\t'* ]] ||
           fail 'A CameraAgent image build lost its revision label.'
+        [[ "$build" == *$'\t--build-arg\tSOURCE_DATE_EPOCH='"$epoch"$'\t'* ]] ||
+          fail 'A CameraAgent image build lost its commit time.'
+        [[ "$build" == *'rewrite-timestamp=true'* ]] || fail 'CameraAgent layer timestamp rewriting is missing.'
     done <<< "$camera_builds"
     [[ "$logic_builds" != *$'\t--build-arg\t'* ]] || fail 'A LogicHost image build received a build argument.'
 }

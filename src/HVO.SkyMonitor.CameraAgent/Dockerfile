@@ -1,6 +1,7 @@
 # Dockerfile for HVO.SkyMonitor.CameraAgent
 # Deployment platforms: linux/amd64 and linux/arm64
-# Build from repo root with a source-revision tag; deployment rejects mutable tags.
+# Build with scripts/build:cameraagent-image (commit time and BuildKit timestamp rewriting).
+# A raw docker build must supply the same SOURCE_DATE_EPOCH and exporter options for repeatability.
 
 # Base images. The digests are pinned on the dotnet-sdk and dotnet-aspnet FROM lines because Dependabot updates
 # only FROM lines (#1321). The stages below select those aliases by default; the ARM64 advisory build passes its
@@ -22,6 +23,7 @@ WORKDIR /src
 ARG HVO_READY_TO_RUN=false
 ARG HVO_CREATED
 ARG TARGETARCH
+ARG SOURCE_DATE_EPOCH
 COPY scripts/release:cameraagent-publish scripts/release:cameraagent-publish
 COPY scripts/cameraagent-release.targets scripts/cameraagent-release.targets
 
@@ -85,9 +87,13 @@ RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *)
         --no-restore -c Release -r "${rid}" -o /app/replay-runner \
         ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}"
 
-# Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
-# an overlay copy-up of the entire payload, which rewrites every published file a second time.
-RUN chmod -R a+rX /app/publish /app/replay-runner
+# Apply permissions and exact source mtimes before copying the payload. Exporter rewriting only clamps NEWER times;
+# a file retained in an existing checkout can predate the commit, unlike the same file in a fresh checkout.
+# Doing this in the build stage also avoids a runtime overlay copy-up of the entire payload.
+RUN chmod -R a+rX /app/publish /app/replay-runner \
+    && if [ -n "${SOURCE_DATE_EPOCH}" ]; then \
+        find /app/publish /app/replay-runner -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +; \
+    fi
 
 # Export exactly the image's CameraAgent payload for clean native repeatability checks.
 FROM scratch AS cameraagent-publish
@@ -98,7 +104,14 @@ FROM ${DOTNET_ASPNET_IMAGE}
 WORKDIR /app
 
 # Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
-RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+# Freeze package bytes for both native architectures. Advance this snapshot with dependency updates;
+# never replace it with a moving mirror, even when the base-image digest remains pinned.
+RUN sed -i -E 's@https?://[^ ]*(archive.ubuntu.com/ubuntu/?|security.ubuntu.com/ubuntu/?|ports.ubuntu.com/ubuntu-ports/?)@https://snapshot.ubuntu.com/ubuntu/20261021T000000Z@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends curl libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/cache/ldconfig/aux-cache \
+    && rm -f /var/lib/dpkg/status-old /var/lib/apt/extended_states \
+    && find /var/log -type f -delete
 
 # Copy published application. The build stage already applied the runtime permissions.
 COPY --from=build /app/publish .

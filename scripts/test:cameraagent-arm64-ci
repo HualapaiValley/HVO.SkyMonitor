@@ -541,8 +541,10 @@ done
 readonly SDK_IMAGE_DIGEST ASPNET_IMAGE_DIGEST
 [[ -n "$SDK_IMAGE_DIGEST" && -n "$ASPNET_IMAGE_DIGEST" ]] || fail "resolved base-image digests are incomplete"
 docker build --pull --platform linux/arm64 --build-arg "HVO_SOURCE_REVISION=$(<"$RESULTS/source-revision.txt")" \
+    --build-arg "SOURCE_DATE_EPOCH=$(git -C "$REPO_ROOT" show -s --format=%ct "$(<"$RESULTS/source-revision.txt")")" \
     --build-arg "DOTNET_SDK_IMAGE=$SDK_IMAGE_DIGEST" \
     --build-arg "DOTNET_ASPNET_IMAGE=$ASPNET_IMAGE_DIGEST" \
+    --provenance=false --sbom=false --output type=docker,rewrite-timestamp=true \
     --label "$OWNERSHIP_LABEL" --tag "$IMAGE_TAG" \
     --iidfile "$RESULTS/image-id.txt" \
     --file "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" \

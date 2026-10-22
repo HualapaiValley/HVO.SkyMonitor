@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Reproducible CameraAgent build from this checkout. Other arguments are buildx options.
+# --output is optional (defaults to loading Docker); supported types: docker, oci, image, local.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+commit="$(git -C "$root" rev-parse HEAD)"
+output='type=docker'
+arguments=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --commit) commit="${2:?--commit requires a commit}"; shift 2 ;;
+        --output) output="${2:?--output requires an exporter}"; shift 2 ;;
+        --load | --push | --file | -f | --output=*)
+            echo 'Use --output type=docker, type=image,push=true or type=oci; the CameraAgent Dockerfile is fixed.' >&2
+            exit 64 ;;
+        *) arguments+=("$1"); shift ;;
+    esac
+done
+commit="$(git -C "$root" rev-parse --verify "${commit}^{commit}")"
+[[ "$commit" == "$(git -C "$root" rev-parse HEAD)" ]] || {
+    echo 'Check out --commit before building its image.' >&2; exit 64;
+}
+epoch="$(git -C "$root" show -s --format=%ct "$commit")"
+case "$output" in
+    type=local,*) ;; # BuildKit applies SOURCE_DATE_EPOCH to local exports itself.
+    type=docker | type=docker,* | type=oci,* | type=image | type=image,*) output+=',rewrite-timestamp=true' ;;
+    *) echo 'Unsupported image exporter.' >&2; exit 64 ;;
+esac
+exec docker buildx build "${arguments[@]}" --file "$root/src/HVO.SkyMonitor.CameraAgent/Dockerfile" \
+    --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "HVO_SOURCE_REVISION=$commit" \
+    --provenance=false --sbom=false --output "$output" "$root"
