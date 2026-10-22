@@ -2011,13 +2011,23 @@ public sealed partial class SqliteCalibrationLibraryStore(
         {
             return;
         }
-        var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginRead(connection);
-        await ValidatePersistedArtifactsAsync(
-            connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        _validatedEvidence[bundle.BundleIdentitySha256] = evidence;
+        try
+        {
+            var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            await ValidatePersistedArtifactsAsync(
+                connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _validatedEvidence[bundle.BundleIdentitySha256] = evidence;
+        }
+        catch
+        {
+            // A failed validation outranks an earlier pass. The cache compares only file length and write time, so a
+            // stale entry would otherwise let later unforced callers trust bytes this validation just rejected.
+            _validatedEvidence.TryRemove(bundle.BundleIdentitySha256, out _);
+            throw;
+        }
     }
 
     private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)

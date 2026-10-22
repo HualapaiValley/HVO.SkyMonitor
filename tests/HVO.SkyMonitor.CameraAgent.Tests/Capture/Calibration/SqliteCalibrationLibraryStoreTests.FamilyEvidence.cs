@@ -57,6 +57,49 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task ConfirmFamilyMastersAsync_ForgetsTheCachedEvidenceItFindsCorrupt()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFamilyFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var family = fixture.Family(fixture.Member(LowGain), fixture.Member(HighGain));
+            var high = fixture.Member(HighGain).Masters;
+            Assert.IsTrue((await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
+
+            // One changed byte that keeps the marker's length and write time is invisible to the selection cache, which
+            // compares only those; this is the window the regression targets. Only a forced validation reads it again.
+            var profile = Path.Combine(
+                root, fixture.Bundles[HighGain].ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var written = File.GetLastWriteTimeUtc(profile);
+            var flipped = await File.ReadAllBytesAsync(profile).ConfigureAwait(false);
+            flipped[0] ^= 0x01;
+            await File.WriteAllBytesAsync(profile, flipped).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(profile, written);
+            Assert.IsTrue((await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
+
+            Assert.AreEqual(
+                CalibrationFamilyReasonCodes.MasterCorrupt,
+                await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
+
+            // The failed confirmation must not leave the earlier validation behind for selection to reuse.
+            var selected = await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(selected.IsSelected);
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, selected.ReasonCode);
+            Assert.IsTrue((await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[LowGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ConfirmFamilyMastersAsync_ReportsAFrozenMasterThatIsNoLongerIntact()
     {
         var root = CreateRoot();
