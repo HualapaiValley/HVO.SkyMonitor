@@ -258,6 +258,8 @@ internal static class Redaction
         // Keep the whole marker inside a bounded diagnostic, so a later embedding can always recognize it.
         first = Math.Min(first, ShownEnd(shown.Text, length - TruncationMarker.Length));
         while (first > 0 && (shown.Origins[first - 1] == Written || IsControlIntroducer(shown.Text[first - 1]))) first--;
+        // The cut may fall inside a surrogate pair, including one joined by removing controls. Keep Reason's input valid.
+        if (first > 0 && char.IsHighSurrogate(shown.Text[first - 1])) first--;
         return WithoutControls(shown.Text[..first]) + TruncationMarker;
     }
 

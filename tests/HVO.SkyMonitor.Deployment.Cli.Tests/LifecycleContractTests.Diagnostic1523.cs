@@ -409,6 +409,20 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(outer.Contains(Diagnostic1523Value, StringComparison.Ordinal), outer);
     }
 
+    // Reserving the marker's space may otherwise cut between a valid surrogate pair and make Reason's JSON encoder throw.
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Diagnostic1523_TruncationKeepsSurrogatePairsValid(bool controlBetween)
+    {
+        var pair = char.ConvertFromUtf32(0x1F600);
+        var padding = new string('p', 244);
+        var diagnostic = padding + pair[0] + (controlBetween ? "\u009C" : string.Empty) + pair[1] + "<redacted>… tail";
+        var expected = padding + "<redacted>…";
+        Assert.AreEqual(expected, Redaction.SafeDiagnostic(diagnostic));
+        Assert.AreEqual(JsonEncodedText.Encode(expected).ToString(), CameraAgentStateDiagnostics.Reason(diagnostic));
+    }
+
     // The JSON reading writes a lone surrogate, which the encoder refuses, as its escape, so a diagnostic holding one is still
     // redacted rather than throwing.
     [TestMethod]
