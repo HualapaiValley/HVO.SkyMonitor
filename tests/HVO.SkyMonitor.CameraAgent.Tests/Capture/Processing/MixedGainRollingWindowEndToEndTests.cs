@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// acquisitions (#1524).
 /// </summary>
 [TestClass]
-public sealed class MixedGainRollingWindowEndToEndTests
+public sealed partial class MixedGainRollingWindowEndToEndTests
 {
     private const string NodeId = "mixed-gain";
     private const double LowGain = 82;
@@ -113,18 +113,7 @@ public sealed class MixedGainRollingWindowEndToEndTests
     public Task Review1530_CenteredWindowMustRetainEveryRequiredPosition()
         => RunAsync([LowGain, HighGain, 90], [LowGain, HighGain], [MixedGainStep()], async run =>
         {
-            var operations = run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var revision = await operations.CreateRevisionAsync(
-                "centered-mixed-gain", "v1",
-                Pipeline(run.Root, [MixedGainStep(windowSize: 3, nodeId: "centered", windowKind: "Centered")]),
-                "centered-create-key", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
-            _ = await operations.ValidateRevisionAsync(
-                revision.RevisionId, "centered-validate-key", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
-            var replay = await operations.SubmitReplayAsync(
-                new ProcessingReplaySubmission(
-                    run.CaptureId(1), revision.RevisionId, run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId,
-                    TriggerReference: "centered-replay"),
-                "centered-replay-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+            var replay = await SeedOriginalCenteredStackAsync(run).ConfigureAwait(false);
             var detail = await RunReplayAsync(run, replay.Execution.ExecutionId).ConfigureAwait(false);
 
             // The family has no member for the +1 frame's gain, so the plan excludes it. A centered window requires every
