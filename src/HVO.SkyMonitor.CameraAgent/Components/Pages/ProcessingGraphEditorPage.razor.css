@@ -28,3 +28,6 @@
 .identity-facts dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
 .identity-facts dd { margin: .1rem 0 0; }
 .check--stale { color: var(--hvo-warning-fg); }
+
+.node-options-section { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--hvo-border-muted); scroll-margin-top: 6rem; }
+.node-options-section h3 { font-size: 1rem; margin-bottom: 1rem; }

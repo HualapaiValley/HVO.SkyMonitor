@@ -22,9 +22,13 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private string? _saveKey;
     private string? _savePayload;
     private IJSObjectReference? _module;
+    private bool _graphChanged;
 
     [SupplyParameterFromQuery(Name = "from")]
     public string? From { get; set; }
+
+    [SupplyParameterFromQuery(Name = "section")]
+    public string? Section { get; set; }
 
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
 
@@ -35,6 +39,22 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
+        if (_from is null && Section == "constellations")
+        {
+            var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            if (registry.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+                return;
+            }
+            _from = registry.Value?.ActiveRevisionId;
+            if (_from is null)
+            {
+                SetMessage("The active graph could not be read. Open Named graphs and select a revision to edit.", error: true);
+                _loading = false;
+                return;
+            }
+        }
         _newType = GraphService.StepAliases.Count > 0 ? GraphService.StepAliases[0] : string.Empty;
         if (_from is null)
         {
@@ -66,6 +86,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         _previewedPipeline = null;
         _message = null;
         _savedRevisionId = null;
+        _graphChanged = false;
     }
 
     private void AddNode()
@@ -98,6 +119,8 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private async Task PreviewAsync()
     {
+        _plan = null;
+        _previewedPipeline = null;
         if (!_model.TryBuild(out var pipeline, out var errors))
         {
             SetMessage(string.Join(' ', errors), error: true);
@@ -116,7 +139,8 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             {
                 _plan = result.Value;
                 _previewedPipeline = pipeline;
-                SetMessage("The draft compiles. No durable state changed.", error: false);
+                _graphChanged = _model.HasGraphChanges(pipeline);
+                SetMessage(_graphChanged ? "The draft compiles. No durable state changed." : "No graph changes. The source revision is unchanged; no new revision is needed.", error: false);
             }
             else
             {
@@ -133,7 +157,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private async Task SaveDraftAsync()
     {
-        if (_previewedPipeline is null)
+        if (_previewedPipeline is null || !_graphChanged || _savedRevisionId is not null)
         {
             return;
         }

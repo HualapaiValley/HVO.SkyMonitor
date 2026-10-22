@@ -17,6 +17,11 @@ internal sealed class ProcessingGraphDraftModel
     public string Revision { get; set; } = string.Empty;
     public List<NodeRow> Nodes { get; } = [];
     public string? SourceRevisionId { get; private set; }
+    private string? _initialDefinition;
+    private CapturePipelineConfig? _sourcePipeline;
+
+    public bool HasGraphChanges(CapturePipelineConfig pipeline)
+        => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
 
     /// <summary>Carried from the source revision and shown read-only; a new draft uses the current explicit schema.</summary>
     public string SchemaVersion { get; private set; } = CapturePipelineSchemaVersions.ExplicitV2;
@@ -33,6 +38,7 @@ internal sealed class ProcessingGraphDraftModel
             Name = name,
             Revision = revision,
             SourceRevisionId = sourceRevisionId,
+            _sourcePipeline = pipeline,
             SchemaVersion = pipeline.SchemaVersion,
             DependencyPolicy = pipeline.DependencyPolicy
         };
@@ -48,6 +54,11 @@ internal sealed class ProcessingGraphDraftModel
                 Options = step.Options,
                 Publication = step.Publication
             });
+        }
+        // Compare the source projection, so merely opening a draft cannot change the graph.
+        if (model.TryBuild(out var initial, out _))
+        {
+            model._initialDefinition = JsonSerializer.Serialize(initial);
         }
         return model;
     }
@@ -122,6 +133,10 @@ internal sealed class ProcessingGraphDraftModel
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var node in Nodes)
         {
+            if (node.OptionsForm is { } form && !form.TryBuild(out _, out var diagnostics))
+            {
+                problems.AddRange(diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+            }
             if (string.IsNullOrWhiteSpace(node.Id))
             {
                 problems.Add("Every node needs an identifier.");
@@ -150,11 +165,20 @@ internal sealed class ProcessingGraphDraftModel
             pipeline = CapturePipelineConfig.Empty;
             return false;
         }
+        if (_sourcePipeline is { } source && StructureMatchesSource(source))
+        {
+            // Option-only edits keep even omitted order/id/enabled members and dependency ordering intact.
+            pipeline = source with
+            {
+                Steps = source.Steps.Select((step, index) => step with { Options = Nodes[index].BuildOptions() }).ToArray()
+            };
+            return true;
+        }
         var steps = Nodes.Select((node, index) => new CaptureProcessingStepConfig(
             node.Type.Trim(),
             node.Id.Trim(),
             (index + 1) * 10,
-            node.Options,
+            node.BuildOptions(),
             node.DependsOn.OrderBy(static dependency => dependency, StringComparer.Ordinal).ToArray(),
             node.Required,
             node.Enabled ? null : false,
@@ -162,6 +186,15 @@ internal sealed class ProcessingGraphDraftModel
         pipeline = new CapturePipelineConfig(steps, SchemaVersion, DependencyPolicy);
         return true;
     }
+
+    private bool StructureMatchesSource(CapturePipelineConfig source)
+        => Nodes.Count == source.Steps.Count && Nodes.Select((node, index) =>
+        {
+            var step = source.Steps[index];
+            return node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
+                node.Type == step.Type && node.Required == step.Required && node.Enabled == (step.Enabled ?? true) &&
+                node.DependsOn.SetEquals(step.DependsOn ?? []);
+        }).All(static same => same);
 
     internal sealed class NodeRow
     {
@@ -173,6 +206,22 @@ internal sealed class ProcessingGraphDraftModel
         public JsonElement? Options { get; init; }
         public CaptureProcessingPublicationPolicy? Publication { get; init; }
         public bool HasOptions => Options is not null;
+        private ProcessingNodeOptionsForm? _optionsForm;
+        public ProcessingNodeOptionsForm? OptionsForm
+        {
+            get
+            {
+                var descriptor = ProcessingNodeOptionsForm.DescriptorFor(Type);
+                if (descriptor is null)
+                {
+                    return null;
+                }
+                return _optionsForm ??= new ProcessingNodeOptionsForm(descriptor, Options);
+            }
+        }
+
+        public JsonElement? BuildOptions()
+            => OptionsForm is { } form && form.TryBuild(out var edited, out _) ? edited : Options;
 
         public void ToggleDependency(string dependency, bool selected)
         {
