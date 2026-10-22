@@ -299,43 +299,58 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         await new SqliteRawCaptureJournal(
             Path.Combine(root, "journal", "raw-ingress.db"), 1)
             .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         using var telemetry = new CaptureControlTelemetry();
         using var admission = new CaptureAdmissionCoordinator(
-            new InitializedIngress(), options, TimeProvider.System, telemetry);
+            new InitializedIngress(), options, clock, telemetry);
         await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
+        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, clock);
         _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var accessor = new CameraAgentConfigurationAccessor();
-        accessor.SetConfiguration(CreateVirtualConfiguration());
+        var configuration = CreateVirtualConfiguration();
+        configuration = configuration with { Rig = configuration.Rig with { Sensor = VirtualResponseSensor() } };
+        accessor.SetConfiguration(configuration);
         using var coordinator = new VirtualCalibrationAcquisitionCoordinator(
             store,
             new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
             admission,
             accessor,
-            TimeProvider.System);
-        var effectiveFrom = DateTimeOffset.UtcNow.AddDays(-1);
+            clock);
+        var effectiveFrom = clock.GetUtcNow().AddDays(-1);
         var bundles = new Dictionary<double, CalibrationLibraryBundleV1>();
         var lights = new Dictionary<double, ReconstructionDescriptor>();
         foreach (var gain in new[] { LowGain, HighGain })
         {
-            var job = await coordinator.AcquireAsync(
-                new VirtualCalibrationAcquisitionRequestV1(
-                    VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion,
-                    FormattableString.Invariant($"family-fixture-{gain}"),
-                    gain,
-                    1,
-                    -10,
-                    TimeSpan.FromMilliseconds(1),
-                    TimeSpan.FromSeconds(2),
-                    TimeSpan.FromMilliseconds(100),
-                    TimeSpan.FromMilliseconds(3),
-                    TimeSpan.FromMilliseconds(32),
-                    effectiveFrom,
-                    effectiveFrom.AddYears(1),
-                    new VirtualCalibrationSourceModelV1 { Seed = 208 },
-                    "operator",
-                    "family fixture"),
-                CancellationToken.None).ConfigureAwait(false);
+            // Plan the test acquisition with the response's canonical sensor identity. The coordinator's live
+            // configuration serializer uses a different identity convention; these are pinned normalization fixtures.
+            var inputLayout = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
+            var rigHash = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
+            var model = new VirtualCalibrationSourceModelV1 { Seed = 208 };
+            var plan = new VirtualCalibrationAcquisitionPlanV1(
+                VirtualCalibrationAcquisitionPlanV1.CurrentSchemaVersion,
+                FormattableString.Invariant($"family-fixture-{gain}"),
+                configuration.ModuleType,
+                configuration.AgentId!,
+                "family-fixture-rig",
+                new ProfileIdentityDescriptor("rig", configuration.Rig.ProfileVersion, rigHash),
+                new ProfileIdentityDescriptor(configuration.Rig.Sensor.Name, configuration.Rig.Sensor.SensorRecipeVersion,
+                    VirtualResponse().Descriptor.SensorProfileSha256),
+                inputLayout,
+                CalibrationMasterBuilder.CreateNormalizedLayout(inputLayout),
+                gain, 1, -10,
+                TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromMilliseconds(3), TimeSpan.FromMilliseconds(32),
+                effectiveFrom, effectiveFrom.AddYears(1), clock.GetUtcNow(),
+                model, VirtualCalibrationSourceGenerator.ComputeModelIdentitySha256(model));
+            var request = new VirtualCalibrationAcquisitionRequestV1(
+                VirtualCalibrationAcquisitionRequestV1.CurrentSchemaVersion, plan.JobId, gain, 1, -10,
+                plan.BiasExposure, plan.DarkExposure, plan.FlatExposure, plan.DefectExposure, plan.ApplicableLightExposure,
+                plan.EffectiveFromUtc, plan.EffectiveUntilUtc, model, "operator", "family fixture");
+            _ = await store.PlanAcquireAsync(
+                plan, plan.JobId, VirtualCalibrationAcquisitionContractJson.ComputeRequestIdentitySha256(request),
+                "operator", "family fixture", null, CancellationToken.None).ConfigureAwait(false);
+            var job = await coordinator.ResumePendingAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(job);
             var bundle = (await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false))
                 .Single(snapshot => snapshot.Bundle.Applicability.MinimumGain == gain).Bundle;
             var source = bundle.Artifacts.First(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source);
