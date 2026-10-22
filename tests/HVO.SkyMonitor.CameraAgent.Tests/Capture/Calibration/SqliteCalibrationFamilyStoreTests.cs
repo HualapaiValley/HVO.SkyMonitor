@@ -407,6 +407,110 @@ public sealed class SqliteCalibrationFamilyStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task ActiveFamilySelector_SelectsTheOneActiveFamilyWhateverTheGainAndRefusesWithStableReasons()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var store = CreateStore(root);
+            var service = new CalibrationFamilyActivationService(store, NullLogger<CalibrationFamilyActivationService>.Instance);
+            var selector = new ActiveCalibrationFamilySelector(store);
+            var config = SelectorConfiguration("VirtualSky");
+            var low = SelectorLight(10);
+
+            Assert.AreEqual("normalization.plan.no-active-family",
+                (await selector.SelectAsync(config, low, CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+
+            var family = await store.StoreAsync(Family("family-a", Member(10), Member(20)), CancellationToken.None).ConfigureAwait(false);
+            // A second stored family whose only member is at the higher gain is never chosen by gain.
+            _ = await store.StoreAsync(Family("family-b", Member(20)), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue((await service.ActivateAsync(Activation("activate", family.IdentitySha256), CancellationToken.None).ConfigureAwait(false)).IsAccepted);
+
+            foreach (var gain in new[] { 10d, 20d, 30d })
+            {
+                var selected = await selector.SelectAsync(config, SelectorLight(gain), CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(selected.ReasonCode, selected.ReasonCode);
+                Assert.AreEqual(family.IdentitySha256, selected.FamilyIdentitySha256);
+                CollectionAssert.AreEqual(CalibrationFamilyContractJson.Serialize(family.Family), selected.FamilyJson.ToArray());
+                Assert.AreEqual(Asi174MmSensorModel.Version, selected.Response!.Descriptor.ResponseModelVersion);
+            }
+
+            Assert.AreEqual(CalibrationFamilyActivationReasonCodes.IdentityMismatch, (await selector.SelectAsync(
+                config, low with { Profiles = low.Profiles with { Sensor = low.Profiles.Sensor with { Sha256 = Hash("other") } } },
+                CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+            Assert.AreEqual(CalibrationFamilyActivationReasonCodes.AcquisitionModelMismatch, (await selector.SelectAsync(
+                config, low with { Profiles = low.Profiles with { Calibration = Model with { Version = "other-model" } } },
+                CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+            Assert.AreEqual(ActiveCalibrationFamilySelector.NoActiveFamily, (await selector.SelectAsync(
+                config, low with { Capture = low.Capture with { RigId = "rig-b" } }, CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+            Assert.AreEqual(GainNormalizationReasonCodes.PhysicalResponseNotEnabled, (await selector.SelectAsync(
+                SelectorConfiguration("Zwo"), low, CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+
+            Assert.IsTrue((await service.DeactivateAsync(Deactivation("deactivate"), CancellationToken.None).ConfigureAwait(false)).IsAccepted);
+            Assert.AreEqual(ActiveCalibrationFamilySelector.NoActiveFamily,
+                (await selector.SelectAsync(config, low, CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public void ActiveFamilySelector_DeclaresTheResponseVirtualSkyRendersWith()
+    {
+        var virtualSky = SelectorConfiguration("VirtualSky");
+        var configured = virtualSky with
+        {
+            Rig = virtualSky.Rig with
+            {
+                Sensor = virtualSky.Rig.Sensor with
+                {
+                    SimulationResponse = new ConfiguredSensorResponseProfile(
+                        "selector-test-response-v1", 16, 0, 400, 4.0, 200, 60_000,
+                        [new SensorReadNoisePoint(0, 2.0), new SensorReadNoisePoint(400, 1.0)], 0, "ZWO 0.1 dB", "selector test")
+                }
+            }
+        };
+
+        Assert.AreEqual(GainResponseSourceKind.VirtualAsi174MmModel, ActiveCalibrationFamilySelector.ResolveSource(virtualSky));
+        Assert.AreEqual(GainResponseSourceKind.VirtualConfiguredResponse, ActiveCalibrationFamilySelector.ResolveSource(configured));
+        Assert.AreEqual(GainResponseSourceKind.PhysicalCamera, ActiveCalibrationFamilySelector.ResolveSource(SelectorConfiguration("Zwo")));
+    }
+
+    /// <summary>A capture of the fixture's agent and rig under its profiles and acquisition model, at one gain.</summary>
+    private static ReconstructionDescriptor SelectorLight(double gain)
+    {
+        var descriptor = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        return descriptor with
+        {
+            Capture = descriptor.Capture with { AgentId = Agent, RigId = Rig },
+            Controls = descriptor.Controls with { RequestedGain = gain, EffectiveGain = gain },
+            Profiles = descriptor.Profiles with
+            {
+                Rig = descriptor.Profiles.Rig with { Sha256 = RigSha256 },
+                Sensor = descriptor.Profiles.Sensor with { Sha256 = SensorSha256 },
+                Calibration = Model
+            }
+        };
+    }
+
+    private static CameraModuleConfig SelectorConfiguration(string moduleType)
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor(moduleType),
+            new CameraRigConfig(
+                new SensorProfile(
+                    "VirtualAsi174Mm", 2, 2, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+                    SensorResponseMode.Monochrome, 64, SampleByteOrder.LittleEndian, "virtual-asi174mm-electron-domain-v2"),
+                new OpticsProfile("EquidistantFisheye", 2.5, 170, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(32), TimeSpan.FromMilliseconds(32), 82, 82)),
+            CapturePipelineConfig.Empty,
+            AgentId: Agent);
+
     private static async Task<IReadOnlyList<ProcessingRetentionHold>> HeldAsync(CompositeProcessingRetentionHolds holds, string root)
         => await holds.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
 
