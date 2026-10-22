@@ -2889,20 +2889,20 @@ public sealed class CentralProcessingGraphSchedulerTests
         public bool Armed { get; set; }
         public bool Triggered { get; private set; }
 
-        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
             DbContextEventData eventData,
             InterceptionResult<int> result,
             CancellationToken cancellationToken = default)
         {
             if (!Armed)
             {
-                return ValueTask.FromResult(result);
+                return result;
             }
             Armed = false;
             Triggered = true;
             if (stopping)
             {
-                cancellation.Cancel();
+                await cancellation.CancelAsync().ConfigureAwait(false);
             }
             // SQL Server can surface an aborted command through EF's wrapped provider-fault path,
             // rather than OperationCanceledException. Exercise both sides of the cancellation guard.
