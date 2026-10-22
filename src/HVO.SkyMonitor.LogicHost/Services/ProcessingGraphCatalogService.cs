@@ -5,6 +5,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -22,6 +23,24 @@ internal sealed record CentralProcessingGraphRevisionView(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? PublishedAtUtc,
     DateTimeOffset? RetiredAtUtc);
+
+/// <summary>A catalog row without its definition document; read the exact revision by identity for the document.</summary>
+internal sealed record CentralProcessingGraphRevisionSummary(
+    Guid Id,
+    string Name,
+    string Revision,
+    CentralProcessingGraphLifecycle Lifecycle,
+    string DefinitionIdentitySha256,
+    string PortablePlanIdentitySha256,
+    string? EdgePlanIdentitySha256,
+    string? CentralPlanIdentitySha256,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? PublishedAtUtc,
+    DateTimeOffset? RetiredAtUtc);
+
+internal sealed record CentralProcessingGraphRevisionPage(
+    IReadOnlyList<CentralProcessingGraphRevisionSummary> Items,
+    string? NextCursor);
 
 internal sealed record CentralProcessingGraphAssignmentView(
     Guid Id,
@@ -68,6 +87,11 @@ internal interface IProcessingGraphCatalogService
 
     Task<CentralProcessingGraphRevisionView?> GetRevisionAsync(
         Guid revisionId,
+        CancellationToken cancellationToken);
+
+    Task<CentralProcessingGraphRevisionPage> ListRevisionSummariesAsync(
+        int take,
+        string? cursor,
         CancellationToken cancellationToken);
 
     Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(
@@ -137,6 +161,76 @@ internal sealed partial class ProcessingGraphCatalogService(
             .SingleOrDefaultAsync(item => item.Id == revisionId, cancellationToken).ConfigureAwait(false);
         return revision is null ? null : ToView(revision);
     }
+
+    /// <summary>
+    /// The global reusable catalog, newest first, beyond the latest-100 list. Definitions are global and grant no
+    /// assignment, installation or execution authority, so the continuation carries only a catalog position.
+    /// </summary>
+    public async Task<CentralProcessingGraphRevisionPage> ListRevisionSummariesAsync(
+        int take,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+        if (take is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(take));
+        var revisions = dbContext.CentralProcessingGraphRevisions.AsNoTracking();
+        if (cursor is not null)
+        {
+            var position = DecodeRevisionCursor(cursor);
+            revisions = revisions.Where(item => item.CreatedAtUtc <= position.CreatedAtUtc &&
+                (item.CreatedAtUtc < position.CreatedAtUtc || item.Id.CompareTo(position.Id) < 0));
+        }
+        var rows = await revisions.OrderByDescending(item => item.CreatedAtUtc).ThenByDescending(item => item.Id)
+            .Take(take + 1)
+            .Select(item => new
+            {
+                item.Id,
+                item.Name,
+                item.Revision,
+                item.DefinitionIdentitySha256,
+                item.PortablePlanIdentitySha256,
+                item.EdgePlanIdentitySha256,
+                item.CentralPlanIdentitySha256,
+                item.CreatedAtUtc,
+                item.PublishedAtUtc,
+                item.RetiredAtUtc
+            })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var more = rows.Count > take;
+        var items = rows.Take(take).Select(item => new CentralProcessingGraphRevisionSummary(
+            item.Id,
+            item.Name,
+            item.Revision,
+            item.RetiredAtUtc is not null ? CentralProcessingGraphLifecycle.Retired
+                : item.PublishedAtUtc is not null ? CentralProcessingGraphLifecycle.Published
+                : CentralProcessingGraphLifecycle.Draft,
+            item.DefinitionIdentitySha256,
+            item.PortablePlanIdentitySha256,
+            item.EdgePlanIdentitySha256,
+            item.CentralPlanIdentitySha256,
+            item.CreatedAtUtc,
+            item.PublishedAtUtc,
+            item.RetiredAtUtc)).ToArray();
+        return new(items, more
+            ? WebEncoders.Base64UrlEncode(JsonSerializer.SerializeToUtf8Bytes(
+                new RevisionCursor(items[^1].CreatedAtUtc, items[^1].Id)))
+            : null);
+    }
+
+    private static RevisionCursor DecodeRevisionCursor(string cursor)
+    {
+        try
+        {
+            if (cursor.Length is 0 or > 256) throw new FormatException();
+            var value = JsonSerializer.Deserialize<RevisionCursor>(WebEncoders.Base64UrlDecode(cursor));
+            return value is null || value.Id == Guid.Empty ? throw new FormatException() : value;
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException)
+        {
+            throw new ArgumentException("The revision continuation is invalid.", nameof(cursor));
+        }
+    }
+
+    private sealed record RevisionCursor(DateTimeOffset CreatedAtUtc, Guid Id);
 
     public async Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(
         ProcessingGraphDefinition definition,
