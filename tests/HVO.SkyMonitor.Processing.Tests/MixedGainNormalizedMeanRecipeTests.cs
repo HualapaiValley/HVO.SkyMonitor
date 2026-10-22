@@ -29,6 +29,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     private static readonly TimeSpan DarkExposure = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan FlatExposure = TimeSpan.FromSeconds(1);
     private static readonly GainResponse Response = Asi174Response();
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
     [TestMethod]
     public async Task OneReferenceGainInputIsEncodedAtSixteenCodesPerCalibratedCode()
@@ -146,6 +147,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     }
 
     [TestMethod]
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "A fixed seed defines reproducible synthetic lights, never security material.")]
     public async Task ABandedFrameMatchesOneFullFrameKernelCall()
     {
         // 64 × 600 runs in three bands of 256, 256 and 88 rows; a spatial defect mask and random lights expose any
@@ -313,7 +315,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         var payload = NormalizationPlanContractJson.Serialize(fixture.Plan);
         var indented = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
             JsonDocument.Parse(payload).RootElement,
-            new JsonSerializerOptions { WriteIndented = true }));
+            IndentedJson));
         var otherScale = Canonical(Encoding.UTF8.GetString(payload).Replace("\"outputScale\":16", "\"outputScale\":8", StringComparison.Ordinal));
         var noScale = Canonical(Encoding.UTF8.GetString(payload).Replace(",\"outputScale\":16", string.Empty, StringComparison.Ordinal));
         var kernelV1 = Canonical(Encoding.UTF8.GetString(payload).Replace(
@@ -385,7 +387,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         Assert.AreEqual(
             identity,
             GainNormalizationCompatibility.ComputeIdentitySha256(
-                FamilySha256.ToLowerInvariant(), policy, reference.ResponseIdentitySha256.ToLowerInvariant()));
+                Lowercase(FamilySha256), policy, Lowercase(reference.ResponseIdentitySha256)));
         var changes = new[]
         {
             GainNormalizationCompatibility.ComputeIdentitySha256(new string('D', 64), policy, reference.ResponseIdentitySha256),
@@ -624,6 +626,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             ? quotient + Int128.Sign(numerator)
             : quotient;
     }
+
+    private static string Lowercase(string value) => new([.. value.Select(char.ToLowerInvariant)]);
 
     private static ushort[] Fill(int count, ushort value)
         => Enumerable.Repeat(value, count).ToArray();
