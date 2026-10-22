@@ -238,6 +238,8 @@ internal static class Redaction
     /// Replaces each space-only value as <c>$1&lt;redacted&gt;</c> would. A value that starts with a quote is also hidden through
     /// its closing quote and the text joined to it, so a tab before a quoted value cannot leave its later words shown. Each
     /// match is the one the plain replacement makes, and the hidden text is the union of the two, so no less is hidden (#1509).
+    /// A match whose key is already hidden adds only its own value: each extension then starts after the text hidden so far,
+    /// so no character is scanned for two of them and the scans stay linear (PR-1521-R2 F3).
     /// </summary>
     private static string RedactSpacedValues(string text, System.Text.RegularExpressions.Regex pattern)
     {
@@ -250,7 +252,7 @@ internal static class Redaction
         {
             var value = match.Index + match.Groups[1].Length;
             var end = match.Index + match.Length;
-            if (text[value] is '"' or '\'')
+            if (match.Index >= hidden && text[value] is '"' or '\'')
             {
                 var closing = ClosingQuote(text, value + 1, text[value]);
                 end = Math.Max(end, closing < 0 ? text.Length : JoinedEnd(text, closing + 1));

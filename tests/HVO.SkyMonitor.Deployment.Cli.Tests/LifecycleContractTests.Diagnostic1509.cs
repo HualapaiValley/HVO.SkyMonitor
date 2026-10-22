@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -107,6 +108,23 @@ public sealed partial class LifecycleContractTests
         var shown = CameraAgentStateDiagnostics.Assignment(name, Diagnostic1509Secret);
         Assert.AreEqual(credential, !shown.Contains(Diagnostic1509Secret, StringComparison.Ordinal), shown);
         Assert.AreEqual(CameraAgentStateDiagnostics.Reason(name + "=" + (credential ? "<redacted>" : Diagnostic1509Secret)), shown);
+    }
+
+    // PR-1521-R2 F3: each space-only value joined by quoted parts to the next made every later match scan the rest of the text
+    // again. Each character is now scanned for one value at most, so a megabyte of them takes milliseconds, not many seconds.
+    [TestMethod]
+    [DataRow("db_password\t\"a\"\\\" ", "db_password\t<redacted>")]
+    [DataRow("db_password\t'a'\\' ", "db_password\t<redacted>")]
+    [DataRow("db_password \"a\"\\\" ", "db_password <redacted>")]
+    public void Diagnostic1509_JoinedQuotedValuesAreRedactedInLinearTime(string unit, string expected)
+    {
+        var text = string.Concat(Enumerable.Repeat(unit, 50_000));
+        var watch = Stopwatch.StartNew();
+        var redacted = Redaction.Redact(text);
+        watch.Stop();
+        Console.WriteLine($"{JsonSerializer.Serialize(unit)} x 50,000: {watch.ElapsedMilliseconds} ms");
+        Assert.AreEqual(expected, redacted);
+        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
     }
 
     // PR-1508-R1 F2: both top-level writers redact a usage error too, and this one used to lose the word after its first option.
