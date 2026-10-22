@@ -427,8 +427,9 @@ public sealed class LogicalCameraArchiveIntegrationTests
     }
 
     private static readonly byte[] Preview = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZbkAAAAASUVORK5CYII=");
-    internal static async Task<CentralArtifact> AddPreviewAsync(IServiceProvider services, CentralFrame frame, bool put)
+    internal static async Task<CentralArtifact> AddPreviewAsync(IServiceProvider services, CentralFrame frame, bool put, byte[]? previewBytes = null)
     {
+        var bytes = previewBytes ?? Preview;
         var db = services.GetRequiredService<ApplicationDbContext>();
         var artifact = new CentralArtifact
         {
@@ -439,8 +440,8 @@ public sealed class LogicalCameraArchiveIntegrationTests
             RecipeVersion = "preview-v1",
             ManifestSchemaVersion = "v2",
             MediaType = "image/png",
-            ByteLength = Preview.Length,
-            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(Preview)),
+            ByteLength = bytes.Length,
+            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(bytes)),
             StorageReference = $"object://skymonitor-artifacts/archive-tests/{Guid.NewGuid():N}",
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
@@ -449,14 +450,15 @@ public sealed class LogicalCameraArchiveIntegrationTests
         };
         db.CentralArtifacts.Add(artifact);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        if (put) await PutAsync(services, artifact).ConfigureAwait(false);
+        if (put) await PutAsync(services, artifact, bytes).ConfigureAwait(false);
         return artifact;
     }
     private static string Key(CentralArtifact artifact) => artifact.StorageReference["object://skymonitor-artifacts/".Length..];
-    private static async Task PutAsync(IServiceProvider services, CentralArtifact artifact)
+    private static async Task PutAsync(IServiceProvider services, CentralArtifact artifact, byte[]? previewBytes = null)
     {
-        using var stream = new MemoryStream(Preview);
-        await services.GetRequiredService<IObjectStore>().PutAsync("skymonitor-artifacts", Key(artifact), stream, Preview.Length, "image/png", CancellationToken.None).ConfigureAwait(false);
+        var bytes = previewBytes ?? Preview;
+        using var stream = new MemoryStream(bytes);
+        await services.GetRequiredService<IObjectStore>().PutAsync("skymonitor-artifacts", Key(artifact), stream, bytes.Length, "image/png", CancellationToken.None).ConfigureAwait(false);
     }
     internal sealed record Dataset(string Owner, Guid Observatory, Guid Camera, IReadOnlyList<CentralFrame> Frames);
     private sealed class FaultReader(ICentralArtifactObjectReader inner, Func<Task> fault) : ICentralArtifactObjectReader
