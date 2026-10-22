@@ -22,6 +22,7 @@ public static class BuiltInProcessingRecipes
     public const string Keogram = "keogram";
     public const string StarTrail = "star-trail";
     public const string KeogramAssembly = "keogram-assembly";
+    public const string MixedGainNormalizedMean = "mixed-gain-normalized-mean";
 
     private static readonly Dictionary<string, ProcessingRecipeDefinition> Definitions = CreateAll()
         .Select(static recipe => recipe.Definition)
@@ -112,7 +113,8 @@ public static class BuiltInProcessingRecipes
         new ProjectedSceneRecipe(),
         new KeogramRecipe(),
         new StarTrailRecipe(),
-        new KeogramAssemblyRecipe()
+        new KeogramAssemblyRecipe(),
+        new MixedGainNormalizedMeanRecipe()
     ];
 }
 
