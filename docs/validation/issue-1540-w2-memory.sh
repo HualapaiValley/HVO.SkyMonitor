@@ -80,7 +80,9 @@ if [[ "$mode" == attribute ]]; then
     tools=${HVO_1540_TOOLS:?HVO_1540_TOOLS must hold dotnet-counters, dotnet-gcdump and dotnet-trace}
     for tool in dotnet-counters dotnet-gcdump dotnet-trace; do [[ -x "$tools/$tool" ]] || fatal "$tools/$tool is required"; done
 fi
-env | grep -qE '^(DOTNET_|COMPlus_)' && fatal "production-default trials must not inherit DOTNET_ or COMPlus_ variables"
+# DOTNET_ROOT locates the installed runtime; it does not change GC or JIT behavior. The harness records it.
+env | grep -E '^(DOTNET_|COMPlus_)' | grep -qv '^DOTNET_ROOT=' &&
+    fatal "production-default trials must not inherit DOTNET_ runtime overrides or COMPlus_ variables"
 for label in "$first" "$second"; do
     [[ -f "$arms/$label.json" ]] || fatal "arm $label is not prepared"
     sha=$(jq -r .revision "$arms/$label.json")
