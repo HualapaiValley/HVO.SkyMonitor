@@ -150,14 +150,21 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    [DataRow("missing-plan", ProcessingReasonCodes.MissingNormalizationPlan)]
-    [DataRow("corrupt-plan", ProcessingReasonCodes.InvalidNormalizationPlan)]
-    [DataRow("missing-input", ProcessingReasonCodes.NormalizationPlanInputMismatch)]
-    [DataRow("changed-node", ProcessingReasonCodes.NormalizationPlanInputMismatch)]
-    public Task ArchivedReplayRejectsDamagedOriginalEvidence(string damage, string expectedReason)
+    [DataRow("missing-plan", ProcessingReasonCodes.MissingNormalizationPlan, false)]
+    [DataRow("corrupt-plan", ProcessingReasonCodes.InvalidNormalizationPlan, false)]
+    [DataRow("missing-input", ProcessingReasonCodes.NormalizationPlanInputMismatch, false)]
+    [DataRow("changed-node", ProcessingReasonCodes.NormalizationPlanInputMismatch, false)]
+    [DataRow("changed-node", ProcessingReasonCodes.NormalizationPlanInputMismatch, true)]
+    public Task ArchivedReplayRejectsDamagedOriginalEvidence(string damage, string expectedReason, bool completedPriorReplay)
         => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
         {
             var live = await LiveExecutionAsync(run).ConfigureAwait(false);
+            if (completedPriorReplay)
+            {
+                var prior = await SubmitOriginalReplayAsync(run, live, "completed-prior-replay").ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed,
+                    (await RunReplayAsync(run, prior.Execution.ExecutionId).ConfigureAwait(false)).Execution.Status);
+            }
             using var connection = await OpenReplayEvidenceAsync(run).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.Parameters.AddWithValue("$execution", live.ExecutionId.ToString("N"));
@@ -184,8 +191,9 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             var exception = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(
                 async () => await SubmitOriginalReplayAsync(run, live).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(expectedReason, exception.ReasonCode);
-            Assert.IsEmpty(await run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().ReadExecutionsAsync(
-                ProcessingGraphExecutionClass.Replay, 10, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(completedPriorReplay ? 1 : 0,
+                (await run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Replay, 10, CancellationToken.None).ConfigureAwait(false)).Count);
         });
 
     [TestMethod]

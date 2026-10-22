@@ -34,9 +34,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             command.Transaction = transaction;
             command.CommandText = """
-                SELECT execution.execution_id, execution.frozen_plan_json, node.plan_sha256
+                SELECT execution.execution_id, execution.frozen_plan_json, node.plan_sha256, revision.nodes_json
                 FROM processing_executions execution
                 JOIN processing_execution_nodes node ON node.execution_id = execution.execution_id
+                LEFT JOIN processing_graph_revisions revision ON revision.revision_id = execution.graph_revision_id
                 WHERE execution.capture_id = $capture
                   AND execution.primary_artifact_id = $artifact AND node.node_id = $node
                   AND node.status = 'Completed'
@@ -51,7 +52,27 @@ internal sealed partial class SqliteCaptureProcessingStore
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 sawNode = true;
-                if (!string.Equals(reader.GetString(2), node.PlanSha256, StringComparison.Ordinal))
+                // A different hash can identify another graph's node or damage to this original. Authenticate it
+                // against the immutable revision before deciding that a later execution may be considered.
+                ProcessingExecutionNodeSeed[]? revisionNodes;
+                try
+                {
+                    revisionNodes = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null
+                        : JsonSerializer.Deserialize<ProcessingExecutionNodeSeed[]>(
+                        (byte[])reader.GetValue(3), ExecutionSerializerOptions);
+                }
+                catch (JsonException exception)
+                {
+                    throw new NormalizationPlanException(ProcessingReasonCodes.NormalizationPlanInputMismatch, exception);
+                }
+                var originalNodes = revisionNodes?.Where(original => string.Equals(original?.NodeId, node.NodeId, StringComparison.Ordinal))
+                    .ToArray();
+                if (originalNodes is not { Length: 1 } ||
+                    !string.Equals(originalNodes[0].PlanSha256, reader.GetString(2), StringComparison.Ordinal))
+                {
+                    throw new NormalizationPlanException(ProcessingReasonCodes.NormalizationPlanInputMismatch);
+                }
+                if (!string.Equals(originalNodes[0].PlanSha256, node.PlanSha256, StringComparison.Ordinal))
                     continue;
                 executionId = reader.GetString(0);
                 try
