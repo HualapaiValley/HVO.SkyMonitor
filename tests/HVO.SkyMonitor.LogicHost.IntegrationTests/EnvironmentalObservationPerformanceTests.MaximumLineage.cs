@@ -124,6 +124,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     }
                     Assert.IsTrue(probes.All(probe => probe.SourceLookups == count + 1 && probe.ObservationLookups == count + 1),
                         "Baseline attribution changed: inspect commands before selecting slice B's implementation.");
+                    Assert.IsTrue(probes.All(probe => probe.TransactionMilliseconds > 0 && probe.RetentionHeldMilliseconds > 0),
+                        "Every derived operation must expose its transaction and retention lock timing.");
                     scenarios.Add(new
                     {
                         References = count, Concurrency = concurrency, Warmups = 5, Measurements = 30,
@@ -282,6 +284,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
     private static async Task<object> VerifyLineageRetentionAsync(string connection, EnvironmentalObservationTelemetry telemetry,
         EnvironmentalObservationV1[] inputs)
     {
+        var unpinned = inputs[0] with { ObservationId = DeterministicGuid(950_000) };
+        await IngestLineageAsync(LineageOptions(connection), telemetry, unpinned, Epoch).ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(builder => builder.UseSqlServer(connection));
         await using var provider = services.BuildServiceProvider();
@@ -294,8 +298,9 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var ids = inputs.Select(input => input.ObservationId).ToArray();
         Assert.AreEqual(256, await db.EnvironmentalObservations.CountAsync(row => ids.Contains(row.ObservationId)).ConfigureAwait(false));
-        Assert.AreEqual(0, deleted, "All old inputs are pinned by current derived observations.");
-        return new { OldInputRows = 256, OldInputRowsRetained = 256, Deleted = deleted, ProductionSweep = true };
+        Assert.AreEqual(1, deleted, "Only the unpinned old control is eligible; all 256 inputs are pinned.");
+        Assert.IsFalse(await db.EnvironmentalObservations.AnyAsync(row => row.ObservationId == unpinned.ObservationId).ConfigureAwait(false));
+        return new { OldInputRows = 256, OldInputRowsRetained = 256, UnpinnedControlDeleted = true, Deleted = deleted, ProductionSweep = true };
     }
 
     private static async Task SampleLineageRssAsync(Process process, CancellationToken cancellationToken, Action<long> sample)
