@@ -33,5 +33,15 @@ separated by `_` or `-` (for example `db_password` and `x-api-key`). This keeps
 credential values containing numeric prose segments from becoming nested keys.
 Explicit `=`/`:` keys retain the existing suffix-based matching.
 
+Redaction runs in two stages. The first is the redactor as it stood before
+#1509, except that a space-only value that starts with a quote is also hidden
+through its closing quote (`db_password\t"a b c"`). The second reads the first
+stage's output and hides more: a secret key whose words are joined by `-`, `_`
+or nothing (`SecretKey`, `secret-access-key`, `ObjectStorage__SecretKey`;
+`secretkeeper` stays ordinary), a quoted value after any whitespace, including a
+tab, a no-break space or a NEL, and text joined to a quoted value's closing
+quote, which is the same shell word. The second stage only replaces text, so a
+key it finds around a value the first stage hid can never show that value again.
+
 Nested matching accepts the temporary removed-decoration boundary before or inside
 an inner credential key. The boundary is removed only after the value is hidden.

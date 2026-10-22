@@ -84,7 +84,9 @@ Request facts:
 - User-Agent: `HVO.SkyMonitor.CameraAgent/<version>`, with build metadata removed.
 - Bounds: a client deadline of at most 30 s, at most 32 MiB on the wire and 32 MiB
   decoded. The request asks for gzip, and a response must be either gzip or
-  unencoded.
+  unencoded. A gzip response must be exactly one complete member whose CRC-32
+  and length match the decoded bytes; a truncated member, a second member or
+  trailing bytes fail as `orbital.gzip-invalid`.
 - The named HttpClient has no retry or logging handlers.
 
 ## Enable And Configure
