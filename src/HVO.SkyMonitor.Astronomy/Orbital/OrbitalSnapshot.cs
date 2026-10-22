@@ -61,19 +61,18 @@ public sealed class OrbitalSnapshot
             KnownExclusions = Array.AsReadOnly(coverage.KnownExclusions.Take(65).Order(StringComparer.Ordinal).ToArray())
         };
         OrbitalContract.Require(items.Length <= OrbitalContract.MaximumRecords && sourceItems.Length is > 0 and <= OrbitalContract.MaximumSources, "snapshot-bound");
-        foreach (var record in items) OrbitalContract.ValidateRecord(record);
-        items = items.Select(OrbitalContract.CreateRecord).ToArray();
+        items = items.Select(OrbitalContract.ValidateAndNormalizeRecord).ToArray();
         OrbitalContract.Require(sourceItems.All(static s => s is not null), "missing-source");
         Array.Sort(items, static (a, b) => StringComparer.Ordinal.Compare(a.RecordSha256, b.RecordSha256));
         Array.Sort(sourceItems, static (a, b) => StringComparer.Ordinal.Compare(a.DatasetKey, b.DatasetKey));
-        var payload = OrbitalContract.SerializeCanonical(items);
+        var payload = OrbitalCanonicalJson.Digest(items);
         var value = new OrbitalSnapshotManifestV1(OrbitalContract.SchemaVersion, OrbitalContract.CelesTrakGpProfile, string.Empty,
-            Convert.ToHexString(SHA256.HashData(payload)), payload.Length, items.Length,
+            payload.Sha256, payload.Length, items.Length,
             items.Select(static r => r.ObjectIdentity).Distinct().Count(),
             items.Length == 0 ? null : items.Min(static r => r.EpochUtc),
             items.Length == 0 ? null : items.Max(static r => r.EpochUtc), normalizedCoverage, Array.AsReadOnly(sourceItems));
         value = value with { ManifestSha256 = ComputeManifestIdentity(value) };
-        return ValidateAndMaterialize(value, items, payload);
+        return ValidateAndMaterialize(value, items, payload, recordsValidated: true);
     }
 
     public byte[] SerializePayload() => OrbitalContract.SerializeCanonical(Records);
@@ -90,7 +89,8 @@ public sealed class OrbitalSnapshot
             var records = JsonSerializer.Deserialize<OrbitalRecordV1[]>(payloadJson.Span, OrbitalContract.JsonOptions);
             OrbitalContract.Require(manifest is not null && records is not null, "missing-document");
             OrbitalContract.Require(manifestJson.Span.SequenceEqual(OrbitalContract.SerializeCanonical(manifest)), "noncanonical-manifest");
-            var snapshot = ValidateAndMaterialize(manifest!, records!, payloadJson.Span);
+            var payload = (Convert.ToHexString(SHA256.HashData(payloadJson.Span)), payloadJson.Length);
+            var snapshot = ValidateAndMaterialize(manifest!, records!, payload);
             return new(snapshot, null);
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException or NotSupportedException or OverflowException)
@@ -118,7 +118,7 @@ public sealed class OrbitalSnapshot
     }
 
     private static OrbitalSnapshot ValidateAndMaterialize(OrbitalSnapshotManifestV1 m, OrbitalRecordV1[] records,
-        ReadOnlySpan<byte> payload)
+        (string Sha256, int Length) payload, bool recordsValidated = false)
     {
         OrbitalContract.Require(m.SchemaVersion == OrbitalContract.SchemaVersion && m.ProfileVersion == OrbitalContract.CelesTrakGpProfile && OrbitalContract.IsSha256(m.ManifestSha256) &&
             OrbitalContract.IsSha256(m.NormalizedPayloadSha256), "manifest-schema-identity");
@@ -145,7 +145,7 @@ public sealed class OrbitalSnapshot
         string? previous = null;
         foreach (var record in records)
         {
-            OrbitalContract.ValidateRecord(record);
+            if (!recordsValidated) OrbitalContract.ValidateRecord(record);
             OrbitalContract.Require(previous is null || StringComparer.Ordinal.Compare(previous, record.RecordSha256) < 0, "record-order-or-duplicate");
             previous = record.RecordSha256;
             OrbitalContract.Require(sources.TryGetValue(record.SourceDataset, out var source) &&
@@ -156,10 +156,12 @@ public sealed class OrbitalSnapshot
             m.MinimumEpochUtc == (records.Length == 0 ? null : records.Min(static r => r.EpochUtc)) &&
             m.MaximumEpochUtc == (records.Length == 0 ? null : records.Max(static r => r.EpochUtc)), "snapshot-count-or-epoch");
         OrbitalContract.Require(payload.Length <= OrbitalContract.MaximumPayloadBytes && m.NormalizedPayloadLengthBytes == payload.Length &&
-            m.NormalizedPayloadSha256 == Convert.ToHexString(SHA256.HashData(payload)) &&
-            payload.SequenceEqual(OrbitalContract.SerializeCanonical(records)), "payload-integrity-or-canonical-form");
+            m.NormalizedPayloadSha256 == payload.Sha256 &&
+            // Create already streamed these validated records once. Parse must also prove that the original
+            // input hashes to precisely the canonical form, including its byte length (no payload-sized copy).
+            (recordsValidated || OrbitalCanonicalJson.Digest(records) == payload), "payload-integrity-or-canonical-form");
         OrbitalContract.Require(m.ManifestSha256 == ComputeManifestIdentity(m) &&
-            OrbitalContract.SerializeCanonical(m).Length <= OrbitalContract.MaximumManifestBytes, "manifest-integrity");
+            OrbitalCanonicalJson.Digest(m).Length <= OrbitalContract.MaximumManifestBytes, "manifest-integrity");
         return new(m, records.ToArray());
     }
 
