@@ -269,10 +269,11 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
             {
                 managedEnd = PlanningCoverageEnd(adopted.Data);
                 pairs.Add(adopted);
-                // The pair it replaced stays eligible, so an adoption never takes away coverage the new pair lacks yet.
-                if (value.Previous is { } previous && await ReadManagedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced)
-                    pairs.Add(replaced);
             }
+            // An intact predecessor stays eligible even when the current pair is damaged. The current adoption's
+            // verification state and coverage above remain distinct from the active pair used for planning/status.
+            if (value.Previous is { } previous && await ReadManagedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced)
+                pairs.Add(replaced);
         }
         return new(CameraAgentOrbitalTimeDataSource.Bundled,
             pairs.Count == 0 ? CameraAgentOrbitalTimeDataProblem.BundledInvalid : CameraAgentOrbitalTimeDataProblem.None,

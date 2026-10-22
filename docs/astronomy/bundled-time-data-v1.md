@@ -103,7 +103,8 @@ the reviewed commit establish their origin.
   never falls back to the bundled or the refreshed pair, and CameraAgent never
   writes the hand-configured files.
 - Otherwise CameraAgent verifies and parses the bundled pair and, when the refresh
-  has adopted one, the adopted managed pair and the managed pair it replaced.
+  has adopted one, the adopted managed pair and its retained predecessor,
+  independently of whether the adopted pair still verifies.
   **Only pairs that continuously cover the time being planned are eligible: the
   planning window, or the current time for the status. Among them the pair whose
   planning coverage ends later is active. On a tie the bundled pair is active.**
@@ -121,9 +122,11 @@ the reviewed commit establish their origin.
   was retrieved after that day's update), the same rule ranks every verified pair.
   The planner then reports the coverage end or the gap, and the status reports
   that no pair covers the current time.
-- A managed pair that no longer verifies (a changed byte, a missing file, a damaged
-  pointer) is reported as invalid, and the bundled pair is used. If no pair
-  verifies, planning stops with a reason.
+- A managed pair that no longer verifies (a changed byte or a missing file) is
+  reported as invalid. With a readable pointer, an intact retained predecessor
+  remains eligible independently of the current pair; it competes with the bundled
+  pair under the same coverage rule. A damaged pointer makes the managed pairs
+  unavailable. If no pair verifies, planning stops with a reason.
 - The rule is deterministic: the same files, options and requested time always
   select the same pair. It does not depend on the refresh switch, so turning the
   refresh off keeps an already adopted pair eligible.
@@ -183,10 +186,10 @@ releases. It is off by default.
 - **Unchanged and not newer.** A download identical to the adopted pair is recorded
   as `unchanged`. One whose planning coverage ends before the adopted pair's is
   `not-newer` and is not adopted. A download is also `not-newer` when neither it
-  nor the adopted pair covers the current time yet and adopting it would retire
-  the replaced pair, which does. With the durable daily floor this happens only
-  when two attempts fall on one UTC day because `refresh.json` was lost or the
-  clock went back.
+  nor any intact adopted current pair covers the current time and adopting it
+  would retire the intact predecessor, which does. This guard also applies when
+  the current pair is damaged. Two attempts on one UTC day can also reach it
+  when `refresh.json` was lost or the clock went back.
 - **Atomic adoption.** The pair is kept under the CameraAgent's writable state at
   `<RawIngressRoot>/.time-data/` (`state/raw/.time-data/` on an installed host), so
   it survives restarts and upgrades. Each adopted pair is an immutable directory
@@ -195,7 +198,10 @@ releases. It is off by default.
   retrieval time, HTTP `Last-Modified`, length, SHA-256, provider checksum, terms).
   The files are flushed first; replacing `current.json` is the single commit point.
   A stop before it leaves the prior pair active and an unreferenced directory that
-  the next adoption removes. The current and previous pairs are kept.
+  the next adoption removes. The current pair and an intact predecessor are kept
+  when one exists. The predecessor can skip a damaged current pair or retain an
+  older intact pair when it alone covers the adoption time. Retirement never
+  deletes that referenced pair.
   `current.json` also keeps the last 32 adoptions (pair, adoption and retrieval
   times, both SHA-256 values), so results computed with a retired pair stay
   attributable.

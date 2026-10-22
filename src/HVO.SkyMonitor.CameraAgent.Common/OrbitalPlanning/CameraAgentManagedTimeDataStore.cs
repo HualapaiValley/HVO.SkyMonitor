@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
@@ -53,7 +54,8 @@ public sealed record CameraAgentTimeDataCandidate(
 /// bundled one (the two provider files byte for byte plus <c>provenance.json</c>). Adoption writes and flushes that
 /// directory first and then atomically replaces <c>current.json</c>, which names it; that rename is the only commit
 /// point, so a stop before it leaves the prior pair active and an unreferenced directory that the next adoption
-/// removes. The current and previous pairs are kept. <c>refresh.json</c> records the last attempt and is written before
+/// removes. The current pair and an intact predecessor are kept when one exists; the predecessor can skip a damaged
+/// pair or preserve the only intact pair covering the adoption time. <c>refresh.json</c> records the last attempt and is written before
 /// any request, so the daily floor survives a restart. Only this process writes here.
 /// </summary>
 public sealed partial class CameraAgentManagedTimeDataStore
@@ -144,13 +146,34 @@ public sealed partial class CameraAgentManagedTimeDataStore
             writer => WriteProvenance(writer, candidate), cancellationToken).ConfigureAwait(false);
         BeforeCommit?.Invoke();
 
+        var previous = await SelectPreviousAsync(current, candidate, adoptedUtc, cancellationToken).ConfigureAwait(false);
         var adoption = new CameraAgentManagedTimeAdoption(pair, adoptedUtc.ToUniversalTime(), candidate.RetrievedUtc.ToUniversalTime(),
             candidate.EarthOrientationSha256, candidate.LeapSecondsSha256);
-        var pointer = new CameraAgentManagedTimePointer(pair, adoption.AdoptedUtc, current?.Pair,
+        var pointer = new CameraAgentManagedTimePointer(pair, adoption.AdoptedUtc, previous,
             [adoption, .. (current?.History ?? []).Take(MaximumHistory - 1)]);
         await PublishJsonAsync(root, PointerFile, PublishMode.Replace, writer => WritePointer(writer, pointer), cancellationToken).ConfigureAwait(false);
         RetireUnreferenced(pointer);
         return pointer;
+    }
+
+    /// <summary>Retains a verified pair, preserving the predecessor when it alone covers the adoption time.</summary>
+    private async Task<string?> SelectPreviousAsync(CameraAgentManagedTimePointer? current, CameraAgentTimeDataCandidate candidate,
+        DateTimeOffset adoptedUtc, CancellationToken cancellationToken)
+    {
+        if (current is null) return null;
+        var adopted = await CameraAgentPinnedOrbitalTimeSource.ReadProvenancedAsync(PairDirectory(current.Pair), ProvenanceSchema,
+            cancellationToken).ConfigureAwait(false);
+        var predecessor = current.Previous is { } previous
+            ? await CameraAgentPinnedOrbitalTimeSource.ReadProvenancedAsync(PairDirectory(previous), ProvenanceSchema,
+                cancellationToken).ConfigureAwait(false)
+            : null;
+        if (adopted is null) return predecessor is null ? null : current.Previous;
+        var instant = new OrbitalUtcInterval(adoptedUtc, adoptedUtc);
+        if (predecessor is not null && CameraAgentPinnedOrbitalTimeSource.Covers(predecessor.Data, instant) &&
+            !CameraAgentPinnedOrbitalTimeSource.Covers(adopted.Data, instant) &&
+            !CameraAgentPinnedOrbitalTimeSource.Covers(OrbitalTimeData.FromFinals2000A(candidate.EarthOrientation, candidate.LeapSeconds), instant))
+            return current.Previous;
+        return current.Pair;
     }
 
     /// <summary>Best-effort removal of pair directories that are neither current nor previous, bounded per call.</summary>

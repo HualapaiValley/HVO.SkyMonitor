@@ -179,7 +179,8 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
             leapHash, started);
         var candidateEnd = CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(candidateData);
         var adopted = await ReadPointerAsync(cancellationToken).ConfigureAwait(false);
-        if (adopted is not null && await ReadAdoptedAsync(adopted.Pair, cancellationToken).ConfigureAwait(false) is { } current)
+        var current = adopted is null ? null : await ReadAdoptedAsync(adopted.Pair, cancellationToken).ConfigureAwait(false);
+        if (current is not null)
         {
             if (current.Data.EarthOrientationSha256 == candidateData.EarthOrientationSha256 &&
                 current.Data.LeapSecondsSha256 == candidateData.LeapSecondsSha256)
@@ -188,16 +189,17 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
             if (candidateEnd < currentEnd)
                 return (CameraAgentTimeDataRefreshOutcome.NotNewer, NotNewerReasonCode, string.Create(CultureInfo.InvariantCulture,
                     $"the download covers planning to {candidateEnd.UtcDateTime:O}, before the adopted pair's {currentEnd.UtcDateTime:O}; the adopted pair is kept"));
-            // Adoption retires the previous pair. While neither the download nor the adopted pair covers the current time
-            // (two attempts on one UTC day: the attempt record was lost or the clock went back), that pair may be the only one that does.
-            var now = timeProvider.GetUtcNow();
-            var instant = new OrbitalUtcInterval(now, now);
-            if (!CameraAgentPinnedOrbitalTimeSource.Covers(candidateData, instant) && !CameraAgentPinnedOrbitalTimeSource.Covers(current.Data, instant) &&
-                adopted.Previous is { } previous && await ReadAdoptedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced &&
-                CameraAgentPinnedOrbitalTimeSource.Covers(replaced.Data, instant))
-                return (CameraAgentTimeDataRefreshOutcome.NotNewer, NotNewerReasonCode,
-                    "neither the download nor the adopted pair covers the current time yet, and adopting it would retire the previous pair, which does; the adopted pairs are kept");
         }
+        // A damaged current pair must not bypass protection of the intact predecessor covering now. The store also
+        // verifies retention independently, so a direct adoption cannot replace that predecessor with a damaged pair.
+        var now = timeProvider.GetUtcNow();
+        var instant = new OrbitalUtcInterval(now, now);
+        if (!CameraAgentPinnedOrbitalTimeSource.Covers(candidateData, instant) &&
+            (current is null || !CameraAgentPinnedOrbitalTimeSource.Covers(current.Data, instant)) &&
+            adopted?.Previous is { } previous && await ReadAdoptedAsync(previous, cancellationToken).ConfigureAwait(false) is { } replaced &&
+            CameraAgentPinnedOrbitalTimeSource.Covers(replaced.Data, instant))
+            return (CameraAgentTimeDataRefreshOutcome.NotNewer, NotNewerReasonCode,
+                "neither the download nor an intact adopted current pair covers the current time, and the intact predecessor does; the adopted pairs are kept");
         var pointer = await store.AdoptAsync(candidate, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
         return (CameraAgentTimeDataRefreshOutcome.Adopted, AdoptedReasonCode, Coverage(
             string.Concat("pair ", pointer.Pair, " eop=", candidate.EarthOrientationSha256, " leap=", candidate.LeapSecondsSha256), candidateEnd));
