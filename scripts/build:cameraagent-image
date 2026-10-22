@@ -43,8 +43,13 @@ docker buildx build "${arguments[@]}" --file "$root/src/HVO.SkyMonitor.CameraAge
     --provenance=false --sbom=false --output "$output" "$root"
 if [[ -n "$load_archive" ]]; then
     config="$(tar -xOf "$load_archive" manifest.json | jq -er 'if length == 1 then .[0].Config else empty end')"
-    image_id="$(tar -xOf "$load_archive" "$config" | sha256sum)"
-    image_id="sha256:${image_id%% *}"
-    docker load --input "$load_archive"
-    printf '%s\n' "$image_id"
+    config_digest="$(tar -xOf "$load_archive" "$config" | sha256sum)"
+    config_digest="sha256:${config_digest%% *}"
+    load_output="$(docker load --input "$load_archive")"
+    printf '%s\n' "$load_output"
+    loaded_reference="$(printf '%s\n' "$load_output" | sed -nE '/^Loaded image( ID)?: / { s/^Loaded image( ID)?: //; p; q; }')"
+    [[ -n "$loaded_reference" ]] || { echo 'Docker load did not report a loaded image reference.' >&2; exit 1; }
+    # Classic stores use the config digest; containerd stores use the manifest digest.
+    image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
+    printf 'image-id: %s\nconfig-digest: %s\n' "$image_id" "$config_digest"
 fi

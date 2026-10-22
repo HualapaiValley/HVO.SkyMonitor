@@ -46,7 +46,10 @@ Use `scripts/build:cameraagent-image --platform linux/amd64 --tag cameraagent:<c
 `git show -s --format=%ct HEAD`, ignoring a caller's environment source date. The checkout must contain the exact
 commit's files for a reproducible release; the helper also permits local edits for development.
 By default it exports a temporary Docker archive with timestamp rewriting, loads it with `docker load`, and prints
-the config digest (image ID). Use `--output type=oci,dest=/absolute/path/image.oci.tar` to retain an archive instead.
+two labelled identities: `image-id: …` is usable with `docker image inspect`, `docker run` and `docker history`;
+`config-digest: …` is the SHA-256 of the archive's config blob, used for reproducibility comparisons. These can differ:
+the containerd image store uses the manifest digest as its image ID, while the classic store uses the config digest.
+Use `--output type=oci,dest=/absolute/path/image.oci.tar` to retain an archive instead.
 Timestamp rewriting must use an archive or an exporter with `unpack=false`; a loading/unpacking Docker exporter
 fails on the containerd image store and silently ignores rewriting on the classic image store.
 BuildKit 0.13 or newer is required: [its source-date contract](https://github.com/moby/buildkit/blob/v0.26.1/docs/build-repro.md)
@@ -74,7 +77,7 @@ Run `scripts/release:check-cameraagent-image --platform linux/amd64 --evidence /
 The directory must not exist and should be outside the checkout. The check makes two full `--no-cache` OCI builds with
 the same tag/output path and compares the image config and manifest digests, layer descriptors and complete archive
 SHA-256. Both archives, inventories and inputs remain available, including on failure. Diagnostics distinguish config fields,
-layer bytes and OCI tar layout/metadata; a difference fails the check even when the image ID matches. Add
+layer bytes and OCI tar layout/metadata; a difference fails the check even when the config digest matches. Add
 `--ready-to-run --created <UTC> --version <version>` to check release arguments. A clean IL result does not qualify R2R
 or another architecture. No cross-platform equality is expected. Network access to pinned dependencies and the snapshot
 service is required; unpinned custom base overrides and local source changes are different build inputs.
