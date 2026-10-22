@@ -29,6 +29,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     private CancellationTokenSource? presentationSaveCancellation;
     [Parameter, EditorRequired] public Guid CaptureId { get; set; }
     [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public bool AllowExactPreviewFallback { get; set; }
     [Parameter] public string? StatusMessage { get; set; }
     [Parameter] public EventCallback<Guid> StackSaved { get; set; }
     [Inject] internal ICentralLayeredPresentationService Presentations { get; set; } = default!;
@@ -55,10 +56,21 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         get
         {
             if (principal is null || !CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
-                Detail is not { } authorized || !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) ||
-                CurrentSelection is not { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection ||
-                selected.CaptureId != CaptureId)
+                Detail is not { } authorized || !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId))
                 return null;
+            if (CurrentSelection is null)
+            {
+                if (!AllowExactPreviewFallback) return null;
+                return authorized.Artifacts.FirstOrDefault(item =>
+                    item.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
+                    item.ObjectState == Data.CentralArtifactObjectState.Available &&
+                    item.ReconstructionState == Data.CentralReconstructionState.Complete &&
+                    item.ByteLength is > 0 and <= LogicalCameraArchiveReadService.MaximumPreviewBytes &&
+                    (string.Equals(item.MediaType, "image/png", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(item.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)))?.ContentPath;
+            }
+            if (CurrentSelection is not { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection ||
+                selected.CaptureId != CaptureId) return null;
             var artifact = authorized.Artifacts.FirstOrDefault(item => item.ArtifactId == artifactId);
             // The selector verified this exact Preview independently of the bounded metadata page.
             // Do not drain artifact history just to rediscover a selected Preview beyond that page.
