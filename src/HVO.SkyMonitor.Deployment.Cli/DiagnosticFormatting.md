@@ -33,5 +33,12 @@ separated by `_` or `-` (for example `db_password` and `x-api-key`). This keeps
 credential values containing numeric prose segments from becoming nested keys.
 Explicit `=`/`:` keys retain the existing suffix-based matching.
 
+A secret key's words may be joined by `-`, `_` or nothing (`SecretKey`,
+`secret-access-key`, `ObjectStorage__SecretKey`); `secretkeeper` stays ordinary.
+A quoted value may follow its key after `=`, `:` or any whitespace, including a
+tab or a no-break space, and is hidden whole. After a space-only key it keeps its
+quotes (`db_password "<redacted>"`) unless text is joined to the closing quote,
+which is hidden with the value.
+
 Nested matching accepts the temporary removed-decoration boundary before or inside
 an inner credential key. The boundary is removed only after the value is hidden.

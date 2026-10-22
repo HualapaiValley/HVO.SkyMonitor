@@ -6,7 +6,12 @@ internal static class Redaction
 
     // A credential key is any key that ends with one of these words, so the key patterns put no word boundary before it:
     // db_password, client_secret, accessToken and x-api-key all match (#1491). The boundary after it keeps tokenid ordinary.
-    private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]key|_access_key)?|private[-_]?key|api[-_]?key)\\b";
+    // A secret key's words may be joined by -, _ or nothing, so SecretKey and secret-access-key match but secretkeeper does not (#1509).
+    private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]?(?:access[-_]?)?key)?|private[-_]?key|api[-_]?key)\\b";
+
+    // A quoted value follows its key after = or :, or after whitespace alone, which may be a tab or another space character
+    // rather than a plain space, so the quoted passes hide every value the space-only pass would find quoted (#1509).
+    private const string QuotedSeparator = "\\s*[=:\\s]\\s*";
 
     private const string KeyWords = CredentialWord + "|authorization|bearer";
 
@@ -27,7 +32,7 @@ internal static class Redaction
 
     // A CSI that is not decoration stays in the text while it is matched, so a quoted value may still follow one.
     private static readonly System.Text.RegularExpressions.Regex QuotedCredential = LinearPattern(
-        $"""(?i)({CredentialWord}["']?\s*[=: ]\s*)(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)*["']""");
+        $"""(?i)({CredentialWord}["']?{QuotedSeparator})(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)*["']""");
 
     private static readonly System.Text.RegularExpressions.Regex KeyWord = LinearPattern($"(?i){KeyWords}");
 
@@ -43,10 +48,10 @@ internal static class Redaction
     private static readonly System.Text.RegularExpressions.Regex BearerValue = LinearPattern("(?i)(\\bbearer\\s+)[^,;\\s\\\"]+");
 
     private static readonly System.Text.RegularExpressions.Regex DoubleQuotedValue = LinearPattern(
-        "(?i)(" + CredentialWord + "[\\\"']?\\s*[=: ]\\s*\\\")[^\\\"]*(\\\")");
+        "(?i)(" + CredentialWord + "[\\\"']?" + QuotedSeparator + "\\\")[^\\\"]*(\\\")");
 
     private static readonly System.Text.RegularExpressions.Regex SingleQuotedValue = LinearPattern(
-        "(?i)(" + CredentialWord + "[\\\"']?\\s*[=: ]\\s*')[^']*(')");
+        "(?i)(" + CredentialWord + "[\\\"']?" + QuotedSeparator + "')[^']*(')");
 
     private static readonly System.Text.RegularExpressions.Regex UnquotedValue = LinearPattern(
         "(?i)((?:authorization|" + CredentialWord + ")[\\\"']?\\s*[=:]\\s*[\\\"']?)[^\\\"',;\\s}]+");
@@ -101,9 +106,18 @@ internal static class Redaction
         text = DoubleQuotedValue.Replace(text, "$1<redacted>$2");
         text = SingleQuotedValue.Replace(text, "$1<redacted>$2");
         text = UnquotedValue.Replace(text, "$1<redacted>");
-        text = SpacedValue.Replace(text, "$1<redacted>");
+        text = SpacedValue.Replace(text, HideSpacedValue);
         return WithoutControls(text);
     }
+
+    /// <summary>
+    /// A value the quoted passes already hid whole keeps its quotes. Anything else the space-only pass reads as a value is
+    /// hidden as before, including text joined to a quoted value's closing quote (#1509).
+    /// </summary>
+    private static string HideSpacedValue(System.Text.RegularExpressions.Match match)
+        => match.ValueSpan[match.Groups[1].Length..] is "\"<redacted>\"" or "'<redacted>'"
+            ? match.Value
+            : match.Groups[1].Value + "<redacted>";
 
     private static string WithoutUserInformation(string text)
         => text.Contains("://", StringComparison.Ordinal) ? UserInformation.Replace(text, "<redacted>@") : text;

@@ -29,7 +29,8 @@ public sealed partial class LifecycleContractTests
             .Select(field => field.GetValue(null)).OfType<Regex>()
             .Where(pattern => pattern.Options.HasFlag(RegexOptions.NonBacktracking)).ToList();
         CollectionAssert.AreEquivalent(declared, Redaction.LinearPatterns.ToList(), "Every nonbacktracking pattern is compared.");
-        var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).Concat(Diagnostic1499Cases().Select(row => (string)row[2]).Distinct()).ToList();
+        var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).Concat(Diagnostic1499Cases().Select(row => (string)row[2]).Distinct())
+            .Concat(Diagnostic1509Cases().Select(row => (string)row[1]).Distinct()).ToList();
         var differences = new List<string>();
         foreach (var pattern in Redaction.LinearPatterns)
         {
@@ -70,10 +71,11 @@ public sealed partial class LifecycleContractTests
         string[] keys =
         [
             "password", "Password", "token", "Token", "secret", "api-key", "apikey", "authorization", "Authorization", "bearer",
-            "db_password", "accessToken", "tokenid", "user", "\u001b[1mtoken\u001b[0m", "--password",
+            "db_password", "accessToken", "tokenid", "user", "\u001b[1mtoken\u001b[0m", "--password", "SecretKey", "secret-access-key",
+            "secretkeeper",
         ];
         string[] quotes = ["", "", "", "\"", "'", "\\\""];
-        string[] separators = ["=", ":", " ", ": ", " = ", "=\t", "\u001b[2J", "\u0085"];
+        string[] separators = ["=", ":", " ", ": ", " = ", "=\t", "\t", "\u001b[2J", "\u0085"];
         string[] values = ["value", "a b", "x", "", "a\\\"b", "a,b", "a;b", "<v>", "\u001b[31mv"];
         string[] betweens = ["", ",", ";", " ", ", ", "'", "\"", ")", "}", "&", "\u001b[0m", "\u001b]0\u0007", "'."];
         var state = 1491UL;

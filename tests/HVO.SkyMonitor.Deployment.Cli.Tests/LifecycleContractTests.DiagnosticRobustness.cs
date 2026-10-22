@@ -377,6 +377,9 @@ public sealed partial class LifecycleContractTests
     [DataRow("accessToken", 1048576)]
     [DataRow("x-api-key", 1048576)]
     [DataRow("token", 1048576)]
+    // #1509: the secret key spellings, and the quoted passes, which now accept whitespace alone before a value.
+    [DataRow("SecretKey", 1048576)]
+    [DataRow("secret-access-key", 1048576)]
     public void Diagnostic1491_KeyBeforeLongWhitespaceIsLinear(string key, int spaces)
     {
         var diagnostic = key + new string(' ', spaces) + "x";

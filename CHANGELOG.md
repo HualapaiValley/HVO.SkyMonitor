@@ -155,6 +155,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
+- Deployment CLI errors and warnings hide the values of `SecretKey`, `ObjectStorage__SecretKey`, `SecretAccessKey` and `secret-access-key`, and the whole of a quoted credential value that follows its key after a tab or other whitespace character rather than a plain space. A quoted value after a space-separated key such as `db_password` keeps its quotes, and the `--password-file`/`--generate-password` usage error is shown in full. (#1509)
+
 - Deployment CLI errors and warnings hide additional credential key forms and nested values, redact space-separated compound keys, and escape controls across raw, helper and report output boundaries. (#1499)
 
 - Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
