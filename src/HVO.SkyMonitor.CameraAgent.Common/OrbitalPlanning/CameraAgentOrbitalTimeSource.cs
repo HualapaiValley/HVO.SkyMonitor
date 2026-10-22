@@ -123,6 +123,9 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
         this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>Test seam: called on a cache miss after the refresh revision is captured and before the pairs are loaded.</summary>
+    internal Action? BeforeLoad { get; set; }
+
     /// <summary>True when any override setting is present, which selects the override over the bundled pair.</summary>
     public static bool HasOverride(CameraAgentSatellitePlanningOptions configuration)
     {
@@ -195,6 +198,7 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
                 // A failed explicit adoption also clears the previous inputs. Never silently use an older pair.
                 cached = null;
                 cachedConfiguration = null;
+                BeforeLoad?.Invoke();
                 verified = source == CameraAgentOrbitalTimeDataSource.Override
                     ? await ReadOverrideAsync(configuration, cancellationToken).ConfigureAwait(false)
                     : await ReadBundledOrManagedAsync(pointer, cancellationToken).ConfigureAwait(false);

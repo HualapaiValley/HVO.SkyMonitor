@@ -696,6 +696,39 @@ public sealed class CameraAgentTimeDataRefreshTests
     }
 
     [TestMethod]
+    public async Task AnInvalidationDuringAnInFlightLoadMakesTheNextReadRevalidateAsync()
+    {
+        var now = new DateTimeOffset(2027, 7, 2, 18, 0, 0, TimeSpan.Zero);
+        using var host = new Host(now);
+        var earlier = await host.AdoptLongerPairAsync(400).ConfigureAwait(false);
+        var current = await host.AdoptLongerPairAsync(500).ConfigureAwait(false);
+        var loads = 0;
+        // A refresh invalidates after this cold load captured its revision. The damage it signals reaches the files only
+        // after the load read them, so the load verifies the intact pair and only the revision can force a recheck.
+        host.Source.BeforeLoad = () =>
+        {
+            if (++loads == 1) host.Store.InvalidateVerification();
+        };
+
+        var inFlight = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentManagedTimeDataState.Verified, inFlight.Managed);
+        Assert.AreEqual(current.Pair, inFlight.ActiveManagedPair);
+        await File.WriteAllTextAsync(Path.Combine(host.Store.PairDirectory(current.Pair), CameraAgentTimeDataSources.EarthOrientationFile),
+            "damaged", TestContext.CancellationToken).ConfigureAwait(false);
+
+        // The in-flight result is cached under the revision captured before the load, never under the newer one.
+        var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("invalid", status.ManagedPair!.State);
+        Assert.IsNull(status.ManagedPair.CoverageEndUtc, "damaged current data has no verified coverage");
+        Assert.AreEqual(earlier.History[0].LeapSecondsSha256, status.LeapSecondsSha256);
+        Assert.AreEqual(2, loads, "the read after the invalidation reloads instead of hitting the cache");
+        var resolution = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentManagedTimeDataState.Invalid, resolution.Managed);
+        Assert.AreEqual(earlier.Pair, resolution.ActiveManagedPair);
+        Assert.AreEqual(2, loads, "the revalidated result is cached under the current revision");
+    }
+
+    [TestMethod]
     [DataRow(false, false)]
     [DataRow(true, false)]
     [DataRow(false, true)]
