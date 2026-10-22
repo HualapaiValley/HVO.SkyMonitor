@@ -192,7 +192,10 @@ public static class ProcessingNodeOptionsCodec
                     string.Equals(property.Name, option.Members[index], StringComparison.OrdinalIgnoreCase));
                 if (at >= 0)
                 {
-                    if (ReadToken(values[index].Kind, properties[at].Value, out _) != values[index])
+                    // A member is unchanged only when it is valid as written and reads as the edited value, so an
+                    // invalid spelling of that value, such as a signed-zero channel, is rewritten rather than kept.
+                    if (ReadMember(option, properties[at], path) is not null ||
+                        ReadToken(values[index].Kind, properties[at].Value, out _) != values[index])
                     {
                         replacements.Add((spans[at].Start, spans[at].End, WriteValue(values[index])));
                     }

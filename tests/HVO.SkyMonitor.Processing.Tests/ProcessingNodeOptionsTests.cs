@@ -254,6 +254,22 @@ public sealed class ProcessingNodeOptionsTests
     }
 
     [TestMethod]
+    [DataRow("constellationLineRed", 0, 160, 255)]
+    [DataRow("constellationLineGreen", 96, 0, 255)]
+    [DataRow("constellationLineBlue", 96, 160, 0)]
+    public void EncodeRewritesASignedZeroChannelThatTheEditSetsToZero(string member, int red, int green, int blue)
+    {
+        var result = ProcessingNodeOptionsCodec.Encode(Scene, Json($$"""{"{{member}}":-0,"unknown": [ 1.50 ]}"""),
+            new Dictionary<string, ProcessingOptionValue>
+            {
+                [Color] = ProcessingOptionValue.FromColor(new((byte)red, (byte)green, (byte)blue))
+            });
+
+        Assert.IsTrue(result.IsValid, string.Join("; ", result.Diagnostics));
+        Assert.AreEqual($$"""{"{{member}}":0,"unknown": [ 1.50 ]}""", result.Options!.Value.GetRawText());
+    }
+
+    [TestMethod]
     public void EncodeAppendsOnlyMembersThatDifferFromTheirDefaults()
     {
         var withMembers = ProcessingNodeOptionsCodec.Encode(Scene, Json("""{"other": 1 }"""),
