@@ -160,6 +160,10 @@ must not redefine its policy inconsistently.
   contract work. Technical dependencies and approved product scope still apply.
 - Complete the assigned issue without routine continuation prompts. Taking
   another issue requires explicit assignment or opt-in queue authorization.
+  An open issue labelled `agent:ready` is opt-in queue authorization: a queue
+  worker may claim it under the claim rules above. When several workers claim
+  at once, the earliest claim comment keeps it and the others withdraw in a
+  comment.
 
 ### Agent Workspaces
 
@@ -236,11 +240,27 @@ must not redefine its policy inconsistently.
   Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human,
   one-shot agent, or guarded resumed-session route; fleet scripts apply only to
   the enrolled resumed-session route they support.
-- Only one PR may hold the repository-wide finalization lock. Acquire it before
-  final target synchronization and hold it through any required base-sync
-  review, protected CI, and merge. If the target branch advances, return the PR
-  to draft, release the lock, synchronize and review again, then run CI on the
-  new reviewed head.
+- Finalize through GitHub auto-merge while the repository allows it. Once review
+  has converged, mark the PR ready and enable auto-merge (merge commit) pinned
+  to the reviewed head. Branch protection then enforces green required checks,
+  an up-to-date head and resolved conversations.
+  - When the target branch advances, the operator's merge-train automation
+    merges it into one queued PR at a time.
+  - It pushes that merge only when two conditions hold. First, the only
+    conflicts are in the test-count inventories, the CI runbook totals and
+    CHANGELOG lines. Second, the non-count diff is byte-identical to the
+    reviewed range. That merge is the recorded unchanged-base proof, so it
+    needs no base-sync review.
+  - In every other case, including a failed required check, the automation
+    disables auto-merge, returns the PR to draft and hands it back to the
+    owner. The owner synchronizes, obtains the base-sync review, and enables
+    auto-merge again on the new reviewed head.
+- When auto-merge is unavailable or the operator reserves the merge, use the
+  finalization lock. Only one PR may hold the repository-wide finalization
+  lock. Acquire it before final target synchronization and hold it through any
+  required base-sync review, protected CI, and merge. If the target branch
+  advances, return the PR to draft, release the lock, synchronize and review
+  again, then run CI on the new reviewed head.
 - Opening a PR assigns its implementing agent ownership of the complete lifecycle:
   request review, actively monitor review and checks, disposition findings, drive
   corrections and bounded rereviews, mark the converged head ready, monitor final
