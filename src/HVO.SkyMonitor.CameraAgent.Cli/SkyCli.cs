@@ -190,6 +190,7 @@ internal static partial class SkyCli
             yield return CreateLogoutCommand();
             yield return CreateRigCommand();
             yield return CreateScheduleCommand();
+            yield return CreateTimeDataCommand();
             yield return CreateUiCommand();
         }
 

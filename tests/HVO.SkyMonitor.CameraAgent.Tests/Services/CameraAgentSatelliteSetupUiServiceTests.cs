@@ -110,6 +110,39 @@ public sealed class CameraAgentSatelliteSetupUiServiceTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Status_ShowsARefreshedPairItsProvenanceAndTheRefreshFactsAsync(bool expired)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        using var host = new CameraAgentTimeDataRefreshTests.Host();
+        var pointer = await host.AdoptLongerPairAsync(days: 100).ConfigureAwait(false);
+        var data = (await host.Source.ReadAsync(CancellationToken.None).ConfigureAwait(false))!;
+        var end = CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(data);
+        var start = expired ? end.AddDays(1) : data.EarthOrientationPredictedCoverage!.StartUtc.AddDays(1);
+        var service = new CameraAgentSatelliteSetupUiService(new Authentication(), Authorization(true, true),
+            harness.Service, new TestOrbitalUiService(), host.Source, host.Options, host.Operations);
+        var view = (await service.GetAsync(start, start.AddHours(6), CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.AreEqual("Refreshed pair (managed time-data refresh)", view.ActiveSource);
+        CollectionAssert.Contains(view.Groups.Select(static group => group.Group).ToArray(), CameraAgentSettingsCatalogue.TimeDataRefreshGroup);
+        foreach (var file in view.Files)
+        {
+            Assert.AreEqual("Refreshed and hash verified", file.Status);
+            StringAssert.StartsWith(file.Path, host.Store.PairDirectory(pointer.Pair), StringComparison.Ordinal);
+            Assert.Contains("https://", file.Origin!, StringComparison.Ordinal);
+        }
+        var status = view.TimeData!;
+        Assert.AreEqual("managed", status.ActiveSource);
+        Assert.AreEqual(pointer.Pair, status.ManagedPair!.Pair);
+        Assert.AreEqual(end, status.CoverageEndUtc);
+        if (expired)
+            Assert.Contains("The refreshed time data covers planning only until",
+                view.Problems.Single(static problem => problem.Code == "coverage-expired").Message, StringComparison.Ordinal);
+        else
+            Assert.IsEmpty(view.Problems);
+    }
+
+    [TestMethod]
     public async Task Status_AnIncompleteOverrideIsShownAndTheBundledPairIsNotUsedAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);

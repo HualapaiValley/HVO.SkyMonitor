@@ -174,7 +174,13 @@ public enum LocalAutomationTaskKind
     /// Refreshes local SWPC facts through an explicitly registered periodic task adapter.
     /// Appended only: the stored text spelling of every earlier value is unchanged.
     /// </summary>
-    SpaceWeatherRefresh
+    SpaceWeatherRefresh,
+
+    /// <summary>
+    /// Refreshes the managed Earth-orientation and leap-second pair at most daily through an explicitly
+    /// registered periodic task adapter. Appended only: the stored text spelling of every earlier value is unchanged.
+    /// </summary>
+    TimeDataRefresh
 }
 
 /// <summary>

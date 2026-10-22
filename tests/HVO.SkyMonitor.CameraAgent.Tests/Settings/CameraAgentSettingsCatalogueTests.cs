@@ -15,13 +15,14 @@ public sealed class CameraAgentSettingsCatalogueTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
     private static CameraAgentSettingDefinition MinimumRefresh => CameraAgentSettingsCatalogue.Find("currentSky.minimumRefreshSeconds")!;
-    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule", "currentSky", "orbitalElements", "satellitePlanning", "spaceWeather"];
+    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule", "currentSky", "orbitalElements", "satellitePlanning", "timeDataRefresh", "spaceWeather"];
     private static readonly string[] SwitchChoices = ["false", "true"];
 
     [TestMethod]
     [DataRow("orbitalElements.enabled", "CameraAgent:OrbitalElements:Enabled", true)]
     [DataRow("satellitePlanning.enabled", "CameraAgent:SatellitePlanning:Enabled", false)]
     [DataRow("spaceWeather.enabled", "CameraAgent:SpaceWeather:Enabled", true)]
+    [DataRow("timeDataRefresh.enabled", "CameraAgent:SatellitePlanning:TimeDataRefreshEnabled", false)]
     public void FeatureSwitches_AreDiscoverableWithOffDefaultAndApplicationPolicy(string key, string configurationKey, bool restart)
     {
         var setting = CameraAgentSettingsCatalogue.Find(key);

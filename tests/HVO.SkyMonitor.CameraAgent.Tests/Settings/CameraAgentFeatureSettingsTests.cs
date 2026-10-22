@@ -12,8 +12,10 @@ public sealed class CameraAgentFeatureSettingsTests
     [DataRow("orbitalElements", true)]
     [DataRow("satellitePlanning", false)]
     [DataRow("spaceWeather", true)]
+    [DataRow("timeDataRefresh", false)]
     public async Task Switches_SaveBooleanToTheOperatorFileAndReportApplicationAsync(string group, bool restart)
     {
+        var property = "\"" + CameraAgentSettingsCatalogue.Find(group + ".enabled")!.ConfigurationKey!.Split(':')[^1] + "\": ";
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
         var before = await harness.GroupAsync(group).ConfigureAwait(false);
         Assert.AreEqual("false", before.Settings.Single().Value!.Value.GetString());
@@ -22,13 +24,13 @@ public sealed class CameraAgentFeatureSettingsTests
         Assert.AreEqual(restart ? CameraAgentSettingsWriteOutcome.PendingRestart : CameraAgentSettingsWriteOutcome.Applied, result.Outcome);
         Assert.AreEqual(restart ? "false" : "true", result.Group!.Settings.Single().Value!.Value.GetString());
         Assert.AreEqual(restart ? "true" : null, result.Group.Settings.Single().PendingValue?.GetString());
-        StringAssert.Contains(harness.ReadSettingsFile(), "\"Enabled\": true", StringComparison.Ordinal);
+        StringAssert.Contains(harness.ReadSettingsFile(), property + "true", StringComparison.Ordinal);
         Assert.IsTrue(bool.Parse(harness.Configuration[CameraAgentSettingsCatalogue.Find(group + ".enabled")!.ConfigurationKey!]!));
         var off = await harness.WriteAsync(group, result.Group.Version,
             new Dictionary<string, object?> { [group + ".enabled"] = "false" }).ConfigureAwait(false);
         Assert.AreEqual("false", off.Group!.Settings.Single().Value!.Value.GetString());
         Assert.IsNull(off.Group.Settings.Single().PendingValue);
-        StringAssert.Contains(harness.ReadSettingsFile(), "\"Enabled\": false", StringComparison.Ordinal);
+        StringAssert.Contains(harness.ReadSettingsFile(), property + "false", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -72,6 +74,8 @@ public sealed class CameraAgentFeatureSettingsTests
     [DataRow("satellitePlanning", "SecretsDirectory")]
     [DataRow("spaceWeather", "Environment")]
     [DataRow("spaceWeather", "SecretsDirectory")]
+    [DataRow("timeDataRefresh", "Environment")]
+    [DataRow("timeDataRefresh", "SecretsDirectory")]
     public async Task Switches_EnvironmentAndSecretsOverrideTheFileAndRefuseWritesAsync(string group, string provider)
     {
         var key = CameraAgentSettingsCatalogue.Find(group + ".enabled")!.ConfigurationKey!;
@@ -82,7 +86,7 @@ public sealed class CameraAgentFeatureSettingsTests
         {
             await File.WriteAllTextAsync(Path.Combine(root, key.Replace(":", "__", StringComparison.Ordinal)), "true").ConfigureAwait(false);
             Environment.SetEnvironmentVariable(variable + key.Replace(":", "__", StringComparison.Ordinal), "true");
-            var fileContents = "{\"CameraAgent\":{\"" + key.Split(':')[1] + "\":{\"Enabled\":false}}}";
+            var fileContents = "{\"CameraAgent\":{\"" + key.Split(':')[1] + "\":{\"" + key.Split(':')[2] + "\":false}}}";
             using var harness = await CameraAgentSettingsHarness.CreateAsync(configureOverrides: configuration =>
             {
                 File.WriteAllText(configuration[DeploymentLocalSettings.PathVariable]!, fileContents);

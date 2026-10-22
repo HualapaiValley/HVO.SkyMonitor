@@ -53,8 +53,8 @@ public sealed class CameraAgentBundledTimeDataTests
         Assert.IsFalse(data.NominalZeroEarthOrientation);
         Assert.AreEqual(provenance.RootElement.GetProperty("earthOrientation").GetProperty("sha256").GetString(), data.EarthOrientationSha256);
         Assert.AreEqual(provenance.RootElement.GetProperty("leapSeconds").GetProperty("sha256").GetString(), data.LeapSecondsSha256);
-        Assert.AreEqual(data.EarthOrientationSha256, resolution.BundledEarthOrientation!.Sha256);
-        Assert.AreEqual(data.LeapSecondsSha256, resolution.BundledLeapSeconds!.Sha256);
+        Assert.AreEqual(data.EarthOrientationSha256, resolution.EarthOrientationProvenance!.Sha256);
+        Assert.AreEqual(data.LeapSecondsSha256, resolution.LeapSecondsProvenance!.Sha256);
         // An approved pair has final history, predictions after it, and a leap list that is still valid when the
         // predictions start; otherwise a release would ship with no usable planning window.
         var final = data.EarthOrientationFinalCoverage!;
@@ -141,7 +141,7 @@ public sealed class CameraAgentBundledTimeDataTests
             Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Override, active.Source);
             Assert.AreEqual(settings.EarthOrientationSha256, active.Data!.EarthOrientationSha256);
             Assert.AreNotEqual(bundled.EarthOrientationSha256, active.Data.EarthOrientationSha256);
-            Assert.IsNull(active.BundledEarthOrientation);
+            Assert.IsNull(active.EarthOrientationProvenance);
 
             settings.LeapSecondsSha256 = new string('B', 64);
             var invalid = await source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
