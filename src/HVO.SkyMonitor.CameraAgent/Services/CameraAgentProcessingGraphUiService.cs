@@ -315,6 +315,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
     {
         try
         {
+            if (ValidateOptions(pipeline) is { } optionsFailure)
+            {
+                return (null, optionsFailure);
+            }
             var configuration = scheduleRuntime?.Snapshot?.Configuration
                 ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
             return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
@@ -350,7 +354,17 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
         string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken)
-        => MutateAsync((actor, token) => operations.CreateRevisionAsync(name, revision, pipeline, idempotencyKey, actor, reason, token), cancellationToken);
+        => MutateAsync((actor, token) => operations.CreateRevisionAsync(name, revision, pipeline, idempotencyKey, actor, reason, token), cancellationToken, pipeline);
+
+    private static string? ValidateOptions(CapturePipelineConfig pipeline)
+    {
+        var diagnostics = pipeline.Steps.SelectMany((step, index) =>
+            ProcessingNodeOptionsForm.DescriptorFor(step.Type) is { } descriptor
+                ? ProcessingNodeOptionsCodec.Decode(descriptor,
+                    step.Options ?? System.Text.Json.JsonSerializer.SerializeToElement(new { }), $"steps[{index}].options").Diagnostics
+                : System.Collections.Immutable.ImmutableArray<ProcessingGraphDiagnostic>.Empty).ToArray();
+        return diagnostics.Length == 0 ? null : string.Join(' ', diagnostics.Select(static item => $"{item.Code} {item.Path}: {item.Message}"));
+    }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
@@ -387,7 +401,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<T>> MutateAsync<T>(
         Func<string, CancellationToken, ValueTask<T>> mutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CapturePipelineConfig? pipeline = null)
         where T : class
     {
         var principal = await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
@@ -395,6 +410,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<T>();
+        }
+        if (pipeline is not null && ValidateOptions(pipeline) is { } optionsFailure)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
         }
         try
         {

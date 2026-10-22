@@ -70,8 +70,11 @@ is_release_scripts_path() {
   # commands of its own. It runs when those scripts, the libraries they source (test:release-install's, the strict
   # GitHub reads and the newest-release rule), install.sh or its fakes, either release workflow, the product version
   # (Directory.Build.props) or the release tool change, or the Preflight wiring that runs it. Its CameraAgent tests
-  # (scripts/test:cameraagent-r2r) also prove the bundled time-data update's rollback with fake curl and dotnet.
+  # (scripts/test:cameraagent-r2r) also prove the bundled time-data update's rollback with fake curl and dotnet,
+  # and scripts/test:cameraagent-image-reproducibility protects the image build scripts and Dockerfile.
   case "$1" in
+    scripts/build:cameraagent-image | scripts/test:cameraagent-image-reproducibility | scripts/release:check-cameraagent-image | \
+      scripts/test:cameraagent-arm64-ci | src/HVO.SkyMonitor.CameraAgent/Dockerfile | \
     scripts/release:cameraagent-publish | scripts/release:check-cameraagent-publish | scripts/cameraagent-release.targets | scripts/test:cameraagent-r2r | \
     scripts/time-data:update | scripts/release:assets | scripts/release:combine-images | scripts/release:check-image-labels | scripts/release:push-image | \
       scripts/release:prerelease-gate | scripts/release:prerelease-check | scripts/release:publish-prerelease | \

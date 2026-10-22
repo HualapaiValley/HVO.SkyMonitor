@@ -26,7 +26,7 @@
         }
         @if (_model.SourceRevisionId is not null)
         {
-            <p class="editor-note" role="note">Started from revision <code>@_model.SourceRevisionId</code>. Opaque node options carried from it stay attached to their rows and are re-emitted unchanged.</p>
+            <p class="editor-note" role="note">Started from revision <code>@_model.SourceRevisionId</code>. Only edited options change; unknown options and step aliases are preserved. Saving creates a new revision.</p>
         }
 
         <form class="editor-form" aria-labelledby="editor-form-heading" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
@@ -79,7 +79,14 @@
                                     <label class="@(stale ? "check check--stale" : "check")"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)@(stale ? " (no longer above this node; clear it)" : "")</label>
                                 }
                             </fieldset>
-                            @if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision.</p> }
+                            @if (node.OptionsForm is { } optionsForm)
+                            {
+                                <section class="node-options-section" id="@(index == _model.Nodes.FindIndex(static row => row.OptionsForm is not null) ? "constellations" : $"constellations-{index}")" aria-label="Constellation overlay">
+                                    <h3>Constellation overlay</h3>
+                                    <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
+                                </section>
+                            }
+                            else if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision. This step has no supported option editor; no version upgrade is applied.</p> }
                         </li>
                     }
                 </ol>
@@ -91,10 +98,14 @@
 
             <div class="editor-actions">
                 <button type="submit" class="btn btn-outline-light" disabled="@_busy">Preview plan</button>
-                <button type="button" class="btn btn-primary" disabled="@(_busy || _plan is null)" @onclick="SaveDraftAsync">Save immutable draft</button>
+                <button type="button" class="btn btn-primary" disabled="@(_busy || _plan is null || !_graphChanged || _savedRevisionId is not null)" @onclick="SaveDraftAsync">Save immutable draft</button>
                 @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
             </div>
         </form>
+        @if (Section == "constellations" && !_model.Nodes.Any(static node => node.OptionsForm is not null))
+        {
+            <p role="status">This graph has no supported constellation overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure constellation lines.</p>
+        }
 
         @if (_plan is not null)
         {

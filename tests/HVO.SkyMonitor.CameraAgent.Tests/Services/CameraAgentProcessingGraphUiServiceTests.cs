@@ -208,6 +208,31 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual("The desired graph contains a dependency cycle.", invalid.Message);
     }
 
+    [TestMethod]
+    [DataRow("{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
+    [DataRow("{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
+    [DataRow("{\"constellationLineRed\":256}", "processing.options.out-of-range")]
+    [DataRow("{\"constellationLineRed\":96,\"CONSTELLATIONLINERED\":96}", "processing.options.duplicate-member")]
+    public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string json, string code)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig("ScenePresentationLayer", "scene",
+            Options: JsonDocument.Parse(json).RootElement.Clone(), DependsOn: ["$raw"], Enabled: false)]);
+
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var created = await service.CreateRevisionAsync("sky", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, preview.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, created.Kind);
+        Assert.AreEqual(preview.Message, created.Message);
+        StringAssert.Contains(preview.Message!, code, StringComparison.Ordinal);
+        StringAssert.Contains(preview.Message!, "steps[0].options", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
+    }
+
     private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized, ICaptureProcessingPipelineFactory? factory = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
