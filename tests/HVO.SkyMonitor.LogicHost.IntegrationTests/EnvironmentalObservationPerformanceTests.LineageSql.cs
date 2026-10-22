@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
@@ -89,6 +90,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         Direction = parameter.Direction, IsNullable = parameter.IsNullable
     };
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Replays only captured production EF command text with its original typed parameters in a disposable database.")]
     private static async Task<object> ReplayLineageCommandsAsync(string connectionString, List<LineageCommand> commands, string output)
     {
         await using var connection = new SqlConnection(connectionString);
