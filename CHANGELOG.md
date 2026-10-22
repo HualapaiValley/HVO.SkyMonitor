@@ -26,6 +26,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
+
 - CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
 
 - Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
