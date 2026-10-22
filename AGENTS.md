@@ -255,6 +255,9 @@ must not redefine its policy inconsistently.
     disables auto-merge, returns the PR to draft and hands it back to the
     owner. The owner synchronizes, obtains the base-sync review, and enables
     auto-merge again on the new reviewed head.
+  - Auto-merge does not switch itself off on a push with write access. Turn it
+    off (`gh pr merge <n> --disable-auto`) before pushing to a finalized PR. The
+    automation also withdraws it from any head it wasn't enabled for.
 - When auto-merge is unavailable or the operator reserves the merge, use the
   finalization lock. Only one PR may hold the repository-wide finalization
   lock. Acquire it before final target synchronization and hold it through any
