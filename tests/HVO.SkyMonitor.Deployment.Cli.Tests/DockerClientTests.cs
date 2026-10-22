@@ -121,7 +121,10 @@ public sealed class DockerClientTests
         var reference = recorded + "@" + digest;
         var listing = JsonSerializer.Serialize(new
         {
-            ID = $"sha256:{new string('5', 64)}", Repository = listed, Tag = "<none>", Digest = digest
+            ID = $"sha256:{new string('5', 64)}",
+            Repository = listed,
+            Tag = "<none>",
+            Digest = digest
         });
         var runner = new FakeProcessRunner(string.Empty, listing);
         var docker = new DockerClient(runner);
