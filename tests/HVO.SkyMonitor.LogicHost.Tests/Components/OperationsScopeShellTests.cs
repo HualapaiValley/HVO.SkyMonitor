@@ -37,7 +37,7 @@ public sealed class OperationsScopeShellTests
         cut.Find("nav[aria-label='Breadcrumb']").TextContent.Should().Contain("Station").And.Contain("Camera");
         cut.Find(".scope-tabs [aria-current='page']").TextContent.Should().Be("Scope overview");
         cut.FindAll(".scope-tabs a").Select(a => a.TextContent).Should()
-            .Equal("Scope overview", "Installation and capture history");
+            .Equal("Scope overview", "Current Sky", "Installation and capture history");
         cut.FindAll("a").Should().NotContain(a => a.GetAttribute("href")!.Contains("processing", StringComparison.Ordinal));
     }
 
