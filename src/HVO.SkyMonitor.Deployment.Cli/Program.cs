@@ -106,7 +106,7 @@ internal static class Program
                 // Without --json an advisory is said before anything runs; with --json it is in the result instead.
                 foreach (var warning in command.ParseWarnings)
                 {
-                    await Console.Error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
+                    await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
             if (command is InstallDeploymentCommand install)
@@ -130,7 +130,7 @@ internal static class Program
             {
                 var report = await services.Preflight(preflight, cancellationToken).ConfigureAwait(false);
                 await Console.Out.WriteLineAsync(preflight.Json
-                    ? JsonSerializer.Serialize(report, DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
+                    ? JsonSerializer.Serialize(CameraAgentStatePreflight.ForOutput(report), DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
                     : CameraAgentStatePreflight.Render(report)).ConfigureAwait(false);
                 if (report.Compatible)
                 {
@@ -237,7 +237,7 @@ internal static class Program
         catch (InstallUsageException exception) when (exception.Usage is not null && !jsonErrors)
         {
             // A command-line mistake is not an installation attempt: say what was wrong, then how to use the command.
-            await Console.Error.WriteLineAsync(Redaction.SafeDiagnostic(exception.Message)).ConfigureAwait(false);
+            await Console.Error.WriteLineAsync(CameraAgentStateDiagnostics.Message(exception.Message)).ConfigureAwait(false);
             await Console.Error.WriteAsync(exception.Usage).ConfigureAwait(false);
             return (int)InstallerExitCode.Usage;
         }
@@ -261,7 +261,7 @@ internal static class Program
                 if (jsonErrors)
                 {
                     await Console.Out.WriteLineAsync(
-                        JsonSerializer.Serialize(report, DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
+                        JsonSerializer.Serialize(HostPrerequisites.ForOutput(report), DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
                 }
                 else
                 {
@@ -311,11 +311,11 @@ internal static class Program
     /// <summary>
     /// Writes the error line. A message the shared formatter composed (<see cref="InstallerException.IsFormattedDiagnostic"/>)
     /// is already redacted and escaped, so it is written as it is: scanning it again could redact the fixed wording after a
-    /// hostile name in it (#1491). Every other message is redacted here.
+    /// hostile name in it (#1491). Every other message is redacted and its remaining controls escaped here (#1499).
     /// </summary>
     private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false, bool formatted = false)
     {
-        var safe = formatted ? message : Redaction.SafeDiagnostic(message);
+        var safe = formatted ? message : CameraAgentStateDiagnostics.Message(message);
         return Console.Error.WriteLineAsync(json
             ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = safe })
             : refused

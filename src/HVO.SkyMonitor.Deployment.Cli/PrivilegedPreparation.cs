@@ -194,7 +194,7 @@ internal static class PrivilegedPreparation
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(exception.Message);
+            Console.Error.WriteLine(CameraAgentStateDiagnostics.Message(exception.Message));
             return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
