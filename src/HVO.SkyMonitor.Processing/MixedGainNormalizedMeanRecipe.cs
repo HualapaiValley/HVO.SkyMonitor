@@ -104,7 +104,9 @@ public static class GainNormalizationCompatibility
 /// <para>
 /// The kernel runs in bands of whole rows, so working buffers stay bounded by the band and the number of distinct
 /// member tuples while the result is byte-identical to one full-frame call. Each light and each distinct master
-/// payload is hashed once per window and must match the plan; a master is never substituted.
+/// payload is hashed once per window and must match the plan; a master is never substituted. A light must also carry
+/// the plan's capture ID, descriptor identity, exposure, gain, offset and exact temperature, and a master the exposure
+/// the plan froze for it: the dark and flat scaling use only those frozen exposures.
 /// </para>
 /// </remarks>
 internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
@@ -207,10 +209,13 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.OutputBackedWindow, nameof(request.Inputs));
             }
             if (!candidateIds.Contains(light.ArtifactId) ||
+                light.CaptureId != planned.CaptureId ||
+                !string.Equals(light.DescriptorIdentitySha256, planned.DescriptorSha256, StringComparison.OrdinalIgnoreCase) ||
                 !ProcessingRecipeSupport.TryValidateFrame(light, out var layout, out _) ||
                 layout != plan.InputLayout ||
                 light.Integration != planned.Exposure ||
                 light.Conditions is not { } conditions || conditions.Gain != planned.Gain || conditions.Offset != planned.Offset ||
+                conditions.TemperatureC != planned.TemperatureC ||
                 !string.Equals(
                     ProcessingIdentity.ComputePayloadSha256(light.Payload),
                     planned.PayloadSha256,
@@ -237,8 +242,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 return ProcessingOutcome.TerminalFailure(CalibrationFamilyReasonCodes.MasterMissing, $"{master.Kind}-master");
             }
             if (artifact.Layout != masterLayout || artifact.Payload.Length != masterLayout.ByteLength ||
-                master.Kind is CalibrationReferenceKinds.Dark or CalibrationReferenceKinds.Flat &&
-                artifact.Integration <= TimeSpan.Zero)
+                artifact.Integration != master.Exposure)
             {
                 return ProcessingOutcome.TerminalFailure(CalibrationFamilyReasonCodes.MasterMismatch, $"{master.Kind}-master");
             }
@@ -280,7 +284,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 new("mixed-gain-master-planes", MasterPlanesAlgorithmVersion)
             ],
             [.. lights, .. masterOrder],
-            TimeSpan.FromTicks(lights.Sum(static light => light.Integration.Ticks)),
+            TimeSpan.FromTicks(selected.Sum(static input => input.Exposure.Ticks)),
             compatibility);
         return ProcessingOutcome.Produced(product);
     }
@@ -324,6 +328,8 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                     masters[key.Dark],
                     masters[key.Flat],
                     masters[key.Defect],
+                    planned.Masters[1].Exposure,
+                    planned.Masters[2].Exposure,
                     planned.Exposure,
                     mapping,
                     bandCapacity,
@@ -461,7 +467,8 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
         private readonly ProcessingArtifact _defect;
         private readonly CodeMapping _mapping;
         private readonly Int128 _lightTicks;
-        private readonly Int128 _darkTicks;
+        private readonly long _darkTicks;
+        private readonly long _flatTicks;
         private readonly Int128 _flatSum;
         private readonly Int128 _photosites;
 
@@ -470,6 +477,8 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             ProcessingArtifact dark,
             ProcessingArtifact flat,
             ProcessingArtifact defect,
+            long darkTicks,
+            long flatTicks,
             TimeSpan lightExposure,
             CodeMapping mapping,
             int bandCapacity,
@@ -481,7 +490,8 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             _defect = defect;
             _mapping = mapping;
             _lightTicks = lightExposure.Ticks;
-            _darkTicks = dark.Integration.Ticks;
+            _darkTicks = darkTicks;
+            _flatTicks = flatTicks;
             Bias = new ushort[bandCapacity];
             Dark = new int[bandCapacity];
             Flat = new int[bandCapacity];
@@ -490,12 +500,17 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             _flatSum = flatSum;
         }
 
-        /// <summary>The planes of one tuple, or <see langword="null"/> when the flat's frame mean is not positive.</summary>
+        /// <summary>
+        /// The planes of one tuple at the frozen dark and flat exposures, or <see langword="null"/> when the flat's frame
+        /// mean is not positive.
+        /// </summary>
         public static MasterPlanes? Create(
             ProcessingArtifact bias,
             ProcessingArtifact dark,
             ProcessingArtifact flat,
             ProcessingArtifact defect,
+            TimeSpan darkExposure,
+            TimeSpan flatExposure,
             TimeSpan lightExposure,
             CodeMapping mapping,
             int bandCapacity,
@@ -506,8 +521,8 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             var biasCodes = bias.Payload.Span;
             var darkCodes = dark.Payload.Span;
             var flatCodes = flat.Payload.Span;
-            var darkTicks = dark.Integration.Ticks;
-            var flatTicks = flat.Integration.Ticks;
+            var darkTicks = darkExposure.Ticks;
+            var flatTicks = flatExposure.Ticks;
             for (var index = 0; index < photosites; index++)
             {
                 if ((index & 0xFFFF) == 0)
@@ -517,7 +532,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 sum += FlatResponse(biasCodes, darkCodes, flatCodes, darkTicks, flatTicks, index);
             }
             return sum > 0
-                ? new MasterPlanes(bias, dark, flat, defect, lightExposure, mapping, bandCapacity, sum)
+                ? new MasterPlanes(bias, dark, flat, defect, darkTicks, flatTicks, lightExposure, mapping, bandCapacity, sum)
                 : null;
         }
 
@@ -541,7 +556,6 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             var darkCodes = _dark.Payload.Span;
             var flatCodes = _flat.Payload.Span;
             var defectCodes = _defect.Payload.Span;
-            var flatTicks = _flat.Integration.Ticks;
             for (var offset = 0; offset < count; offset++)
             {
                 var index = first + offset;
@@ -564,7 +578,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 }
                 Dark[offset] = (int)dark;
 
-                var response = FlatResponse(biasCodes, darkCodes, flatCodes, (long)_darkTicks, flatTicks, index);
+                var response = FlatResponse(biasCodes, darkCodes, flatCodes, _darkTicks, _flatTicks, index);
                 Flat[offset] = response <= 0
                     ? 0
                     : (int)Int128.Min(

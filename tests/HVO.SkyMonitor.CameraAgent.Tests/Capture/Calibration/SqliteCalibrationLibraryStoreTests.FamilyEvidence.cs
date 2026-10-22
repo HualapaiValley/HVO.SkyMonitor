@@ -100,6 +100,59 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task ConfirmFamilyMastersAsync_KeepsAnEarlierPassFromRepublishingEvidenceALaterValidationFoundCorrupt()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFamilyFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var family = fixture.Family(fixture.Member(LowGain), fixture.Member(HighGain));
+            var high = fixture.Member(HighGain).Masters;
+            var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reached = 0;
+            store.BeforeValidatedEvidenceCachedForTest = async _ =>
+            {
+                if (Interlocked.Increment(ref reached) == 1)
+                {
+                    paused.SetResult();
+                    await resume.Task.ConfigureAwait(false);
+                }
+            };
+
+            // The earlier confirmation verifies intact evidence and is held before it caches what it verified.
+            var earlier = store.ConfirmFamilyMastersAsync(high, CancellationToken.None);
+            await paused.Task.ConfigureAwait(false);
+            var profile = Path.Combine(
+                root, fixture.Bundles[HighGain].ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var written = File.GetLastWriteTimeUtc(profile);
+            var flipped = await File.ReadAllBytesAsync(profile).ConfigureAwait(false);
+            flipped[0] ^= 0x01;
+            await File.WriteAllBytesAsync(profile, flipped).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(profile, written);
+            Assert.AreEqual(
+                CalibrationFamilyReasonCodes.MasterCorrupt,
+                await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
+            resume.SetResult();
+            Assert.IsNull(await earlier.ConfigureAwait(false));
+            store.BeforeValidatedEvidenceCachedForTest = null;
+
+            // The later failure outranks the earlier pass, so selection reads the bytes again rather than trusting it.
+            var selected = await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(selected.IsSelected);
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, selected.ReasonCode);
+            Assert.IsTrue((await store.SelectFamilyMastersAsync(
+                family, fixture.Lights[LowGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ConfirmFamilyMastersAsync_ReportsAFrozenMasterThatIsNoLongerIntact()
     {
         var root = CreateRoot();
@@ -246,8 +299,13 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 Assert.AreEqual(NormalizationPlanInputDispositions.Selected, input.Disposition);
                 Assert.AreEqual(selection.MemberId, input.MemberId);
                 CollectionAssert.AreEqual(
-                    selection.Masters.Select(static master => (master.Kind, master.ArtifactId, master.PayloadSha256)).ToArray(),
-                    input.Masters!.Select(static master => (master.Kind, master.ArtifactId, master.PayloadSha256)).ToArray());
+                    selection.Masters.Select(static master => (master.Kind, master.ArtifactId, master.PayloadSha256, master.Exposure)).ToArray(),
+                    input.Masters!.Select(static master => (master.Kind, master.ArtifactId, master.PayloadSha256, master.Exposure)).ToArray());
+                // The plan freezes each master's library exposure, the one the recipe scales the dark and flat by.
+                CollectionAssert.AreEqual(
+                    input.Masters!.Select(master => fixture.Bundles[gain].Artifacts
+                        .Single(artifact => artifact.ArtifactId == master.ArtifactId).Exposure).ToArray(),
+                    input.Masters!.Select(static master => master.Exposure).ToArray());
                 Assert.AreEqual(response.ResolveCoefficient(gain).Coefficient, input.Coefficient);
             }
             Assert.AreEqual(NormalizationPlanInputDispositions.Excluded, plan.Inputs[2].Disposition);

@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -28,6 +29,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     private static readonly TimeSpan LightExposure = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DarkExposure = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan FlatExposure = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan BiasExposure = TimeSpan.FromMilliseconds(1);
+    private static readonly TimeSpan DefectExposure = TimeSpan.FromSeconds(30);
     private static readonly GainResponse Response = Asi174Response();
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
@@ -254,6 +257,121 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     }
 
     [TestMethod]
+    public async Task ADarkMasterWhoseIntegrationIsNotTheFrozenOneIsAMismatch()
+    {
+        // The dark scales by light/dark integration, so a 2 s dark under the plan that froze it at 4 s would double
+        // the dark it subtracts under the same output identity.
+        var fixture = SingleInputFixture();
+        var shorter = fixture.Member.Dark with { Integration = TimeSpan.FromSeconds(2) };
+
+        var outcome = await ExecuteAsync(Request(
+            fixture.Plan,
+            [fixture.Light, fixture.Member.Bias, shorter, fixture.Member.Flat, fixture.Member.Defect]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMismatch, outcome.ReasonCode);
+        Assert.AreEqual("dark-master", outcome.Field);
+    }
+
+    [TestMethod]
+    public async Task AFlatMasterWhoseIntegrationIsNotTheFrozenOneIsAMismatch()
+    {
+        // The flat's dark correction scales by flat/dark integration, so it is frozen like the dark's.
+        var fixture = SingleInputFixture();
+        var longer = fixture.Member.Flat with { Integration = TimeSpan.FromSeconds(2) };
+
+        var outcome = await ExecuteAsync(Request(
+            fixture.Plan,
+            [fixture.Light, fixture.Member.Bias, fixture.Member.Dark, longer, fixture.Member.Defect]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMismatch, outcome.ReasonCode);
+        Assert.AreEqual("flat-master", outcome.Field);
+    }
+
+    [TestMethod]
+    public async Task UnchangedFrozenEvidenceReproducesIdenticalBytes()
+    {
+        var fixture = SingleInputFixture();
+        var copies = fixture.Member.All.Select(static master => master with { Payload = master.Payload.ToArray() }).ToArray();
+        var reparsed = NormalizationPlanContractJson.Parse(NormalizationPlanContractJson.Serialize(fixture.Plan)).Value!;
+
+        var first = await ExecuteAsync(fixture.Request);
+        var second = await ExecuteAsync(Request(reparsed, [fixture.Light with { Payload = fixture.Light.Payload.ToArray() }, .. copies]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, first.Status, first.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, second.Status, second.ReasonCode);
+        CollectionAssert.AreEqual(new ushort[] { 9456, 0, 0, 58960, 0, 25456, 16, 41456 }, Values(first.Products.Single().Payload.Span));
+        CollectionAssert.AreEqual(first.Products.Single().Payload.ToArray(), second.Products.Single().Payload.ToArray());
+        Assert.AreEqual(first.Products.Single().ChecksumSha256, second.Products.Single().ChecksumSha256);
+        Assert.AreEqual(first.Products.Single().OutputIdentitySha256, second.Products.Single().OutputIdentitySha256);
+    }
+
+    [TestMethod]
+    public async Task ALightWhoseCaptureIdIsNotTheFrozenOneIsAMismatch()
+    {
+        var fixture = SingleInputFixture();
+
+        foreach (var captureId in new Guid?[] { Guid.NewGuid(), null })
+        {
+            var outcome = await ExecuteAsync(Request(
+                fixture.Plan,
+                [fixture.Light with { CaptureId = captureId }, .. fixture.Member.All]));
+
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status, captureId?.ToString() ?? "null");
+            Assert.AreEqual(ProcessingReasonCodes.NormalizationPlanInputMismatch, outcome.ReasonCode);
+        }
+    }
+
+    [TestMethod]
+    public async Task ALightWhoseDescriptorIdentityIsNotTheFrozenOneIsAMismatch()
+    {
+        var fixture = SingleInputFixture();
+
+        foreach (var descriptor in new[] { new string('C', 64), null })
+        {
+            var outcome = await ExecuteAsync(Request(
+                fixture.Plan,
+                [fixture.Light with { DescriptorIdentitySha256 = descriptor }, .. fixture.Member.All]));
+
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status, descriptor ?? "null");
+            Assert.AreEqual(ProcessingReasonCodes.NormalizationPlanInputMismatch, outcome.ReasonCode);
+        }
+    }
+
+    [TestMethod]
+    public async Task ALightWhoseTemperatureIsNotTheFrozenOneIsAMismatch()
+    {
+        // The plan freezes the light's exact effective temperature, not a band, so any other value is a mismatch.
+        var fixture = SingleInputFixture();
+
+        foreach (var temperature in new double?[] { -9.5, null })
+        {
+            var outcome = await ExecuteAsync(Request(
+                fixture.Plan,
+                [fixture.Light with { Conditions = fixture.Light.Conditions! with { TemperatureC = temperature } }, .. fixture.Member.All]));
+
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status, temperature?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null");
+            Assert.AreEqual(ProcessingReasonCodes.NormalizationPlanInputMismatch, outcome.ReasonCode);
+        }
+    }
+
+    [TestMethod]
+    public async Task ALightMatchingEveryFrozenFieldIsProduced()
+    {
+        // Hashes compare case-insensitively, as the plan's uppercase canonical form requires.
+        var fixture = SingleInputFixture();
+        var baseline = await ExecuteAsync(fixture.Request);
+        var lowercase = await ExecuteAsync(Request(
+            fixture.Plan,
+            [fixture.Light with { DescriptorIdentitySha256 = Lowercase(DescriptorSha256) }, .. fixture.Member.All]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, baseline.Status, baseline.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, lowercase.Status, lowercase.ReasonCode);
+        Assert.AreEqual(baseline.Products.Single().ChecksumSha256, lowercase.Products.Single().ChecksumSha256);
+    }
+
+    [TestMethod]
     public async Task AFrozenPlanIsImmuneToLiveArtifactsAndRejectsChangedLights()
     {
         var fixture = SingleInputFixture();
@@ -320,6 +438,9 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         var noScale = Canonical(Encoding.UTF8.GetString(payload).Replace(",\"outputScale\":16", string.Empty, StringComparison.Ordinal));
         var kernelV1 = Canonical(Encoding.UTF8.GetString(payload).Replace(
             "linear16-gain-normalized-mean-v2", "linear16-gain-normalized-mean-v1", StringComparison.Ordinal));
+        // A plan frozen before master exposures were plan fields is rejected, never completed from the live masters.
+        var noMasterExposure = Canonical(Regex.Replace(
+            Encoding.UTF8.GetString(payload), ",\"exposure\":\"[^\"]*\"(?=,\"kind\")", string.Empty));
         var unmatchedPrimary = Light(fixture.Light.Layout!, Fill(8, 1000), HigherGain);
         var excludedPrimary = Plan(
             fixture.Light.Layout!,
@@ -342,7 +463,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             ]
         });
         var scaleOutcomes = new List<ProcessingOutcome>();
-        foreach (var variant in new[] { otherScale, noScale, kernelV1 })
+        foreach (var variant in new[] { otherScale, noScale, kernelV1, noMasterExposure })
         {
             CollectionAssert.AreNotEqual(payload, variant);
             scaleOutcomes.Add(await ExecuteAsync(fixture.Request with
@@ -502,8 +623,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
                     null,
                     null))]);
 
-    private static CalibrationFamilyMasterV1 Master(string kind, ProcessingArtifact artifact)
-        => new(kind, artifact.ArtifactId, ProcessingIdentity.ComputePayloadSha256(artifact.Payload));
+    private static NormalizationPlanMasterV1 Master(string kind, ProcessingArtifact artifact)
+        => new(kind, artifact.ArtifactId, ProcessingIdentity.ComputePayloadSha256(artifact.Payload), artifact.Integration);
 
     private static MasterSet Member(
         FrameLayoutDescriptor layout,
@@ -514,10 +635,10 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     {
         var masterLayout = CalibrationMasterBuilder.CreateNormalizedLayout(layout);
         return new MasterSet(
-            MasterArtifact("bias-master", masterLayout, bias, TimeSpan.Zero),
+            MasterArtifact("bias-master", masterLayout, bias, BiasExposure),
             MasterArtifact("dark-master", masterLayout, dark, DarkExposure),
             MasterArtifact("flat-master", masterLayout, flat, FlatExposure),
-            MasterArtifact("defect-master", masterLayout, defect, TimeSpan.Zero));
+            MasterArtifact("defect-master", masterLayout, defect, DefectExposure));
     }
 
     private static ProcessingArtifact MasterArtifact(string variant, FrameLayoutDescriptor layout, ushort[] values, TimeSpan integration)
@@ -533,9 +654,12 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             integration,
             Compatibility(ReferenceGain));
 
+    /// <summary>A light whose capture and descriptor identities are the ones <see cref="Plan"/> freezes for it.</summary>
     private static ProcessingArtifact Light(FrameLayoutDescriptor layout, ushort[] values, double gain)
-        => new(
-            Guid.NewGuid(),
+    {
+        var artifactId = Guid.NewGuid();
+        return new(
+            artifactId,
             FrameArtifactRole.Raw,
             "source",
             new string('F', 64),
@@ -547,7 +671,12 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             Compatibility(gain),
             ObservationStartedUtc: CaptureTime,
             ObservationEndedUtc: CaptureTime.Add(LightExposure),
-            Conditions: new ProcessingCaptureConditions(gain, null, -10));
+            Conditions: new ProcessingCaptureConditions(gain, null, -10))
+        {
+            CaptureId = artifactId,
+            DescriptorIdentitySha256 = DescriptorSha256
+        };
+    }
 
     private static ProcessingCompatibilityIdentity Compatibility(double gain)
         => new(
