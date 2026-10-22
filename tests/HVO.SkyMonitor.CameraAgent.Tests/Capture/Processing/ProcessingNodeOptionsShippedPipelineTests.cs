@@ -1,0 +1,222 @@
+using System.ComponentModel.DataAnnotations;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+
+/// <summary>
+/// #1532: the option descriptors leave the shipped pipelines' graph revisions and product identities unchanged, their
+/// defaults equal today's rendering, and they accept and reject what CameraAgent's step binder does.
+/// </summary>
+[TestClass]
+[TestCategory("Unit")]
+public sealed class ProcessingNodeOptionsShippedPipelineTests
+{
+    private const string W6 = "cameraagent.standalone-w6.json";
+    private static readonly ObservatoryLocation Location = new(35.5599378, -113.9119818, 520, "America/Phoenix");
+
+    [TestMethod]
+    [DataRow(W6)]
+    [DataRow("cameraagent.standalone-w6-mono8.json")]
+    public async Task ShippedPipelinesValidateAndRoundTripWithUnchangedIdentities(string fileName)
+    {
+        var plan = SharedPlan(await LoadAsync(fileName).ConfigureAwait(false));
+        var canonical = Encoding.UTF8.GetBytes(plan.CanonicalDefinition.GetRawText());
+        var definition = ProcessingGraphJson.Parse(canonical).Definition!;
+        var catalog = ProcessingNodeOptionsCatalog.BuiltIn;
+
+        Assert.IsEmpty(catalog.Validate(definition));
+        foreach (var reassign in new[] { false, true })
+        {
+            var roundTripped = definition with
+            {
+                Nodes = [.. definition.Nodes.Select(node => RoundTrip(catalog, node, reassign))]
+            };
+
+            CollectionAssert.AreEqual(canonical, ProcessingGraphJson.SerializeCanonical(roundTripped));
+            var compiled = ProcessingGraphCompiler.Compile(roundTripped, new(ProcessingGraphHosts.CameraAgent, []));
+            Assert.IsTrue(compiled.IsValid);
+            Assert.AreEqual(plan.DefinitionIdentitySha256, compiled.Plan!.DefinitionIdentitySha256);
+            Assert.AreEqual(plan.PlanIdentitySha256, compiled.Plan.PlanIdentitySha256);
+            CollectionAssert.AreEqual(
+                plan.Nodes.Select(static node => (node.Definition.Id, node.IdentitySha256)).ToArray(),
+                compiled.Plan.Nodes.Select(static node => (node.Definition.Id, node.IdentitySha256)).ToArray());
+        }
+    }
+
+    [TestMethod]
+    public async Task TheW6SceneNodeCarriesTheDescriptorDefaultsThatTodaysStepRenders()
+    {
+        var plan = SharedPlan(await LoadAsync(W6).ConfigureAwait(false));
+        var scene = plan.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
+        var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(scene.StepAlias, scene.StepVersion).Descriptor!;
+        var stepDefaults = new ScenePresentationLayerProcessingStepOptions();
+
+        var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, scene.EffectiveOptions);
+
+        Assert.AreSame(ProcessingNodeOptionsDescriptors.ScenePresentationLayer, descriptor);
+        var expectedColor = new PresentationColor(
+            stepDefaults.ConstellationLineRed, stepDefaults.ConstellationLineGreen, stepDefaults.ConstellationLineBlue);
+        Assert.AreEqual(expectedColor, descriptor.Find("constellationLineColor")!.DefaultValue.AsColor());
+        Assert.AreEqual(
+            stepDefaults.ConstellationLineThickness,
+            descriptor.Find("constellationLineThickness")!.DefaultValue.AsWholeNumber());
+        // Explicit v2 materializes the bound options, so the shipped node states today's values explicitly.
+        Assert.IsTrue(decoded.Get("constellationLineColor").IsExplicit);
+        Assert.AreEqual(expectedColor, decoded.Get("constellationLineColor").Value.AsColor());
+        Assert.IsTrue(decoded.Get("constellationLineThickness").IsExplicit);
+        Assert.AreEqual(2, decoded.Get("constellationLineThickness").Value.AsWholeNumber());
+    }
+
+    [TestMethod]
+    [DataRow("constellationLineRed", "0")]
+    [DataRow("constellationLineRed", "255")]
+    [DataRow("constellationLineGreen", "-1")]
+    [DataRow("constellationLineGreen", "256")]
+    [DataRow("constellationLineBlue", "1.5")]
+    [DataRow("constellationLineBlue", "1e2")]
+    [DataRow("constellationLineBlue", "null")]
+    [DataRow("constellationLineThickness", "1")]
+    [DataRow("constellationLineThickness", "8")]
+    [DataRow("constellationLineThickness", "0")]
+    [DataRow("constellationLineThickness", "9")]
+    [DataRow("constellationLineThickness", "2.5")]
+    [DataRow("constellationLineThickness", "2.0")]
+    [DataRow("constellationLineThickness", "true")]
+    [DataRow("constellationLineThickness", "99999999999999999999")]
+    public async Task TheDescriptorAndTheStepBinderAgreeOnWhatTheyAccept(string member, string token)
+    {
+        var edited = WithSceneMember(await LoadAsync(W6).ConfigureAwait(false), member, token);
+
+        var descriptorAccepts = ProcessingNodeOptionsCodec.Decode(
+            ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited)).IsValid;
+
+        Assert.AreEqual(BinderAccepts(edited), descriptorAccepts, $"{member}={token}");
+    }
+
+    [TestMethod]
+    public async Task QuotedNumbersAreTheOneDeclaredDifferenceFromTheLenientBinder()
+    {
+        var edited = WithSceneMember(await LoadAsync(W6).ConfigureAwait(false), "constellationLineThickness", "\"3\"");
+
+        Assert.IsTrue(BinderAccepts(edited));
+        Assert.AreEqual(
+            ProcessingOptionReasonCodes.WrongType,
+            ProcessingNodeOptionsCodec.Decode(ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited))
+                .Diagnostics.Single().Code);
+    }
+
+    private static CameraModuleConfig WithSceneMember(CameraModuleConfig configuration, string member, string token)
+    {
+        var steps = configuration.Pipeline!.Steps.Select(step =>
+        {
+            if (step.Id != "scene-presentation")
+            {
+                return step;
+            }
+            var options = JsonNode.Parse(step.Options!.Value.GetRawText())!.AsObject();
+            options[member] = JsonNode.Parse(token);
+            return step with { Options = JsonSerializer.SerializeToElement(options) };
+        }).ToArray();
+        return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
+    }
+
+    private static JsonElement SceneOptions(CameraModuleConfig configuration)
+        => configuration.Pipeline!.Steps.Single(static step => step.Id == "scene-presentation").Options!.Value;
+
+    private static ProcessingGraphNodeDefinition RoundTrip(
+        ProcessingNodeOptionsCatalog catalog,
+        ProcessingGraphNodeDefinition node,
+        bool reassign)
+    {
+        if (catalog.Resolve(node.StepAlias, node.StepVersion).Descriptor is not { } descriptor)
+        {
+            return node;
+        }
+        // Re-assigning every decoded value is the editor's "save without changes"; it must not move a byte either.
+        var edits = reassign
+            ? ProcessingNodeOptionsCodec.Decode(descriptor, node.EffectiveOptions).Options
+                .ToDictionary(static option => option.Descriptor.Key, static option => option.Value, StringComparer.Ordinal)
+            : new Dictionary<string, ProcessingOptionValue>(StringComparer.Ordinal);
+        var options = ProcessingNodeOptionsCodec.Encode(descriptor, node.EffectiveOptions, edits).Options!.Value;
+        return new(
+            node.Id,
+            node.StepAlias,
+            node.StepVersion,
+            node.OperationKind,
+            node.Enabled,
+            node.FailurePolicy,
+            node.Order,
+            options,
+            node.Dependencies,
+            node.Inputs,
+            node.Outputs,
+            node.Window,
+            node.CapabilityLabels,
+            node.HostApplicability);
+    }
+
+    private static bool BinderAccepts(CameraModuleConfig configuration)
+    {
+        using var provider = CreateProvider();
+        try
+        {
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(configuration).DisposeSteps();
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException or ValidationException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static ProcessingGraphExecutionPlan SharedPlan(CameraModuleConfig configuration)
+    {
+        using var provider = CreateProvider();
+        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(configuration);
+        try
+        {
+            return graph.SharedPlan!;
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+    }
+
+    private static async Task<CameraModuleConfig> LoadAsync(string fileName)
+    {
+        var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+        {
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            Observatory = Location
+        }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+        return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private static ServiceProvider CreateProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            })
+            .Build());
+        return services.BuildServiceProvider();
+    }
+}
