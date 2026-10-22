@@ -447,6 +447,11 @@ running, the declared control endpoint to be present, and every required
 platform to be supplied by at least one node. This permits a native AMD64/ARM64
 multi-node builder without weakening control-daemon correlation. The selected
 builder is passed to every build and registry inspect.
+Registry distribution requires the `docker-container` driver for CameraAgent's
+timestamp-rewriting image exporter. The unpacking `docker` driver conflicts with
+rewriting on the containerd image store and can silently skip it on the classic
+store; inventory validation rejects it before pushing a registry tag. Archive
+distribution supports both drivers.
 Ambient `DOCKER_CONTEXT` is cleared and the selected/default builder is never
 trusted. The phase does not create, alter, stop, or remove builders. LogicHost is
 built for `linux/amd64`; CameraAgent platforms are the unique `amd64` and/or
@@ -463,9 +468,12 @@ does not read secret values.
 Before a push, the phase durably records `push-intended` with the exact component,
 tag, platform set, revision/tree-bound labels, timestamp, and SDK. If the tag is
 already present, including after an abrupt post-push exit, it is adopted only
-after the canonical parent digest, exact non-attestation platform descriptors and
-child digests, optional well-formed attestation descriptors, and every child
-image config label all match the intent. A mismatched existing tag is never
+after the canonical parent digest, platform set and image config labels all match
+the intent. A plain single-platform OCI or Docker manifest is accepted with its
+platform checked from the config. An index is checked against the exact platform
+descriptors and child digests; attestation-free indexes are accepted, as are
+indexes with optional well-formed attestation descriptors. Every child config
+must match the intended labels. A mismatched existing tag is never
 overwritten. A missing tag is pushed once and subjected to the same checks before
 the intent becomes `built`. Targets pull only the resulting
 `repository@sha256:<parent-manifest>` reference.

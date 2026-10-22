@@ -51,8 +51,10 @@ public sealed class CameraAgentImageBuildIdentityTests
     public void Dockerfile_StampsEveryPublishedOutputAfterTheCachedRestoreLayers()
     {
         var instructions = ReadInstructions();
-        var runtimeStage = instructions.FindLastIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
-        var build = instructions[..runtimeStage];
+        var buildStage = instructions.FindIndex(static instruction => instruction.EndsWith(" AS build", StringComparison.Ordinal));
+        Assert.IsGreaterThan(-1, buildStage);
+        var nextStage = instructions.FindIndex(buildStage + 1, static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
+        var build = instructions[buildStage..nextStage];
         var publishes = build
             .Select(static (instruction, index) => (instruction, index))
             .Where(static item => item.instruction.Contains("dotnet publish ", StringComparison.Ordinal) ||
@@ -81,20 +83,30 @@ public sealed class CameraAgentImageBuildIdentityTests
             helper[^1]);
         Assert.DoesNotContain("InformationalVersion", string.Join('\n', helper), StringComparison.Ordinal);
         // The product version and its check are in the build context the publishes run in.
-        CollectionAssert.Contains(build, "COPY Directory.Build.props ./");
-        CollectionAssert.Contains(build, "COPY Directory.Build.targets ./");
-        // A change of revision alone must keep reusing restore and the source copy.
-        var lastRestore = build.FindLastIndex(static instruction =>
-            instruction.StartsWith("RUN dotnet restore ", StringComparison.Ordinal) ||
-            instruction.StartsWith("RUN ./scripts/release:cameraagent-publish restore", StringComparison.Ordinal));
-        var sourceCopy = build.IndexOf("COPY src/ src/");
-        Assert.IsGreaterThan(-1, lastRestore);
-        Assert.IsGreaterThan(-1, sourceCopy);
-        foreach (var declaration in new[] { "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION" })
+        foreach (var file in new[] { "Directory.Build.props", "Directory.Build.targets" })
         {
-            var identity = build.IndexOf(declaration);
+            Assert.HasCount(1, build.Where(instruction => instruction.StartsWith($"COPY {file} ", StringComparison.Ordinal)));
+        }
+        // Both restore passes stay cached when only the revision or epoch changes, regardless of cd/WORKDIR spelling.
+        var restores = build
+            .Select(static (instruction, index) => (instruction, index))
+            .Where(static item => item.instruction.StartsWith("RUN ", StringComparison.Ordinal) &&
+                                  item.instruction.Contains(" restore", StringComparison.Ordinal))
+            .ToArray();
+        Assert.HasCount(4, restores);
+        var sourceCopy = build.FindIndex(static instruction => instruction.StartsWith("COPY src/ ", StringComparison.Ordinal));
+        Assert.IsGreaterThan(-1, sourceCopy);
+        Assert.HasCount(2, restores.Where(item => item.index < sourceCopy));
+        Assert.HasCount(2, restores.Where(item => item.index > sourceCopy));
+        foreach (var declaration in new[] { "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG SOURCE_DATE_EPOCH" })
+        {
+            var identity = build.FindIndex(instruction => instruction == declaration ||
+                                                         instruction.StartsWith(declaration + "=", StringComparison.Ordinal));
             Assert.IsGreaterThan(sourceCopy, identity);
-            Assert.IsGreaterThan(lastRestore, identity);
+            foreach (var (_, index) in restores)
+            {
+                Assert.IsGreaterThan(index, identity, $"{declaration} must follow every cached restore instruction.");
+            }
             foreach (var (_, index) in publishes)
             {
                 Assert.IsLessThan(index, identity);

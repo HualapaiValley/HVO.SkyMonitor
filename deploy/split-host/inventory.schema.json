@@ -87,7 +87,7 @@
         {
           "if": { "properties": { "distributionMode": { "const": "archive" } } },
           "then": { "properties": { "artifactRoot": { "type": "string" }, "registryImmutableTags": { "const": false } } },
-          "else": { "properties": { "artifactRoot": { "type": "null" }, "registryImmutableTags": { "const": true } } }
+          "else": { "properties": { "artifactRoot": { "type": "null" }, "registryImmutableTags": { "const": true }, "builder": { "properties": { "driver": { "const": "docker-container" } } } } }
         }
       ]
     },

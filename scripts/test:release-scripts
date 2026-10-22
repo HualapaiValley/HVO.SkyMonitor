@@ -1463,4 +1463,6 @@ PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:cameraagent-r2r" || fail "t
 # install.sh's tests bring their own fake commands, so they run on the PATH this script was given.
 PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:install-sh" || fail "the install.sh tests failed."
 
+PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:cameraagent-image-reproducibility" || fail "the CameraAgent image reproducibility tests failed."
+
 printf 'Release script tests passed.\n'
