@@ -48,9 +48,17 @@ public sealed partial class CameraArchiveView : ComponentBase, IAsyncDisposable
     private string PageUrl(string? cursor, Guid? capture = null, string? focus = null) =>
         Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
             capture is { } id ? $"{ArchivePath}/{id:D}" : ArchivePath,
-            new Dictionary<string, string?> { ["from"] = From, ["until"] = Until, ["product"] = Product,
-                ["objectState"] = ObjectState, ["reconstruction"] = Reconstruction, ["identity"] = Identity,
-                ["cursor"] = cursor, ["focus"] = focus });
+            new Dictionary<string, string?>
+            {
+                ["from"] = From,
+                ["until"] = Until,
+                ["product"] = Product,
+                ["objectState"] = ObjectState,
+                ["reconstruction"] = Reconstruction,
+                ["identity"] = Identity,
+                ["cursor"] = cursor,
+                ["focus"] = focus
+            });
     private string BackUrl => PageUrl(Cursor, focus: CaptureId?.ToString("D"));
 
     protected override void OnInitialized() => Authentication.AuthenticationStateChanged += AuthenticationChanged;
@@ -174,7 +182,7 @@ public sealed partial class CameraArchiveView : ComponentBase, IAsyncDisposable
             if (authorized is null || result is null)
             {
                 detail = null;
-                        message = "Capture not found or access was removed.";
+                message = "Capture not found or access was removed.";
             }
             else trace = result;
         }
@@ -185,7 +193,7 @@ public sealed partial class CameraArchiveView : ComponentBase, IAsyncDisposable
             if (version == generation)
             {
                 detail = null;
-                        message = "Capture trace is temporarily unavailable. Refresh to try again.";
+                message = "Capture trace is temporarily unavailable. Refresh to try again.";
             }
         }
         finally { if (version == generation) traceLoading = false; }
@@ -205,7 +213,7 @@ public sealed partial class CameraArchiveView : ComponentBase, IAsyncDisposable
         {
             if (version != generation || disposed) return;
             detail = null;
-                trace = null;
+            trace = null;
             message = "Raw download authorization failed or expired. Refresh access and authorize again.";
         }
     }

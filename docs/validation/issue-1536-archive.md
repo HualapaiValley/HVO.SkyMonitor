@@ -23,6 +23,14 @@ retain authorized provenance and a same-image retry. Raw downloads use the
 existing audited one-minute grant, reauthorize content and explain renewal after
 expiry. The archive has no shared content cache or persistence writes.
 
+Raw-grant failures deliberately clear the entire protected detail, including on
+network or server failures. The existing download helper does not distinguish
+those failures from revoked authorization. Keeping previously loaded evidence
+would therefore assume authority that this attempt could not confirm. Refresh
+rechecks the exact capture and restores its authorized metadata/image before a
+new download attempt; no other capture is substituted. This conservative choice
+can require an extra refresh after a transient download failure.
+
 ## Reproduction
 
 Use SDK 10.0.402, Release, Docker available for the SQL Server/Redis/Mailpit and
@@ -84,9 +92,12 @@ samples (and their ten-sample pool), not p95. No worker/backlog or capture pipel
 
 ## Results
 
-Final UI/browser/Unit source fingerprint:
+Measured UI/browser/Unit source fingerprint:
 `3e50ec6529617162a15d18538f2ff23d079bdc04d37f4669b12b4609acb4257f`.
 The manifest records the base and SHA-256 of every changed source/test file.
+The review correction changes only whitespace in the archive code-behind and
+documents the existing raw-grant failure policy. Removing whitespace produces
+identical production source bytes, so these measured execution paths are unchanged.
 Service cost evidence is retained from fingerprint
 `5f23a1bbe3cbbcfe0502b7e8bb83cebd99c373674dfaa22577d5b66306d56ab3`;
 its two archive test/harness files and all production service files are unchanged
