@@ -40,7 +40,7 @@ public static class GainNormalizationCompatibility
     /// <summary>
     /// True for the recipes whose products may carry a normalized compatibility: the mixed-gain recipe, which assigns
     /// it, and the rolling mean at the version that averages normalized inputs only when every one is a combined
-    /// product sharing it, so it propagates an identity it never assigns.
+    /// product of these recipes sharing it, so it propagates an identity it never assigns.
     /// </summary>
     public static bool MayCarryNormalizedGain(string? recipeName, string? semanticVersion)
         => IsNormalizationRecipe(recipeName, semanticVersion) ||

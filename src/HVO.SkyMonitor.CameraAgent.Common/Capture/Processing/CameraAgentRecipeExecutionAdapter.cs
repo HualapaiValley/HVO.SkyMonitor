@@ -176,7 +176,8 @@ public sealed class CameraAgentRecipeExecutionAdapter
             CaptureId = reconstructionDescriptor?.Capture.CaptureId,
             DescriptorIdentitySha256 = reconstructionDescriptor is null
                 ? null
-                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor)
+                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor),
+            RecipeDescriptor = product?.Recipe.Descriptor
         };
     }
 
@@ -204,7 +205,8 @@ public sealed class CameraAgentRecipeExecutionAdapter
             SchemaVersion = product.SchemaVersion,
             ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256,
             CaptureId = descriptor?.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = product.Recipe.Descriptor
         };
     }
 

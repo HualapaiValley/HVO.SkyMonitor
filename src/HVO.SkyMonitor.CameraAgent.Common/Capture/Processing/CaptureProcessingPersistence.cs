@@ -553,7 +553,8 @@ internal sealed partial class CaptureProcessingPersistence(
             {
                 ProductKind = restored.Product.Kind,
                 SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
+                RecipeDescriptor = restored.Product.Recipe.Descriptor
             });
         }
         return artifacts;
@@ -1340,7 +1341,8 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = restored.Product.SchemaVersion,
             ContentIdentitySha256 = restored.Product.ContentIdentitySha256 ?? restored.Product.OutputIdentitySha256,
             CaptureId = output.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = restored.Product.Recipe.Descriptor
         };
     }
 

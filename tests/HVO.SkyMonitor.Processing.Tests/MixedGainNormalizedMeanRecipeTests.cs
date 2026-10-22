@@ -586,14 +586,15 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, sameGain.Status, sameGain.ReasonCode);
 
         var combined = ProcessingInputSelector.Combined(OutputVariant);
-        var first = reference with
+        var producer = ProducerIdentity(BuiltInProcessingRecipes.MixedGainNormalizedMean, plan);
+        var first = ProducedBy(reference, producer) with
         {
             Role = FrameArtifactRole.Combined,
             Variant = OutputVariant,
             Compatibility = normalized,
             Conditions = null
         };
-        var second = higher with
+        var second = ProducedBy(higher, producer) with
         {
             Role = FrameArtifactRole.Combined,
             Variant = OutputVariant,
@@ -609,6 +610,136 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             combined, [first, second with { Compatibility = GainNormalizationCompatibility.Normalize(higher.Compatibility, otherPlan) }]));
         Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, mixedPlans.ReasonCode);
     }
+
+    [TestMethod]
+    public async Task Review1530RejectsUnprovenNormalizedInputsWithDifferentProducerIdentities()
+    {
+        var layout = Layout(4, 2);
+        var reference = Light(layout, Fill(8, 100), ReferenceGain);
+        var higher = Light(layout, Fill(8, 300), HigherGain);
+        var member = Member(layout, Fill(8, 0), Fill(8, 0), Fill(8, 1), Fill(8, 0));
+        var plan = Plan(layout, [new(reference, ReferenceGain, member), new(higher, HigherGain, member)]);
+        var normalized = GainNormalizationCompatibility.Normalize(reference.Compatibility, plan);
+        var analyzer = ProducerIdentity(BuiltInProcessingRecipes.NoOpAnalyzer);
+        var normalization = ProducerIdentity(BuiltInProcessingRecipes.LinearNormalization);
+        var combined = ProcessingInputSelector.Combined(OutputVariant);
+
+        // Neither input passed through the mixed-gain recipe: equal normalized labels alone cannot license averaging
+        // frames taken at different gains under different producers.
+        var first = reference with
+        {
+            Role = FrameArtifactRole.Combined,
+            Variant = OutputVariant,
+            RecipeIdentitySha256 = analyzer.IdentitySha256,
+            Compatibility = normalized
+        };
+        var second = higher with
+        {
+            Role = FrameArtifactRole.Combined,
+            Variant = OutputVariant,
+            RecipeIdentitySha256 = normalization.IdentitySha256,
+            Compatibility = normalized
+        };
+
+        var outcome = await ExecuteAsync(RollingRequest(combined, [first, second]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, outcome.ReasonCode);
+
+        // Naming those producers truthfully does not help, nor does sharing one of their identities.
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(combined, [ProducedBy(first, analyzer), ProducedBy(second, normalization)]))).ReasonCode);
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(combined, [ProducedBy(first, analyzer), ProducedBy(second, analyzer)]))).ReasonCode);
+        // A mixed-gain descriptor proves nothing unless it is the one the input's own recipe identity was made from.
+        var mixedGain = ProducerIdentity(BuiltInProcessingRecipes.MixedGainNormalizedMean, plan);
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(
+                combined, [first with { RecipeDescriptor = mixedGain.Descriptor }, ProducedBy(second, mixedGain)]))).ReasonCode);
+        // Only a mixed-gain version that defines the normalized compatibility may assign it.
+        var laterVersion = ProcessingIdentity.CreateRecipeIdentity(mixedGain.Descriptor with { SemanticVersion = "1.0.1" });
+        Assert.AreEqual(
+            ProcessingReasonCodes.IncompatibleInput,
+            (await ExecuteAsync(RollingRequest(combined, [ProducedBy(first, laterVersion), ProducedBy(second, mixedGain)]))).ReasonCode);
+        // The same inputs as verified products of two mixed-gain plans do stack.
+        var otherPlan = Plan(layout, [new(higher, HigherGain, member)]);
+        var stacked = await ExecuteAsync(RollingRequest(
+            combined,
+            [
+                ProducedBy(first, mixedGain),
+                ProducedBy(second, ProducerIdentity(BuiltInProcessingRecipes.MixedGainNormalizedMean, otherPlan))
+            ]));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, stacked.Status, stacked.ReasonCode);
+        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single().Payload.Span));
+    }
+
+    [TestMethod]
+    public async Task RealMixedGainProductsOfTwoPlansAndTheirRollingMeanStackAgain()
+    {
+        var layout = Layout(4, 2);
+        var member = Member(layout, Fill(8, 0), Fill(8, 0), Fill(8, 43690), Fill(8, 0));
+        var reference = Light(layout, Fill(8, 100), ReferenceGain);
+        var higher = Light(layout, Fill(8, 300), HigherGain);
+        var firstPlan = Plan(layout, [new(reference, ReferenceGain, member)]);
+        var secondPlan = Plan(layout, [new(reference, ReferenceGain, member), new(higher, HigherGain, member)]);
+        var firstWindow = await ExecuteAsync(Request(firstPlan, [reference, .. member.All]));
+        var secondWindow = await ExecuteAsync(Request(secondPlan, [reference, higher, .. member.All]));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, firstWindow.Status, firstWindow.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, secondWindow.Status, secondWindow.ReasonCode);
+        var first = ProductArtifact(firstWindow.Products.Single(), CaptureTime);
+        var second = ProductArtifact(secondWindow.Products.Single(), CaptureTime.AddSeconds(5));
+        Assert.AreNotEqual(first.RecipeIdentitySha256, second.RecipeIdentitySha256);
+        Assert.AreEqual(first.Compatibility, second.Compatibility);
+        var combined = ProcessingInputSelector.Combined(OutputVariant);
+
+        var mean = await ExecuteAsync(RollingRequest(combined, [first, second]));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, mean.Status, mean.ReasonCode);
+        Assert.AreEqual(first.Compatibility, mean.Products.Single().Compatibility);
+        // The rolling mean propagates the normalized compatibility under its own identity, which a later window accepts
+        // next to the mixed-gain products it averaged.
+        var rolled = ProductArtifact(mean.Products.Single(), CaptureTime.AddSeconds(10)) with { Variant = OutputVariant };
+        var again = await ExecuteAsync(RollingRequest(combined, [second, rolled]));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, again.Status, again.ReasonCode);
+        // Without the descriptors the same products are only labels and are refused.
+        var unproven = await ExecuteAsync(RollingRequest(
+            combined, [first with { RecipeDescriptor = null }, second with { RecipeDescriptor = null }]));
+        Assert.AreEqual(ProcessingReasonCodes.IncompatibleInput, unproven.ReasonCode);
+    }
+
+    private static ProcessingRecipeIdentity ProducerIdentity(string recipeName, NormalizationPlanV1? plan = null)
+    {
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(recipeName, out var definition));
+        return ProcessingIdentity.CreateRecipeIdentity(
+            definition!,
+            JsonSerializer.SerializeToElement(new { plan = plan is null ? null : NormalizationPlanContractJson.ComputeIdentitySha256(plan) }));
+    }
+
+    /// <summary>The input as a product of <paramref name="recipe"/>: it carries that recipe's identity and descriptor.</summary>
+    private static ProcessingArtifact ProducedBy(ProcessingArtifact input, ProcessingRecipeIdentity recipe)
+        => input with { RecipeIdentitySha256 = recipe.IdentitySha256, RecipeDescriptor = recipe.Descriptor };
+
+    /// <summary>A product restored as a window input, as a host restores a committed processing output.</summary>
+    private static ProcessingArtifact ProductArtifact(ProcessingProduct product, DateTimeOffset createdUtc)
+        => new(
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
+            product.Role,
+            product.Variant,
+            product.Recipe.IdentitySha256,
+            product.MediaType,
+            product.Layout,
+            product.Payload,
+            createdUtc,
+            product.TotalIntegration,
+            product.Compatibility,
+            SourceArtifactIds: product.SourceArtifactIds)
+        {
+            ProductKind = product.Kind,
+            RecipeDescriptor = product.Recipe.Descriptor
+        };
 
     private static ProcessingExecutionRequest RollingRequest(ProcessingInputSelector selector, IReadOnlyList<ProcessingArtifact> inputs)
         => new(
