@@ -347,6 +347,9 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<SqliteTimeLapseStore>(),
                 provider.GetRequiredService<SqliteCalibrationFamilyStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
+        services.AddSingleton<ActiveCalibrationFamilySelector>();
+        services.AddSingleton<NormalizationPlanFreezer>();
+        services.AddSingleton<GainNormalizationPreparer>();
         var replayProfile = configuration.GetValue(
             "CameraAgent:ProcessingGraphs:ReplayProfile",
             ReplayExecutionProfile.InProcess);
@@ -365,7 +368,9 @@ public static class CameraAgentServiceCollectionExtensions
             return new CameraAgentRecipeExecutionAdapter(
                 provider.GetRequiredService<IProcessingRecipeExecutor>(),
                 replayProfile,
-                runner);
+                runner,
+                // Resolved on first use by a mixed-gain node: composing any graph must not require the durable stores.
+                provider.GetRequiredService<GainNormalizationPreparer>);
         });
         services.AddSingleton<ArtifactOutboxState>();
         services.AddSingleton<ArtifactOutboxTelemetry>();
