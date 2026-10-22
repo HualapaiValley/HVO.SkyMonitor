@@ -227,8 +227,13 @@ node page, proposals and proposal facts are keyset pages over existing indexes:
 one bounded `TOP` seek per retained installation merged by `UNION ALL`, because
 EF decorrelates a per-installation `Take` into `ROW_NUMBER` over the whole history.
 Jobs (`jobs`) and event associations (`transient-events`) have no camera index, so
-each request walks at most 50 of the camera's own captures and reports
-`ExaminedCaptures`; a short or empty page may still continue. The job inspector
+each request walks at most 50 of the camera's own captures, a resumed capture
+included, and reports `ExaminedCaptures`; a short or empty page may still continue.
+On SQL Server the proposal, fact, job and event reads force their existing index
+seeks from the page's own identities, and a proposal summary reads only its
+terminal, latest and latest Activated/RolledBack facts, so no read follows the
+size of the network's history. Event associations apply the all-contributor
+rule to the window's candidate events and recheck it before returning. The job inspector
 pages attempts, inputs and outputs independently and omits lease, trace and
 free-form error fields; artifact identities from another observatory are null.
 Continuations are protected and bound to caller, camera, collection, subject and

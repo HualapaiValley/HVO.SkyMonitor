@@ -34,9 +34,8 @@ internal sealed partial class CameraOperationsReadService
 
     /// <summary>
     /// Proposals issued to every retained installation of the camera, newest first, through one bounded seek of
-    /// (RegistrationId, LogicalCameraInstallationId, IssuedAtUtc, Id) per installation. The page's facts are then
-    /// read in one query restricted to those proposals; a correlated per-proposal TOP is avoided deliberately,
-    /// because EF decorrelates it into ROW_NUMBER over every stored fact.
+    /// (RegistrationId, LogicalCameraInstallationId, IssuedAtUtc, Id) per installation. Each summary then needs only
+    /// three stored facts per proposal, read by bounded seeks; the complete history stays behind the fact page.
     /// </summary>
     public async Task<CameraOperationsPage<CameraProcessingGraphProposalSummary>> ListProposalsAsync(
         ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, int take, string? cursor,
@@ -58,27 +57,21 @@ internal sealed partial class CameraOperationsReadService
                 proposal.IssuedAtUtc, proposal.ExpiresAtUtc))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var more = Trim(proposals, take);
-        var facts = proposals.Count == 0
-            ? []
-            : await PageFacts(db, proposals.Select(proposal => proposal.Id).ToList())
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var ids = proposals.Select(proposal => proposal.Id).ToList();
+        var summaries = ids.Count == 0
+            ? new Dictionary<Guid, SummaryFacts>()
+            : await SummaryFactsAsync(ids, cancellationToken).ConfigureAwait(false);
         if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
             return new([], null);
-        // Rows arrive newest first per proposal, so the first match of each kind is the latest stored one.
-        var byProposal = facts.ToLookup(fact => fact.ProposalId);
         var items = proposals.Select(proposal =>
         {
-            var proposalFacts = byProposal[proposal.Id].ToArray();
-            var terminal = proposalFacts.FirstOrDefault(fact => IsTerminal(fact.Kind));
-            var lifecycle = proposalFacts.FirstOrDefault(fact =>
-                fact.Kind is nameof(ProcessingGraphDeliveryFactKind.Activated) or
-                    nameof(ProcessingGraphDeliveryFactKind.RolledBack));
+            var facts = summaries.GetValueOrDefault(proposal.Id) ?? new(null, null, null);
             // Staged is a CameraAgent poll disposition, never a stored fact: an accepted revision that is not the
             // device's active one, i.e. never activated or rolled back since. Label the derivation explicitly.
-            var staged = terminal?.Kind == nameof(ProcessingGraphDeliveryFactKind.Accepted) &&
-                lifecycle?.Kind is null or nameof(ProcessingGraphDeliveryFactKind.RolledBack);
+            var staged = facts.Terminal?.Kind == nameof(ProcessingGraphDeliveryFactKind.Accepted) &&
+                facts.Lifecycle?.Kind is null or nameof(ProcessingGraphDeliveryFactKind.RolledBack);
             return new CameraProcessingGraphProposalSummary(
-                proposal, terminal, proposalFacts.FirstOrDefault(), lifecycle,
+                proposal, facts.Terminal, facts.Latest, facts.Lifecycle,
                 staged ? new CameraProposalDerivedStatus(DerivedStagedStatus, DerivedStagedBasis) : null);
         }).ToArray();
         return new(items, more
@@ -88,33 +81,88 @@ internal sealed partial class CameraOperationsReadService
     }
 
     /// <summary>
-    /// Every stored fact of the given proposals, newest recorded first within each proposal, through the existing
-    /// (ProposalId, RecordedAtUtc, Id) index. Rows read are the page's own facts, never the whole fact history.
-    /// On SQL Server the seek is forced: on a compact fact table the optimizer otherwise prefers a clustered scan
-    /// whose rows read grow with every proposal in the network.
+    /// The terminal, latest and latest-lifecycle facts of each given proposal. On SQL Server these are three bounded
+    /// reads: the filtered unique terminal index, and a forced (ProposalId, RecordedAtUtc, Id) TOP 1 seek per
+    /// proposal for the other two. The delivery service records Retrieved once at issue and the single terminal fact
+    /// before any activation or rollback, so the lifecycle seek passes at most those two rows. Other providers
+    /// evaluate the same rules over the proposals' facts.
     /// </summary>
-    internal static IQueryable<ProcessingGraphDeliveryFactView> PageFacts(ApplicationDbContext db, List<Guid> proposalIds)
+    private async Task<Dictionary<Guid, SummaryFacts>> SummaryFactsAsync(List<Guid> ids, CancellationToken cancellationToken)
     {
-        var facts = db.Database.IsSqlServer()
+        if (!db.Database.IsSqlServer())
+        {
+            var facts = await ProjectFacts(db.CentralProcessingGraphDeliveryFacts.AsNoTracking()
+                    .Where(fact => ids.Contains(fact.ProposalId))
+                    .OrderBy(fact => fact.ProposalId).ThenByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id))
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            return facts.GroupBy(fact => fact.ProposalId).ToDictionary(group => group.Key, group => new SummaryFacts(
+                group.FirstOrDefault(fact => IsTerminal(fact.Kind)),
+                group.First(),
+                group.FirstOrDefault(fact => IsLifecycle(fact.Kind))));
+        }
+        var terminal = await ProjectFacts(TerminalFacts(db, ids)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var latest = await ProjectFacts(LatestFacts(db, ids, lifecycleOnly: false)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var lifecycle = await ProjectFacts(LatestFacts(db, ids, lifecycleOnly: true)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return ids.ToDictionary(id => id, id => new SummaryFacts(
+            terminal.SingleOrDefault(fact => fact.ProposalId == id),
+            latest.SingleOrDefault(fact => fact.ProposalId == id),
+            lifecycle.SingleOrDefault(fact => fact.ProposalId == id)));
+    }
+
+    /// <summary>The single stored terminal fact of each proposal, through the filtered unique terminal index.</summary>
+    internal static IQueryable<CentralProcessingGraphDeliveryFact> TerminalFacts(ApplicationDbContext db, List<Guid> proposalIds)
+        => db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
+            SELECT fact.*
+            FROM OPENJSON({JsonSerializer.Serialize(proposalIds)}) WITH ([Id] uniqueidentifier '$') AS page
+            INNER JOIN [CentralProcessingGraphDeliveryFacts] AS fact
+                WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId]([ProposalId])))
+                ON fact.[ProposalId] = page.[Id]
+            WHERE fact.[Kind] IN (N'Accepted', N'Rejected', N'Expired', N'Superseded')
+            """).AsNoTracking();
+
+    /// <summary>The most recently recorded fact (or Activated/RolledBack fact) of each proposal, one TOP 1 seek each.</summary>
+    internal static IQueryable<CentralProcessingGraphDeliveryFact> LatestFacts(
+        ApplicationDbContext db, List<Guid> proposalIds, bool lifecycleOnly)
+        => lifecycleOnly
             ? db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
                 SELECT fact.*
                 FROM OPENJSON({JsonSerializer.Serialize(proposalIds)}) WITH ([Id] uniqueidentifier '$') AS page
-                INNER JOIN [CentralProcessingGraphDeliveryFacts] AS fact
-                    WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId])))
-                    ON fact.[ProposalId] = page.[Id]
+                CROSS APPLY (
+                    SELECT TOP (1) candidate.*
+                    FROM [CentralProcessingGraphDeliveryFacts] AS candidate
+                        WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId])))
+                    WHERE candidate.[ProposalId] = page.[Id] AND candidate.[Kind] IN (N'Activated', N'RolledBack')
+                    ORDER BY candidate.[RecordedAtUtc] DESC, candidate.[Id] DESC) AS fact
                 """).AsNoTracking()
-            : db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => proposalIds.Contains(fact.ProposalId));
-        return facts
-            .OrderBy(fact => fact.ProposalId)
-            .ThenByDescending(fact => fact.RecordedAtUtc)
-            .ThenByDescending(fact => fact.Id)
-            .Select(fact => new ProcessingGraphDeliveryFactView(
-                fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
-                fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
-                fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256));
-    }
+            : db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
+                SELECT fact.*
+                FROM OPENJSON({JsonSerializer.Serialize(proposalIds)}) WITH ([Id] uniqueidentifier '$') AS page
+                CROSS APPLY (
+                    SELECT TOP (1) candidate.*
+                    FROM [CentralProcessingGraphDeliveryFacts] AS candidate
+                        WITH (FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId])))
+                    WHERE candidate.[ProposalId] = page.[Id]
+                    ORDER BY candidate.[RecordedAtUtc] DESC, candidate.[Id] DESC) AS fact
+                """).AsNoTracking();
 
-    /// <summary>One proposal's facts through a forced (ProposalId, RecordedAtUtc, Id) seek on SQL Server.</summary>
+    private static IQueryable<ProcessingGraphDeliveryFactView> ProjectFacts(IQueryable<CentralProcessingGraphDeliveryFact> facts)
+        => facts.Select(fact => new ProcessingGraphDeliveryFactView(
+            fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
+            fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
+            fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256));
+
+    private static bool IsLifecycle(string kind)
+        => kind is nameof(ProcessingGraphDeliveryFactKind.Activated) or nameof(ProcessingGraphDeliveryFactKind.RolledBack);
+
+    private sealed record SummaryFacts(
+        ProcessingGraphDeliveryFactView? Terminal,
+        ProcessingGraphDeliveryFactView? Latest,
+        ProcessingGraphDeliveryFactView? Lifecycle);
+
+    /// <summary>
+    /// One proposal's facts through a forced (ProposalId, RecordedAtUtc, Id) seek on SQL Server: on a compact fact
+    /// table the optimizer otherwise prefers a clustered scan whose rows read grow with every proposal in the network.
+    /// </summary>
     internal static IQueryable<CentralProcessingGraphDeliveryFact> ProposalFacts(ApplicationDbContext db, Guid proposalId)
         => db.Database.IsSqlServer()
             ? db.CentralProcessingGraphDeliveryFacts.FromSqlInterpolated($"""
@@ -127,7 +175,7 @@ internal sealed partial class CameraOperationsReadService
 
     /// <summary>
     /// One retained installation's proposals through a forced (RegistrationId, LogicalCameraInstallationId,
-    /// IssuedAtUtc, Id) seek on SQL Server, for the same reason as <see cref="PageFacts"/>.
+    /// IssuedAtUtc, Id) seek on SQL Server, for the same reason as <see cref="ProposalFacts"/>.
     /// </summary>
     private static IQueryable<CentralProcessingGraphDeliveryProposal> InstallationProposals(
         ApplicationDbContext db, InstallationKey installation)

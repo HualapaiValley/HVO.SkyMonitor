@@ -30,7 +30,9 @@ public sealed class CameraOperationsReadTests
     [TestMethod]
     public async Task Http_ViewerReadsEveryCameraCollectionWhileNonMembersAndOtherScopesAreDenied()
     {
-        var seed = await CameraOperationsSeed.CreateAsync(captures: 6, jobEvery: 2, executions: 3, proposals: 2).ConfigureAwait(false);
+        var seed = await CameraOperationsSeed.CreateAsync(captures: 6, jobEvery: 2, executions: 3, proposals: 2, eventEvery: 2)
+            .ConfigureAwait(false);
+        var crossObservatoryEvent = await seed.AddCrossObservatoryEventAsync().ConfigureAwait(false);
         await seed.AddMemberAsync(TestUsers.Viewer.Email, ObservatoryMembershipRole.Viewer).ConfigureAwait(false);
         using var viewer = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Viewer.Username, TestUsers.Viewer.Password).ConfigureAwait(false);
         foreach (var path in seed.CollectionPaths().Concat(seed.ExactPaths()))
@@ -57,6 +59,25 @@ public sealed class CameraOperationsReadTests
             json.RootElement.GetProperty("Attempts").GetProperty("NextCursor").GetString().Should().NotBeNullOrEmpty();
             json.RootElement.GetProperty("Inputs").GetProperty("Items")[0].GetProperty("ArtifactId").GetGuid()
                 .Should().Be(seed.InspectedJobSourceArtifactId);
+        }
+        // The all-contributor rule on SQL Server: the Viewer belongs only to the camera's observatory, so the event whose
+        // background comes from another observatory is omitted; the operator belongs to both and sees it.
+        using (var events = await viewer.GetAsync(seed.Path("transient-events?take=50")).ConfigureAwait(false))
+        {
+            using var json = JsonDocument.Parse(await events.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            var items = json.RootElement.GetProperty("Items").EnumerateArray().ToArray();
+            // An event appears once per associated capture: as a source on one and as a background on the next.
+            items.Select(item => item.GetProperty("CentralTransientEventId").GetGuid()).Distinct().Should()
+                .BeEquivalentTo(seed.Events).And.NotContain(crossObservatoryEvent);
+            items.Should().Contain(item => item.GetProperty("CaptureIsBackground").GetBoolean() &&
+                !item.GetProperty("CaptureIsObservationSource").GetBoolean());
+        }
+        using (var owner = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false))
+        using (var events = await owner.GetAsync(seed.Path("transient-events?take=50")).ConfigureAwait(false))
+        {
+            using var json = JsonDocument.Parse(await events.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            json.RootElement.GetProperty("Items").EnumerateArray().Select(item => item.GetProperty("CentralTransientEventId").GetGuid())
+                .Should().Contain(crossObservatoryEvent);
         }
         using (var proposals = await viewer.GetAsync(seed.Path("processing-graph-proposals?take=50")).ConfigureAwait(false))
         {
@@ -154,6 +175,31 @@ public sealed class CameraOperationsReadTests
         jobs.Should().OnlyHaveUniqueItems().And.BeEquivalentTo(seed.Jobs);
     }
 
+    [TestMethod]
+    public async Task SqlServer_ProposalSummariesReadBoundedFactsForLongLifecycleHistories()
+    {
+        // Review F2: a summary needs only the terminal, latest and latest lifecycle facts, never the whole history.
+        var seed = await CameraOperationsSeed.CreateAsync(captures: 2, jobEvery: 1, executions: 1, proposals: 3,
+            lifecycleFacts: 2_001).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var (service, capture, measuredDb, connectionString) = await CameraOperationsSql.CreateMeasuredServiceAsync(
+            scope.ServiceProvider).ConfigureAwait(false);
+        await using var db = measuredDb;
+        var principal = CameraOperationsSeed.Principal(seed.OwnerId);
+        capture.Enabled = true;
+        var page = await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false);
+        capture.Enabled = false;
+        var summary = page.Items.Single(item => item.Proposal.Id == seed.FactProposal);
+        summary.TerminalFact!.Kind.Should().Be("Accepted");
+        summary.LatestLifecycleFact!.Kind.Should().Be("Activated");
+        summary.LatestFact!.Id.Should().Be(summary.LatestLifecycleFact.Id);
+        summary.DerivedStatus.Should().BeNull();
+        var rowsRead = 0L;
+        foreach (var command in capture.Commands)
+            rowsRead += (await CameraOperationsSql.ExplainAsync(connectionString, command).ConfigureAwait(false)).ActualRowsRead;
+        rowsRead.Should().BeLessThan(500, "three proposals' summaries read a bounded number of facts, not 2,003");
+    }
+
     internal static async Task<HttpClient> CreateScopedKeyClientAsync(Guid? observatory)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -207,15 +253,22 @@ public sealed class CameraOperationsReadPerformanceTests
         // Two retained installations of the measured camera plus an unrelated camera of the same observatory with
         // the same volume, so a full-history or observatory-wide scan would show up as rows read.
         var seed = await CameraOperationsSeed.CreateAsync(captures: 3_000, jobEvery: 10, executions: 1_000,
-            proposals: 1_000, unrelatedVolume: true, facts: 120).ConfigureAwait(false);
+            proposals: 1_000, unrelatedVolume: true, lifecycleFacts: 10_000, eventEvery: 3).ConfigureAwait(false);
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var services = scope.ServiceProvider;
-        var connectionString = services.GetRequiredService<ApplicationDbContext>().Database.GetConnectionString()!;
-        var capture = new QueryCapture();
-        await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseSqlServer(connectionString).AddInterceptors(capture).Options);
-        var service = new CameraOperationsReadService(db, services.GetRequiredService<IDataProtectionProvider>());
+        var (service, capture, measuredDb, connectionString) = await CameraOperationsSql.CreateMeasuredServiceAsync(services)
+            .ConfigureAwait(false);
+        await using var db = measuredDb;
         var principal = CameraOperationsSeed.Principal(seed.OwnerId);
+        var workload = await seed.CountAsync(db).ConfigureAwait(false);
+        // The measured paths must be populated: events with source and background associations, and the long
+        // activate/rollback history on the newest proposal.
+        var events = await service.ListEventAssociationsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false);
+        events.Items.Should().NotBeEmpty();
+        events.Items.Should().Contain(item => item.CaptureIsObservationSource).And.Contain(item => item.CaptureIsBackground);
+        var proposals = await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false);
+        proposals.Items.Should().Contain(item => item.Proposal.Id == seed.FactProposal &&
+            item.LatestLifecycleFact != null && item.LatestLifecycleFact.Kind == "RolledBack");
         var deepExecutions = await service.ListExecutionsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false);
         for (var page = 0; page < 10; page++)
             deepExecutions = await service.ListExecutionsAsync(principal, seed.Observatory, seed.Camera, 50, deepExecutions.NextCursor).ConfigureAwait(false);
@@ -232,9 +285,9 @@ public sealed class CameraOperationsReadPerformanceTests
             ["jobs-first"] = (async () => await service.ListJobsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 6, 4_000),
             ["jobs-deep-keyset"] = (async () => await service.ListJobsAsync(principal, seed.Observatory, seed.Camera, 50, deepJobs.NextCursor).ConfigureAwait(false), 6, 4_000),
             ["job-inspector"] = (async () => await service.GetJobAsync(principal, seed.Observatory, seed.Camera, seed.InspectedJob, 50).ConfigureAwait(false), 6, 2_000),
-            ["proposals-first"] = (async () => await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 5, 2_000),
+            ["proposals-first"] = (async () => await service.ListProposalsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 7, 2_000),
             ["proposal-facts"] = (async () => await service.ListProposalFactsAsync(principal, seed.Observatory, seed.Camera, seed.FactProposal, 50, null).ConfigureAwait(false), 4, 2_000),
-            ["event-associations"] = (async () => await service.ListEventAssociationsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 6, 4_000)
+            ["event-associations"] = (async () => await service.ListEventAssociationsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 12, 4_000)
         };
         var evidence = new List<object>();
         var violations = new List<string>();
@@ -255,8 +308,9 @@ public sealed class CameraOperationsReadPerformanceTests
             capture.Enabled = true;
             _ = await run().ConfigureAwait(false);
             capture.Enabled = false;
-            var plans = new List<Plan>();
-            foreach (var command in capture.Commands) plans.Add(await ExplainAsync(connectionString, command).ConfigureAwait(false));
+            var plans = new List<CameraOperationsSql.Plan>();
+            foreach (var command in capture.Commands)
+                plans.Add(await CameraOperationsSql.ExplainAsync(connectionString, command).ConfigureAwait(false));
             var rowsRead = plans.Sum(plan => plan.ActualRowsRead);
             if (capture.Commands.Count > maxCommands) violations.Add($"{name}: {capture.Commands.Count} SQL commands > {maxCommands}");
             if (rowsRead > maxRowsRead) violations.Add($"{name}: {rowsRead} rows read > {maxRowsRead}");
@@ -281,9 +335,10 @@ public sealed class CameraOperationsReadPerformanceTests
         {
             Source = Environment.GetEnvironmentVariable("HVO_ISSUE1237_REVISION"),
             Utc = DateTimeOffset.UtcNow,
-            Workload = "Measured camera: 2 retained installations, 6,000 captures, 600 source jobs (3 per tenth capture), " +
-                "2,000 executions, 2,000 proposals, 120 facts on one proposal; an unrelated camera of the same observatory " +
-                "holds the same volume. take=50; deep keyset after 10 execution and 5 job pages.",
+            Workload = workload,
+            WorkloadNote = "Counts are read from the database after seeding. An unrelated camera of the same observatory " +
+                "holds the same capture, job, execution, proposal and event volume. take=50; deep keyset after 10 " +
+                "execution and 5 job pages.",
             Method = "3 warmup + 20 sequential service/serialization operations; SQL plans and rows read from replay of the " +
                 "exact parameterized production commands with SET STATISTICS XML/IO",
             Browser = "N/A: backend prerequisite, no UI changes",
@@ -292,7 +347,12 @@ public sealed class CameraOperationsReadPerformanceTests
         violations.Should().BeEmpty();
     }
 
-    private static async Task<Plan> ExplainAsync(string connectionString, Command command)
+}
+
+/// <summary>Replays captured production commands with SET STATISTICS XML/IO to report rows read and plans.</summary>
+internal static class CameraOperationsSql
+{
+    internal static async Task<Plan> ExplainAsync(string connectionString, Command command)
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync().ConfigureAwait(false);
@@ -331,14 +391,14 @@ public sealed class CameraOperationsReadPerformanceTests
         return new(rows, accessedRows, reads, indexes);
     }
 
-    private static SqlParameter Copy(SqlParameter item) => new(item.ParameterName, item.SqlDbType, item.Size)
+    internal static SqlParameter Copy(SqlParameter item) => new(item.ParameterName, item.SqlDbType, item.Size)
     { Value = item.Value, Precision = item.Precision, Scale = item.Scale };
 
-    private sealed record Plan(int ResultRows, long ActualRowsRead, long LogicalReads, string[] Indexes);
+    internal sealed record Plan(int ResultRows, long ActualRowsRead, long LogicalReads, string[] Indexes);
 
-    private sealed record Command(string Text, SqlParameter[] Parameters);
+    internal sealed record Command(string Text, SqlParameter[] Parameters);
 
-    private sealed class QueryCapture : DbCommandInterceptor
+    internal sealed class QueryCapture : DbCommandInterceptor
     {
         internal bool Enabled { get; set; }
         internal List<Command> Commands { get; } = [];
@@ -349,6 +409,17 @@ public sealed class CameraOperationsReadPerformanceTests
             if (Enabled) Commands.Add(new(command.CommandText, command.Parameters.Cast<SqlParameter>().Select(Copy).ToArray()));
             return ValueTask.FromResult(result);
         }
+    }
+
+    internal static async Task<(CameraOperationsReadService Service, QueryCapture Capture, ApplicationDbContext Db, string ConnectionString)>
+        CreateMeasuredServiceAsync(IServiceProvider services)
+    {
+        var connectionString = services.GetRequiredService<ApplicationDbContext>().Database.GetConnectionString()!;
+        var capture = new QueryCapture();
+        var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(connectionString).AddInterceptors(capture).Options);
+        await Task.CompletedTask.ConfigureAwait(false);
+        return (new CameraOperationsReadService(db, services.GetRequiredService<IDataProtectionProvider>()), capture, db, connectionString);
     }
 }
 
@@ -374,6 +445,32 @@ internal sealed class CameraOperationsSeed
     internal Guid LeaseToken { get; } = Guid.NewGuid();
     internal List<Guid> Executions { get; } = [];
     internal List<Guid> Jobs { get; } = [];
+    internal List<Guid> Events { get; } = [];
+
+    /// <summary>Workload metadata read back from the store rather than inferred from seeding parameters.</summary>
+    internal async Task<object> CountAsync(ApplicationDbContext db)
+    {
+        var camera = Camera;
+        var proposal = FactProposal;
+        return new
+        {
+            Installations = await db.LogicalCameraInstallations.CountAsync(item => item.LogicalCameraId == camera).ConfigureAwait(false),
+            Captures = await db.CentralFrames.CountAsync(item => item.LogicalCameraInstallation!.LogicalCameraId == camera).ConfigureAwait(false),
+            SourceJobs = await db.CentralDerivativeJobs.CountAsync(item =>
+                item.SourceArtifact!.Frame!.LogicalCameraInstallation!.LogicalCameraId == camera).ConfigureAwait(false),
+            Executions = await db.CentralProcessingGraphExecutions.CountAsync(item => item.LogicalCameraId == camera).ConfigureAwait(false),
+            Proposals = await db.CentralProcessingGraphDeliveryProposals.CountAsync(item =>
+                item.LogicalCameraInstallation!.LogicalCameraId == camera).ConfigureAwait(false),
+            FactsOnNewestProposal = await db.CentralProcessingGraphDeliveryFacts.CountAsync(item => item.ProposalId == proposal).ConfigureAwait(false),
+            EventSources = await db.CentralTransientObservationSources.CountAsync(item =>
+                item.Artifact!.Frame!.LogicalCameraInstallation!.LogicalCameraId == camera).ConfigureAwait(false),
+            EventBackgrounds = await db.CentralTransientObservationBackgrounds.CountAsync(item =>
+                item.Artifact!.Frame!.LogicalCameraInstallation!.LogicalCameraId == camera).ConfigureAwait(false),
+            ObservatoryCaptures = await db.CentralFrames.CountAsync(item => item.ObservatoryId == Observatory).ConfigureAwait(false),
+            ObservatoryFacts = await db.CentralProcessingGraphDeliveryFacts.CountAsync(item =>
+                item.Proposal!.LogicalCameraInstallation!.LogicalCamera!.ObservatoryId == Observatory).ConfigureAwait(false)
+        };
+    }
 
     internal Uri Path(string relative, Guid? camera = null)
         => new($"/api/v1.0/observatories/{Observatory:D}/cameras/{camera ?? Camera:D}/{relative}", UriKind.Relative);
@@ -412,7 +509,8 @@ internal sealed class CameraOperationsSeed
     }
 
     internal static async Task<CameraOperationsSeed> CreateAsync(
-        int captures, int jobEvery, int executions, int proposals, bool unrelatedVolume = false, int facts = 2)
+        int captures, int jobEvery, int executions, int proposals, bool unrelatedVolume = false, int lifecycleFacts = 0,
+        int eventEvery = 0)
     {
         var seed = new CameraOperationsSeed();
         var first = await ArtifactRetrievalTests.SeedArtifactAsync(TestUsers.Operator.Email, [1], putObject: false).ConfigureAwait(false);
@@ -468,6 +566,7 @@ internal sealed class CameraOperationsSeed
             ? new[] { (camera, (retired, current), captures), (other, (otherInstallation, otherInstallation), captures) }
             : new[] { (camera, (retired, current), captures) })
         {
+            CentralArtifact? previousRaw = null;
             for (var index = 0; index < count; index++)
             {
                 var installation = index % 2 == 0 ? targetInstallation.Item1 : targetInstallation.Item2;
@@ -477,6 +576,13 @@ internal sealed class CameraOperationsSeed
                 var raw = NewArtifact(frame, registration);
                 db.AddRange(frame, raw);
                 anchors.TryAdd(installation.Id, raw);
+                if (eventEvery > 0 && index % eventEvery == 0)
+                {
+                    // The event observes this capture and, after the first, uses the newer capture as background.
+                    var eventId = AddEvent(db, frame, raw, previousRaw);
+                    if (target == camera) seed.Events.Add(eventId);
+                }
+                previousRaw = raw;
                 if (index % jobEvery == 0)
                 {
                     for (var jobIndex = 0; jobIndex < (unrelatedVolume ? 3 : 1); jobIndex++)
@@ -630,17 +736,30 @@ internal sealed class CameraOperationsSeed
                 });
                 if (target == camera && index == 0)
                 {
+                    // As the delivery service records it: Retrieved once at issue, the Accepted settlement, then
+                    // monotonically recorded activations and rollbacks for as long as the device alternates.
                     seed.FactProposal = proposal.Id;
-                    for (var fact = 0; fact < facts; fact++)
+                    db.Add(new CentralProcessingGraphDeliveryFact
                     {
+                        ProposalId = proposal.Id,
+                        Kind = "Retrieved",
+                        Source = "LogicHost",
+                        OccurredAtUtc = proposal.IssuedAtUtc,
+                        RecordedAtUtc = proposal.IssuedAtUtc,
+                        ReasonCode = "agent-pull"
+                    });
+                    for (var fact = 0; fact < lifecycleFacts; fact++)
+                    {
+                        var recorded = proposal.IssuedAtUtc.AddSeconds(2 + fact);
                         db.Add(new CentralProcessingGraphDeliveryFact
                         {
                             ProposalId = proposal.Id,
-                            Kind = "Retrieved",
+                            Kind = fact % 2 == 0 ? "Activated" : "RolledBack",
                             Source = "CameraAgent",
-                            OccurredAtUtc = proposal.IssuedAtUtc,
-                            RecordedAtUtc = proposal.IssuedAtUtc
+                            OccurredAtUtc = recorded,
+                            RecordedAtUtc = recorded
                         });
+                        if (fact % 1_000 == 999) await SaveAndClearAsync(db).ConfigureAwait(false);
                     }
                 }
                 if (index % 500 == 499) await SaveAndClearAsync(db).ConfigureAwait(false);
@@ -659,6 +778,132 @@ internal sealed class CameraOperationsSeed
         seed.Executions.Clear();
         seed.Executions.AddRange(ordered);
         return seed;
+    }
+
+    /// <summary>
+    /// An event observing the camera's newest capture with a background from another observatory owned by the same
+    /// operator, so only a member of both observatories may read it.
+    /// </summary>
+    internal async Task<Guid> AddCrossObservatoryEventAsync()
+    {
+        var foreign = await ArtifactRetrievalTests.SeedArtifactAsync(TestUsers.Operator.Email, [9], putObject: false).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var camera = Camera;
+        var frame = await db.CentralFrames.AsNoTracking().Where(item => item.LogicalCameraInstallation!.LogicalCameraId == camera)
+            .OrderByDescending(item => item.CapturedAtUtc).ThenByDescending(item => item.Id).FirstAsync().ConfigureAwait(false);
+        var source = await db.CentralArtifacts.AsNoTracking().FirstAsync(item => item.CentralFrameId == frame.Id).ConfigureAwait(false);
+        var background = await db.CentralArtifacts.AsNoTracking()
+            .FirstAsync(item => item.DevicePublicId == foreign.DevicePublicId && item.ArtifactId == foreign.ArtifactId).ConfigureAwait(false);
+        var eventId = AddEvent(db, frame, source, background);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        return eventId;
+    }
+
+    /// <summary>One version-1 central event observing <paramref name="source"/>, optionally with a background.</summary>
+    private static Guid AddEvent(ApplicationDbContext db, CentralFrame frame, CentralArtifact source, CentralArtifact? background)
+    {
+        var created = frame.CapturedAtUtc.AddSeconds(5);
+        var record = new CentralTransientEventRecord { AgentId = frame.AgentId, EventId = Guid.NewGuid(), EventCreatedUtc = created };
+        var assessment = new CentralTransientAssessmentRecord
+        {
+            AssessmentId = Guid.NewGuid(),
+            CentralTransientEventId = record.Id,
+            CreatedUtc = created,
+            Authority = TransientAssessmentAuthority.Provisional,
+            Classification = TransientClassification.Meteor,
+            ConfidenceMillionths = 900_000,
+            ProducerSchemaVersion = "v1",
+            ProducerKind = TransientAssessmentProducerKind.DeterministicAlgorithm,
+            ProducerName = "camera-operations",
+            ProducerVersion = "1",
+            RecipeIdentitySha256 = new string('a', 64),
+            ReceiptSchemaVersion = "v1",
+            ExecutionIdentitySha256 = new string('b', 64),
+            OptionsIdentitySha256 = new string('c', 64),
+            CanonicalReceiptJson = "{}",
+            CanonicalReceiptSha256 = new string('d', 64),
+            CanonicalReceiptByteLength = 2
+        };
+        var version = new CentralTransientEventVersionRecord
+        {
+            EventVersionId = Guid.NewGuid(),
+            CentralTransientEventId = record.Id,
+            Version = 1,
+            State = TransientEventState.Provisional,
+            VersionCreatedUtc = created,
+            FirstObservedUtc = frame.CapturedAtUtc,
+            LastObservedUtc = frame.CapturedAtUtc,
+            SchemaVersion = "v1",
+            CanonicalEventJson = "{}",
+            CanonicalEventSha256 = new string('e', 64),
+            CanonicalEventByteLength = 2
+        };
+        var observationId = Guid.NewGuid();
+        db.AddRange(record, assessment, version,
+            new CentralTransientObservationSourceReference
+            {
+                ObservationId = observationId,
+                CentralArtifactId = source.Id,
+                EvidenceSchemaVersion = "v1",
+                EvidenceId = Guid.NewGuid(),
+                LocatorSchemaVersion = "v1",
+                LocatorKind = TransientSourceLocatorKind.WholeArtifact,
+                ArtifactId = source.ArtifactId,
+                ArtifactRole = source.Role,
+                ArtifactVariant = "",
+                ArtifactRecipeIdentitySha256 = new string('f', 64),
+                ArtifactChecksumSha256 = source.ChecksumSha256,
+                ObservationStartedUtc = frame.CapturedAtUtc,
+                ObservationEndedUtc = frame.CapturedAtUtc,
+                TimingQuality = TransientTimingQuality.Reported,
+                TimingProvenanceSource = "camera-operations",
+                TimingProvenanceVersion = "1"
+            },
+            new CentralTransientObservationRecord
+            {
+                ObservationId = observationId,
+                CentralTransientEventId = record.Id,
+                SourceReferenceId = observationId,
+                DetectorInputIdentitySha256 = new string('1', 64),
+                CalibrationIdentity = "calibration",
+                MaskIdentity = "mask",
+                ProcessingProfileIdentity = "profile",
+                ExtractionProducerSchemaVersion = "v1",
+                ExtractionProducerKind = TransientExtractionProducerKind.DeterministicAlgorithm,
+                ExtractionProducerName = "camera-operations",
+                ExtractionProducerVersion = "1",
+                ExtractionRecipeIdentitySha256 = new string('2', 64),
+                ExtractionReceiptIdentitySha256 = new string('3', 64),
+                GeometryJson = "{}",
+                FeaturesJson = "{}"
+            },
+            new CentralTransientEventCurrent
+            {
+                CentralTransientEventId = record.Id,
+                LatestEventVersionId = version.EventVersionId,
+                LatestVersion = 1,
+                ActiveAssessmentId = assessment.AssessmentId,
+                ReviewState = CentralTransientReviewState.NeedsReview,
+                EffectiveClassification = TransientClassification.Meteor,
+                EffectiveConfidenceMillionths = 900_000,
+                UpdatedUtc = created
+            });
+        if (background is not null)
+        {
+            db.Add(new CentralTransientObservationBackgroundReference
+            {
+                ObservationId = observationId,
+                Ordinal = 0,
+                CentralArtifactId = background.Id,
+                ArtifactId = background.ArtifactId,
+                ArtifactRole = background.Role,
+                ArtifactVariant = "",
+                ArtifactRecipeIdentitySha256 = new string('f', 64),
+                ArtifactChecksumSha256 = background.ChecksumSha256
+            });
+        }
+        return record.Id;
     }
 
     private static async Task SaveAndClearAsync(ApplicationDbContext db)

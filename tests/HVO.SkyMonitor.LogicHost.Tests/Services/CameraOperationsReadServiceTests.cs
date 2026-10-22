@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -8,6 +9,8 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -305,7 +308,7 @@ public sealed class CameraOperationsReadServiceTests
         {
             var page = await service.ListJobsAsync(Member(), a.Observatory, a.Camera, 4, cursor).ConfigureAwait(false);
             Assert.IsLessThanOrEqualTo(4, page.Items.Count);
-            Assert.IsLessThanOrEqualTo(CameraOperationsReadService.CaptureExaminationLimit + 1, page.ExaminedCaptures);
+            Assert.IsLessThanOrEqualTo(CameraOperationsReadService.CaptureExaminationLimit, page.ExaminedCaptures);
             seen.AddRange(page.Items.Select(item => item.JobId));
             cursor = page.NextCursor;
             requests++;
@@ -436,6 +439,60 @@ public sealed class CameraOperationsReadServiceTests
     }
 
     [TestMethod]
+    public async Task EventAssociationsRecheckEveryContributorAfterTheAssociationRead()
+    {
+        // Review F1: the member of A and B loses B after the association rows are selected, before the page returns.
+        var hook = new AfterRowsRead<CameraOperationsReadService.EventDetailRow>();
+        await using var world = await World.CreateAsync(ObservatoryMembershipRole.Viewer, hook).ConfigureAwait(false);
+        var a = world.A;
+        var shared = world.AddEvent(a.EventCapture, world.B.EventCapture, Now.AddMinutes(2));
+        await world.Db.SaveChangesAsync().ConfigureAwait(false);
+        hook.Action = () =>
+        {
+            using var other = world.OpenSeparateContext();
+            other.ObservatoryMemberships.RemoveRange(other.ObservatoryMemberships
+                .Where(item => item.UserId == "member" && item.ObservatoryId == world.B.Observatory));
+            other.SaveChanges();
+        };
+        var page = await world.Service().ListEventAssociationsAsync(Member(), a.Observatory, a.Camera, 50, null).ConfigureAwait(false);
+        Assert.AreEqual(1, hook.Fired);
+        CollectionAssert.DoesNotContain(page.Items.Select(item => item.CentralTransientEventId).ToArray(), shared);
+        Assert.AreEqual(a.Event, page.Items.Single().CentralTransientEventId);
+    }
+
+    [TestMethod]
+    public async Task ResumingInsideACaptureStaysWithinTheCaptureExaminationLimit()
+    {
+        // Review F3: a resumed capture counts against the same per-request examination budget as the window.
+        await using var world = await World.CreateAsync(ObservatoryMembershipRole.Viewer).ConfigureAwait(false);
+        var a = world.A;
+        var newest = world.AddCapture(a.CurrentInstallation, a.CameraEntity, Now.AddHours(1));
+        var newestArtifact = world.AddArtifact(newest, FrameArtifactRole.Raw);
+        world.AddJob(newestArtifact, Now.AddHours(1));
+        world.AddJob(newestArtifact, Now.AddHours(1));
+        world.AddEvent(newest, null, Now.AddHours(1));
+        world.AddEvent(newest, null, Now.AddHours(1));
+        for (var index = 0; index < CameraOperationsReadService.CaptureExaminationLimit; index++)
+        {
+            world.AddCapture(a.CurrentInstallation, a.CameraEntity, Now.AddMinutes(30 - index));
+        }
+        await world.Db.SaveChangesAsync().ConfigureAwait(false);
+        var service = world.Service();
+        var jobs = await service.ListJobsAsync(Member(), a.Observatory, a.Camera, 1, null).ConfigureAwait(false);
+        var events = await service.ListEventAssociationsAsync(Member(), a.Observatory, a.Camera, 1, null).ConfigureAwait(false);
+        Assert.AreEqual(newest.Id, jobs.Items.Single().CaptureId);
+        Assert.AreEqual(newest.Id, events.Items.Single().CaptureId);
+        foreach (var page in new[]
+        {
+            (await service.ListJobsAsync(Member(), a.Observatory, a.Camera, 1, jobs.NextCursor).ConfigureAwait(false)).ExaminedCaptures,
+            (await service.ListEventAssociationsAsync(Member(), a.Observatory, a.Camera, 1, events.NextCursor).ConfigureAwait(false)).ExaminedCaptures
+        })
+        {
+            Assert.IsLessThanOrEqualTo(CameraOperationsReadService.CaptureExaminationLimit, page);
+        }
+    }
+
+    [TestMethod]
     public void SqlServerTranslationKeepsPerInstallationSeeksAndUnionedAssignmentBranches()
     {
         using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -465,19 +522,37 @@ public sealed class CameraOperationsReadServiceTests
             db, observatory, camera, CentralProcessingGraphTargetHost.Central, Now, Guid.NewGuid()).Take(26).ToQueryString();
         StringAssert.Contains(assignments, "UNION ALL");
         // Proposal and fact reads pin their existing indexes so rows read never follow the network's history.
-        var facts = CameraOperationsReadService.PageFacts(db, [Guid.NewGuid(), Guid.NewGuid()]).ToQueryString();
-        Assert.DoesNotContain("ROW_NUMBER", facts);
-        StringAssert.Contains(facts, "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId]))");
+        // Summaries read three facts per proposal: the terminal index, and TOP 1 latest and latest-lifecycle seeks.
+        List<Guid> page = [Guid.NewGuid(), Guid.NewGuid()];
+        StringAssert.Contains(CameraOperationsReadService.TerminalFacts(db, page).ToQueryString(),
+            "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId]([ProposalId]))");
+        foreach (var lifecycleOnly in new[] { false, true })
+        {
+            var latest = CameraOperationsReadService.LatestFacts(db, page, lifecycleOnly).ToQueryString();
+            StringAssert.Contains(latest, "CROSS APPLY");
+            StringAssert.Contains(latest, "TOP (1)");
+            StringAssert.Contains(latest, "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId]))");
+            Assert.DoesNotContain("ROW_NUMBER", latest);
+        }
+        var jobs = CameraOperationsReadService.CaptureJobs(db, [Guid.NewGuid()], installations, observatory).ToQueryString();
+        StringAssert.Contains(jobs, "FORCESEEK([PK_CentralFrames]([Id]))");
+        StringAssert.Contains(jobs, "FORCESEEK([IX_CentralArtifacts_CentralFrameId_ArtifactId]([CentralFrameId]))");
         StringAssert.Contains(CameraOperationsReadService.ProposalFacts(db, Guid.NewGuid()).Take(51).ToQueryString(),
             "FORCESEEK([IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id]([ProposalId]))");
         var proposals = CameraOperationsReadService.ProposalHistory(db, installations
             .Select(id => new CameraOperationsReadService.InstallationKey(id, Guid.NewGuid(), Guid.NewGuid())).ToArray(),
             Now, Guid.NewGuid(), 26)!.ToQueryString();
         Assert.AreEqual(installations.Length, proposals.Split("FORCESEEK(").Length - 1, proposals);
-        var events = new CameraOperationsReadService(db, new EphemeralDataProtectionProvider())
-            .EventAssociations("member", null, observatory, camera, [Guid.NewGuid()], Guid.NewGuid()).Take(3).ToQueryString();
-        StringAssert.Contains(events, "UNION");
-        StringAssert.Contains(events, "CentralTransientObservationBackgrounds");
+        // Event associations, contributors and details are read by forced seeks from the window's own identities.
+        var service = new CameraOperationsReadService(db, new EphemeralDataProtectionProvider());
+        var pairs = service.EventPairsSql([Guid.NewGuid()], installations, observatory, Guid.NewGuid()).ToQueryString();
+        StringAssert.Contains(pairs, "FORCESEEK([IX_CentralTransientObservationSources_CentralArtifactId]([CentralArtifactId]))");
+        StringAssert.Contains(pairs, "FORCESEEK([IX_CentralTransientObservationBackgrounds_CentralArtifactId]([CentralArtifactId]))");
+        var contributors = service.EventContributorsSql([Guid.NewGuid()]).ToQueryString();
+        Assert.AreEqual(2, contributors.Split(
+            "FORCESEEK([AK_CentralTransientObservations_CentralTransientEventId_ObservationId]([CentralTransientEventId]))").Length - 1);
+        StringAssert.Contains(service.EventDetails([Guid.NewGuid()]).ToQueryString(),
+            "FORCESEEK([PK_CentralTransientEventCurrent]([CentralTransientEventId]))");
     }
 
     private static async Task AssertDeniedAsync(
@@ -517,6 +592,40 @@ public sealed class CameraOperationsReadServiceTests
         => new(new ClaimsIdentity([new Claim("sub", "member"), new Claim("account_type", "System"), new Claim("scope", "api.admin")],
             CanonicalCredentialClaims.BearerAuthenticationType));
 
+    /// <summary>
+    /// Runs <see cref="Action"/> once, while rows of <typeparamref name="TRow"/> are being materialized: for event
+    /// associations, after the page's events were selected and authorized and before the final recheck.
+    /// </summary>
+    internal sealed class AfterRowsRead<TRow> : IQueryExpressionInterceptor
+    {
+        public Action? Action { get; set; }
+
+        public int Fired { get; private set; }
+
+        public Expression QueryCompilationStarting(Expression queryExpression, QueryExpressionEventData eventData)
+        {
+            if (queryExpression.Type != typeof(IQueryable<TRow>))
+            {
+                return queryExpression;
+            }
+            var item = Expression.Parameter(typeof(TRow), "item");
+            var pass = Expression.Lambda<Func<TRow, TRow>>(
+                Expression.Call(Expression.Constant(this), typeof(AfterRowsRead<TRow>).GetMethod(nameof(Pass))!, item), item);
+            return Expression.Call(typeof(Queryable), nameof(Queryable.Select), [typeof(TRow), typeof(TRow)],
+                queryExpression, Expression.Quote(pass));
+        }
+
+        public TRow Pass(TRow item)
+        {
+            if (Fired == 0 && Action is not null)
+            {
+                Fired++;
+                Action();
+            }
+            return item;
+        }
+    }
+
     internal sealed record Site(
         Guid Observatory,
         Guid Camera,
@@ -546,16 +655,36 @@ public sealed class CameraOperationsReadServiceTests
         internal static readonly Guid LeaseToken = Guid.NewGuid();
         private int _sequence;
 
-        private World(ApplicationDbContext db) => Db = db;
+        private World()
+        {
+        }
 
-        public ApplicationDbContext Db { get; }
+        public ApplicationDbContext Db { get; private set; } = null!;
+
+        /// <summary>A second context over the same in-memory store, as another request would see it.</summary>
+        public ApplicationDbContext OpenSeparateContext() => new(Options);
+
+        private DbContextOptions<ApplicationDbContext> Options { get; set; } = null!;
         public Site A { get; private set; } = null!;
         public Site B { get; private set; } = null!;
 
-        public static async Task<World> CreateAsync(ObservatoryMembershipRole role)
+        public string DatabaseName { get; } = Guid.NewGuid().ToString();
+
+        public InMemoryDatabaseRoot DatabaseRoot { get; } = new();
+
+        public static async Task<World> CreateAsync(ObservatoryMembershipRole role, IInterceptor? interceptor = null)
         {
-            var world = new World(new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options));
+            var world = new World();
+            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(world.DatabaseName, world.DatabaseRoot);
+            if (interceptor is not null)
+            {
+                // A query-expression interceptor is a singleton interceptor, so EF gives it a private service provider
+                // and compiled-query cache; queries compiled by other tests cannot bypass it.
+                options.AddInterceptors(interceptor);
+            }
+            world.Options = options.Options;
+            world.Db = new ApplicationDbContext(world.Options);
             var member = new ApplicationUser { Id = "member", AccountType = AccountType.User };
             var bOnly = new ApplicationUser { Id = "b-only", AccountType = AccountType.User };
             var nobody = new ApplicationUser { Id = "nobody", AccountType = AccountType.User };

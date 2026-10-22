@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
@@ -123,21 +124,49 @@ internal sealed partial class CameraOperationsReadService
         CancellationToken cancellationToken = default)
         => CaptureAnchoredAsync(
             principal, observatoryId, cameraId, "jobs", take, cursor,
-            (owner, position, limit) =>
+            (owner, installationIds, position, limit) =>
             {
-                var capture = position.Id;
                 var time = position.ChildTime!.Value;
                 var id = position.ChildId!.Value;
-                return ProjectJobHistory(CameraJobs(owner, observatoryId, cameraId)
-                        .Where(job => job.SourceArtifact!.CentralFrameId == capture &&
-                            job.CreatedAtUtc <= time && (job.CreatedAtUtc < time || job.Id.CompareTo(id) < 0)))
+                return ProjectJobHistory(CaptureJobs(db, [position.Id], installationIds, observatoryId)
+                        .Where(job => job.CreatedAtUtc <= time && (job.CreatedAtUtc < time || job.Id.CompareTo(id) < 0)))
                     .Take(limit).ToListAsync(cancellationToken);
             },
-            (owner, captureIds, limit) => ProjectJobHistory(CameraJobs(owner, observatoryId, cameraId)
-                    .Where(job => captureIds.Contains(job.SourceArtifact!.CentralFrameId)))
+            (owner, installationIds, captureIds, limit) => ProjectJobHistory(
+                    CaptureJobs(db, captureIds, installationIds, observatoryId))
                 .Take(limit).ToListAsync(cancellationToken),
             item => (item.CaptureId, item.CapturedAtUtc, item.CreatedAtUtc, item.JobId),
+            recheck: null,
             cancellationToken);
+
+    /// <summary>
+    /// Jobs whose source artifact belongs to the given captures of the camera's retained installations, driven from
+    /// the capture identities. On SQL Server each step is a forced seek: left to cost, the optimizer can instead drive
+    /// from the camera's installation and walk its whole capture history to reach a page of captures.
+    /// </summary>
+    internal static IQueryable<CentralDerivativeJob> CaptureJobs(
+        ApplicationDbContext db, List<Guid> captureIds, IReadOnlyList<Guid> installationIds, Guid observatoryId)
+        => db.Database.IsSqlServer()
+            ? db.CentralDerivativeJobs.FromSqlInterpolated($"""
+                SELECT job.*
+                FROM OPENJSON({JsonSerializer.Serialize(captureIds)}) WITH ([Id] uniqueidentifier '$') AS page
+                INNER JOIN [CentralFrames] AS frame WITH (FORCESEEK([PK_CentralFrames]([Id])))
+                    ON frame.[Id] = page.[Id]
+                INNER JOIN [CentralArtifacts] AS artifact
+                    WITH (FORCESEEK([IX_CentralArtifacts_CentralFrameId_ArtifactId]([CentralFrameId])))
+                    ON artifact.[CentralFrameId] = frame.[Id]
+                INNER JOIN [CentralDerivativeJobs] AS job
+                    WITH (FORCESEEK([IX_CentralDerivativeJobs_SourceCentralArtifactId_TargetRole_TargetRecipeVersion]([SourceCentralArtifactId])))
+                    ON job.[SourceCentralArtifactId] = artifact.[Id]
+                WHERE frame.[ObservatoryId] = {observatoryId}
+                    AND frame.[LogicalCameraInstallationId] IN (
+                        SELECT installation.[Id]
+                        FROM OPENJSON({JsonSerializer.Serialize(installationIds)}) WITH ([Id] uniqueidentifier '$') AS installation)
+                """).AsNoTracking()
+            : db.CentralDerivativeJobs.AsNoTracking().Where(job =>
+                captureIds.Contains(job.SourceArtifact!.CentralFrameId) &&
+                job.SourceArtifact.Frame!.ObservatoryId == observatoryId &&
+                installationIds.Contains(job.SourceArtifact.Frame.LogicalCameraInstallationId!.Value));
 
     public async Task<CameraJobInspector?> GetJobAsync(
         ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, Guid jobId, int take,
@@ -392,14 +421,17 @@ internal sealed partial class CameraOperationsReadService
 
     /// <summary>
     /// Pages rows keyed by (capture time, capture, child time, child) over the camera's captures. A continuation
-    /// either resumes inside a capture after a child, or (child absent) after a fully examined capture. Every row
+    /// either resumes inside a capture after a child, or (child absent) after a fully examined capture. At most
+    /// <see cref="CaptureExaminationLimit"/> captures are examined per request, including a resumed one. Every row
     /// read belongs to this camera, so a short page or examined count discloses nothing about another scope.
+    /// <paramref name="recheck"/> applies any per-row authority again after the final camera check.
     /// </summary>
     private async Task<CameraCaptureAnchoredPage<T>> CaptureAnchoredAsync<T>(
         ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, string purpose, int take, string? cursor,
-        Func<string, OperationsCursor, int, Task<List<T>>> remainderOfCapture,
-        Func<string, List<Guid>, int, Task<List<T>>> windowRows,
+        Func<string, IReadOnlyList<Guid>, OperationsCursor, int, Task<List<T>>> remainderOfCapture,
+        Func<string, IReadOnlyList<Guid>, List<Guid>, int, Task<List<T>>> windowRows,
         Func<T, (Guid CaptureId, DateTimeOffset CapturedAtUtc, DateTimeOffset? ChildTime, Guid ChildId)> key,
+        Func<string, List<T>, Task<List<T>>>? recheck,
         CancellationToken cancellationToken)
     {
         ValidateTake(take);
@@ -407,31 +439,32 @@ internal sealed partial class CameraOperationsReadService
         if (owner is null || !await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
             return new([], null, 0);
         var position = Decode(cursor, owner, observatoryId, cameraId, purpose, Guid.Empty);
+        var installationIds = (await InstallationKeysAsync(owner, observatoryId, cameraId, cancellationToken)
+            .ConfigureAwait(false)).Select(item => item.Id).ToArray();
         var items = new List<T>(take + 1);
         var examined = 0;
         if (position?.ChildId is not null)
         {
-            items.AddRange(await remainderOfCapture(owner, position, take + 1).ConfigureAwait(false));
+            items.AddRange(await remainderOfCapture(owner, installationIds, position, take + 1).ConfigureAwait(false));
             examined++;
         }
         var moreCaptures = false;
         List<CapturePosition> captures = [];
-        if (items.Count <= take)
+        // A resumed capture spends part of the same per-request examination budget as the window.
+        var budget = CaptureExaminationLimit - examined;
+        if (items.Count <= take && budget > 0)
         {
-            var installations = await InstallationKeysAsync(owner, observatoryId, cameraId, cancellationToken)
-                .ConfigureAwait(false);
-            var window = CaptureWindow(db, installations.Select(item => item.Id).ToArray(), observatoryId,
-                position?.Time, position?.Id, CaptureExaminationLimit + 1);
+            var window = CaptureWindow(db, installationIds, observatoryId, position?.Time, position?.Id, budget + 1);
             captures = window is null
                 ? []
                 : await window.Select(frame => new CapturePosition(frame.Id, frame.CapturedAtUtc))
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
-            moreCaptures = Trim(captures, CaptureExaminationLimit);
+            moreCaptures = Trim(captures, budget);
             examined += captures.Count;
             if (captures.Count > 0)
             {
-                items.AddRange(await windowRows(owner, captures.Select(capture => capture.Id).ToList(), take + 1 - items.Count)
-                    .ConfigureAwait(false));
+                items.AddRange(await windowRows(owner, installationIds, captures.Select(capture => capture.Id).ToList(),
+                    take + 1 - items.Count).ConfigureAwait(false));
             }
         }
         if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
@@ -448,6 +481,8 @@ internal sealed partial class CameraOperationsReadService
             next = Encode(new(owner, observatoryId, cameraId, purpose, Guid.Empty, "", captures[^1].CapturedAtUtc,
                 captures[^1].Id));
         }
+        // The continuation was fixed from every row read, so a row concealed here is never offered again.
+        if (recheck is not null && items.Count > 0) items = await recheck(owner, items).ConfigureAwait(false);
         return new(items, next, examined);
     }
 
