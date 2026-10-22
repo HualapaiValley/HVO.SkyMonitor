@@ -246,8 +246,8 @@ The manifest explicitly binds `hvo-orbital-elements-v1` and
 `celestrak-gp-json-v1`. Identity strings are uppercase SHA256, catalog text
 is canonical decimal, and software `ImplementationSha256` identifies the
 retained implementation/source package, not a platform-specific runtime DLL.
-Canonical JSON uses the existing capture canonical writer, typed numeric and
-UTC values, ordered collections and a final numeric-zero normalization. Exact
+Canonical JSON preserves the capture canonical writer's ordinal property order,
+typed numeric and UTC values, ordered collections and numeric-zero normalization. Exact
 parsing rejects unknown/duplicate/missing members, unsupported metadata,
 noncanonical number spellings, bad source bindings and corrupt identities.
 Source bytes are hashed unchanged by the acquisition adapter; the shared
