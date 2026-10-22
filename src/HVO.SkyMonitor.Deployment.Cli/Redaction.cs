@@ -6,6 +6,9 @@ internal static class Redaction
 
     private const int MaximumDiagnosticLength = 256;
 
+    // A shortened diagnostic must keep its tail hidden when another error embeds it beside a second reason.
+    private const string TruncationMarker = "<redacted>…";
+
     // A credential key is any key that ends with one of these words, so the key patterns put no word boundary before it:
     // db_password, client_secret, accessToken and x-api-key all match (#1491). The boundary after it keeps tokenid ordinary.
     private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]key|_access_key)?|private[-_]?key|api[-_]?key)\\b";
@@ -50,6 +53,10 @@ internal static class Redaction
 
     private static readonly System.Text.RegularExpressions.Regex UserInformation = new(
         "(?<=://)[^/@\\s]+@", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    // Reason JSON-encodes a diagnostic, and another embedding may encode it again. Keep the marker through either form.
+    private static readonly System.Text.RegularExpressions.Regex TruncatedDiagnostic = LinearPattern(
+        """(?:<|\\+u003[Cc])redacted(?:>|\\+u003[Ee])(?:…|\\+u2026)""");
 
     // A CSI that is not decoration stays in the text while it is matched, so a quoted value may still follow one.
     private static readonly System.Text.RegularExpressions.Regex QuotedCredential = LinearPattern(
@@ -124,11 +131,15 @@ internal static class Redaction
         "\u001B\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008A\u008B\u008C\u008D\u008E\u008F" +
         "\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009A\u009B\u009C\u009D\u009E\u009F");
 
+    // What JsonEncodedText.Encode writes for each ASCII character, as CameraAgentStateDiagnostics.Reason encodes a diagnostic.
+    private static readonly string[] AsciiJson =
+        [.. Enumerable.Range(0, 128).Select(character => System.Text.Json.JsonEncodedText.Encode(((char)character).ToString()).ToString())];
+
     /// <summary>
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [QuotedCredential, KeyWord, KeyAssignment, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
+        [TruncatedDiagnostic, QuotedCredential, KeyWord, KeyAssignment, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
             UnquotedValue, SpacedValue, NestedValue, NestedQuotedCredential, SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue,
             ConfigurationSpacedValue];
 
@@ -150,24 +161,26 @@ internal static class Redaction
     internal static string Redact(string text) => Redacted(text, int.MaxValue);
 
     /// <summary>
-    /// The redacted text, at most <paramref name="length"/> characters of it. The merge base cut its redacted text there, and
-    /// text the #1523 passes hide is often shorter once redacted, so the cut is made where the merge base made it: what follows
-    /// that is not shown, however much shorter the text before it is (PR-1528-R0 F1). A diagnostic is often embedded in a
-    /// message that is redacted and cut again, so the text also hides what the merge base's passes hide when they read its
-    /// output again (PR-1528-R1 F4), and a cut text ends before the first character it would show earlier than the merge base
-    /// did: no later cut can reach further.
+    /// The redacted text, at most <paramref name="length"/> characters of it. Where the #1523 passes hide nothing the merge base
+    /// showed, it is the merge base's text. Where they do, it is the merge base's text up to the first character they hide, then
+    /// a marker, so no character stands anywhere but where the merge base had it (PR-1528-R0 F1). A diagnostic is often embedded
+    /// in an error that is encoded, redacted and cut again, and hiding a value in the middle of a text can hide the key a later
+    /// reading would have found there; a text that ends at the value leaves no later key to lose (PR-1528-R1 F4, PR-1528-R2 F5).
     /// </summary>
     private static string Redacted(string text, int length)
     {
+        // Read before removing URL user information or decoration, either of which could consume an embedded marker.
+        var carried = TruncatedDiagnostic.Match(text);
+        var source = Tracked.Of(text);
         // A URL's user information is also found as the text stood, so punctuation inside removed decoration still counts.
         // Without a control character the two texts are the same, and without :// neither holds a URL.
-        if (text.AsSpan().ContainsAny(Introducers)) text = WithoutUserInformation(text);
+        if (text.AsSpan().ContainsAny(Introducers)) source = WithoutUserInformation(source);
         // Each pass reads what the passes before it left, so a pass that hides more can make a later one hide less: a value
         // that now reaches a later key hides that key, and the key's own value is then shown. The #1523 passes therefore read
-        // the text apart from the merge base's, and a character either hides is hidden, so no value the merge base hid is shown.
-        var source = Tracked.Of(text);
+        // the text apart from the merge base's, and the merge base's output ends where they first hide more.
         var shown = Passes(source, extended: false);
-        var redacted = WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length), length);
+        var redacted = WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length),
+            carried.Success ? carried.Index : -1, length);
         return redacted.Length <= length ? redacted : redacted[..length];
     }
 
@@ -214,109 +227,95 @@ internal static class Redaction
     }
 
     /// <summary>
-    /// The merge base's text before <paramref name="end"/>, with each character the extended passes hid hidden too and the
-    /// controls removed, so its output is unchanged where they hide nothing more. A run of such characters, with the markers
-    /// and boundaries next to it, reads as one marker. A diagnostic is often embedded in an installer error that is redacted
-    /// again, and removing the controls can show the merge base's passes a key they then find: the text also hides what they
-    /// hide when they read the merge base's output again, because the #1523 passes may have hidden that key (PR-1528-R1 F4).
-    /// A text cut at <paramref name="length"/> ends before the first character it shows earlier than the merge base's output
-    /// does, and is then <see cref="Settled"/>, so no later cut reaches a character the merge base's would not.
+    /// The merge base's text before <paramref name="end"/>, with the controls removed, so its output is unchanged where the
+    /// extended passes hide nothing more. Otherwise it ends before the first character the extended passes hide that the merge
+    /// base shows, or, if earlier, the first one the merge base's passes hide when they read its output again as an error
+    /// embeds it: as it is, with its controls escaped, or JSON-encoded (PR-1528-R2 F5). A marker takes the place of the rest,
+    /// and of the markers and controls just before it. The text before the end is the merge base's, so a later reading finds
+    /// the same keys and values in it, and nothing after it is left to show. The truncation marker carries that boundary into
+    /// a later error, even when JSON-encoded, so shortening this reason cannot bring a second reason inside the later error's cut.
     /// </summary>
-    private static string WithHidden(Tracked shown, Tracked extended, int origins, int end, int length)
+    private static string WithHidden(Tracked shown, Tracked extended, int origins, int end, int carried, int length)
     {
-        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return WithoutControls(shown.Text[..end]);
-        var hidden = new bool[origins];
-        Array.Fill(hidden, true);
-        foreach (var origin in extended.Origins)
+        var first = string.Equals(shown.Text, extended.Text, StringComparison.Ordinal) ? end : FirstHidden(shown, end, extended, origins);
+        var carriedEnd = shown.Text.Length;
+        if (carried >= 0)
         {
-            if (origin != Written) hidden[origin] = false;
+            for (var position = 0; position < shown.Text.Length; position++)
+            {
+                if (shown.Origins[position] < carried) continue;
+                carriedEnd = position;
+                break;
+            }
+            first = Math.Min(first, carriedEnd);
         }
-        // Where each character stands when the merge base's output is read again. The merge base's own output reads the same
-        // on a third reading, so one more reading finds every value a later redaction of it does.
+        if (first == end && (carried < 0 || carriedEnd > end)) return WithoutControls(shown.Text[..end]);
         var output = WithoutControls(shown, end);
-        var again = new int[origins];
-        Array.Fill(again, -1);
-        var rescanned = Passes(output, extended: false);
-        for (var index = 0; index < rescanned.Origins.Length; index++)
+        foreach (var encoding in (ReadOnlySpan<Encoding>)[Encoding.None, Encoding.Controls, Encoding.Json])
         {
-            if (rescanned.Origins[index] != Written) again[rescanned.Origins[index]] = index;
+            first = FirstHidden(shown, first, Passes(Encoded(output, encoding), extended: false), origins);
         }
-        foreach (var origin in output.Origins)
-        {
-            if (origin != Written && again[origin] < 0) hidden[origin] = true;
-        }
-        var cut = length != int.MaxValue;
-        var result = new TrackedBuilder(end);
-        var position = 0;
-        // Where the next character stands in the merge base's output, apart from the controls.
-        var kept = 0;
-        while (position < end)
-        {
-            var run = position;
-            var hides = false;
-            while (run < end && (shown.Origins[run] == Written || hidden[shown.Origins[run]]))
-            {
-                hides |= shown.Origins[run++] != Written;
-            }
-            if (run == position)
-            {
-                if (cut && !IsControlIntroducer(shown.Text[run]) && result.Length < kept) break;
-                run++;
-            }
-            if (hides)
-            {
-                result.AppendRedacted();
-            }
-            else
-            {
-                for (var index = position; index < run; index++)
-                {
-                    if (!IsControlIntroducer(shown.Text[index])) result.Append(shown, index, 1);
-                }
-            }
-            kept += Width(shown.Text.AsSpan(position, run - position));
-            position = run;
-        }
-        return cut ? Settled(result.ToTracked(), again, length) : result.ToTracked().Text;
+        // Keep the whole marker inside a bounded diagnostic, so a later embedding can always recognize it.
+        first = Math.Min(first, ShownEnd(shown.Text, length - TruncationMarker.Length));
+        while (first > 0 && (shown.Origins[first - 1] == Written || IsControlIntroducer(shown.Text[first - 1]))) first--;
+        return WithoutControls(shown.Text[..first]) + TruncationMarker;
     }
 
     /// <summary>
-    /// <paramref name="text"/> cut at <paramref name="length"/>, and then before the first character the merge base's passes
-    /// show earlier, when they read it once or twice, than they show it in the merge base's output: an installer error embeds a
-    /// diagnostic and is redacted and cut again, and an error can embed that error in turn. Reading the text can shorten what
-    /// comes before a character, as when a marker a quoted value runs into reads as part of that value, and a cut then reaches
-    /// one more character than the merge base's did (PR-1528-R1 F4). A shorter text can read differently near its end, so
-    /// the cut text is read again until no character is shown earlier.
+    /// The position of the first character before <paramref name="end"/> that <paramref name="text"/> shows, apart from the
+    /// controls, and <paramref name="reading"/> of the same text does not, or <paramref name="end"/>.
     /// </summary>
-    private static string Settled(Tracked text, int[] again, int length)
+    private static int FirstHidden(Tracked text, int end, Tracked reading, int origins)
     {
-        var end = Math.Min(text.Text.Length, length);
-        while (true)
+        var read = new bool[origins];
+        foreach (var origin in reading.Origins)
         {
-            text = new Tracked(text.Text[..end], text.Origins[..end]);
-            var once = Passes(text, extended: false);
-            var twice = Passes(once, extended: false);
-            var first = Math.Min(Earlier(text, once, again), Earlier(text, twice, again));
-            if (first == end) return text.Text;
-            end = first;
+            if (origin != Written) read[origin] = true;
         }
+        for (var position = 0; position < end; position++)
+        {
+            var origin = text.Origins[position];
+            if (origin != Written && !read[origin] && !IsControlIntroducer(text.Text[position])) return position;
+        }
+        return end;
+    }
+
+    /// <summary>How an embedding writes a redacted text before it is read again.</summary>
+    private enum Encoding
+    {
+        /// <summary>As it is.</summary>
+        None,
+
+        /// <summary>With each control as JSON escapes it, as <c>CameraAgentStateDiagnostics.Message</c> and <c>Text</c> write it.</summary>
+        Controls,
+
+        /// <summary>JSON-encoded, as <c>CameraAgentStateDiagnostics.Reason</c> writes it.</summary>
+        Json,
     }
 
     /// <summary>
-    /// The position in <paramref name="text"/> of the first character <paramref name="reading"/> of it shows earlier than
-    /// <paramref name="again"/> has it, or its length. The characters of both keep the order they had.
+    /// <paramref name="text"/> written with <paramref name="encoding"/>. Each escape keeps the origin of the character it stands
+    /// for, so what a later reading hides of it is known by origin.
     /// </summary>
-    private static int Earlier(Tracked text, Tracked reading, int[] again)
+    private static Tracked Encoded(Tracked text, Encoding encoding)
     {
-        var at = 0;
-        for (var index = 0; index < text.Origins.Length; index++)
+        if (encoding == Encoding.None) return text;
+        var value = text.Text;
+        var result = new TrackedBuilder(value.Length);
+        for (var position = 0; position < value.Length; position++)
         {
-            var origin = text.Origins[index];
-            if (origin == Written) continue;
-            while (at < reading.Origins.Length && (reading.Origins[at] == Written || reading.Origins[at] < origin)) at++;
-            if (at < reading.Origins.Length && reading.Origins[at] == origin && at < again[origin]) return index;
+            var character = value[position];
+            if (encoding == Encoding.Controls ? !char.IsControl(character) : character < 128 && AsciiJson[character].Length == 1)
+            {
+                result.Append(text, position, 1);
+                continue;
+            }
+            // The encoder writes every other UTF-16 unit as \uXXXX, a surrogate pair as two. Writing it here cannot throw on a
+            // lone surrogate, which the encoder refuses.
+            var escaped = character < 128 ? AsciiJson[character] : $"\\u{(int)character:X4}";
+            result.Append(escaped, text.Origins[position]);
         }
-        return text.Origins.Length;
+        return result.ToTracked();
     }
 
     /// <summary>The characters of <paramref name="text"/> before <paramref name="end"/> that removing the controls leaves.</summary>
@@ -446,17 +445,6 @@ internal static class Redaction
     }
 
     private static bool IsControlIntroducer(char character) => character is '\u001B' or (>= '\u0080' and <= '\u009F');
-
-    /// <summary>How many characters of <paramref name="text"/> removing the controls leaves.</summary>
-    private static int Width(ReadOnlySpan<char> text)
-    {
-        var width = 0;
-        foreach (var character in text)
-        {
-            if (!IsControlIntroducer(character)) width++;
-        }
-        return width;
-    }
 
     private static System.Text.RegularExpressions.Regex LinearPattern(string pattern) => new(pattern, Linear, TimeSpan.FromSeconds(1));
 
@@ -617,8 +605,6 @@ internal static class Redaction
         private readonly System.Text.StringBuilder text = new(capacity);
         private readonly List<int> origins = new(capacity);
 
-        public int Length => text.Length;
-
         public TrackedBuilder Append(Tracked source, int start, int length)
         {
             text.Append(source.Text, start, length);
@@ -630,6 +616,13 @@ internal static class Redaction
         {
             text.Append(written);
             origins.Add(Written);
+            return this;
+        }
+
+        public TrackedBuilder Append(string escaped, int origin)
+        {
+            text.Append(escaped);
+            for (var index = 0; index < escaped.Length; index++) origins.Add(origin);
             return this;
         }
 

@@ -16,66 +16,70 @@ public sealed partial class LifecycleContractTests
             .GetCustomAttributes(typeof(DataRowAttribute), inherit: false).Cast<DataRowAttribute>()
             .Select(row => row.Data.Select(value => value!).ToArray());
 
-    // Each expected value is the redacted text before the writer escapes the controls redaction leaves, such as a tab. The writer
-    // cuts the line, so it ends at a value only the #1523 passes hide that is longer than its marker; uncut, the rest is kept.
+    // Each expected value is the redacted text before the writer escapes the controls redaction leaves, such as a tab. Where the
+    // #1523 passes hide a value the merge base showed, the text ends there with a marker, cut or not, or earlier where the merge
+    // base's own text, read again as an error embeds it, would hide more (PR-1528-R2 F5).
     [TestMethod]
     [DoNotParallelize]
     // #1523 item 1: a quoted value that ends in a key leaves that key's value after the closing quote.
-    [DataRow(false, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted>")]
-    [DataRow(true, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted>")]
-    [DataRow(false, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted>")]
-    [DataRow(true, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted>")]
-    [DataRow(false, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted>")]
-    [DataRow(true, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted>")]
+    [DataRow(false, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=<redacted>…")]
+    [DataRow(false, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=<redacted>…")]
+    [DataRow(true, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=<redacted>…")]
+    [DataRow(false, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token=<redacted>…")]
+    [DataRow(true, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token=<redacted>…")]
+    // The text before the first value only the #1523 passes hide is the merge base's.
+    [DataRow(false, "kept words, token=\"password=\" " + Diagnostic1523Value + " tail", "kept words, token=<redacted>…")]
+    [DataRow(true, "kept words, token=\"password=\" " + Diagnostic1523Value + " tail", "kept words, token=<redacted>…")]
     // A word that is itself a key is not hidden as the value, so its own value is still found.
     [DataRow(false, "token=\"password=\" db_password " + Diagnostic1523Value, "token=\"<redacted>\" db_password <redacted>")]
     [DataRow(true, "token=\"password=\" db_password " + Diagnostic1523Value, "token=\"<redacted>\" db_password <redacted>")]
-    [DataRow(false, "token=\"password=\" ObjectStorage__SecretKey " + Diagnostic1523Value, "token=\"<redacted>\" ObjectStorage__SecretKey <redacted>")]
-    [DataRow(true, "token=\"password=\" ObjectStorage__SecretKey " + Diagnostic1523Value, "token=\"<redacted>\" ObjectStorage__SecretKey <redacted>")]
+    [DataRow(false, "token=\"password=\" ObjectStorage__SecretKey " + Diagnostic1523Value, "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" ObjectStorage__SecretKey " + Diagnostic1523Value, "token=<redacted>…")]
     // PR-1528-R0 F2: a key word inside the value, with no assignment of its own, does not keep the value shown.
-    [DataRow(false, "token=\"password=\" mysecret tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(true, "token=\"password=\" mysecret tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(false, "token=\"password=\" \"mysecret\" tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(true, "token=\"password=\" \"mysecret\" tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(false, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted>")]
-    [DataRow(true, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted>")]
+    [DataRow(false, "token=\"password=\" mysecret tail", "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" mysecret tail", "token=<redacted>…")]
+    [DataRow(false, "token=\"password=\" \"mysecret\" tail", "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" \"mysecret\" tail", "token=<redacted>…")]
+    [DataRow(false, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=<redacted>…")]
     // #1523 item 2: an inner key that an outer assignment consumes still hides a quoted value after a tab.
-    [DataRow(false, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(false, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
     // PR-1528-R0 F3: the inner and outer keys may take the #1509 spellings and a configuration key's double underscore.
-    [DataRow(false, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(false, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(false, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(false, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>")]
-    [DataRow(true, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>")]
-    [DataRow(false, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>")]
-    [DataRow(false, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>")]
-    [DataRow(true, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>")]
-    [DataRow(false, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>")]
-    [DataRow(true, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>")]
-    [DataRow(false, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>")]
-    [DataRow(true, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>")]
+    [DataRow(false, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>…")]
+    [DataRow(true, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>…")]
+    [DataRow(false, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>…")]
+    [DataRow(false, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>…")]
     // An outer key only the second passes find consumes its inner key after the space-only pass has hidden the quoted value.
     [DataRow(false, "SecretKey=db_password\t\"a " + Diagnostic1523Value + "\" tail", "SecretKey=<redacted>\t<redacted> tail")]
     [DataRow(true, "SecretKey=db_password\t\"a " + Diagnostic1523Value + "\" tail", "SecretKey=<redacted>\t<redacted> tail")]
     // #1523 item 3: a space-only key's words may be joined by a double underscore, as configuration keys are.
-    [DataRow(false, "ObjectStorage__SecretKey " + Diagnostic1523Value, "ObjectStorage__SecretKey <redacted>")]
-    [DataRow(true, "ObjectStorage__SecretKey " + Diagnostic1523Value, "ObjectStorage__SecretKey <redacted>")]
-    [DataRow(false, "db__password " + Diagnostic1523Value, "db__password <redacted>")]
-    [DataRow(true, "db__password " + Diagnostic1523Value, "db__password <redacted>")]
+    [DataRow(false, "ObjectStorage__SecretKey " + Diagnostic1523Value, "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow(true, "ObjectStorage__SecretKey " + Diagnostic1523Value, "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow(false, "db__password " + Diagnostic1523Value, "db__password <redacted>…")]
+    [DataRow(true, "db__password " + Diagnostic1523Value, "db__password <redacted>…")]
     [DataRow(false, "db__passwordless kept value", "db__passwordless kept value")]
     [DataRow(true, "db__passwordless kept value", "db__passwordless kept value")]
     // #1523 item 4: removed decoration starts a word before a new spelling too.
-    [DataRow(false, "see\u001b[1mSecretKey " + Diagnostic1523Value, "seeSecretKey <redacted>")]
-    [DataRow(true, "see\u001b[1mSecretKey " + Diagnostic1523Value, "seeSecretKey <redacted>")]
-    [DataRow(false, "see\u001b[1mSecretAccessKey " + Diagnostic1523Value, "seeSecretAccessKey <redacted>")]
-    [DataRow(true, "see\u001b[1mSecretAccessKey " + Diagnostic1523Value, "seeSecretAccessKey <redacted>")]
+    [DataRow(false, "see\u001b[1mSecretKey " + Diagnostic1523Value, "seeSecretKey <redacted>…")]
+    [DataRow(true, "see\u001b[1mSecretKey " + Diagnostic1523Value, "seeSecretKey <redacted>…")]
+    [DataRow(false, "see\u001b[1mSecretAccessKey " + Diagnostic1523Value, "seeSecretAccessKey <redacted>…")]
+    [DataRow(true, "see\u001b[1mSecretAccessKey " + Diagnostic1523Value, "seeSecretAccessKey <redacted>…")]
     [DataRow(false, "see\u001b[1mSecretKeeper kept value", "seeSecretKeeper kept value")]
     [DataRow(true, "see\u001b[1mSecretKeeper kept value", "seeSecretKeeper kept value")]
     public async Task Diagnostic1523_PreExistingGapsAreRedacted(bool json, string diagnostic, string expected)
@@ -99,14 +103,15 @@ public sealed partial class LifecycleContractTests
     }
 
     // The merge base's passes and the #1523 passes each read the whole text, and a value a quoted key leaves is found once, so a
-    // megabyte of each new shape still takes milliseconds.
+    // megabyte of each new shape still takes milliseconds. The merge base's text is read again as an error embeds it, as it is,
+    // with its controls escaped and JSON-encoded, and each reading is linear too; the text then ends at the first unit's value.
     [TestMethod]
-    [DataRow("token=\"password=\" x ", "token=\"<redacted>\" <redacted> ")]
-    [DataRow("api_key=db_password\t\"a b\" ", "api_key=<redacted>\t\"<redacted>\" ")]
-    [DataRow("ObjectStorage__SecretKey x ", "ObjectStorage__SecretKey <redacted> ")]
-    [DataRow("see\u001b[1mSecretKey x ", "seeSecretKey <redacted> ")]
-    [DataRow("token=\"password=\" mysecret ", "token=\"<redacted>\" <redacted> ")]
-    [DataRow("api_key=SecretKey\t\"a b\" ", "api_key=<redacted>\t\"<redacted>\" ")]
+    [DataRow("token=\"password=\" x ", "token=<redacted>…")]
+    [DataRow("api_key=db_password\t\"a b\" ", "api_key=<redacted>…")]
+    [DataRow("ObjectStorage__SecretKey x ", "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow("see\u001b[1mSecretKey x ", "seeSecretKey <redacted>…")]
+    [DataRow("token=\"password=\" mysecret ", "token=<redacted>…")]
+    [DataRow("api_key=SecretKey\t\"a b\" ", "api_key=<redacted>…")]
     public void Diagnostic1523_NewPassesAreLinear(string unit, string expected)
     {
         var text = string.Concat(Enumerable.Repeat(unit, 50_000));
@@ -114,24 +119,22 @@ public sealed partial class LifecycleContractTests
         var redacted = Redaction.Redact(text);
         watch.Stop();
         Console.WriteLine($"{JsonSerializer.Serialize(unit)} x 50,000: {watch.ElapsedMilliseconds} ms");
-        var all = string.Concat(Enumerable.Repeat(expected, 50_000));
-        Assert.AreEqual(all, redacted);
+        Assert.AreEqual(expected, redacted);
         Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
-        // Each unit is longer redacted than the merge base left it, so the diagnostic's cut ends inside the units it keeps.
         watch.Restart();
         var diagnostic = Redaction.SafeDiagnostic(text);
         watch.Stop();
-        Assert.AreEqual(all[..256], diagnostic);
+        Assert.AreEqual(expected, diagnostic);
         Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
     }
 
     // PR-1528-R0 F1: the merge base cut each diagnostic at 256 characters. Text the #1523 passes hide is shorter once redacted,
     // so the cut is made where the merge base made it, and no character after that is shown.
     [TestMethod]
-    [DataRow("ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>")]
-    [DataRow("token=\"password=\" ", "token=\"<redacted>\" ", "token=\"<redacted>\" <redacted>")]
-    [DataRow("api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow("see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>")]
+    [DataRow("ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow("token=\"password=\" ", "token=\"<redacted>\" ", "token=<redacted>…")]
+    [DataRow("api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>…")]
+    [DataRow("see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>…")]
     public void Diagnostic1523_TruncationKeepsTheMergeBaseCut(string lead, string mergeBaseLead, string expected)
     {
         ArgumentNullException.ThrowIfNull(lead);
@@ -146,9 +149,9 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(expected.Replace("\t", "\\t", StringComparison.Ordinal), CameraAgentStateDiagnostics.Message(diagnostic));
         Assert.AreEqual("first line" + Environment.NewLine + expected, Redaction.SafeDiagnostics("first line\n" + diagnostic));
         // Differential: what is shown, apart from the markers, is a part of what the merge base showed, in order.
-        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
         var position = 0;
-        foreach (var character in shown.Replace("<redacted>", string.Empty, StringComparison.Ordinal))
+        foreach (var character in shown.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal))
         {
             position = rest.IndexOf(character, position) + 1;
             Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(shown)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
@@ -161,14 +164,14 @@ public sealed partial class LifecycleContractTests
     // diagnostic ends at such a value's marker, and nothing after it moves forward.
     [TestMethod]
     [DoNotParallelize]
-    [DataRow(false, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>")]
-    [DataRow(true, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>")]
-    [DataRow(false, "token=\"password=\" ", "token=\"<redacted>\" ", "token=\"<redacted>\" <redacted>")]
-    [DataRow(true, "token=\"password=\" ", "token=\"<redacted>\" ", "token=\"<redacted>\" <redacted>")]
-    [DataRow(false, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(true, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>\t\"<redacted>")]
-    [DataRow(false, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>")]
-    [DataRow(true, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>")]
+    [DataRow(false, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow(true, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow(false, "token=\"password=\" ", "token=\"<redacted>\" ", "token=<redacted>…")]
+    [DataRow(true, "token=\"password=\" ", "token=\"<redacted>\" ", "token=<redacted>…")]
+    [DataRow(false, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>…")]
+    [DataRow(true, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>…")]
+    [DataRow(false, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>…")]
+    [DataRow(true, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>…")]
     public async Task Diagnostic1523_EmbeddedDiagnosticKeepsTheMergeBaseCut(bool json, string lead, string mergeBaseLead, string expected)
     {
         ArgumentNullException.ThrowIfNull(lead);
@@ -193,8 +196,8 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
         Assert.AreEqual(prefix + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
         // Differential: what is shown, apart from the markers, is a part of what the merge base showed, in order.
-        var shown = (prefix + expected).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
-        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var shown = (prefix + expected).Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
         var position = 0;
         foreach (var character in shown)
         {
@@ -209,25 +212,25 @@ public sealed partial class LifecycleContractTests
     // the second reading hid (PR-1528-R1 F4). The rows end in each of the #1523 items 1 to 4.
     [TestMethod]
     [DataRow(false, "token='password=' tailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
-        "token='<redacted>' tailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+        "token='<redacted>' tailtoken '<redacted>'", "token=<redacted>…")]
     [DataRow(true, "token='password=' tailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
-        "token='<redacted>' tailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+        "token='<redacted>' tailtoken '<redacted>'", "token=<redacted>…")]
     [DataRow(false, "token='password=' xtailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
-        "token='<redacted>' xtailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+        "token='<redacted>' xtailtoken '<redacted>'", "token=<redacted>…")]
     [DataRow(true, "token='password=' xtailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
-        "token='<redacted>' xtailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+        "token='<redacted>' xtailtoken '<redacted>'", "token=<redacted>…")]
     [DataRow(false, "api_key=db_password\t\"a\"apassword \u0080\t\"" + Diagnostic1523Value + "\" tail",
-        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>\t\"<redacted>\"<redacted> \t\"<redacted>\" tail")]
+        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>…")]
     [DataRow(true, "api_key=db_password\t\"a\"apassword \u0080\t\"" + Diagnostic1523Value + "\" tail",
-        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>\t\"<redacted>\"<redacted> \t\"<redacted>\" tail")]
+        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>…")]
     [DataRow(false, "ObjectStorage__SecretKey xtailtoken \u0090\t \"" + Diagnostic1523Value + "\" tail",
-        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted> \t \"<redacted>")]
+        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted>…")]
     [DataRow(true, "ObjectStorage__SecretKey xtailtoken \u0090\t \"" + Diagnostic1523Value + "\" tail",
-        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted> \t \"<redacted>")]
+        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted>…")]
     [DataRow(false, "see\u001b[1mSecretKey xtailtoken \u0090 \"" + Diagnostic1523Value + "\" tail",
-        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>  \"<redacted>")]
+        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>…")]
     [DataRow(true, "see\u001b[1mSecretKey xtailtoken \u0090 \"" + Diagnostic1523Value + "\" tail",
-        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>  \"<redacted>")]
+        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>…")]
     public async Task Diagnostic1523_EmbeddedDiagnosticKeepsTheMergeBaseRescan(bool json, string diagnostic, string mergeBase, string expected)
     {
         ArgumentNullException.ThrowIfNull(diagnostic);
@@ -247,8 +250,8 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
         Assert.AreEqual(prefix + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
         // Differential: what is shown, apart from the markers, is a part of what the merge base's writer showed, in order.
-        var shown = expected.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
-        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var shown = expected.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
         var position = 0;
         foreach (var character in shown)
         {
@@ -258,24 +261,24 @@ public sealed partial class LifecycleContractTests
     }
 
     // A failed rollback's error embeds an error that embeds a diagnostic, and each is redacted and cut again. Reading a text
-    // again can shorten it, as when a marker runs into the marker after it, and a later cut then reaches a character the merge
-    // base's did not, so the diagnostic ends before any character the merge base's passes, reading it once or twice, show
-    // earlier than they show it in the merge base's output (PR-1528-R1 F4). Q stands for a value.
+    // again can shorten it, as when a marker runs into the marker after it, and a later cut then reached a character the merge
+    // base's did not (PR-1528-R1 F4). The diagnostic now ends at the first value only the #1523 passes hide, so each later
+    // reading and cut sees the merge base's text up to there and nothing after it. Q stands for a value.
     [TestMethod]
     [DataRow(false, "docker run exited 125: ", 119,
         "db__password xsecret\t\u0080 :Q=Q\tsee\u001b[1mSecretKey:'\"\"api_key=SecretKey\t'a b'\tx\u0080'Q Qfile= \" ",
-        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted> :<redacted>\tseeSecretKey:'<redacted>'")]
+        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted>…")]
     [DataRow(true, "docker run exited 125: ", 119,
         "db__password xsecret\t\u0080 :Q=Q\tsee\u001b[1mSecretKey:'\"\"api_key=SecretKey\t'a b'\tx\u0080'Q Qfile= \" ",
-        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted> :<redacted>\tseeSecretKey:'<redacted>'")]
+        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted>…")]
     [DataRow(false, "Docker image pull failed: ", 78,
         "api_key=db_password\t\"a\"\txsecret  \u001b:'Q Q'client_secret=  'Q' tail see\u001b[1mSecretKey  SecretKey \u009C\u009C Q'Q\t/ ' ",
         "api_key=<redacted>\t\"a\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  SecretKey <redacted> Q'",
-        "api_key=<redacted>\t\"<redacted>\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  <redacted>")]
+        "api_key=<redacted>…")]
     [DataRow(true, "Docker image pull failed: ", 78,
         "api_key=db_password\t\"a\"\txsecret  \u001b:'Q Q'client_secret=  'Q' tail see\u001b[1mSecretKey  SecretKey \u009C\u009C Q'Q\t/ ' ",
         "api_key=<redacted>\t\"a\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  SecretKey <redacted> Q'",
-        "api_key=<redacted>\t\"<redacted>\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  <redacted>")]
+        "api_key=<redacted>…")]
     public async Task Diagnostic1523_NestedErrorKeepsTheMergeBaseCut(
         bool json, string command, int padding, string diagnostic, string mergeBase, string expected)
     {
@@ -299,14 +302,123 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(error.Contains('Q', StringComparison.Ordinal), "Credential leaked: " + error);
         Assert.AreEqual(rollback + embedding + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
         // Differential: what is shown, apart from the markers, is a part of what the merge base's writer showed, in order.
-        var shown = expected.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
-        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var shown = expected.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
         var position = 0;
         foreach (var character in shown)
         {
             position = rest.IndexOf(character, position) + 1;
             Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(error)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
         }
+    }
+
+    // CameraAgentStateDiagnostics.Reason JSON-encodes a redacted diagnostic before an error embeds it, so the next reading sees
+    // its quotes as ' and finds keys a plain reading does not. Hiding a key that only a plain reading needed hid nothing,
+    // and the encoded reading then lost the key that had hidden the value after it (PR-1528-R2 F5).
+    [TestMethod]
+    [DataRow(false, "apikey=SecretKey\t'a'password\u009C authorization:'' REVIEW_VALUE",
+        "apikey=<redacted> authorization:<redacted>", "apikey=<redacted>…")]
+    [DataRow(true, "apikey=SecretKey\t'a'password\u009C authorization:'' REVIEW_VALUE",
+        "apikey=<redacted> authorization:<redacted>", "apikey=<redacted>…")]
+    public async Task Diagnostic1523_EncodedDiagnosticKeepsTheMergeBaseReading(bool json, string diagnostic, string mergeBase, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        ArgumentNullException.ThrowIfNull(mergeBase);
+        ArgumentNullException.ThrowIfNull(expected);
+        const string rollback = "Candidate failed and exact rollback also failed: ";
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(rollback + Redaction.SafeDiagnostic(CameraAgentStateDiagnostics.Reason(diagnostic))));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        else error = error.TrimEnd('\r', '\n')["Installation failed: ".Length..];
+        Assert.IsFalse(error.Contains("REVIEW_VALUE", StringComparison.Ordinal), "Credential leaked: " + error);
+        Assert.AreEqual(rollback + expected, error);
+        // Differential: what is shown, apart from the markers, is a part of what the merge base's writer showed, in order.
+        var shown = expected.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>…", string.Empty, StringComparison.Ordinal).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var position = 0;
+        foreach (var character in shown)
+        {
+            position = rest.IndexOf(character, position) + 1;
+            Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(error)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
+        }
+    }
+
+    // A shorter first reason must not bring the second reason inside the outer writer's 256-character window. These are the
+    // CarryFailures and archive-restore message shapes; the merge base's first reason fills that window before the value.
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task Diagnostic1523_ComposedReasonsKeepTheMergeBaseCut(bool json, bool carry)
+    {
+        var first = "token=\"password=\" " + new string('x', 300);
+        var second = Diagnostic1523Value;
+        var message = carry
+            ? CameraAgentStateDiagnostics.CarryFailures([("first", first), ("next", second)])
+            : $"{CameraAgentStateDiagnostics.Reason(first)} could not be restored: {CameraAgentStateDiagnostics.Reason(second)}";
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(message));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
+        Assert.IsFalse(error.Contains(carry ? "next" : "could not be restored", StringComparison.Ordinal), error);
+    }
+
+    // Carry the truncation across repeated JSON encodings, including when URL redaction or decoration removes the marker.
+    [TestMethod]
+    [DataRow(0, false)]
+    [DataRow(1, false)]
+    [DataRow(2, false)]
+    [DataRow(0, true)]
+    [DataRow(1, true)]
+    [DataRow(2, true)]
+    public void Diagnostic1523_EncodedTruncationSurvivesUrlRedaction(int encodings, bool url)
+    {
+        var inner = Redaction.SafeDiagnostic("token=\"password=\" x");
+        for (var count = 0; count < encodings; count++) inner = JsonEncodedText.Encode(inner).ToString();
+        var message = url ? $"https://user:{inner}@example.test/\u009C " : inner + "; ";
+        var result = Redaction.SafeDiagnostic(message + Diagnostic1523Value);
+        Assert.IsFalse(result.Contains(Diagnostic1523Value, StringComparison.Ordinal), result);
+        StringAssert.EndsWith(result, "<redacted>…", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(230)]
+    [DataRow(240)]
+    [DataRow(241)]
+    public void Diagnostic1523_TruncationMarkerSurvivesLengthLimit(int padding)
+    {
+        var diagnostic = new string('p', padding) + " db__password " + new string('x', 300);
+        var inner = Redaction.SafeDiagnostic(diagnostic);
+        Assert.IsLessThanOrEqualTo(256, inner.Length);
+        StringAssert.EndsWith(inner, "<redacted>…", StringComparison.Ordinal);
+        var outer = Redaction.SafeDiagnostic(inner + "; " + Diagnostic1523Value);
+        Assert.IsFalse(outer.Contains(Diagnostic1523Value, StringComparison.Ordinal), outer);
+    }
+
+    // The JSON reading writes a lone surrogate, which the encoder refuses, as its escape, so a diagnostic holding one is still
+    // redacted rather than throwing.
+    [TestMethod]
+    [DataRow(0xD800)]
+    [DataRow(0xDC00)]
+    public void Diagnostic1523_LoneSurrogateIsRedacted(int surrogate)
+    {
+        var diagnostic = "token=\"password=\" " + (char)surrogate + Diagnostic1523Value + " tail";
+        Assert.AreEqual("token=<redacted>…", Redaction.SafeDiagnostic(diagnostic));
+        Assert.AreEqual("token=<redacted>…", Redaction.Redact(diagnostic));
     }
 
     // #1523 item 5:the word after a bare password is hidden as its value, so a fixed message is worded to put none there. No
