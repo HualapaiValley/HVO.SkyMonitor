@@ -594,6 +594,83 @@ public sealed class CameraAgentTimeDataRefreshTests
     }
 
     [TestMethod]
+    [DataRow(false, "not-newer")]
+    [DataRow(true, "not-newer")]
+    [DataRow(false, "rejected")]
+    [DataRow(true, "rejected")]
+    [DataRow(false, "adopted")]
+    [DataRow(true, "adopted")]
+    [DataRow(false, "failed")]
+    [DataRow(true, "failed")]
+    public async Task RefreshRevalidatesAWarmManagedCacheOnEveryOutcomeAsync(bool damageCurrent, string outcome)
+    {
+        var now = new DateTimeOffset(2027, 7, 2, 18, 0, 0, TimeSpan.Zero);
+        using var host = new Host(now);
+        var earlier = await host.AdoptLongerPairAsync(400).ConfigureAwait(false);
+        var current = await host.AdoptLongerPairAsync(500).ConfigureAwait(false);
+        var warm = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("verified", warm.ManagedPair!.State);
+        Assert.AreEqual(current.History[0].LeapSecondsSha256, warm.LeapSecondsSha256);
+        Assert.IsTrue(warm.CoversNow);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, (await PlanAsync(host, now).ConfigureAwait(false)).Outcome);
+        if (damageCurrent)
+            await File.WriteAllTextAsync(Path.Combine(host.Store.PairDirectory(current.Pair), CameraAgentTimeDataSources.EarthOrientationFile),
+                "damaged", TestContext.CancellationToken).ConfigureAwait(false);
+
+        var eop = outcome == "not-newer" ? RapidOn(BundledEop, now.AddHours(-18)) : BundledEop;
+        host.Client.Serve(CameraAgentTimeDataSources.EarthOrientationUri, eop);
+        host.Client.Serve(CameraAgentTimeDataSources.EarthOrientationChecksumsUri, Checksums(eop));
+        host.Client.Serve(CameraAgentTimeDataSources.LeapSecondsUri, Republished(BundledLeap, outcome == "not-newer" ? 10 : 800));
+        if (outcome == "rejected")
+            host.Client.Serve(CameraAgentTimeDataSources.EarthOrientationChecksumsUri, Checksums(Encoding.ASCII.GetBytes("different")));
+        if (outcome == "failed") host.Store.BeforeCommit = () => throw new IOException("disk full");
+        var downloads = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Client.Gate = downloads.Task;
+        var refresh = host.Job.ExecuteAsync(manual: true, TestContext.CancellationToken).AsTask();
+        await host.Client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Concurrent reads during refresh keep using the intact, immutable data already loaded in memory.
+            await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+            {
+                Assert.IsTrue((await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false)).CoversNow);
+                Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, (await PlanAsync(host, now).ConfigureAwait(false)).Outcome);
+            })).ConfigureAwait(false);
+        }
+        finally { downloads.SetResult(); }
+        var execution = await refresh.ConfigureAwait(false);
+        var expectedCode = outcome switch
+        {
+            "not-newer" => CameraAgentTimeDataRefreshJob.NotNewerReasonCode,
+            "rejected" => CameraAgentTimeDataRefreshJob.ChecksumMismatchReasonCode,
+            "failed" => CameraAgentTimeDataRefreshJob.StorageFailedReasonCode,
+            _ => CameraAgentTimeDataRefreshJob.AdoptedReasonCode
+        };
+        StringAssert.StartsWith(execution.Detail, expectedCode, StringComparison.Ordinal);
+        var pointer = (await host.Store.ReadPointerAsync(TestContext.CancellationToken).ConfigureAwait(false))!;
+        if (outcome != "adopted") Assert.AreEqual(current.Pair, pointer.Pair, "non-adoption leaves the pointer identity unchanged");
+        var invalidCurrent = damageCurrent && outcome != "adopted";
+        var active = invalidCurrent ? earlier.Pair : pointer.Pair;
+        var hash = invalidCurrent ? earlier.History[0].LeapSecondsSha256 : pointer.History[0].LeapSecondsSha256;
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+        {
+            var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(invalidCurrent ? "invalid" : "verified", status.ManagedPair!.State);
+            if (invalidCurrent) Assert.IsNull(status.ManagedPair.CoverageEndUtc, "damaged current data has no verified coverage");
+            else Assert.IsNotNull(status.ManagedPair.CoverageEndUtc);
+            Assert.IsTrue(status.CoversNow);
+            Assert.IsFalse(status.Expired);
+            Assert.AreEqual("managed", status.ActiveSource);
+            Assert.AreEqual(hash, status.LeapSecondsSha256);
+            var resolution = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(active, resolution.ActiveManagedPair);
+            var plan = await PlanAsync(host, now).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, plan.Outcome);
+            Assert.AreEqual(hash, plan.LeapSecondsSha256);
+        })).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task TimeSourceUsesTheIntactPredecessorWhenTheCurrentPairIsDamagedAsync()
     {
         var now = new DateTimeOffset(2027, 7, 2, 18, 0, 0, TimeSpan.Zero);

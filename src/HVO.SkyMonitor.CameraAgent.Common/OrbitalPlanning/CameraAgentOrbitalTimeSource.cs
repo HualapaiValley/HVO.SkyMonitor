@@ -79,7 +79,7 @@ public static class CameraAgentOrbitalTimeSourceExtensions
 /// <summary>
 /// Bounded pinned local-file loader. A configured override (any of the four path/hash settings) takes precedence and
 /// must be complete and valid; an invalid override never falls back to another pair. Otherwise the pair bundled with
-/// this release, the managed pair the refresh last adopted and, while that one verifies, the managed pair it replaced
+/// this release, the managed pair the refresh last adopted and, independently, the managed pair it replaced
 /// are each verified against their provenance SHA-256 values and parsed. Only pairs that continuously cover the
 /// requested window (the current instant when the caller has none) are eligible, so a refresh retrieved after the
 /// provider's daily update, which cannot evaluate the rest of that UTC day, never takes the day's coverage away. Among
@@ -87,7 +87,7 @@ public static class CameraAgentOrbitalTimeSourceExtensions
 /// managed ones, so a newer release is never shadowed by an older refresh. When none is eligible the same rule ranks
 /// every verified pair, and the caller's coverage check reports why. This loader never downloads, writes or replaces
 /// data with nominal-zero Earth orientation; a different pair becomes active only by an options change, a new release,
-/// an adoption or a later requested time. Problems carry no paths.
+/// an adoption, revalidation after a refresh or a later requested time. Problems carry no paths.
 /// </summary>
 public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTimeSource, IDisposable
 {
@@ -177,13 +177,15 @@ public sealed class CameraAgentPinnedOrbitalTimeSource : ICameraAgentOrbitalTime
              !IsHash(configuration.EarthOrientationSha256) || !IsHash(configuration.LeapSecondsSha256)))
             return new(source, CameraAgentOrbitalTimeDataProblem.OverrideIncomplete, null);
         var pointer = await ReadPointerAsync(cancellationToken).ConfigureAwait(false);
-        // The adopted pair is part of the identity, so an adoption is picked up by the next resolution.
-        var identity = Convert.ToHexString(SHA256.HashData(OrbitalContract.SerializeCanonical(configuration))) + "/" +
-            (pointer.Invalid ? "invalid" : pointer.Value?.Pair ?? "none");
         VerifiedPairs verified;
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Capture the refresh revision under the cache gate, before loading. Invalidation during a load then
+            // leaves that entry with the old identity, so the next read revalidates instead of losing the signal.
+            var identity = Convert.ToHexString(SHA256.HashData(OrbitalContract.SerializeCanonical(configuration))) + "/" +
+                (pointer.Invalid ? "invalid" : pointer.Value?.Pair ?? "none") + "/" +
+                (managed?.VerificationRevision ?? 0).ToString(CultureInfo.InvariantCulture);
             if (identity == cachedConfiguration && cached is not null)
             {
                 verified = cached;

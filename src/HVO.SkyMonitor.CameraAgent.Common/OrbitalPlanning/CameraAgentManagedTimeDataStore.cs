@@ -71,6 +71,14 @@ public sealed partial class CameraAgentManagedTimeDataStore
     private const int MaximumMetadataBytes = CameraAgentPinnedOrbitalTimeSource.MaximumProvenanceBytes;
     private const int MaximumRetiredPerAdoption = 16;
 
+    private long verificationRevision;
+
+    /// <summary>In-memory cache revision shared by the refresh job and time source; the revision resets on restart.</summary>
+    internal long VerificationRevision => Interlocked.Read(ref verificationRevision);
+
+    /// <summary>Recheck managed verification even when a refresh leaves the pointer unchanged.</summary>
+    internal void InvalidateVerification() => Interlocked.Increment(ref verificationRevision);
+
     /// <summary>Test seam: called after the pair directory is durable and before <c>current.json</c> is replaced.</summary>
     internal Action? BeforeCommit { get; set; }
 

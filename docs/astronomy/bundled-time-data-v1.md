@@ -127,6 +127,10 @@ the reviewed commit establish their origin.
   remains eligible independently of the current pair; it competes with the bundled
   pair under the same coverage rule. A damaged pointer makes the managed pairs
   unavailable. If no pair verifies, planning stops with a reason.
+  Every completed refresh invalidates the source's managed verification cache,
+  including rejected, not-newer and failed attempts that leave the pointer
+  unchanged. The next status or planning read rechecks the files; already loaded
+  immutable data remains usable by concurrent planning reads during the refresh.
 - The rule is deterministic: the same files, options and requested time always
   select the same pair. It does not depend on the refresh switch, so turning the
   refresh off keeps an already adopted pair eligible.

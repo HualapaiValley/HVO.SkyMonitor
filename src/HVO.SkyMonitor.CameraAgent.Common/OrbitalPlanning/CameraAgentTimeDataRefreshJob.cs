@@ -69,6 +69,9 @@ public sealed partial class CameraAgentTimeDataRefreshJob(
         }
         finally
         {
+            // Revalidate after every outcome, including rejection or failure before adoption. An unchanged pointer
+            // cannot preserve a warm verification cache after this attempt found a damaged managed pair.
+            store.InvalidateVerification();
             _gate.Release();
         }
     }
