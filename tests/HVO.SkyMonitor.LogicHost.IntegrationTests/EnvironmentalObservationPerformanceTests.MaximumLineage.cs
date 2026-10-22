@@ -95,7 +95,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     var allocations = GC.GetTotalAllocatedBytes(true);
                     var peakRss = process.WorkingSet64;
                     using var sampling = new CancellationTokenSource();
-                    var sampler = SampleLineageRssAsync(process, sampling.Token, value => peakRss = Math.Max(peakRss, value));
+                    var sampler = SampleLineageRssAsync(process, value => peakRss = Math.Max(peakRss, value), sampling.Token);
                     var started = Stopwatch.GetTimestamp();
                     try
                     {
@@ -306,7 +306,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         return new { OldInputRows = 256, OldInputRowsRetained = 256, UnpinnedControlDeleted = true, Deleted = deleted, ProductionSweep = true };
     }
 
-    private static async Task SampleLineageRssAsync(Process process, CancellationToken cancellationToken, Action<long> sample)
+    private static async Task SampleLineageRssAsync(Process process, Action<long> sample, CancellationToken cancellationToken)
     {
         try
         {
