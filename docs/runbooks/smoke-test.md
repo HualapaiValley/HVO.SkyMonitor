@@ -126,7 +126,7 @@ checked-in `appsettings.StandaloneProductionSmoke.json` supplies the standalone
 host boundary when running the CameraAgent directly with
 `DOTNET_ENVIRONMENT=StandaloneProductionSmoke`. The checked-in deployment pair
 uses the instance `state/` root for both raw ingress and derivative storage and
-the selected `/var/lib/hvo/skymonitor/catalogs/hyg-v42-production` installation.
+the selected `/var/lib/hvo-sky/catalogs/hyg-v42-production` installation.
 If an operator changes the storage
 location, both `CameraAgent__RawIngressRoot` and the deployment copy's
 `LocalStorage.options.storageRoot` must resolve to the same directory.
@@ -144,8 +144,8 @@ representative direct launch is:
 ```bash
 DOTNET_ENVIRONMENT=StandaloneProductionSmoke \
 LocalIdentity__AdminPassword='OperatorSecret!171' \
-LocalIdentity__DatabasePath=/var/lib/hvo/skymonitor/cameraagents/<instance-uuid>/state/identity/cameraagent_identity.db \
-DeviceProvisioning__StateDirectory=/var/lib/hvo/skymonitor/cameraagents/<instance-uuid>/state/provisioning \
+LocalIdentity__DatabasePath=/var/lib/hvo-sky/cameraagents/<instance-uuid>/state/identity/cameraagent_identity.db \
+DeviceProvisioning__StateDirectory=/var/lib/hvo-sky/cameraagents/<instance-uuid>/state/provisioning \
   dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
@@ -154,9 +154,12 @@ already present:
 
 ```bash
 ./scripts/catalog/build-hyg-v42.sh --fetch \
-  --install-root /var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
-  /var/lib/hvo/catalog-build
+  --install-root /var/lib/hvo-sky/catalogs/hyg-v42-production \
+  ./artifacts/hyg-v42
 ```
+
+The last argument is an operator-chosen build output directory that must not
+already exist, as in [production catalog installation](../catalog/production-install.md).
 
 Run the smoke against the installation root, not a bundle or SQLite file.
 
@@ -172,7 +175,7 @@ three campaign scripts now validate the shape and refuse the version directory b
 name at the point of the mistake.
 
 ```bash
-HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v42-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
@@ -248,7 +251,7 @@ Stop LogicHost, install the approved Production HYG package, and run.
 directory below `versions/`:
 
 ```bash
-HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v42-production \
 HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6 \
   ./scripts/test:cameraagent-dual-standalone-smoke
 ```

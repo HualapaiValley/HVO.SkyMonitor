@@ -22,7 +22,7 @@ public sealed class PresentationResolvedFootprintTests
 
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
-        // The disc is wider than the 6 px point marker, so its outline replaces the crosshair; the star keeps one.
+        // The disc is wider than the 6 px point marker, so its outline replaces the marker; the star keeps one.
         Assert.IsFalse(groups.StarAnnotations.Markers.Any(marker => marker.Center == sun.Pixel));
         Assert.HasCount(1, groups.StarAnnotations.Markers);
         var segments = groups.StarAnnotations.Segments;
@@ -47,7 +47,7 @@ public sealed class PresentationResolvedFootprintTests
     }
 
     [TestMethod]
-    public async Task DiscWithinThePointMarkerKeepsTheCrosshairAndNoOutline()
+    public async Task DiscWithinThePointMarkerKeepsThePlainMarkerAndNoOutline()
     {
         // At f = 400 the 0.25 degree limb is 1.75 px, so the padded half-extent of 5.75 px fits the 6 px marker.
         var scene = await SceneAsync(400).ConfigureAwait(false);
@@ -55,7 +55,7 @@ public sealed class PresentationResolvedFootprintTests
 
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
-        Assert.IsTrue(groups.StarAnnotations.Markers.Any(marker => marker.Center == sun.Pixel));
+        Assert.IsFalse(groups.StarAnnotations.Markers.Single(marker => marker.Center == sun.Pixel).Crosshair);
         Assert.IsEmpty(groups.StarAnnotations.Segments);
     }
 
@@ -104,6 +104,7 @@ public sealed class PresentationResolvedFootprintTests
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
         Assert.AreEqual(new PixelPoint(100, 100), groups.StarAnnotations.Markers.Single().Center);
+        Assert.IsFalse(groups.StarAnnotations.Markers.Single().Crosshair);
         Assert.IsEmpty(groups.StarAnnotations.Segments);
         var raster = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun], new PreviewTransform(1, 1));
         var marker = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun with { FootprintParts = null }],

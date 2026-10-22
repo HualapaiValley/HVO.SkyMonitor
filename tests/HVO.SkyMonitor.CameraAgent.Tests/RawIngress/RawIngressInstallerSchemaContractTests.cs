@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed class RawIngressInstallerSchemaContractTests
 {
     [TestMethod]
-    public async Task CandidateV14SchemaMatchesFrozenInstallerFingerprint()
+    public async Task CandidateV15SchemaMatchesFrozenInstallerFingerprintAndFencesEarlierReaders()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-v14-schema-{Guid.NewGuid():N}");
         var path = Path.Combine(root, "journal", "raw-ingress.db");
@@ -27,7 +27,10 @@ public sealed class RawIngressInstallerSchemaContractTests
             await ((Task)initialize.Invoke(journal, [CancellationToken.None])!).ConfigureAwait(false);
             using var connection = new SqliteConnection($"Data Source={path}");
             await connection.OpenAsync().ConfigureAwait(false);
-            Assert.AreEqual(RawIngressV13Schema.V14Fingerprint, RawIngressV13Schema.ComputeFingerprint(connection));
+            Assert.AreEqual(RawIngressV13Schema.V15Fingerprint, RawIngressV13Schema.ComputeFingerprint(connection));
+            using var version = connection.CreateCommand();
+            version.CommandText = "PRAGMA user_version;";
+            Assert.AreEqual(15L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
         }
         finally
         {

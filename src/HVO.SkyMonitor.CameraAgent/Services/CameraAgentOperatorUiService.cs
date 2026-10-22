@@ -19,6 +19,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
+using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.Options;
@@ -223,7 +224,17 @@ internal sealed record CameraAgentCurrentSkyView(
     CameraAgentCurrentImagePresentation Presentation,
     CameraAgentCurrentSkyFacts? Facts,
     string? FactsUnavailableReason,
-    CameraAgentCurrentSkyOperations? Operations = null);
+    CameraAgentCurrentSkyOperations? Operations = null)
+{
+    /// <summary>
+    /// The displayed capture's overlays are still being produced and no earlier capture has finished processing.
+    /// Otherwise the displayed capture is complete: its layers are retained, or its processing has ended.
+    /// </summary>
+    public bool ProcessingPending { get; init; }
+
+    /// <summary>The operator's minimum time between image changes.</summary>
+    public TimeSpan MinimumRefreshInterval { get; init; } = TimeSpan.FromSeconds(CurrentSkyRefreshSetting.DefaultSeconds);
+}
 
 // Current operational facts are separate from the retained capture's historical acquisition/profile facts.
 internal sealed record CameraAgentCurrentSkyOperations(
@@ -275,6 +286,12 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveFrozenLayeredPresentationAsync(
+        Guid captureId, string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
+            OperatorUiResultKind.Conflict, "The selected composition is unavailable."));
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
 
@@ -362,7 +379,10 @@ internal sealed class CameraAgentOperatorUiService(
     ILogger<CameraAgentOperatorUiService> logger,
     ISiteProfileStore? siteProfileStore = null,
     RawIngressState? rawIngressState = null,
-    CaptureProcessingState? captureProcessingState = null) : ICameraAgentOperatorUiService
+    CaptureProcessingState? captureProcessingState = null,
+    IRawEvidenceOperations? rawEvidenceOperations = null,
+    ICameraAgentProcessingCompletion? processingCompletion = null,
+    CurrentSkyRefreshSetting? currentSkyRefresh = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -508,7 +528,8 @@ internal sealed class CameraAgentOperatorUiService(
         if (pageSize is < 1 or > 50 ||
             !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
         {
             return OperatorUiResult<OperatorOutboxPage>.Failure(
                 OperatorUiResultKind.Invalid,
@@ -517,6 +538,27 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
+            {
+                long? rawCursor = null;
+                if (rawEvidenceOperations is null || !string.IsNullOrWhiteSpace(storageAlias) ||
+                    cursor is not null && !tokens.TryReadRawEvidenceCursor(cursor, out rawCursor))
+                    return OperatorUiResult<OperatorOutboxPage>.Failure(OperatorUiResultKind.Invalid, "The raw evidence query is invalid.");
+                var rawPage = await rawEvidenceOperations.ReadEvidencePageAsync(pageSize, rawCursor, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorOutboxPage>.Success(new("RawEvidence", [], null,
+                    rawPage.Items.Select(item => new OperatorOutboxItem(
+                        "RawEvidence", item.WrittenOff ? "WrittenOff" : item.Target.State, null, "Raw evidence", 0,
+                        item.PayloadBytes, item.LatestAudit?.OccurredUtc ?? item.CreatedUtc,
+                        OutboxOperationsReasonCodes.Sanitize(item.Target.FailureReason),
+                        item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
+                        item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target),
+                        item.CreatedUtc, AuditSummary: item.LatestAudit is null ? null :
+                            $"{item.LatestAudit.Action}: {item.LatestAudit.Reason}; actor {item.LatestAudit.Actor}; {item.LatestAudit.OccurredUtc:O}",
+                        AgentId: item.AgentId, CaptureId: item.Target.CaptureId, ArtifactId: item.ArtifactId,
+                        CaptureSequence: item.CaptureSequence, ManifestSha256: item.Target.ManifestSha256)).ToArray(),
+                    rawPage.NextCursor is null ? null : tokens.ProtectRawEvidenceCursor(rawPage.NextCursor.Value)));
+            }
+
             if (string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrWhiteSpace(storageAlias))
@@ -794,6 +836,9 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
+
+    /// <summary>How many ended captures Current Sky reads at a time, newest first, while the newest one is still processing.</summary>
+    internal const int FinishedCandidatePageSize = 4;
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
@@ -825,16 +870,18 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
         }
+        var (current, pending) = await ResolveCompleteDisplayAsync(presentation.Value, cancellationToken).ConfigureAwait(false);
+        var minimumRefresh = TimeSpan.FromSeconds(currentSkyRefresh?.Seconds ?? CurrentSkyRefreshSetting.DefaultSeconds);
         var operations = new CameraAgentCurrentSkyOperations(
             _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
             _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
             rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
-        var displayed = presentation.Value.DisplayCapture ?? presentation.Value.LatestCapture;
+        var displayed = current.DisplayCapture ?? current.LatestCapture;
         if (displayed is null)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null, operations));
+            return View(null, null);
         }
-        var combinedArtifactId = presentation.Value.Stages
+        var combinedArtifactId = current.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
         // Facts are immutable once a capture is committed, so a circuit that
         // polls every few seconds re-reads them only when the capture changes.
@@ -842,18 +889,18 @@ internal sealed class CameraAgentOperatorUiService(
         if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null, operations));
+            return View(cached.Facts, null);
         }
         try
         {
             var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained.", operations));
+                return View(null, "The displayed capture is no longer retained.");
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null, operations));
+            return View(facts, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -862,7 +909,82 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable.", operations));
+            return View(null, "Capture facts are temporarily unavailable.");
+        }
+
+        OperatorUiResult<CameraAgentCurrentSkyView> View(CameraAgentCurrentSkyFacts? facts, string? factsUnavailableReason)
+            => OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(current, facts, factsUnavailableReason, operations)
+            {
+                ProcessingPending = pending,
+                MinimumRefreshInterval = minimumRefresh
+            });
+    }
+
+    // Current Sky moves only to a capture whose overlays are settled: retained, or never coming because its processing
+    // ended. While the newest displayable capture is still processing, the newest earlier capture whose processing has
+    // ended and that can be displayed is shown instead; an ended capture without a displayable stage is passed over.
+    // Candidates are read a page at a time until one can be shown, history runs out (the newest is then reported as
+    // pending), or the caller's deadline expires. Completion that cannot be read never holds the page.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unreadable completion state falls back to the newest displayable capture, as before.")]
+    private async ValueTask<(CameraAgentCurrentImagePresentation Presentation, bool Pending)> ResolveCompleteDisplayAsync(
+        CameraAgentCurrentImagePresentation newest,
+        CancellationToken cancellationToken)
+    {
+        if (processingCompletion is null || newest.StructuredLayersAvailable || newest.DisplayCapture is not { } display)
+        {
+            return (newest, false);
+        }
+        try
+        {
+            var completion = await processingCompletion.ReadAsync(
+                display.CaptureId, FinishedCandidatePageSize, cancellationToken).ConfigureAwait(false);
+            if (!completion.Pending)
+            {
+                return (newest, false);
+            }
+            var page = completion.NewestFinishedCaptureIds;
+            while (page.Count > 0)
+            {
+                foreach (var finishedId in page)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (await gallery.GetCaptureAsync(finishedId, cancellationToken).ConfigureAwait(false) is not { } finished)
+                    {
+                        continue;
+                    }
+                    var projected = await currentImagePresentation.ProjectCaptureAsync(finished, cancellationToken).ConfigureAwait(false);
+                    if (projected.SelectedStage is null)
+                    {
+                        continue;
+                    }
+                    using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-availability");
+                    var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
+                    return (newest with
+                    {
+                        DisplayCapture = new CameraAgentPresentationCapture(finished.CaptureId, finished.CaptureSequence,
+                            finished.ExposureStartedUtc, Math.Max(0, (long)(newest.ObservedUtc - finished.ExposureStartedUtc).TotalSeconds),
+                            finished.EvidenceOrigin),
+                        SelectedStage = projected.SelectedStage,
+                        Stages = projected.Stages,
+                        StructuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found
+                    }, false);
+                }
+                // A short page is the end of history.
+                page = page.Count < FinishedCandidatePageSize
+                    ? []
+                    : await processingCompletion.ReadFinishedBeforeAsync(page[^1], FinishedCandidatePageSize, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+            return (newest, true);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent current sky processing completion read failed.");
+            return (newest, false);
         }
     }
 
@@ -1069,10 +1191,21 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
         Guid captureId,
         IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken)
+        => SavePresentationCoreAsync(captureId, null, enabledLayerIdentitySha256, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveFrozenLayeredPresentationAsync(
+        Guid captureId, string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
+        => SavePresentationCoreAsync(captureId, manifestIdentitySha256, enabledLayerIdentitySha256, cancellationToken);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    private async ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SavePresentationCoreAsync(
+        Guid captureId, string? manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
     {
         var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
         if (actor is null)
@@ -1081,8 +1214,10 @@ internal sealed class CameraAgentOperatorUiService(
         }
         try
         {
-            var result = await presentationMaterializer.SaveAsync(
-                captureId, enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
+            var result = manifestIdentitySha256 is null
+                ? await presentationMaterializer.SaveAsync(captureId, enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false)
+                : await presentationMaterializer.SaveFrozenAsync(captureId, manifestIdentitySha256,
+                    enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
             return result.Status == CameraAgentPresentationMaterializationStatus.Saved && result.Receipt is { } receipt
                 ? OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(receipt)
                 : OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
@@ -1341,6 +1476,18 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "RawEvidence", StringComparison.Ordinal) && rawEvidenceOperations is not null)
+            {
+                var rawAction = action == OutboxOperationAction.Replay ? RawEvidenceReleaseAction.Revalidate : RawEvidenceReleaseAction.WriteOff;
+                if (!tokens.TryReadRawEvidenceAction(rawAction, actionToken, out var target) || target is null)
+                    return NotFound<OperatorCommandReceipt>("The raw evidence action expired or is no longer available.");
+                var receipt = await rawEvidenceOperations.ReleaseEvidenceAsync(
+                    target, rawAction, idempotencyKey, actor, reasonCode, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                    rawAction == RawEvidenceReleaseAction.Revalidate ? "Revalidate raw evidence" : "Write off raw evidence",
+                    receipt.Duplicate ? "Duplicate receipt" : "Applied",
+                    rawAction == RawEvidenceReleaseAction.Revalidate ? "Revalidated" : "WrittenOff", null, receipt.Audit.OccurredUtc));
+            }
             OutboxOperationDisposition disposition;
             if (string.Equals(kind, "Artifact", StringComparison.Ordinal) &&
                 tokens.TryReadArtifactAction(action, actionToken, out var alias, out var recordKey))

@@ -92,6 +92,28 @@ internal static class StorageLifecycleLock
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
         => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
+
+    internal static async ValueTask WaitAsync(
+        SemaphoreSlim gate, string caller, Microsoft.Extensions.Logging.ILogger? logger,
+        CancellationToken cancellationToken, TimeProvider? timeProvider = null)
+    {
+        var clock = timeProvider ?? TimeProvider.System;
+        var started = clock.GetTimestamp();
+        try { await gate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            StorageLifecycleTelemetry.Record(caller, clock.GetElapsedTime(started), logger, acquired: false);
+            throw;
+        }
+        // Only an acquired gate owns a release, including when an observer throws.
+        try { StorageLifecycleTelemetry.Record(caller, clock.GetElapsedTime(started), logger); }
+        catch
+        {
+            gate.Release();
+            throw;
+        }
+    }
+
 }
 
 /// <summary>
@@ -102,7 +124,7 @@ internal static class StorageLifecycleLock
 /// Lock order (outermost first) for every site that holds more than one lock:
 /// <list type="number">
 /// <item><description><c>RawCaptureIngress._acceptGate</c> (accept path only) or
-/// <c>RawCaptureIngress._initializeGate</c> (initialization only); the two are never held together.</description></item>
+/// <c>RawCaptureIngress._initializeGate</c> (initialization and audited evidence release); the two are never held together.</description></item>
 /// <item><description><see cref="RawIngressLifecycleLock"/> for the storage root.</description></item>
 /// <item><description><see cref="StorageLifecycleLock"/> for the same root (retention acquires it under the
 /// raw-ingress lifecycle lock).</description></item>

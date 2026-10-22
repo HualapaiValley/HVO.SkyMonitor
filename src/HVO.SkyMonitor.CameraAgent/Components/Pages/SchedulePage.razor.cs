@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
 {
+    private const string DiscardedEditsNotice = "The schedule changed while you were editing, so your unsaved edits were discarded. The editor now shows the latest revision.";
     private string? _blackoutInputZone;
     private readonly Dictionary<CaptureProfileFormModel.BlackoutRow, (string? Start, string? End)> _blackoutInputs = [];
 
@@ -200,6 +201,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
                 _state = result.Value;
                 var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
                 var basisChanged = !string.Equals(_editorBasisRevisionId, editorRevision.RevisionId, StringComparison.Ordinal);
+                var discardedEdits = _editorDirty && !resetEditor && basisChanged;
                 var keepEdits = _editorDirty && !resetEditor && !basisChanged;
                 if (!keepEdits)
                 {
@@ -215,9 +217,12 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
                     _overrideProfile = _state.Decision.SetpointProfileId ?? (setpoints.Count > 0 ? setpoints[0].Id : string.Empty);
                 }
                 if (!_rigSelectionAvailable)
-                    SetMessage("Named rig selection is unavailable. Schedule changes are disabled until refresh succeeds.", error: true);
-                else if (_editorDirty && !resetEditor && basisChanged)
-                    SetMessage("The schedule changed while you were editing, so your unsaved edits were discarded. The editor now shows the latest revision.", error: true);
+                {
+                    const string RigNotice = "Named rig selection is unavailable. Schedule changes are disabled until refresh succeeds.";
+                    SetMessage(discardedEdits ? DiscardedEditsNotice + " " + RigNotice : RigNotice, error: true);
+                }
+                else if (discardedEdits)
+                    SetMessage(DiscardedEditsNotice, error: true);
                 else
                     _message = null;
             }

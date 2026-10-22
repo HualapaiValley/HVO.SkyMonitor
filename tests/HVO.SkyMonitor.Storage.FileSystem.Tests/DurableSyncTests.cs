@@ -33,13 +33,32 @@ public sealed class DurableSyncTests
     }
 
     [TestMethod]
-    public void File_FlushesAnExistingFileByPathAndHandle()
+    public void Directory_ReportsUnsupportedKernelSyncInsteadOfClaimingDurability()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("Requires Linux procfs.");
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.Directory("/proc"));
+        Assert.AreEqual("sync-directory", fault.Operation);
+        Assert.AreEqual(FileSystemFaultKind.Io, fault.Kind);
+        var original = Assert.IsInstanceOfType<IOException>(fault.InnerException);
+        Assert.AreEqual(22, original.HResult, "Preserve the actual EINVAL from fsync(procfs).");
+    }
+
+    [TestMethod]
+    public void File_FlushesAnExistingFileByPathHandleAndStream()
     {
         var path = Path.Combine(_temp, "data.bin");
         File.WriteAllBytes(path, new byte[64 * 1024]);
         DurableSync.File(path);
-        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite);
-        DurableSync.File(handle, path);
+        using (var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite))
+        {
+            DurableSync.File(handle, path);
+        }
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write);
+        stream.Write([1, 2, 3]);
+
+        DurableSync.File(stream);
+
+        Assert.AreEqual(64 * 1024 + 3, new FileInfo(path).Length, "the stream's buffered bytes reached the file");
     }
 
     [TestMethod]
@@ -137,6 +156,17 @@ public sealed class DurableSyncTests
 
         Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
         Assert.AreEqual(0, DurableSync.DirectoryChain(_root, _temp, isLinux: false));
+    }
+
+    [TestMethod]
+    public void LinuxSync_RejectsAnInvalidHandleBeforeCallingFsync()
+    {
+        // The guard precedes any libc call, so the Linux dispatch is exercised on every platform.
+        using var invalid = new Microsoft.Win32.SafeHandles.SafeFileHandle(-1, ownsHandle: false);
+
+        var fault = Assert.ThrowsExactly<ArgumentException>(() => DurableSync.Directory(invalid, _temp, isLinux: true));
+
+        Assert.AreEqual("handle", fault.ParamName);
     }
 
     [TestMethod]

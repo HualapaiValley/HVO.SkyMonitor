@@ -10,6 +10,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
+# shellcheck source=lib/dotnet-runtime-home.sh
+source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"
 readonly BUNDLE="${1:-}"
 readonly RUN_ID="${GITHUB_RUN_ID:-local}"
 readonly RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-$(date -u '+%Y%m%d%H%M%S')-$$}"
@@ -251,9 +253,12 @@ if [[ $# -ne 1 || ! -d "$BUNDLE" || -L "$BUNDLE" ]]; then
     exit 2
 fi
 
-for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat timeout wc; do
+for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat tar tee timeout wc; do
     require_command "$command"
 done
+
+# Fail before invoking dotnet or creating any ARM64 workload resources.
+dotnet_runtime_home_check || fail "runner runtime directory is unusable"
 
 rm -rf -- "$RESULTS" "$UPLOAD_RESULTS" "$UPLOAD_STAGING"
 mkdir -p "$RESULTS" "$AGENT_ROOT/home" "$AGENT_ROOT/identity" "$AGENT_ROOT/provisioning" \
@@ -407,7 +412,17 @@ readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.Sky
 # stays strict for every test that should run on ARM64 Linux. The category audit owns the
 # Unit count and still sees it; the macOS lane still runs it. If a second OS-conditioned
 # test appears, add it here with its commit, not a broader pattern.
-readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
+unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
+# The cross-lineage catalog transition added in e44804d5 needs the HYG 4.4 bundle as well as the
+# 4.2 bundle. The 4.4 bundle is retained as local evidence until its publication is approved, so
+# this workflow restores only 4.2, the test records Inconclusive, and the gate below failed every
+# run from e44804d5 on. It is excluded by name only when no 4.4 bundle is supplied, so a run that
+# passes HVO_HYG_V44_CATALOG_BUNDLE still executes it and the gate stays strict for it.
+readonly CROSS_LINEAGE_TEST='HVO.SkyMonitor.Deployment.Cli.Tests.LifecycleContractTests.CatalogSelect_CrossLineage_SelectsSideBySideRootAndRollsBackExactly'
+if [[ -z "${HVO_HYG_V44_CATALOG_BUNDLE:-}" ]]; then
+    unit_filter+="&FullyQualifiedName!=$CROSS_LINEAGE_TEST"
+fi
+readonly UNIT_FILTER="$unit_filter"
 DOCKER_SERVER_ID="$(docker info --format '{{.ID}}')"
 readonly DOCKER_SERVER_ID
 
@@ -424,6 +439,8 @@ done
 printf 'build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
 phase_started=$SECONDS
+# Record the exact selection so the evidence shows any by-name exclusion that applied to this run.
+printf '%s\n' "$UNIT_FILTER" > "$RESULTS/unit-filter.txt"
 for entry in \
     "$CAMERA_TESTS:cameraagent" \
     "$ACCEPTANCE_TESTS:cameraagent-acceptance" \
@@ -498,7 +515,8 @@ printf 'catalog-install,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-
 
 git -C "$REPO_ROOT" rev-parse HEAD > "$RESULTS/source-revision.txt"
 phase_started=$SECONDS
-mapfile -t base_images < <(awk -F= '/^ARG DOTNET_.*_IMAGE=/ { print $2 }' "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" | sort -u)
+# The pinned base images are the dotnet-sdk and dotnet-aspnet alias stages, kept on FROM lines for Dependabot (#1321).
+mapfile -t base_images < <(awk '$1 == "FROM" && $3 == "AS" && ($4 == "dotnet-sdk" || $4 == "dotnet-aspnet") { print $2 }' "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" | sort -u)
 printf '[]\n' > "$RESULTS/base-images.json"
 SDK_IMAGE_DIGEST=""
 ASPNET_IMAGE_DIGEST=""
@@ -523,13 +541,21 @@ done
 readonly SDK_IMAGE_DIGEST ASPNET_IMAGE_DIGEST
 [[ -n "$SDK_IMAGE_DIGEST" && -n "$ASPNET_IMAGE_DIGEST" ]] || fail "resolved base-image digests are incomplete"
 docker build --pull --platform linux/arm64 --build-arg "HVO_SOURCE_REVISION=$(<"$RESULTS/source-revision.txt")" \
+    --build-arg "SOURCE_DATE_EPOCH=$(git -C "$REPO_ROOT" show -s --format=%ct "$(<"$RESULTS/source-revision.txt")")" \
     --build-arg "DOTNET_SDK_IMAGE=$SDK_IMAGE_DIGEST" \
     --build-arg "DOTNET_ASPNET_IMAGE=$ASPNET_IMAGE_DIGEST" \
+    --provenance=false --sbom=false --output "type=docker,dest=$TEMP_ROOT/image.tar,rewrite-timestamp=true" \
     --label "$OWNERSHIP_LABEL" --tag "$IMAGE_TAG" \
-    --iidfile "$RESULTS/image-id.txt" \
     --file "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" \
     > "$RESULTS/docker-build.log"
-IMAGE_ID="$(<"$RESULTS/image-id.txt")"
+image_config="$(tar -xOf "$TEMP_ROOT/image.tar" manifest.json | jq -er 'if length == 1 then .[0].Config else empty end')"
+image_config_digest="$(tar -xOf "$TEMP_ROOT/image.tar" "$image_config" | sha256sum)"
+image_config_digest="sha256:${image_config_digest%% *}"
+printf '%s\n' "$image_config_digest" > "$RESULTS/image-config-digest.txt"
+docker load --input "$TEMP_ROOT/image.tar" > "$RESULTS/docker-load.log"
+IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")"
+rm -f -- "$TEMP_ROOT/image.tar"
+printf '%s\n' "$IMAGE_ID" | tee "$RESULTS/image-id.txt"
 readonly IMAGE_ID
 [[ "$IMAGE_ID" == sha256:* ]] || fail "Docker did not produce a content-addressed image ID"
 docker image inspect "$IMAGE_ID" > "$RESULTS/image-inspect.json"
@@ -537,8 +563,13 @@ jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
     '.[0].Id | startswith("sha256:")' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
 jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
-    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "13" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "2" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v1" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "15" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "2" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v1" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
+# The advisory build passes no release version, so the published assemblies carry the product version's development
+# build (#1310) and the version label is empty.
+docker run --rm --network none --label "$OWNERSHIP_LABEL" --entrypoint /bin/sh "$IMAGE_ID" -c \
+    'grep -qaF "$1" /app/HVO.SkyMonitor.CameraAgent.dll && grep -qaF "$1" /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner.dll' \
+    stamp "$("$REPO_ROOT/scripts/release:version" --dev)+$(<"$RESULTS/source-revision.txt")" || fail "published assemblies do not carry the source revision"
 docker run --rm --label "$OWNERSHIP_LABEL" \
     --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
     "$IMAGE_ID" --capabilities > "$RESULTS/replay-runner-image-capabilities.json"

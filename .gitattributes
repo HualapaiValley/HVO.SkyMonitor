@@ -1,0 +1,11 @@
+# Preserve checksum-pinned CSV bytes and their original CRLF record terminators.
+# Retain trailing-space, blank-at-EOF and space-before-tab checks on these files.
+tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-aliases.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-objects.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-outline-points.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-tombstones.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+tests/fixtures/catalog/hyg-v44-openngc-subset-star-aliases.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+tests/fixtures/catalog/hyg-v44-openngc-subset-star-objects.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+# Preserve the bundled time-data bytes exactly as the providers publish them; their checksums pin those bytes (#1474).
+src/HVO.SkyMonitor.CameraAgent.Common/OrbitalPlanning/TimeData/finals2000A.* -text whitespace=-trailing-space,-space-before-tab
+src/HVO.SkyMonitor.CameraAgent.Common/OrbitalPlanning/TimeData/leap-seconds.list -text whitespace=-trailing-space,-space-before-tab

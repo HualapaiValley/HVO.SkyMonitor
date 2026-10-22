@@ -22,7 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class VirtualSkyCameraModuleTests
+public sealed partial class VirtualSkyCameraModuleTests
 {
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -208,6 +208,41 @@ public sealed class VirtualSkyCameraModuleTests
             Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { illuminationMode = "PretendNight" }))
         };
         Assert.Throws<JsonException>(() => ((ICameraModuleConfigurationPreflight)module).ValidateConfiguration(config));
+    }
+
+    [TestMethod]
+    public async Task SimulatedSkyRegime_IsNightOnlyForControlledNight()
+    {
+        Assert.IsNull(((ICameraSimulatedSkyRegime)CreateModule(FixtureUtc)).SimulatedSolarRegime);
+        foreach (var (mode, expected) in new (string?, CaptureSolarRegime?)[]
+        {
+            (null, null),
+            ("LegacyScalarSolar", null),
+            ("SolarDriven", null),
+            ("ControlledNight", CaptureSolarRegime.Night)
+        })
+        {
+            var module = CreateModule(FixtureUtc);
+            await module.InitializeAsync(CreateConfig(width: 64, height: 64) with
+            {
+                Module = new CameraModuleDescriptor("VirtualSky", mode is null
+                    ? JsonSerializer.SerializeToElement(new { seed = 7 })
+                    : JsonSerializer.SerializeToElement(new { illuminationMode = mode, seed = 7 }))
+            }, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(expected, ((ICameraSimulatedSkyRegime)module).SimulatedSolarRegime, mode ?? "omitted");
+        }
+    }
+
+    [TestMethod]
+    public void SimulatedSkyRegime_IsOfferedOnlyByVirtualSky()
+    {
+        var modules = new[] { typeof(VirtualSkyCameraModule).Assembly, typeof(HVO.SkyMonitor.CameraAgent.Modules.Zwo.ZwoAsiCameraModule).Assembly }
+            .SelectMany(assembly => assembly.GetTypes())
+            .Where(type => type.IsClass && !type.IsAbstract && typeof(ICameraModule).IsAssignableFrom(type))
+            .ToArray();
+        CollectionAssert.Contains(modules, typeof(HVO.SkyMonitor.CameraAgent.Modules.Zwo.ZwoAsiCameraModule));
+        CollectionAssert.AreEqual(new[] { typeof(VirtualSkyCameraModule) },
+            modules.Where(type => typeof(ICameraSimulatedSkyRegime).IsAssignableFrom(type)).ToArray());
     }
 
     [TestMethod]

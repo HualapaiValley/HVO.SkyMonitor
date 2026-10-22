@@ -84,6 +84,34 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
     }
 
     [TestMethod]
+    [DataRow("ActivateCameraAgentProcessingGraphRevision")]
+    [DataRow("RollbackCameraAgentProcessingGraphRevision")]
+    [DataRow("SubmitCameraAgentProcessingReplay")]
+    public async Task SupersededSelectionReturnsSafeConflictRemedy(string endpointName)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ActivateRevisionAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProcessingGraphRevisionSupersededException("private-plan-sentinel"));
+        operations.Setup(value => value.RollbackRevisionAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProcessingGraphRevisionSupersededException("private-plan-sentinel"));
+        operations.Setup(value => value.SubmitReplayAsync(It.IsAny<ProcessingReplaySubmission>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProcessingGraphRevisionSupersededException("private-plan-sentinel"));
+        await using var app = CreateApp(operations.Object, Mock.Of<ICameraAgentArtifactService>());
+        var request = new { expectedVersion = 1, captureId = Guid.NewGuid(), graphRevisionId = "revision-old" };
+
+        var (status, body) = await InvokeForBodyAsync(app, endpointName, HttpMethods.Post, request,
+            new() { ["revisionId"] = "revision-old" }).ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status409Conflict, status);
+        using var problem = JsonDocument.Parse(body);
+        Assert.AreEqual(ProcessingGraphRevisionSupersededException.SafeMessage, problem.RootElement.GetProperty("title").GetString());
+        Assert.IsFalse(body.Contains("private-plan-sentinel", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task EveryRouteExecutesItsOperationAndUsesExpectedSuccessStatus()
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Loose);
@@ -387,7 +415,9 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
     private static async Task<(int Status, string Body)> InvokeForBodyAsync(
         WebApplication app,
         string endpointName,
-        string method)
+        string method,
+        object? requestBody = null,
+        RouteValueDictionary? routeValues = null)
     {
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
             .OfType<RouteEndpoint>()
@@ -401,6 +431,16 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
             User = CreateUser()
         };
         context.Request.Method = method;
+        context.Request.Headers["Idempotency-Key"] = "test-key";
+        if (routeValues is not null) context.Request.RouteValues = routeValues;
+        if (requestBody is not null)
+        {
+            var payload = JsonSerializer.SerializeToUtf8Bytes(requestBody);
+            context.Request.Body = new MemoryStream(payload);
+            context.Request.ContentLength = payload.Length;
+            context.Request.ContentType = "application/json";
+            context.Features.Set<IHttpRequestBodyDetectionFeature>(RequestBodyDetectionFeature.Instance);
+        }
         var body = new MemoryStream();
         context.Response.Body = body;
 

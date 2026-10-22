@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -10,6 +12,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FirstLoadRefreshTimeout = TimeSpan.FromSeconds(30);
+    // The interval is measured between refresh starts, which the poll timer's wake-ups move by milliseconds; this slack
+    // keeps an interval of one poll period from being missed on every other poll.
+    private static readonly TimeSpan CaptureChangeSlack = TimeSpan.FromSeconds(1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _lifetime;
     private PeriodicTimer? _timer;
@@ -79,15 +85,33 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private string? _factsUnavailableReason;
     private CameraAgentPresentationStage? _selectedStage;
     private string? _errorMessage;
+    private string? _refreshDeadlineMessage;
+    private bool _firstRefresh = true;
     private string? _technicalEvidenceError;
     private bool _initialLoading = true;
     private bool _refreshing;
     private Guid? _liveExecutionId;
     private int _refreshRequested;
+    private int _manualRefreshRequested;
+    private long _lastCaptureChangeTimestamp;
     private int _disposeStarted;
+
+    // Whether each layer kind is shown, as last shown or chosen. It carries the selection from read to read and capture
+    // to capture, and the operator's choices are kept in browser storage across page loads, separately for the live and
+    // the archived view. A kind not seen yet follows its profile default.
+    private readonly Dictionary<string, bool> _layerVisibility = new(StringComparer.Ordinal);
+    private bool _layerVisibilityRead;
+
+    private enum CaptureChange
+    {
+        None,
+        Switch,
+        Hold
+    }
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
+    [Inject] internal ILogger<CurrentSkyPage> Logger { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
@@ -136,6 +160,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await WarmInteropModuleAsync();
+        if (firstRender) await LoadLayerVisibilityAsync();
         if (!_bindLayers || !ShowLayeredHero) return;
         _bindLayers = false;
         var generation = _layerGeneration;
@@ -217,22 +242,66 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private async Task RefreshCoreAsync(CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(RefreshTimeout);
+        var manual = Interlocked.Exchange(ref _manualRefreshRequested, 0) != 0;
+        var started = TimeProvider.GetTimestamp();
+        // One deadline covers the whole refresh: the current-sky read with its completion reads, and the next capture's
+        // layers. A refresh that runs past it applies nothing and keeps the capture shown.
+        var firstRefresh = _firstRefresh;
+        _firstRefresh = false;
+        var bound = firstRefresh ? FirstLoadRefreshTimeout : RefreshTimeout;
+        using var timings = new CameraAgentCurrentSkyRefreshDiagnostics(TimeProvider, Logger);
+        using var deadline = new CancellationTokenSource(bound, TimeProvider);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         await InvokeAsync(() => _refreshing = true);
         try
         {
-            var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
+            OperatorUiResult<CameraAgentCurrentSkyView> result;
+            using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("view-read"))
+                result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 await InvokeAsync(RevokeAccess).ConfigureAwait(false);
                 return;
             }
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
+            var change = CaptureChange.None;
+            if (result.IsSuccess && result.Value is { } view)
+                await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
+            // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
+            var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
+                ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
+                : null;
+            timeout.Token.ThrowIfCancellationRequested();
+            // Overlays the read advertised but that could not be read now leave the complete image in place until a
+            // later refresh reads them. A capture whose processing ended without overlays still replaces it.
+            if (change == CaptureChange.Switch && layers is { IsSuccess: false, Kind: not OperatorUiResultKind.Unauthorized } &&
+                result.Value!.Presentation.StructuredLayersAvailable)
+            {
+                change = CaptureChange.Hold;
+            }
+            var refreshedCaptureId = displayCaptureId;
             await InvokeAsync(() =>
             {
-                if (_accessDenied || _disposeStarted != 0 || _viewerOpen) { _refreshing = false; return; }
-                if (result.IsSuccess && result.Value is not null)
+                if (_accessDenied || _disposeStarted != 0) { _refreshing = false; return; }
+                // A denial is never deferred, not even behind the full-screen viewer.
+                if (layers?.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    RevokeAccess();
+                    return;
+                }
+                // A result that waited for the dispatcher past the deadline is discarded, like one that missed it.
+                if (timeout.IsCancellationRequested)
+                {
+                    ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
+                    return;
+                }
+                if (_viewerOpen) { _refreshing = false; return; }
+                if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
+                {
+                    HoldDisplayedCapture(result.Value);
+                    refreshedCaptureId = _runCaptureId;
+                }
+                else if (result.IsSuccess && result.Value is not null)
                 {
                     var wasLayered = ShowLayeredHero;
                     var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
@@ -250,6 +319,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
+                        _lastCaptureChangeTimestamp = started;
+                        if (layers is not null && displayCaptureId is { } shownCaptureId)
+                            ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
                     var combinedId = _facts?.CombinedLineage?.ArtifactId;
                     if (_lineageArtifactId != combinedId)
@@ -271,18 +343,19 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _bindGeneration++;
                         _bindLayers = true;
                     }
-                    TryLoadLayers(displayCaptureId);
+                    if (layers is null) TryLoadLayers(displayCaptureId);
                     _errorMessage = null;
                 }
                 else
                 {
                     _errorMessage = result.Message ?? "The current image projection is unavailable.";
                 }
+                _refreshDeadlineMessage = null;
                 _initialLoading = false;
                 _refreshing = false;
                 StateHasChanged();
             }).ConfigureAwait(false);
-            if (!_accessDenied && _disposeStarted == 0 && displayCaptureId is { } captureId)
+            if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
             {
                 // The image is already visible. A slow optional run-link lookup cannot make
                 // the five-second current-sky refresh appear to have failed.
@@ -295,15 +368,58 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             await InvokeAsync(() =>
             {
                 if (_accessDenied || _disposeStarted != 0) return;
-                _errorMessage = "The current image refresh exceeded its five-second deadline.";
-                _initialLoading = false;
-                _refreshing = false;
-                StateHasChanged();
+                ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
             }).ConfigureAwait(false);
         }
     }
 
+    private void ShowRefreshDeadlineExceeded(CameraAgentCurrentSkyRefreshDiagnostics timings, TimeSpan bound, bool firstRefresh)
+    {
+        timings.LogDeadline(bound, firstRefresh);
+        _refreshDeadlineMessage = _presentation?.DisplayCapture is not null
+            ? $"Current Sky couldn’t refresh within {bound.TotalSeconds:0} s; showing the last image; retrying automatically."
+            : "The current image is still loading. Retrying automatically.";
+        _initialLoading = false;
+        _refreshing = false;
+        StateHasChanged();
+    }
+
     private Guid? _runCaptureId;
+
+    // A newer capture replaces the displayed one only once its overlays are complete and the operator's minimum interval
+    // has passed since the last change; Refresh image skips the interval. A live view never steps back to an older one.
+    private CaptureChange ClassifyCaptureChange(CameraAgentCurrentSkyView view, bool manual, long started)
+    {
+        if (_presentation?.DisplayCapture is not { } shown || view.Presentation.DisplayCapture is not { } next ||
+            next.CaptureId == shown.CaptureId)
+        {
+            return CaptureChange.None;
+        }
+        return view.ProcessingPending || next.CaptureSequence < shown.CaptureSequence ||
+               (!manual && TimeProvider.GetElapsedTime(_lastCaptureChangeTimestamp, started) + CaptureChangeSlack <
+                   view.MinimumRefreshInterval)
+            ? CaptureChange.Hold
+            : CaptureChange.Switch;
+    }
+
+    // The displayed capture stays, complete; the camera's state, the operational facts and the image's age move on.
+    private void HoldDisplayedCapture(CameraAgentCurrentSkyView view)
+    {
+        var shown = _presentation!;
+        var observed = view.Presentation.ObservedUtc;
+        _presentation = shown with
+        {
+            ObservedUtc = observed,
+            System = view.Presentation.System,
+            DisplayCapture = shown.DisplayCapture! with
+            {
+                AgeSeconds = Math.Max(0, (long)(observed - shown.DisplayCapture.ExposureStartedUtc).TotalSeconds)
+            }
+        };
+        _operations = view.Operations;
+        TryLoadLayers(_runCaptureId);
+        _errorMessage = null;
+    }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional lineage does not interrupt the current image.")]
     private async Task LoadLineageAsync(Guid artifactId, Guid? captureId, CancellationToken cancellationToken)
@@ -443,27 +559,41 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
+    private async Task RefreshMeasuredEvidenceAsync()
+    {
+        if (_layers is null || _layerLoading || _saving || _viewerOpen || _accessDenied ||
+            _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
+        _layerLoading = true;
+        await LoadLayersAsync(_layers.CaptureId, Volatile.Read(ref _layerGeneration), cancellation.Token);
+    }
+
     private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
-        OperatorUiResult<CameraAgentLayeredPresentation> result;
+        var result = await ReadLayersAsync(captureId, cancellation).ConfigureAwait(false);
+        if (result is null || cancellation.IsCancellationRequested || Volatile.Read(ref _disposeStarted) != 0) return;
+        await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
+    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
+    {
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            result = await OperatorService.GetLayeredPresentationAsync(captureId, timeout.Token).ConfigureAwait(false);
+            using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
+            using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
+            return await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
-            return;
+            return null;
         }
         catch (Exception)
         {
-            result = OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+            return OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
                 "Structured layers are temporarily unavailable.");
         }
-        if (cancellation.IsCancellationRequested || Volatile.Read(ref _disposeStarted) != 0) return;
-        await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
     }
 
     private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
@@ -489,8 +619,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             _layers = value;
             _layersNotRetained = false;
             _layerMessage = null;
-            _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
-                .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+            _selectedLayers = RememberedSelection(value);
+            _layerInteractive = false;
+            _bindGeneration++;
             _bindLayers = true;
         }
         else
@@ -574,15 +705,108 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         if (enabled) _selectedLayers.Add(identity);
         else _selectedLayers.Remove(identity);
+        if (_layers?.Layers.FirstOrDefault(layer => layer.IdentitySha256 == identity) is not { } layer) return;
+        _layerVisibility[layer.Kind] = enabled;
+        _ = SaveLayerVisibilityAsync();
     }
 
     private void RestoreLayerDefaults()
     {
         if (_layers is null || !ShowLayeredHero || !_layerInteractive) return;
-        _selectedLayers = _layers.Layers.Where(static layer => layer.EnabledByDefault)
-            .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+        _layerVisibility.Clear();
+        _ = SaveLayerVisibilityAsync();
+        _selectedLayers = RememberedSelection(_layers);
         _bindGeneration++;
         _bindLayers = true;
+    }
+
+    // The selection for a layer read, recording the state of any kind seen for the first time.
+    private HashSet<string> RememberedSelection(CameraAgentLayeredPresentation layers)
+    {
+        var selected = layers.Layers
+            .Where(layer => _layerVisibility.TryGetValue(layer.Kind, out var visible) ? visible : layer.EnabledByDefault)
+            .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+        foreach (var layer in layers.Layers) _layerVisibility.TryAdd(layer.Kind, selected.Contains(layer.IdentitySha256));
+        return selected;
+    }
+
+    // Live and archived views keep separate choices. localStorage is already kept per origin; the path base tells
+    // apart instances served under one origin.
+    private string LayerVisibilityKey =>
+        $"hvo.{(IsArchived ? "archivedCapture" : "currentSky")}.layerVisibility.v1:{new Uri(NavigationManager.BaseUri).AbsolutePath}";
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Remembered layer choices are optional; any storage or interop failure keeps the profile defaults.")]
+    private async Task LoadLayerVisibilityAsync()
+    {
+        string? stored = null;
+        try
+        {
+            if (await GetLayerModuleAsync() is { } module)
+                stored = await module.InvokeAsync<string?>("readLayerVisibility", LayerVisibilityKey);
+        }
+        catch (Exception)
+        {
+            // The profile defaults apply.
+        }
+        // A choice made while storage was being read is newer than what storage holds; what the page merely showed
+        // meanwhile is not.
+        if (_layerVisibilityRead || _disposeStarted != 0) return;
+        _layerVisibilityRead = true;
+        var remembered = ParseLayerVisibility(stored);
+        foreach (var (kind, visible) in remembered) _layerVisibility[kind] = visible;
+        if (remembered.Length == 0 || _layers is null) return;
+        _selectedLayers = RememberedSelection(_layers);
+        _bindGeneration++;
+        _bindLayers = true;
+        StateHasChanged();
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Remembered layer choices are optional; the choice still applies on this page.")]
+    private async Task SaveLayerVisibilityAsync()
+    {
+        _layerVisibilityRead = true;
+        try
+        {
+            if (await GetLayerModuleAsync() is { } module)
+                await module.InvokeVoidAsync("writeLayerVisibility", LayerVisibilityKey,
+                    _layerVisibility.Count == 0 ? null : JsonSerializer.Serialize(_layerVisibility));
+        }
+        catch (Exception)
+        {
+            // The choice still applies on this page.
+        }
+    }
+
+    // Browser storage is the operator's own, but it is still input: only a bounded object of kind/boolean pairs is used.
+    private static KeyValuePair<string, bool>[] ParseLayerVisibility(string? stored)
+    {
+        if (stored is not { Length: > 0 and <= 16_384 }) return [];
+        try
+        {
+            using var document = JsonDocument.Parse(stored);
+            return document.RootElement.ValueKind != JsonValueKind.Object
+                ? []
+                : [.. document.RootElement.EnumerateObject()
+                    .Where(static entry => entry.Name.Length is > 0 and <= 128 &&
+                        entry.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    .Take(64)
+                    .Select(static entry => KeyValuePair.Create(entry.Name, entry.Value.GetBoolean()))];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private async Task<IJSObjectReference?> GetLayerModuleAsync()
+    {
+        var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+        if (Volatile.Read(ref _disposeStarted) != 0)
+        {
+            if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
+            return null;
+        }
+        return _layerModule = module;
     }
 
     private int SelectedLayerCount => _layers?.Layers.Count(layer => _selectedLayers.Contains(layer.IdentitySha256)) ?? 0;
@@ -601,20 +825,23 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         ? FormattableString.Invariant($"aspect-ratio: {layers.WidthPixels} / {layers.HeightPixels};")
         : string.Empty;
 
-    private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
+    private bool HasLayer(string first, string? second = null) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 
     private IEnumerable<CameraAgentPresentationLayer> RetainedLayers(string group) =>
         _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [];
 
     private static string LayerGroup(string kind) => kind switch
     {
+        "MeasuredTransientTrails" => "Measured",
         "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
 
     private static string LayerDescription(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "expected / projected catalog, not measured associations (#526)",
+        "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
+        OrbitalTrackPresentation.LayerKind => "predicted / exact exposure segment; geometry only, not a detection or visibility claim",
+        "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
         "scene-constellations" or "constellations" => "expected / HYG topology",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
         "scene-image-circle" or "image-circle" => "native sensor coordinates",
@@ -883,7 +1110,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerLabel(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "Catalog stars",
+        "MeasuredTransientTrails" => "Measured transient trails",
+        OrbitalTrackPresentation.LayerKind => "Predicted satellite tracks",
+        "scene-annotation" or "star-annotations" => "Sky annotations",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",
         "scene-constellations" or "constellations" => "Constellation lines",
@@ -909,7 +1138,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var selected = _layers.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
                 .Select(static layer => layer.IdentitySha256).ToArray();
             if (!IsCurrentLayer(generation, captureId, cancellation)) return;
-            var result = await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token);
+            var result = _layers.ManifestArtifactId == Guid.Empty
+                ? await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token)
+                : await OperatorService.SaveFrozenLayeredPresentationAsync(captureId,
+                    _layers.ManifestIdentitySha256, selected, cancellation.Token);
             if (!IsCurrentLayer(generation, captureId, cancellation)) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
@@ -1014,6 +1246,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         if (_lifetime is not null)
         {
             if (IsArchived) TryLoadLayers(_runCaptureId);
+            Interlocked.Exchange(ref _manualRefreshRequested, 1);
             await RequestRefreshAsync(_lifetime.Token);
             await InvokeAsync(() =>
             {

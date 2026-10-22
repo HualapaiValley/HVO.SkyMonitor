@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -54,18 +55,37 @@ public sealed record CatalogSnapshotResult(
     string DatabaseSha256,
     long DatabaseLength,
     long RowCount,
-    SqliteCelestialCatalog Catalog);
+    SqliteCelestialCatalog Catalog,
+    CatalogDeepSkyCounts? DeepSkyCounts = null)
+{
+    /// <summary>
+    /// Gets how the catalog identity was established, naming the manifest version that declared it. Health and the
+    /// startup log report it so an operator can see which manifest contract an installed package uses.
+    /// </summary>
+    public string CatalogIdentitySource => $"explicit-manifest-v{ManifestVersion.ToString(CultureInfo.InvariantCulture)}";
+}
 
 /// <summary>Resolves and validates the active immutable catalog snapshot below an installation root.</summary>
 public static class CatalogSnapshotResolver
 {
     /// <summary>
-    /// The only catalog manifest version this resolver accepts. Deployment images declare the same value so an
-    /// upgrade preflight can compare a selected catalog against the runtime that will read it.
+    /// The highest catalog manifest version this resolver accepts; it accepts every version from
+    /// <see cref="MinimumSupportedManifestVersion"/> through this one. Deployment images declare the same value so an
+    /// upgrade preflight can refuse a selected catalog newer than the runtime that will read it.
     /// </summary>
-    public const int SupportedManifestVersion = 2;
+    public const int SupportedManifestVersion = ComposedManifestVersion;
+
+    /// <summary>The lowest catalog manifest version this resolver accepts: the stars-only schema 2 and 3 layout.</summary>
+    public const int MinimumSupportedManifestVersion = 2;
+
+    /// <summary>
+    /// The manifest version of a composed schema-4 catalog, which adds deep-sky counts, its components, and its
+    /// recorded transformations to the version-2 layout.
+    /// </summary>
+    public const int ComposedManifestVersion = 3;
     private const int Sha256HexLength = 64;
     private const int MaximumManifestLength = 65_536;
+    private const int HashBufferLength = 81_920;
     private const int MaximumCatalogIdLength = 32;
     private const int MaximumCatalogVersionLength = 64;
     private const uint StatxType = 0x00000001;
@@ -96,6 +116,30 @@ public static class CatalogSnapshotResolver
         var pointer = options.ExpectedPackageVersion is null
             ? ReadPointer(installRoot, Path.Combine(installRoot, "current"))
             : ReadExactVersion(installRoot, options.ExpectedPackageVersion);
+        return ResolveSnapshot(pointer, options);
+    }
+
+    /// <summary>
+    /// Resolves a directory that holds one package version's files itself, such as a production bundle before it is
+    /// installed, with every check <see cref="Resolve"/> makes on an installed version and without writing anything.
+    /// The options name the package version the directory must hold.
+    /// </summary>
+    public static CatalogSnapshotResult ResolveDirectory(string snapshotDirectory, CatalogSnapshotResolverOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotDirectory);
+        ArgumentNullException.ThrowIfNull(options);
+        ValidateOptions(options);
+        if (options.ExpectedPackageVersion is null)
+        {
+            throw new ArgumentException("A snapshot directory is resolved for an expected package version.", nameof(options));
+        }
+        var directory = Path.GetFullPath(snapshotDirectory);
+        EnsureDirectoryIsNotLink(directory, "Catalog snapshot directory");
+        return ResolveSnapshot(new SnapshotPointer(options.ExpectedPackageVersion, directory), options);
+    }
+
+    private static CatalogSnapshotResult ResolveSnapshot(SnapshotPointer pointer, CatalogSnapshotResolverOptions options)
+    {
         var snapshotVersion = pointer.SnapshotVersion;
         var snapshotDirectory = pointer.SnapshotDirectory;
 
@@ -166,7 +210,7 @@ public static class CatalogSnapshotResolver
                 $"Catalog database length mismatch. Expected {manifest.Database.Length}, got {databaseFile.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(databaseFile.Stream);
+        var actualSha256 = ComputeSha256(databaseFile.Stream, manifest.Database.Length, "Catalog database");
         RevalidateFile(databaseFile, "Catalog database");
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(manifest.Database.Sha256)))
@@ -181,7 +225,8 @@ public static class CatalogSnapshotResolver
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
             manifest.Database.RowCount,
-            manifest.Catalog.Version), databaseFile, manifest.Database.Length,
+            manifest.Catalog.Version,
+            manifest.DeepSkyCounts), databaseFile, manifest.Database.Length,
             new AstrometricCatalogProvenance(manifest.Catalog.Id, snapshotVersion,
                 PackageKindValue(options.ExpectedPackageKind), manifest.PreprocessingVersion));
         if (!string.Equals(catalog.Metadata.Name, manifest.Catalog.Name, StringComparison.Ordinal))
@@ -207,7 +252,8 @@ public static class CatalogSnapshotResolver
             actualSha256,
             manifest.Database.Length,
             manifest.Database.RowCount,
-            catalog);
+            catalog,
+            manifest.DeepSkyCounts);
     }
 
     private static void ValidateTopologyEndpoints(
@@ -284,6 +330,11 @@ public static class CatalogSnapshotResolver
         ValidateConstant("topology.constellationCount", expected.Topology.ConstellationCount,
             manifest.Topology.ConstellationCount);
         ValidateConstant("topology.segmentCount", expected.Topology.SegmentCount, manifest.Topology.SegmentCount);
+        // The manifest versions match, and exactly the version-3 specifications and manifests have a composition.
+        if (expected.Composition is { } composition)
+        {
+            composition.RequireSameAs(manifest.Composition!);
+        }
     }
 
     private static void ValidateProductionRetainedFiles(
@@ -314,11 +365,13 @@ public static class CatalogSnapshotResolver
     /// production schema/preprocessing pair it imitates, so each pair has exactly one expected file set.
     /// </summary>
     private static string FixtureDatabaseFile(SnapshotManifest manifest)
-        => (manifest.SchemaVersion, manifest.PreprocessingVersion) switch
+        => (manifest.ManifestVersion, manifest.SchemaVersion, manifest.PreprocessingVersion) switch
         {
-            ("2", "3") => "hyg_v42.sqlite",
-            ("3", "4") => "hyg_v44.sqlite",
-            _ => throw new InvalidDataException("Catalog fixture must declare a supported schema and preprocessing pair.")
+            (MinimumSupportedManifestVersion, "2", "3") => "hyg_v42.sqlite",
+            (MinimumSupportedManifestVersion, "3", "4") => "hyg_v44.sqlite",
+            (ComposedManifestVersion, "4", "5") => "hyg_v44_openngc.sqlite",
+            _ => throw new InvalidDataException(
+                "Catalog fixture must declare a supported manifest, schema, and preprocessing combination.")
         };
 
     private static void ValidateFixtureRetainedFiles(string snapshotDirectory, string databaseFile)
@@ -400,16 +453,38 @@ public static class CatalogSnapshotResolver
         return new SnapshotPointer(packageVersion, snapshotDirectory);
     }
 
-    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    /// <summary>
+    /// Reads the manifest from its start, never past one byte beyond the limit. Authentication fixes the file's
+    /// identity, not its length, so the bound is enforced on the bytes actually read rather than on a length reported
+    /// before the read.
+    /// </summary>
+    internal static ReadOnlyMemory<byte> ReadBoundedManifest(Stream stream)
     {
-        if (file.Stream.Length > MaximumManifestLength)
+        if (stream.Length > MaximumManifestLength)
         {
             throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
         }
+        stream.Position = 0;
+        var buffer = new byte[MaximumManifestLength + 1];
+        var length = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        if (length > MaximumManifestLength)
+        {
+            throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
+        }
+        return buffer.AsMemory(0, length);
+    }
+
+    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    {
+        var manifest = ReadBoundedManifest(file.Stream);
+        if (manifest.Span.StartsWith(Utf8ByteOrderMark))
+        {
+            // Parsing the manifest stream skipped a leading byte-order mark; parsing its bounded bytes must too.
+            manifest = manifest[Utf8ByteOrderMark.Length..];
+        }
         try
         {
-            file.Stream.Position = 0;
-            using var document = JsonDocument.Parse(file.Stream, new JsonDocumentOptions
+            using var document = JsonDocument.Parse(manifest, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
@@ -418,10 +493,10 @@ public static class CatalogSnapshotResolver
             RejectDuplicateProperties(document.RootElement);
             var root = RequireObject(document.RootElement, "manifest");
             var manifestVersion = RequireInt32(root, "manifestVersion");
-            if (manifestVersion != SupportedManifestVersion)
+            if (manifestVersion is < MinimumSupportedManifestVersion or > SupportedManifestVersion)
             {
                 throw new InvalidDataException(
-                    $"Catalog manifest version mismatch. Expected {SupportedManifestVersion}, got {manifestVersion}.");
+                    $"Catalog manifest version {manifestVersion} is unsupported. This runtime reads versions {MinimumSupportedManifestVersion} through {SupportedManifestVersion}.");
             }
             var package = RequireObject(RequireProperty(root, "package"), "package");
             RequireExactProperties(package, "package", "kind", "version");
@@ -441,9 +516,14 @@ public static class CatalogSnapshotResolver
 
     private static SnapshotManifest ReadProductionManifest(JsonElement root, JsonElement package, int manifestVersion)
     {
-        RequireExactProperties(root, "manifest",
+        var composed = manifestVersion == ComposedManifestVersion;
+        string[] rootProperties =
+        [
             "manifestVersion", "package", "catalog", "source", "schemaVersion", "preprocessingVersion",
-            "serializer", "database", "license", "topology");
+            "serializer", "database", "license", "topology"
+        ];
+        string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount", "solCount", "requiredColumn"];
+        RequireExactProperties(root, "manifest", composed ? [.. rootProperties, "components", "transformations"] : rootProperties);
         var catalog = RequireObject(RequireProperty(root, "catalog"), "catalog");
         var source = RequireObject(RequireProperty(root, "source"), "source");
         var compressed = RequireObject(RequireProperty(source, "compressed"), "source.compressed");
@@ -460,9 +540,9 @@ public static class CatalogSnapshotResolver
         RequireExactProperties(compressed, "source.compressed", "sha256", "length");
         RequireExactProperties(decompressed, "source.decompressed", "sha256", "length");
         RequireExactProperties(serializer, "serializer", "name", "version");
-        RequireExactProperties(database, "database", "relativePath", "sha256", "length", "rowCount", "solCount",
-            "requiredColumn");
+        RequireExactProperties(database, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
         RequireExactProperties(license, "license", "identifier", "url", "file", "attribution");
+        var composition = composed ? ApprovedCatalogComposition.Read(root, database) : null;
         RequireExactProperties(licenseFile, "license.file", "relativePath", "sha256", "length");
         RequireExactProperties(attribution, "license.attribution", "relativePath", "sha256", "length");
         RequireExactProperties(topology, "topology", "identity", "sha256", "constellationCount", "segmentCount");
@@ -496,10 +576,15 @@ public static class CatalogSnapshotResolver
                 RequireString(topology, "identity"),
                 RequireString(topology, "sha256"),
                 RequireInt64(topology, "constellationCount"),
-                RequireInt64(topology, "segmentCount")));
+                RequireInt64(topology, "segmentCount")),
+            composition);
         return manifest;
     }
 
+    /// <summary>
+    /// Reads a fixture manifest. A version-3 fixture adds only <c>database.deepSky</c>, so the loader can prove the
+    /// fixture's deep-sky tables hold the counts it declares; it names no components or transformations.
+    /// </summary>
     private static SnapshotManifest ReadFixtureManifest(JsonElement root, JsonElement package, int manifestVersion)
     {
         RequireExactProperties(root, "manifest", "manifestVersion", "package", "catalog", "schemaVersion",
@@ -507,7 +592,9 @@ public static class CatalogSnapshotResolver
         var catalog = RequireObject(RequireProperty(root, "catalog"), "catalog");
         var database = RequireObject(RequireProperty(root, "database"), "database");
         RequireExactProperties(catalog, "catalog", "id", "name", "version");
-        RequireExactProperties(database, "database", "relativePath", "sha256", "length", "rowCount");
+        string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount"];
+        var composed = manifestVersion == ComposedManifestVersion;
+        RequireExactProperties(database, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
 
         var manifest = new SnapshotManifest(
             manifestVersion,
@@ -525,7 +612,9 @@ public static class CatalogSnapshotResolver
             null,
             null,
             null,
-            null);
+            null,
+            null,
+            composed ? ApprovedCatalogComposition.ReadDeepSkyCounts(database) : null);
         return manifest;
     }
 
@@ -978,7 +1067,7 @@ public static class CatalogSnapshotResolver
                 $"{description} length mismatch. Expected {evidence.Length}, got {file.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(file.Stream);
+        var actualSha256 = ComputeSha256(file.Stream, evidence.Length, description);
         RevalidateFile(file, description);
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(evidence.Sha256)))
@@ -997,12 +1086,35 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static string ComputeSha256(FileStream source)
+    private static ReadOnlySpan<byte> Utf8ByteOrderMark => [0xEF, 0xBB, 0xBF];
+
+    /// <summary>
+    /// Hashes the file from its start, never past one byte beyond the length already checked. Authentication fixes the
+    /// file's identity, not its length, so a file extended after its length check is rejected rather than hashed to
+    /// its end. A file truncated after the check hashes short and fails the checksum comparison.
+    /// </summary>
+    internal static string ComputeSha256(Stream source, long length, string description)
     {
         source.Position = 0;
-        var result = Convert.ToHexString(SHA256.HashData(source));
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[HashBufferLength];
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var read = source.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (read == 0)
+            {
+                break;
+            }
+            hash.AppendData(buffer, 0, read);
+            remaining -= read;
+        }
+        if (remaining == 0 && source.Read(buffer, 0, 1) > 0)
+        {
+            throw new InvalidDataException($"{description} grew beyond its expected length of {length} bytes.");
+        }
         source.Position = 0;
-        return result;
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     internal static void InvokeValidationTestHook(string path, CatalogSnapshotValidationPoint point)
@@ -1032,7 +1144,13 @@ public static class CatalogSnapshotResolver
         SnapshotSource? Source,
         SnapshotSerializer? Serializer,
         SnapshotLicense? License,
-        SnapshotTopology? Topology);
+        SnapshotTopology? Topology,
+        ApprovedCatalogComposition? Composition = null,
+        CatalogDeepSkyCounts? FixtureDeepSkyCounts = null)
+    {
+        /// <summary>Gets the deep-sky counts a composed manifest declares, or <see langword="null"/>.</summary>
+        public CatalogDeepSkyCounts? DeepSkyCounts => Composition?.DeepSkyCounts ?? FixtureDeepSkyCounts;
+    }
 
     private sealed record SnapshotPackage(string Kind, string Version);
 

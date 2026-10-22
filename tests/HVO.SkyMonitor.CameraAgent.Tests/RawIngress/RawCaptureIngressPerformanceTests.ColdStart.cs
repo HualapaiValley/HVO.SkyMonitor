@@ -131,7 +131,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
         Assert.AreEqual(0, state.LastReconciliation.Quarantined);
         Assert.AreEqual(0, state.LastReconciliation.IndexProjectionFailures);
         Assert.AreEqual(RetainedCaptureCount, stages.Count);
-        // Event 2048 is currently Warning even for a successful checkpoint; retain and inspect it.
+        // Before #1295 event 2048 also logged a successful checkpoint at Warning. That exact message stays allowed so the
+        // harness can still run against a baseline Common assembly from before that change; every other warning fails.
         Assert.IsFalse(logger.Events.Any(entry => entry.Level >= LogLevel.Warning &&
             (entry.EventId != 2048 || entry.Message != "Raw ingress SQLite operation checkpoint completed with result success")),
             JsonSerializer.Serialize(logger.Events, EvidenceOptions));
@@ -256,7 +257,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
     {
         internal int Count { get; private set; }
 
-        public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(IReadOnlySet<string> ownedStageKeys, CancellationToken cancellationToken)
+        public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(IReadOnlySet<string> ownedStageKeys, CancellationToken cancellationToken, CancellationToken interruptionToken = default)
         {
             Count = ownedStageKeys.Count;
             Assert.HasCount(RetainedCaptureCount, ownedStageKeys);

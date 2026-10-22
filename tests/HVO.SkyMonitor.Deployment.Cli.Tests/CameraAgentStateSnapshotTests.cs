@@ -1,0 +1,244 @@
+using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.Data.Sqlite;
+
+namespace HVO.SkyMonitor.Deployment.Cli.Tests;
+
+/// <summary>
+/// The small-database snapshot a migrating upgrade takes (#1314): which stores it covers, how it verifies a copy,
+/// and how a restore puts every store back exactly.
+/// </summary>
+[TestClass]
+[TestCategory("Unit")]
+public sealed class CameraAgentStateSnapshotTests
+{
+    private static readonly ImageInstallationIdentity Image = new(
+        "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null);
+
+    /// <summary>
+    /// The stores an installer released before the calibration-family store (#1475) snapshots. A snapshot or backup it
+    /// took names exactly these, and this installer must still verify and restore it.
+    /// </summary>
+    private static readonly string[] StoresBeforeCalibrationFamilies =
+    [
+        "identity/cameraagent_identity.db",
+        "raw/journal/raw-ingress.db",
+        "raw/outbox/artifact-outbox.db",
+        "archive/outbox/artifact-outbox.db",
+        "raw/.fleet/fleet-status.db",
+        "raw/.environment/environmental-observation-outbox.db",
+        "raw/evidence/execution-evidence-outbox.db",
+        "raw/.time-lapses/time-lapses.db",
+        "raw/.nightly-products/nightly-products.db",
+        "raw/.automation/local-automations.db"
+    ];
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateAsync_CorruptStore_IsRefusedRatherThanSnapshotted()
+    {
+        using var root = new SnapshotRoot();
+        var store = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db");
+        CreateDatabase(store, 400);
+        // Overwrite part of a b-tree page in the middle of the file.
+        await using (var stream = new FileStream(store, FileMode.Open, FileAccess.Write))
+        {
+            stream.Seek(2 * 4096 + 100, SeekOrigin.Begin);
+            stream.Write(new byte[512]);
+        }
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.CreateAsync(
+            root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "raw/journal/raw-ingress.db", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreAsync_PutsEveryStoreBackExactlyAndIsRepeatable()
+    {
+        using var root = new SnapshotRoot();
+        var raw = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db");
+        var outbox = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/outbox/artifact-outbox.db");
+        CreateDatabase(raw, 25);
+        var operationId = Guid.NewGuid();
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, operationId, Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+        var expected = Rows(raw);
+        // A candidate writes to the journal, creates a store the snapshot recorded as absent, and leaves sidecars.
+        CreateDatabase(outbox, 3);
+        await using (var connection = new SqliteConnection($"Data Source={raw};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate');";
+            await command.ExecuteNonQueryAsync();
+        }
+        await File.WriteAllTextAsync(raw + "-journal", "hot journal left by a crash");
+
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
+        var once = await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None);
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
+
+        CollectionAssert.AreEqual(expected, Rows(raw));
+        Assert.AreEqual(once, await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None));
+        Assert.IsFalse(File.Exists(raw + "-journal"));
+        Assert.IsFalse(File.Exists(outbox));
+        Assert.IsFalse(Directory.EnumerateFiles(Path.GetDirectoryName(raw)!, "*.tmp").Any());
+    }
+
+    [TestMethod]
+    public void SqliteStores_LeaveOutTheOrbitalElementsStore()
+    {
+        // The orbital store holds the provider's attempt floor and any halt, which a restore must never rewind (#528).
+        Assert.DoesNotContain(CameraAgentStateLayout.OrbitalElementsStore, CameraAgentStateLayout.SqliteStores);
+        Assert.DoesNotContain(CameraAgentStateLayout.SpaceWeatherStore, CameraAgentStateLayout.SqliteStores);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreAsync_LeavesTheOrbitalElementsStoreUntouched()
+    {
+        using var root = new SnapshotRoot();
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
+        var orbital = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.OrbitalElementsStore);
+        CreateDatabase(orbital, 2);
+        var spaceWeather = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.SpaceWeatherStore);
+        CreateDatabase(spaceWeather, 2);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+        // After the snapshot the candidate records a provider attempt and keeps a content file beside the store.
+        await using (var connection = new SqliteConnection($"Data Source={orbital};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate attempt');";
+            await command.ExecuteNonQueryAsync();
+        }
+        await using (var connection = new SqliteConnection($"Data Source={spaceWeather};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate halt');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var spaceWeatherExpected = await SafeFileSystem.ComputeSha256Async(spaceWeather, CancellationToken.None);
+        var content = Path.Combine(Path.GetDirectoryName(orbital)!, "payloads", "candidate.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(content)!);
+        await File.WriteAllTextAsync(content, "{}");
+        var expected = await SafeFileSystem.ComputeSha256Async(orbital, CancellationToken.None);
+
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
+
+        Assert.AreEqual(expected, await SafeFileSystem.ComputeSha256Async(orbital, CancellationToken.None));
+        CollectionAssert.Contains(Rows(orbital), "candidate attempt");
+        Assert.AreEqual(spaceWeatherExpected, await SafeFileSystem.ComputeSha256Async(spaceWeather, CancellationToken.None));
+        CollectionAssert.Contains(Rows(spaceWeather), "candidate halt");
+        Assert.IsTrue(File.Exists(content));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task VerifyAsync_AcceptsASnapshotAnEarlierInstallerTookWithoutTheCalibrationFamiliesStore()
+    {
+        // Verification requires every store SqliteStores lists, so listing the calibration-family store would make this
+        // installer refuse every snapshot and backup an earlier installer took (#1475).
+        Assert.DoesNotContain(CameraAgentStateLayout.CalibrationFamiliesStore, CameraAgentStateLayout.SqliteStores);
+        using var root = new SnapshotRoot();
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(
+            root.Paths, root.InstanceId, Guid.NewGuid(), Image, StoresBeforeCalibrationFamilies, CancellationToken.None);
+
+        var manifest = await CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None);
+
+        CollectionAssert.AreEquivalent(StoresBeforeCalibrationFamilies, manifest.Databases.Select(static database => database.RelativePath).ToArray());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreAsync_LeavesTheCalibrationFamiliesStoreUntouched()
+    {
+        using var root = new SnapshotRoot();
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
+        var families = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.CalibrationFamiliesStore);
+        CreateDatabase(families, 2);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+        // After the snapshot the candidate records an activation. The release rolled back to never opens the store.
+        await using (var connection = new SqliteConnection($"Data Source={families};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate activation');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var expected = await SafeFileSystem.ComputeSha256Async(families, CancellationToken.None);
+
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
+
+        Assert.AreEqual(expected, await SafeFileSystem.ComputeSha256Async(families, CancellationToken.None));
+        CollectionAssert.Contains(Rows(families), "candidate activation");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task VerifyAsync_RejectsASnapshotRecordedForAnotherOperationOrInstance()
+    {
+        using var root = new SnapshotRoot();
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.VerifyAsync(
+            root.Paths, Guid.NewGuid(), snapshot, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.VerifyAsync(
+            root.Paths, root.InstanceId, snapshot with { ManifestSha256 = new string('0', 64) }, CancellationToken.None));
+    }
+
+    private static void CreateDatabase(string path, int rows)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // Test-owned statements, not input.
+        command.CommandText = "CREATE TABLE rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL);" + string.Concat(
+            Enumerable.Range(1, rows).Select(static index => $"INSERT INTO rows(value) VALUES('{new string('r', 200)}-{index}');"));
+#pragma warning restore CA2100
+        command.ExecuteNonQuery();
+    }
+
+    private static List<string> Rows(string path)
+    {
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM rows ORDER BY id;";
+        using var reader = command.ExecuteReader();
+        var values = new List<string>();
+        while (reader.Read()) values.Add(reader.GetString(0));
+        return values;
+    }
+
+    private sealed class SnapshotRoot : IDisposable
+    {
+        public SnapshotRoot()
+        {
+            Root = Path.Combine(Path.GetTempPath(), $"hvo-snapshot-{Guid.NewGuid():N}");
+            InstanceId = Guid.NewGuid();
+            Paths = InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId);
+            foreach (var directory in new[] { Paths.InstanceRoot, Paths.StateRoot, Paths.OperationsRoot })
+                SafeFileSystem.CreateOwnerDirectory(directory);
+            SafeFileSystem.CreateOwnerDirectory(Path.Combine(Paths.OperationsRoot, "lifecycle"));
+        }
+
+        public string Root { get; }
+        public Guid InstanceId { get; }
+        public InstallationPaths Paths { get; }
+        public uint Uid { get; } = NativeLinux.getuid();
+        public uint Gid { get; } = NativeLinux.getgid();
+
+        public void Dispose()
+        {
+            if (!Directory.Exists(Root)) return;
+            SafeFileSystem.MakeTreeOwnerWritable(Root);
+            Directory.Delete(Root, recursive: true);
+        }
+    }
+}

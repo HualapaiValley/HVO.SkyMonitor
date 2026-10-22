@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -29,7 +30,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Configured async disposal would hide the strongly typed standalone fixture used throughout the acceptance scope.")]
-public sealed class StandaloneCameraAgentAcceptanceTests
+public sealed partial class StandaloneCameraAgentAcceptanceTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
     private static readonly FrameArtifactRole[] ExpectedRoles =
@@ -402,6 +403,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         await coordinator.PauseAsync($"issue-435-{Guid.NewGuid():N}", coordinator.Snapshot.Version, owner.Id,
             "restart projected-scene evidence", CancellationToken.None).ConfigureAwait(false);
         await fixture.StopAsync().ConfigureAwait(false);
+        var stageRoot = Path.Combine(fixture.Root, "staging", "projected-scenes");
+        // Processing can commit after admission pauses. Those stages must survive
+        // the drained shutdown and paused restart until capture explicitly resumes.
+        var retainedStages = Directory.Exists(stageRoot)
+            ? Directory.EnumerateFiles(stageRoot).Order(StringComparer.Ordinal).ToArray()
+            : [];
         await fixture.ChangeCurrentProjectedSceneConfigurationAsync().ConfigureAwait(false);
         await fixture.StartStoppedHostAsync().ConfigureAwait(false);
         Assert.AreEqual(0, fixture.ProjectedSceneMemoryCacheCount);
@@ -417,9 +424,18 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion).ArtifactId);
         Assert.AreEqual(1L, ReadJournalCount(fixture.Root,
             $"SELECT COUNT(*) FROM processing_outputs WHERE capture_id = '{capture.CaptureId:N}' AND product_schema_version = 'projected-scene-v1';"));
-        Assert.IsEmpty(Directory.Exists(Path.Combine(fixture.Root, "staging", "projected-scenes"))
-            ? Directory.EnumerateFiles(Path.Combine(fixture.Root, "staging", "projected-scenes")).ToArray()
+        CollectionAssert.AreEqual(retainedStages, Directory.Exists(stageRoot)
+            ? Directory.EnumerateFiles(stageRoot).Order(StringComparer.Ordinal).ToArray()
             : []);
+        var restartedCoordinator = fixture.Services.GetRequiredService<CaptureAdmissionCoordinator>();
+        await restartedCoordinator.ResumeAsync($"issue-435-resume-{Guid.NewGuid():N}", restartedCoordinator.Snapshot.Version,
+            owner.Id, "reclaim retained projected-scene stages", CancellationToken.None).ConfigureAwait(false);
+        var ingress = fixture.Services.GetRequiredService<IRawCaptureIngress>();
+        await WaitForConditionAsync(async () =>
+        {
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            return retainedStages.All(static path => !File.Exists(path));
+        }, "retained projected-scene stages to be reclaimed after resume", TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await fixture.StopAsync().ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
     }

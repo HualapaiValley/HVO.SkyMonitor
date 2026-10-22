@@ -21,7 +21,7 @@ must not redefine its policy inconsistently.
   qualification. Whole-repository ShellCheck and exhaustive category discovery
   run in full CI; changes to shell/category behavior still need focused local
   validation of that behavior.
-- Use the SDK pinned in `global.json` (`10.0.401`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
+- Use the SDK pinned in `global.json` (`10.0.402`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
 - The complete Tier C/M local candidate gate is:
   ```bash
@@ -100,7 +100,7 @@ must not redefine its policy inconsistently.
 
 - Read `docs/roadmap.md` for portfolio initiatives, stable `RM-###` IDs, and future direction. `docs/project-plan.md` remains authoritative for architecture, virtual-first requirements, phase order, and completion; it forbids references between `CameraAgent` and `LogicHost`.
 - `AgentCore` contains stable transport-neutral camera, rig, frame, and artifact contracts only; do not add ASP.NET, EF Core, object-storage SDK, SkiaSharp, or camera-SDK dependencies.
-- `HVO.SkyMonitor.Processing` (introduced under issue #93) owns host-neutral recipe definitions and execution contracts; it may reference AgentCore, Astronomy, and Imaging but no host or persistence infrastructure.
+- `HVO.SkyMonitor.Processing` (introduced under issue #93) owns host-neutral recipe definitions and execution contracts, and host-neutral, source-neutral fact models; it may reference AgentCore, Astronomy, and Imaging but no host or persistence infrastructure.
 - `HVO.SkyMonitor.Common` contains reusable ASP.NET security, identity, API, middleware, and observability infrastructure only; do not move capture, recipe, image, edge-workflow, or central-workflow ownership into it.
 - `HVO.SkyMonitor.Storage.FileSystem` (introduced under issue #592) owns only host-neutral root confinement, symlink/reparse protection, atomic publication, durable file/directory synchronization, and bounded cleanup/error primitives. It must not own CameraAgent or LogicHost storage contracts, capture/object identity, manifests, persistence policy, ASP.NET, EF Core, SQLite, or provider SDKs. Register it explicitly in the solution graph, architecture rules, coverage policy, and CI component classifier.
 - `CameraAgent.Common` owns edge capture orchestration: module registration/factory, SQLite/file durable ingress, durable lanes, local storage, outbox, retention, telemetry, and configuration loading. The `CameraAgent` host registers this through `AddCameraAgentInfrastructure` and hosts the local UI/API/identity.
@@ -122,6 +122,16 @@ must not redefine its policy inconsistently.
 - LogicHost integration tests start SQL Server, Redis, and Mailpit through Testcontainers and use the real filesystem object-store provider; CameraAgent integration tests reuse that central-host fixture and wire in-process HTTP handlers.
 - CameraAgent module/pipeline configuration comes from `cameraagent.sample.json` and the `CameraAgent` configuration section. Preserve configuration-driven module discovery and explicit pipeline graphs that use stable step aliases rather than adding host-specific branches.
 - For Blazor components with logic, keep markup, code-behind, scoped CSS, and optional scoped JS in sibling `.razor`, `.razor.cs`, `.razor.css`, and `.razor.js` files. Root/layout components must render `data-theme="hvo-dark"` on `<html>`.
+
+## Changelog
+
+- A pull request that changes what an operator or user notices adds a line under `## [Unreleased]` in `CHANGELOG.md`.
+  This covers the installer, UI, API, configuration, deployment, images, and the logs and metrics operators act on.
+- Put the line under the Keep a Changelog heading that fits: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or
+  `Security`. Write it for an operator, and end it with the issue number.
+- Internal refactoring, tests, CI and agent-process changes add no entry.
+- Cutting a release renames `[Unreleased]` and adds `docs/upgrade-notes/X.Y.Z.md`. That is the release procedure of the
+  install contract (section 3), not part of an ordinary pull request.
 
 ## Roadmap Execution
 
@@ -150,6 +160,10 @@ must not redefine its policy inconsistently.
   contract work. Technical dependencies and approved product scope still apply.
 - Complete the assigned issue without routine continuation prompts. Taking
   another issue requires explicit assignment or opt-in queue authorization.
+  An open issue labelled `agent:ready` is opt-in queue authorization: a queue
+  worker may claim it under the claim rules above. When several workers claim
+  at once, the earliest claim comment keeps it and the others withdraw in a
+  comment.
 
 ### Agent Workspaces
 
@@ -226,11 +240,35 @@ must not redefine its policy inconsistently.
   Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human,
   one-shot agent, or guarded resumed-session route; fleet scripts apply only to
   the enrolled resumed-session route they support.
-- Only one PR may hold the repository-wide finalization lock. Acquire it before
-  final target synchronization and hold it through any required base-sync
-  review, protected CI, and merge. If the target branch advances, return the PR
-  to draft, release the lock, synchronize and review again, then run CI on the
-  new reviewed head.
+- Finalize through GitHub auto-merge while the repository allows it. Once review
+  has converged, mark the PR ready. Once the required checks pass on the
+  reviewed head, publish the `hvo/reviewed-head` commit status on exactly that
+  head. `development/v1`'s branch protection requires that status, so it is the
+  merge gate there; `main` doesn't require it, and promotion PRs stay
+  owner-approved. Then
+  merge, or enable auto-merge (merge commit) pinned to that head. Branch
+  protection also enforces green required checks, an up-to-date head and
+  resolved conversations. The PR lifecycle skill gives the steps and commands.
+  - When the target branch advances, the operator's merge-train automation
+    merges it into one queued PR at a time.
+  - It pushes that merge only when two conditions hold. First, the only
+    conflicts are in the test-count inventories, the CI runbook totals and
+    CHANGELOG lines. Second, the non-count diff is byte-identical to the
+    reviewed range. That merge is the recorded unchanged-base proof, so it
+    needs no base-sync review.
+  - In every other case, including a failed required check, the automation
+    disables auto-merge, returns the PR to draft and hands it back to the
+    owner. The owner synchronizes, obtains the base-sync review, and enables
+    auto-merge again on the new reviewed head.
+  - Auto-merge does not switch itself off on a push with write access. Turn it
+    off (`gh pr merge <n> --disable-auto`) before pushing to a finalized PR. The
+    automation also withdraws it from any head it wasn't enabled for.
+- When auto-merge is unavailable or the operator reserves the merge, use the
+  finalization lock. Only one PR may hold the repository-wide finalization
+  lock. Acquire it before final target synchronization and hold it through any
+  required base-sync review, protected CI, and merge. If the target branch
+  advances, return the PR to draft, release the lock, synchronize and review
+  again, then run CI on the new reviewed head.
 - Opening a PR assigns its implementing agent ownership of the complete lifecycle:
   request review, actively monitor review and checks, disposition findings, drive
   corrections and bounded rereviews, mark the converged head ready, monitor final

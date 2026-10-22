@@ -1,0 +1,173 @@
+{
+ "jobs": [
+  {
+   "attempt": 1,
+   "completedAt": "2026-10-10T12:01:40Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:00Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 1001,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Build",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 100,
+   "runner": "gh-runner-01",
+   "startedAt": "2026-10-10T12:00:00Z",
+   "workflow": "CI"
+  },
+  {
+   "attempt": 1,
+   "completedAt": "2026-10-10T12:01:40Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:00Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 1002,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Unit Tests",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 100,
+   "runner": "gh-runner-02",
+   "startedAt": "2026-10-10T12:00:00Z",
+   "workflow": "CI"
+  },
+  {
+   "attempt": 1,
+   "completedAt": "2026-10-10T12:01:40Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:00Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 1003,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Integration Tests",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 100,
+   "runner": "gh-runner-03",
+   "startedAt": "2026-10-10T12:00:00Z",
+   "workflow": "CI"
+  },
+  {
+   "attempt": 2,
+   "completedAt": "2026-10-10T12:01:40Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:00Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 1004,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Build",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 100,
+   "runner": "gh-runner-01",
+   "startedAt": "2026-10-10T12:00:00Z",
+   "workflow": "CI"
+  },
+  {
+   "attempt": 1,
+   "completedAt": "2026-10-10T12:02:30Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:10Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 2001,
+   "labels": [
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Development v1 / Build and Unit",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 200,
+   "runner": "gh-runner-01",
+   "startedAt": "2026-10-10T12:01:40Z",
+   "workflow": "Development v1"
+  },
+  {
+   "attempt": 1,
+   "completedAt": "2026-10-10T12:00:50Z",
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:00Z",
+   "event": "schedule",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 3001,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "ARM64",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 300,
+   "runner": "pi-runner-01",
+   "startedAt": "2026-10-10T12:00:05Z",
+   "workflow": "CameraAgent ARM64 Advisory"
+  },
+  {
+   "attempt": 1,
+   "completedAt": null,
+   "conclusion": "success",
+   "createdAt": "2026-10-10T12:00:20Z",
+   "event": "pull_request",
+   "headBranch": "development/v1",
+   "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "job": 4001,
+   "labels": [
+    "hvo-qualification",
+    "hvo-skymonitor",
+    "linux",
+    "self-hosted",
+    "x64"
+   ],
+   "name": "Development v1 / Build and Unit",
+   "repository": "HualapaiValley/HVO.SkyMonitor",
+   "run": 400,
+   "runner": null,
+   "startedAt": null,
+   "workflow": "Development v1"
+  }
+ ],
+ "repositories": [
+  "HualapaiValley/HVO.SkyMonitor"
+ ],
+ "runs": 4,
+ "schema": "hvo-runner-capacity-input-v1",
+ "window": {
+  "since": "2026-10-10",
+  "until": "2026-10-10"
+ }
+}

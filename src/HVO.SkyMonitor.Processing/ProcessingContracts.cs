@@ -104,6 +104,13 @@ public sealed record ProcessingArtifact(
     public string? DescriptorIdentitySha256 { get; init; }
 
     /// <summary>
+    /// Gets the producing recipe's canonical descriptor when this artifact was restored from a processing product. Its
+    /// identity is <see cref="RecipeIdentitySha256"/>, so a recipe can check what produced an input rather than trust a
+    /// label the input carries.
+    /// </summary>
+    public RecipeIdentityDescriptor? RecipeDescriptor { get; init; }
+
+    /// <summary>
     /// Resolves the observation end. Accelerated captures may report an instantaneous acquisition while retaining a
     /// positive modeled integration; all execution locations expand that interval identically.
     /// </summary>
@@ -268,6 +275,13 @@ public static class ProcessingReasonCodes
     public const string CalibrationReferenceConditionsMismatch = "calibration.reference-conditions-mismatch";
     public const string InvalidCalibrationFlat = "calibration.invalid-flat";
     public const string UnrepairableCalibrationDefect = "calibration.unrepairable-defect";
+    public const string InvalidCalibrationBias = "calibration.invalid-bias";
+    public const string InvalidCalibrationDark = "calibration.invalid-dark";
+    public const string MissingNormalizationPlan = "normalization.missing-plan";
+    public const string InvalidNormalizationPlan = "normalization.invalid-plan";
+    public const string NormalizationPlanInputMismatch = "normalization.plan-input-mismatch";
+    public const string NormalizationPrimaryExcluded = "normalization.primary-excluded";
+    public const string OutputBackedWindow = "normalization.output-backed-window";
 }
 
 public sealed record ProcessingRecipeDefinition(

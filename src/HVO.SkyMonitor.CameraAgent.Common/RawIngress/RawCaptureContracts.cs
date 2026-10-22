@@ -20,6 +20,13 @@ public interface IRawCaptureIngress
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 
+    // Startup can expose operator recovery only after validating the journal. False keeps capture closed.
+    internal async ValueTask<bool> InitializeForOperationsAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
     ValueTask<RawCaptureReceipt?> AcceptAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
@@ -89,7 +96,8 @@ internal sealed record RawIngressJournalEntry(
     DateTimeOffset DurableIngressUtc,
     string State = "committed",
     bool RetentionHold = true,
-    GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown);
+    GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown,
+    bool EvidenceWrittenOff = false);
 
 internal sealed record RawIngressReconciliationSummary(
     int Inspected,
@@ -99,7 +107,8 @@ internal sealed record RawIngressReconciliationSummary(
     int MissingEvidence,
     long QuarantineBytes,
     int IndexProjectionFailures = 0,
-    int ProjectedSceneStageBacklog = 0);
+    int ProjectedSceneStageBacklog = 0,
+    int MaintenanceDeferred = 0);
 
 internal sealed record RawIngressPlannedQuarantine(
     string EvidenceKey,
@@ -107,4 +116,5 @@ internal sealed record RawIngressPlannedQuarantine(
     string? CompanionRelativePath,
     string QuarantineRelativePath,
     string Reason,
-    long ObservedBytes);
+    long ObservedBytes,
+    Guid? CaptureId = null);

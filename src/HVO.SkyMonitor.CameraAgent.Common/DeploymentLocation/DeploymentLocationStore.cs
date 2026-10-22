@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -50,6 +51,15 @@ public interface IDeploymentLocationStore
         => ValueTask.FromException<ManualDeploymentLocationResult>(
             new NotSupportedException("This deployment-location store does not support manual coordinate mutation."));
 
+    /// <summary>
+    /// Finds the original resolved coordinates of a retained manual command for partial-request replay.
+    /// Applying the command still validates its payload and whether it has been superseded.
+    /// </summary>
+    ValueTask<ManualDeploymentLocationAuditEntry?> FindManualCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult<ManualDeploymentLocationAuditEntry?>(null);
+
     ValueTask<DeploymentLocationSnapshot> InitializeAsync(
         DeploymentLocationSeed seed,
         CancellationToken cancellationToken);
@@ -86,6 +96,7 @@ public sealed class ProtectedDeploymentLocationStore(
     private readonly IDeploymentLocationProtector _protector = protector;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<ProtectedDeploymentLocationStore> _logger = logger;
+    internal Action<string>? BeforeStateDirectorySyncForTest { get; set; }
     private DeploymentLocationHistory? _history;
     private ManualDeploymentLocationRecord? _manual;
     private DeploymentLocationSeed? _configurationSeed;
@@ -289,6 +300,23 @@ public sealed class ProtectedDeploymentLocationStore(
             var (path, _, _) = EnsureStatePaths();
             await WriteAsync(path, updated, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _history, updated);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask<ManualDeploymentLocationAuditEntry?> FindManualCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Search the durable replay window, which is larger than the operator-facing history projection.
+            return _manual?.Entries.FirstOrDefault(entry =>
+                string.Equals(entry.IdempotencyKey, idempotencyKey.Trim(), StringComparison.Ordinal));
         }
         finally
         {
@@ -755,7 +783,7 @@ public sealed class ProtectedDeploymentLocationStore(
         await WriteDurableAsync(path, protectedPayload, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask WriteMarkerAsync(
+    private async ValueTask WriteMarkerAsync(
         string path,
         DeploymentLocationSnapshot snapshot,
         CancellationToken cancellationToken)
@@ -767,7 +795,7 @@ public sealed class ProtectedDeploymentLocationStore(
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken)
+    private async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path)!;
         RawIngressFileStore.EnsureNoSymbolicLinks(directory, path);
@@ -785,13 +813,12 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RestrictFile(temporaryPath);
-            File.Move(temporaryPath, path, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, path, overwrite: true);
             RestrictFile(path);
+            BeforeStateDirectorySyncForTest?.Invoke(directory);
             RawIngressFileStore.SyncDirectory(directory);
         }
         finally
@@ -825,23 +852,16 @@ public sealed class ProtectedDeploymentLocationStore(
         var parent = Path.GetDirectoryName(root)
             ?? throw new InvalidOperationException("CameraAgent data root has no parent directory.");
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
-        var rootExisted = Directory.Exists(root);
         Directory.CreateDirectory(root);
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
         RestrictDirectory(root);
-        if (!rootExisted)
-        {
-            RawIngressFileStore.SyncDirectory(parent);
-        }
+        CameraAgentFileSystem.EnsureStorageRootDurable(root);
         var directory = Path.GetFullPath(Path.Combine(root, ".location"));
-        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         RestrictDirectory(directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
-        }
+        BeforeStateDirectorySyncForTest?.Invoke(root);
+        RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
         // The manual record is a separate protected file rather than a field of the history document:
         // the history schema stays byte-compatible so an installer rollback to a baseline image can
@@ -1453,7 +1473,7 @@ internal static partial class DeploymentLocationLog
         "Deployment location {LocationId} manual coordinate entry {Sequence} recorded; the next start appends its deployment version")]
     internal static partial void ManualEntryRecorded(ILogger logger, string locationId, long sequence);
 
-    [LoggerMessage(7306, LogLevel.Warning,
+    [LoggerMessage(7306, LogLevel.Information,
         "Deployment location {LocationId} manual override superseded by a changed startup configuration seed")]
     internal static partial void ManualOverrideSuperseded(ILogger logger, string locationId);
 }

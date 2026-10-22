@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -68,6 +69,10 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
     private string _objectLimitInput = string.Empty;
     private bool _objectLimitDirty;
     private string? _objectLimitExpectedVersion;
+
+    private string _currentSkyRefreshInput = string.Empty;
+    private bool _currentSkyRefreshDirty;
+    private string? _currentSkyRefreshExpectedVersion;
 
     private string _search = string.Empty;
     private string _magnitudeFilter = string.Empty;
@@ -229,6 +234,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
             SeedLocationForm();
             SeedProfileForm();
             SeedObjectLimitForm();
+            SeedCurrentSkyRefreshForm();
         }
         finally
         {
@@ -341,6 +347,22 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
     private void ObjectLimitFormChanged()
     {
         _objectLimitDirty = true;
+        _notice = null;
+    }
+
+    private void SeedCurrentSkyRefreshForm()
+    {
+        if (_currentSkyRefreshDirty || _site?.CurrentSkyRefresh is not { } refresh)
+        {
+            return;
+        }
+        _currentSkyRefreshInput = refresh.SavedValue ?? string.Empty;
+        _currentSkyRefreshExpectedVersion = refresh.Version;
+    }
+
+    private void CurrentSkyRefreshFormChanged()
+    {
+        _currentSkyRefreshDirty = true;
         _notice = null;
     }
 
@@ -493,7 +515,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         if (!useDefault && !string.IsNullOrWhiteSpace(_objectLimitInput))
         {
             if (!int.TryParse(_objectLimitInput.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ||
-                parsed is < 1 or > CameraAgentSkyMapProjection.MaximumConfigurableObjects)
+                ObjectLimit.Check(parsed) is not null)
             {
                 SetNotice(ObjectLimitRule, error: true);
                 return;
@@ -535,9 +557,84 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         SetNotice(result.Message ?? "The object limit could not be saved.", error: true);
     }
 
-    private static string ObjectLimitRule { get; } = string.Create(
+    private async Task SaveCurrentSkyRefreshAsync(bool useDefault)
+    {
+        if (_busy || _currentSkyRefreshExpectedVersion is not { } expectedVersion)
+        {
+            return;
+        }
+        int? seconds = null;
+        if (!useDefault && !string.IsNullOrWhiteSpace(_currentSkyRefreshInput))
+        {
+            if (!int.TryParse(_currentSkyRefreshInput.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ||
+                CurrentSkyRefresh.Check(parsed) is not null)
+            {
+                SetNotice(CurrentSkyRefresh.NumberRule, error: true);
+                return;
+            }
+            seconds = parsed;
+        }
+        _busy = true;
+        OperatorUiResult<CameraAgentCurrentSkyRefreshSetting> result;
+        try
+        {
+            result = await SkyMapService.SaveCurrentSkyRefreshAsync(seconds, expectedVersion, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            NavigationManager.NavigateTo("/Account/AccessDenied");
+            return;
+        }
+        if (result.IsSuccess && result.Value is { } saved)
+        {
+            _currentSkyRefreshDirty = false;
+            await LoadAsync().ConfigureAwait(false);
+            SetNotice(
+                (saved.Unchanged
+                    ? "The minimum image refresh already has this value, so nothing changed."
+                    : seconds is null
+                        ? string.Create(CultureInfo.InvariantCulture,
+                            $"The minimum image refresh is back to its default of {CurrentSkyRefreshPlaceholder} seconds.")
+                        : string.Create(CultureInfo.InvariantCulture,
+                            $"Saved a minimum image refresh of {seconds:N0} seconds. Current Sky uses it from its next refresh."))
+                + (saved.Overridden ? " Another setting source still supplies the interval, so it has no effect yet." : string.Empty),
+                error: false);
+            return;
+        }
+        if (result.Kind == OperatorUiResultKind.Conflict)
+        {
+            await LoadAsync().ConfigureAwait(false);
+            _currentSkyRefreshExpectedVersion = _site?.CurrentSkyRefresh?.Version;
+        }
+        SetNotice(result.Message ?? "The minimum image refresh could not be saved.", error: true);
+    }
+
+    private static CameraAgentSettingDefinition CurrentSkyRefresh => CameraAgentSettingsCatalogue.MinimumRefreshInterval;
+
+    /// <summary>The minimum image refresh field label: the catalogue's title, unit and range.</summary>
+    private static string CurrentSkyRefreshLabel => string.Create(
         CultureInfo.InvariantCulture,
-        $"The object limit must be a whole number from 1 to {CameraAgentSkyMapProjection.MaximumConfigurableObjects:N0}.");
+        $"{CurrentSkyRefresh.Title} ({CurrentSkyRefresh.Unit}, {CurrentSkyRefresh.Minimum:N0} to {CurrentSkyRefresh.Maximum:N0})");
+
+    private static string CurrentSkyRefreshPlaceholder
+        => Convert.ToString(CurrentSkyRefresh.Default, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static string ObjectLimitRule => ObjectLimit.NumberRule;
+
+    private static CameraAgentSettingDefinition ObjectLimit => CameraAgentSettingsCatalogue.MaximumSceneObjects;
+
+    /// <summary>The object limit field label: the catalogue's title and range.</summary>
+    private static string ObjectLimitLabel => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{ObjectLimit.Title} (brightest objects, {ObjectLimit.Minimum:N0} to {ObjectLimit.Maximum:N0})");
+
+    private static string ObjectLimitPlaceholder
+        => Convert.ToString(ObjectLimit.Default, CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static string DescribeLocation(ManualDeploymentLocationResult result) => result.Status switch
     {
@@ -566,36 +663,29 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         longitude = 0;
         elevation = 0;
         timeZoneId = _timeZoneInput?.Trim() ?? string.Empty;
-        if (!TryParseNumber(_latitudeInput, -90, 90, out latitude))
+        if (!TryParseCoordinate(CameraAgentSettingsCatalogue.Latitude, _latitudeInput, out latitude) ||
+            !TryParseCoordinate(CameraAgentSettingsCatalogue.Longitude, _longitudeInput, out longitude) ||
+            !TryParseCoordinate(CameraAgentSettingsCatalogue.Elevation, _elevationInput, out elevation))
         {
-            SetNotice("Latitude must be a number between -90 and 90 degrees.", error: true);
             return false;
         }
-        if (!TryParseNumber(_longitudeInput, -180, 180, out longitude))
+        if (CameraAgentSettingsCatalogue.TimeZone.Check(timeZoneId) is { } zoneProblem)
         {
-            SetNotice("Longitude must be a number between -180 and 180 degrees, east positive.", error: true);
-            return false;
-        }
-        if (!TryParseNumber(
-                _elevationInput,
-                ManualDeploymentLocationContract.MinimumElevationMeters,
-                ManualDeploymentLocationContract.MaximumElevationMeters,
-                out elevation))
-        {
-            SetNotice(
-                $"Elevation must be a number between {ManualDeploymentLocationContract.MinimumElevationMeters:F0} "
-                + $"and {ManualDeploymentLocationContract.MaximumElevationMeters:F0} metres.",
-                error: true);
-            return false;
-        }
-        if (timeZoneId.Length == 0)
-        {
-            SetNotice(
-                "Time zone must be an IANA identifier this host can resolve, such as America/Phoenix or UTC.",
-                error: true);
+            SetNotice(zoneProblem, error: true);
             return false;
         }
         return true;
+    }
+
+    /// <summary>Parses a coordinate within the catalogue's bounds, or shows the catalogue's rule.</summary>
+    private bool TryParseCoordinate(CameraAgentSettingDefinition definition, string value, out double parsed)
+    {
+        if (TryParseNumber(value, definition.Minimum!.Value, definition.Maximum!.Value, out parsed))
+        {
+            return true;
+        }
+        SetNotice(definition.NumberRule, error: true);
+        return false;
     }
 
     /// <summary>Parses within the same bounds the message advertises, so the guidance is truthful.</summary>

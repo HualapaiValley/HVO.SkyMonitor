@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
@@ -118,8 +119,7 @@ internal sealed class CentralDerivativeJobInputReader(
 
     private static CentralDerivativeJobLeaseInput[] ResolveLeaseInputs(CentralDerivativeJobLease lease)
         => lease.Inputs is { Count: > 0 }
-            ? lease.Inputs.Where(input => lease.ProjectedScene is null ||
-                input.BindingName != CentralProjectedSceneResolver.BindingName).ToArray()
+            ? CentralProjectedSceneResolver.RecipeInputs(lease).ToArray()
             : [new CentralDerivativeJobLeaseInput(
                 0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
                 lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
@@ -229,6 +229,30 @@ internal sealed class CentralDerivativeJobInputReader(
     {
         if (artifact.Layout is null)
         {
+            if (artifact.StructuredProduct?.ProductSchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion)
+            {
+                // An ingested scene carries authenticated processing evidence in its immutable descriptor;
+                // the separate job evidence row exists only for products published by central execution.
+                var structured = CentralReconstructionDescriptorFactory.CreateStructured(artifact);
+                var capture = structured.SourceCapture;
+                if (capture.Capture.CaptureId != artifact.Frame!.FrameId)
+                    throw new CentralDerivativeInputRejectedException("The retained scene capture evidence is inconsistent.");
+                var integration = TimeSpan.FromTicks(structured.TotalIntegrationTicks);
+                return new LogicHostProcessingInput(null, payload, leaseInput.BindingName,
+                    new ProcessingArtifact(structured.Artifact.ArtifactId, structured.Artifact.Role,
+                        structured.Artifact.Variant, ProcessingIdentity.CreateRecipeIdentity(structured.Artifact.Recipe).IdentitySha256,
+                        structured.Artifact.MediaType, null, payload, structured.Artifact.CreatedUtc,
+                        integration, structured.Compatibility, capture.Capture.CaptureSequence,
+                        structured.Artifact.SourceArtifactIds, capture.Timing.ExposureStartedUtc,
+                        ProcessingArtifact.ResolveObservationEndedUtc(capture.Timing.ExposureStartedUtc,
+                            capture.Timing.ExposureEndedUtc, integration))
+                    {
+                        CaptureId = capture.Capture.CaptureId,
+                        ProductKind = structured.Kind,
+                        SchemaVersion = structured.ProductSchemaVersion,
+                        ContentIdentitySha256 = structured.ContentIdentitySha256
+                    }, leaseInput.BindingKind);
+            }
             var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
                 .SingleOrDefaultAsync(item => item.CentralArtifactId == artifact.Id, cancellationToken)
                 .ConfigureAwait(false)
@@ -263,6 +287,7 @@ internal sealed class CentralDerivativeJobInputReader(
                         artifact.Frame.Timing.ExposureEndedUtc,
                         TimeSpan.FromTicks(evidence.TotalIntegrationTicks)))
                 {
+                    CaptureId = artifact.Frame.FrameId,
                     // The durable product facts, resolved as the output writer resolves them: the graph evidence
                     // first, then an ingested structured product, then the role. None of these enters a recipe or
                     // auxiliary identity; a recipe that consumes a structured product checks them.
@@ -319,8 +344,8 @@ internal sealed class CentralDerivativeJobInputReader(
                         && candidate.SourceCentralArtifactId == artifact.Id))
                 .Include(artifact => artifact.Layout)
                 .Include(artifact => artifact.Recipe)
-                .Include(artifact => artifact.Sources)
                 .Include(artifact => artifact.StructuredProduct)
+                .Include(artifact => artifact.Sources)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
@@ -343,8 +368,8 @@ internal sealed class CentralDerivativeJobInputReader(
                         && input.Ordinal == leaseInput.Ordinal)))
             .Include(artifact => artifact.Layout)
             .Include(artifact => artifact.Recipe)
-            .Include(artifact => artifact.Sources)
             .Include(artifact => artifact.StructuredProduct)
+            .Include(artifact => artifact.Sources)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)

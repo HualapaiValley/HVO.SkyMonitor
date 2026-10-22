@@ -11,6 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class EquipmentFormModelTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+    private static readonly string[] SkyLightingValues = ["LegacyScalarSolar", "SolarDriven", "ControlledNight"];
+    private static readonly string[] SkyLightingLabels = ["Uniform daylight", "Realistic daylight", "No daylight"];
     private static readonly JsonSerializerOptions SampleJson = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -44,6 +46,54 @@ public sealed class EquipmentFormModelTests
             Assert.AreEqual(basis.Readout, saved.Readout);
             Assert.AreEqual(color ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None, saved.Readout!.CfaPattern);
         }
+    }
+
+    [TestMethod]
+    public void SkyLighting_OffersTheThreeVirtualSkyModesWithTheDefaultFirst()
+    {
+        CollectionAssert.AreEqual(SkyLightingValues,
+            EquipmentFormModel.SkyLightingChoices.Select(choice => choice.Value).ToArray());
+        CollectionAssert.AreEqual(SkyLightingLabels,
+            EquipmentFormModel.SkyLightingChoices.Select(choice => choice.Label).ToArray());
+        CollectionAssert.AreEquivalent(Enum.GetNames<HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.VirtualSkyIlluminationMode>(),
+            EquipmentFormModel.SkyLightingChoices.Select(choice => choice.Value).ToArray());
+    }
+
+    [TestMethod]
+    public void SkyLighting_IsSubmittedOnlyForAVirtualSkyBasisAndOnlyFromTheAllowList()
+    {
+        var virtualSky = Camera() with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { seed = 42, illuminationMode = "SolarDriven" }))
+        };
+        var model = EquipmentFormModel.FromCamera(virtualSky, "SolarDriven");
+        Assert.AreEqual("SolarDriven", model.SkyLighting);
+        model.SkyLighting = "ControlledNight";
+        Assert.IsTrue(model.TryApplyCamera(virtualSky, out var definition, out var errors), string.Join(" ", errors));
+        Assert.AreEqual("ControlledNight", definition.GetProperty("illuminationMode").GetString());
+        Assert.IsFalse(definition.GetProperty("module").TryGetProperty("options", out _));
+        Assert.IsFalse(definition.GetRawText().Contains("seed", StringComparison.Ordinal));
+        foreach (var unsupported in new[] { "PretendNight", "controllednight", "2" })
+        {
+            model.SkyLighting = unsupported;
+            Assert.IsFalse(model.TryApplyCamera(virtualSky, out _, out errors), unsupported);
+            CollectionAssert.Contains(errors.ToArray(), "Sky lighting is not a supported value.");
+        }
+
+        // An unreadable basis choice is not offered, so saving leaves the basis option untouched.
+        var unreadable = EquipmentFormModel.FromCamera(virtualSky, "PretendNight");
+        Assert.AreEqual(string.Empty, unreadable.SkyLighting);
+        Assert.IsTrue(unreadable.TryApplyCamera(virtualSky, out definition, out errors), string.Join(" ", errors));
+        Assert.IsFalse(definition.TryGetProperty("illuminationMode", out _));
+
+        var physical = Camera();
+        var physicalModel = EquipmentFormModel.FromCamera(physical, "ControlledNight");
+        Assert.AreEqual(string.Empty, physicalModel.SkyLighting);
+        Assert.IsTrue(physicalModel.TryApplyCamera(physical, out definition, out errors), string.Join(" ", errors));
+        Assert.IsFalse(definition.TryGetProperty("illuminationMode", out _));
+        physicalModel.SkyLighting = "ControlledNight";
+        Assert.IsFalse(physicalModel.TryApplyCamera(physical, out _, out errors));
+        CollectionAssert.Contains(errors.ToArray(), "Sky lighting applies only to virtual sky cameras.");
     }
 
     [TestMethod]

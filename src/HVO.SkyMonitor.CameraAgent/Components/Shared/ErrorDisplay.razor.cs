@@ -16,11 +16,6 @@ public partial class ErrorDisplay : ComponentBase
     [Inject]
     private ICorrelationIdAccessor CorrelationIdAccessor { get; set; } = default!;
 
-    private void Reload()
-    {
-        NavigationManager.NavigateTo(NavigationManager.Uri, forceLoad: true);
-    }
-
     private async Task OnDismissClicked()
     {
         if (OnDismiss.HasDelegate)

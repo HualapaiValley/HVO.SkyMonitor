@@ -8,9 +8,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class AccountShellTests
 {
-    private static readonly string[] SettingsLinks = ["Account/Manage", "Account/Manage/Email", "Account/Manage/ChangePassword"];
+    private static readonly string[] SettingsLinks =
+        ["Account/Manage", "Account/Manage/Email", "Account/Manage/ChangePassword", "Account/Manage/ApiKeys"];
 
-    private static readonly string[] SettingsNames = ["Profile", "Owner email", "Password"];
+    private static readonly string[] SettingsNames = ["Profile", "Owner email", "Password", "API keys"];
 
     [TestMethod]
     public void StatusMessage_Error_RendersTheFailureBanner()
@@ -54,7 +55,7 @@ public sealed class AccountShellTests
     }
 
     [TestMethod]
-    public void ManageNavMenu_LinksTheThreeSettingsPagesInOrder()
+    public void ManageNavMenu_LinksTheFourSettingsPagesInOrder()
     {
         using var context = new BunitContext();
 

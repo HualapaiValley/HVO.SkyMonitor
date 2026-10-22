@@ -1,0 +1,14 @@
+/* The Overview's compact space-weather summary. The shared Operations vocabulary (.ops-*, .state-chip, .status-icon)
+   lives in OperationsLayout.razor.css; this file stacks the notice lines and the footer. */
+
+.space-weather-summary-count { margin: .6rem 0 0; color: var(--muted-strong); font-size: .65rem; }
+.space-weather-summary-count strong { color: var(--text); font-size: .8rem; }
+.space-weather-summary-list { display: grid; gap: .5rem; margin: .6rem 0 0; padding: 0; list-style: none; }
+.space-weather-summary-row { display: grid; gap: .2rem; padding: .55rem .65rem; border: 1px solid var(--border); border-radius: .42rem; background: var(--surface-raised); font-size: .62rem; }
+.space-weather-summary-title { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
+.space-weather-summary-global { color: var(--text); overflow-wrap: anywhere; }
+.space-weather-summary-site { color: var(--muted-strong); overflow-wrap: anywhere; }
+.space-weather-summary-more { margin: .45rem 0 0; color: var(--muted); font-size: .6rem; }
+.space-weather-summary-footer { display: grid; gap: .35rem; margin-top: .7rem; font-size: .6rem; }
+.space-weather-summary-footer a, .space-weather-summary a { color: var(--blue); font-weight: 700; }
+.space-weather-credit { margin: 0; color: var(--muted); font-size: .55rem; line-height: 1.4; }

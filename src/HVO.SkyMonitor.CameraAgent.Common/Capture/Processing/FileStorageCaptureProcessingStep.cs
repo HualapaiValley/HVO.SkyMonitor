@@ -90,7 +90,7 @@ internal sealed class FileStorageCaptureProcessingStep(
         });
         await QueueCanonicalScenesAsync(context, selectedProducts, allowAutomaticPublication, needsSceneUpload,
             cancellationToken).ConfigureAwait(false);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             foreach (var artifact in selectedArtifacts)
@@ -318,7 +318,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                 throw new InvalidOperationException("Canonical scene upload requires durable reconstruction context.");
             var root = _processingPersistence.StorageRoot;
             var gate = StorageLifecycleLock.ForRoot(root);
-            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await StorageLifecycleLock.WaitAsync(gate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
             try
             {
                 var output = await _processingPersistence.RequireCommittedSceneAsync(

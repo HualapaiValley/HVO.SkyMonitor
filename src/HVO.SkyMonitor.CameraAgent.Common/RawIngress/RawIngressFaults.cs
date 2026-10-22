@@ -24,7 +24,8 @@ internal enum RawIngressFaultPoint
     AfterJournalCommit,
     BeforeIndexProjection,
     AfterIndexProjection,
-    BeforeWakeUpNotification
+    BeforeWakeUpNotification,
+    BeforeAcceptanceLifecycleLock
 }
 
 internal interface IRawIngressFaultInjector
@@ -32,6 +33,14 @@ internal interface IRawIngressFaultInjector
     bool IsEnabled(RawIngressFaultPoint point) => false;
 
     void Inject(RawIngressFaultPoint point);
+
+    // Scheduling-only seams keep initialization races separate from publication fault inventory.
+    void AfterInitializationStateReset() { }
+
+    void BeforeOperationsReadinessDecision() { }
+
+    // Reconciliation reads a stored payload's bytes, to verify its checksum, only through the stream this opens.
+    Stream OpenPayloadForVerification(string path) => RawIngressReconciler.OpenPayload(path);
 }
 
 internal interface IRawIngressRecoveryControl

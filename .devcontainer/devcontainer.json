@@ -27,7 +27,7 @@
       "upgradePackages": false
     },
     "ghcr.io/devcontainers/features/dotnet:2": {
-      "version": "10.0.401"
+      "version": "10.0.402"
     },
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
       "version": "29.7.2",

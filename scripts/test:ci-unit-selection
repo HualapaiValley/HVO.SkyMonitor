@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Negative controls for scripts/ci:unit-selection (issue #1255): the checked-in
+# workflow must pass, and each way of leaving a Unit-bearing project out of the
+# Unit job -- or of letting a supplemental run reach the canonical coverage
+# merge -- must fail, so the check cannot report success without selecting.
+# Issue #1261 adds focused component selection, build-root and TRX boundaries.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+checker="$repo_root/scripts/ci:unit-selection"
+workflow="$repo_root/.github/workflows/ci.yml"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+expect_pass() {
+  "$checker" "$@" > "$scratch/out" 2>&1 || { cat "$scratch/out" >&2; printf 'Expected pass: %s\n' "$*" >&2; exit 1; }
+}
+expect_fail() {
+  local needle="$1"; shift
+  if "$checker" "$@" > "$scratch/out" 2>&1; then
+    printf 'Unexpected pass (%s): %s\n' "$needle" "$*" >&2; exit 1
+  fi
+  grep -qF -- "$needle" "$scratch/out" || { cat "$scratch/out" >&2; printf 'Failure did not mention: %s\n' "$needle" >&2; exit 1; }
+}
+mutate() { # mutate <name> <sed-script>
+  sed -E "$2" "$workflow" > "$scratch/$1.yml"
+  cmp -s "$workflow" "$scratch/$1.yml" && { printf 'Mutation %s changed nothing.\n' "$1" >&2; exit 1; }
+  return 0
+}
+
+expect_pass
+expect_pass --workflow "$workflow" --tests-root "$repo_root/tests"
+
+# Removing any one Unit-bearing selection fails and names the project.
+for slot in cameraagent-integration logichost-integration cameraagent-logichost-integration \
+    catalog-sqlite-performance astronomy cameraagent-logichost; do
+  mutate "drop-$slot" "/dotnet test .* --results-directory TestResults\/unit\/$slot --logger/d"
+  expect_fail 'Unit job command(s) select it' --workflow "$scratch/drop-$slot.yml"
+done
+
+# A duplicate selection, a non-positive filter and a non-Release/--no-build command all fail.
+mutate duplicate '/--results-directory TestResults\/unit\/astronomy /{p}'
+expect_fail 'expected exactly 1' --workflow "$scratch/duplicate.yml"
+# The sed script matches the literal text "$UNIT_FILTER" in the workflow.
+# shellcheck disable=SC2016
+mutate filter '/unit\/logichost-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
+expect_fail 'lacks --filter' --workflow "$scratch/filter.yml"
+mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
+expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
+
+# Supplemental runs are TRX-only; a canonical slot must keep collecting coverage.
+mutate collect '/unit\/catalog-sqlite-performance/ s#--logger#--collect:"XPlat Code Coverage" --logger#'
+expect_fail 'collects coverage that the Coverage job never merges' --workflow "$scratch/collect.yml"
+mutate uncollected '/unit\/imaging --logger/ s#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" ##'
+expect_fail 'canonical coverage slot but its command does not collect' --workflow "$scratch/uncollected.yml"
+
+# A selection that exists but may never execute, or whose evidence is not its own, fails.
+mutate stepif '/- name: Run Docker-disabled supplemental Unit suites/ a\        if: needs.changes.outputs.complete == '"'"'false'"'"''
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepif.yml"
+mutate stepcoe '/- name: Run Docker-disabled supplemental Unit suites/ a\        continue-on-error: true'
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepcoe.yml"
+# Reordered keys, a spaced colon and a first-key spelling do not slip past the key check.
+mutate stepiffirst 's#^      - name: Run Docker-disabled supplemental Unit suites#      - if: needs.changes.outputs.complete == '"'"'false'"'"'\n        name: Run Docker-disabled supplemental Unit suites#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepiffirst.yml"
+mutate stepifspaced '/- name: Run Docker-disabled supplemental Unit suites/ a\        if : needs.changes.outputs.complete == '"'"'false'"'"''
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepifspaced.yml"
+mutate stepcoefirst 's#^      - name: Run Docker-disabled supplemental Unit suites#      - continue-on-error: true\n        name: Run Docker-disabled supplemental Unit suites#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepcoefirst.yml"
+mutate stepflow 's#^      - name: Run Docker-disabled supplemental Unit suites#      - { name: Run Docker-disabled supplemental Unit suites, if: false }#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/stepflow.yml"
+# Indentation and shell structure cannot turn a selection into one that never runs.
+mutate reindent '/^      - name: Run Docker-disabled supplemental Unit suites/,/^      - name: Bind Unit evidence/ { /Bind Unit evidence/! s/^/    / }'
+expect_fail 'outside the supported grammar' --workflow "$scratch/reindent.yml"
+mutate heredoc '/dotnet test tests\/HVO.SkyMonitor.CameraAgent.IntegrationTests\// i\          : <<'"'"'SKIP'"'"'
+/dotnet test tests\/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests\// a\          SKIP'
+expect_fail 'outside the supported grammar' --workflow "$scratch/heredoc.yml"
+mutate inertenv '/- name: Run Docker-disabled supplemental Unit suites/,/- name: Bind Unit evidence/ { /^        env:$/d; /DOCKER_HOST: unix:\/\/\/tmp\/hvo-no-docker.sock/d }; /dotnet test tests\/HVO.SkyMonitor.CameraAgent.IntegrationTests\// i\          : <<'"'"'DOC'"'"'\n            DOCKER_HOST: unix:///tmp/hvo-no-docker.sock\n          DOC'
+expect_fail 'outside the supported grammar' --workflow "$scratch/inertenv.yml"
+mutate swallow '/unit\/catalog-sqlite-performance/ s#$# || true#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/swallow.yml"
+
+mutate envfilter '/DOCKER_HOST: unix:\/\/\/tmp\/hvo-no-docker.sock/ a\          UNIT_FILTER: FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone'
+expect_fail 'outside the supported grammar' --workflow "$scratch/envfilter.yml"
+mutate listtests '/unit\/cameraagent-integration/ s# --no-build# --list-tests --no-build#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/listtests.yml"
+# Harmless trailing whitespace on the block header is not a reason to reject.
+mutate trailing '/- name: Run Docker-disabled supplemental Unit suites/,/- name: Bind Unit evidence/ s#^        run: \|$#        run: | #'
+expect_pass --workflow "$scratch/trailing.yml"
+# Anything outside the selecting step that changes what the Unit job executes fails too:
+# an earlier step exporting through GITHUB_ENV/GITHUB_PATH, inherited defaults or shell,
+# job or workflow env beyond the supported keys, and a selection that runs after the
+# evidence is bound and uploaded.
+# shellcheck disable=SC2016
+mutate githubenv '/^      - name: Run Docker-disabled supplemental Unit suites/ i\      - name: Narrow filter\n        run: echo "UNIT_FILTER=FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone" >> "$GITHUB_ENV"'
+expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubenv.yml"
+# shellcheck disable=SC2016
+mutate githubpath '/^      - name: Run Docker-disabled supplemental Unit suites/ i\      - name: Shadow dotnet\n        run: echo "/tmp/shadow" >> "$GITHUB_PATH"'
+expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubpath.yml"
+mutate jobdefaults '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults:\n      run:\n        shell: bash --noprofile --norc -n {0}
+}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/jobdefaults.yml"
+mutate workflowdefaults '/^concurrency:/ i\defaults:\n  run:\n    shell: bash --noprofile --norc -n {0}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/workflowdefaults.yml"
+mutate jobenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      BASH_ENV: /tmp/narrow.sh
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER' --workflow "$scratch/jobenv.yml"
+mutate workflowenv '/^  DOTNET_NOLOGO: true$/ a\  BASH_ENV: /tmp/narrow.sh'
+expect_fail 'workflow env may set only' --workflow "$scratch/workflowenv.yml"
+# R1255-6: alternate spellings and a folded continuation of the validated values.
+mutate defaultsflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults : {run: {shell: "bash --noprofile --norc -n {0}"}}
+}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsflow.yml"
+mutate defaultsquoted '/^concurrency:/ i\"defaults": {run: {shell: "bash --noprofile --norc -n {0}"}}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsquoted.yml"
+mutate shellflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    steps-shell: x\n    "shell" : bash -n
+}'
+expect_fail 'Unit job must not set a shell' --workflow "$scratch/shellflow.yml"
+mutate filtercont '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\        \&FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/filtercont.yml"
+mutate dockercont '/^  unit:/,/^  integration:/ { /^      DOCKER_HOST:/ a\        x
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/dockercont.yml"
+mutate quotedenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      "BASH_ENV": /tmp/narrow.sh
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/quotedenv.yml"
+# A word at the end of a run line and a colon on the next line are not a key.
+for word in defaults shell; do
+  mutate "log-$word" "/^  unit:/,/^  integration:/ { /- name: Setup .NET from global.json/ i\      - name: Log selection mode\n        run: |\n          echo $word\n          :
+}"
+  expect_pass --workflow "$scratch/log-$word.yml"
+done
+# Removing the sole supported export is a clean no-match, an accepted catalog gap.
+mutate noexport '/printf .*HVO_PRODUCTION_CATALOG_BUNDLE=.*GITHUB_ENV/d'
+expect_pass --workflow "$scratch/noexport.yml"
+
+# #1265: a failed input inspection is not clean absence of defaults/shell.
+# Inject independent read failures into the two existing comment-filter reads;
+# the otherwise valid workflow must fail with an explicit inspection diagnostic.
+mkdir "$scratch/inspection-bin"
+real_grep="$(command -v grep)"
+cat > "$scratch/inspection-bin/grep" <<'GREP'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == -vE && "${2-}" == '^[[:space:]]*#' ]]; then
+  case "${HVO_UNIT_INSPECTION_SCOPE-}:$#" in
+    workflow:3|unit:2) printf 'Simulated input read failure.\n' >&2; exit 2 ;;
+  esac
+fi
+case "${HVO_UNIT_INSPECTION_SCOPE-}:${1-}:${2-}" in
+  exports:-E:'GITHUB_(ENV|PATH)'| \
+  bind:-nxF:'      - name: Bind Unit evidence'| \
+  upload:-nxF:'      - name: Upload Unit evidence'| \
+  commands:-E:'^[[:space:]]+dotnet test tests/'| \
+  coverage:-oE:'TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml'| \
+  unsupported:'^BAD ':*| \
+  component-count:-cxF:*| \
+  component-build:-nxF:'        run: ./scripts/ci:component-build '*| \
+  component-upload:-nE:'^      - name: Upload .* component evidence$'| \
+  writers:-Ec:*)
+    printf 'Simulated scan read failure.\n' >&2; exit "${HVO_UNIT_INSPECTION_STATUS:-2}" ;;
+esac
+exec "$HVO_UNIT_REAL_GREP" "$@"
+GREP
+chmod +x "$scratch/inspection-bin/grep"
+inspection_failures=0
+for scope in workflow unit; do
+  needle='could not inspect workflow settings'
+  [[ "$scope" != unit ]] || needle='could not inspect Unit job settings'
+  if ! (PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+      HVO_UNIT_REAL_GREP="$real_grep" expect_fail "$needle" --workflow "$workflow"); then
+    inspection_failures=$((inspection_failures + 1))
+  fi
+done
+((inspection_failures == 0)) || exit 1
+
+# Exercise each formerly suppressed scan independently. A status other than 0/1
+# must not become absence, even when it would hide a narrowed filter export.
+for scope in exports bind upload commands coverage unsupported component-count component-build component-upload writers; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+    HVO_UNIT_REAL_GREP="$real_grep" expect_fail 'could not inspect input' --workflow "$workflow"
+done
+for status in 2 7; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE=exports \
+    HVO_UNIT_INSPECTION_STATUS="$status" HVO_UNIT_REAL_GREP="$real_grep" \
+    expect_fail 'could not inspect input' --workflow "$scratch/githubenv.yml"
+done
+
+# Failure to deliver input must also fail when grep itself returns clean absence.
+cat > "$scratch/fail-delivery.bash" <<'DELIVERY'
+printf() {
+  if [[ "${1-}" == '%s\n' && "${2-}" == *'DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock'* ]]; then
+    return 9
+  fi
+  builtin printf "$@"
+}
+DELIVERY
+BASH_ENV="$scratch/fail-delivery.bash" expect_fail 'could not inspect input (delivery=9, grep=1)' --workflow "$workflow"
+
+# Discovery may emit a complete-looking list before failing; capture its status
+# before consuming either the inventory list or a project's adjacent csproj list.
+real_find="$(command -v find)"
+cat > "$scratch/inspection-bin/find" <<'FIND'
+#!/usr/bin/env bash
+set -euo pipefail
+"$HVO_UNIT_REAL_FIND" "$@"
+case "${HVO_UNIT_INSPECTION_SCOPE-}:$*" in
+  inventories:*'-maxdepth 2 '*|projects:*'-maxdepth 1 '*)
+    printf 'Simulated partial discovery failure.\n' >&2; exit 2 ;;
+esac
+FIND
+chmod +x "$scratch/inspection-bin/find"
+for scope in inventories projects; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+    HVO_UNIT_REAL_FIND="$real_find" HVO_UNIT_REAL_GREP="$real_grep" \
+    expect_fail 'could not inspect' --workflow "$workflow"
+done
+
+mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
+expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
+# The supplemental step moved after the upload keeps a complete list but loses its evidence.
+awk '
+  /^      - name: Run Docker-disabled supplemental Unit suites/ { hold = 1 }
+  /^      - name: Bind Unit evidence/ { hold = 0 }
+  hold { held = held $0 "\n"; next }
+  /^  integration:/ { printf "%s\n", held; held = "" }
+  { print }
+' "$workflow" | awk 'BEGIN { RS = "\0" } { sub(/\n\n\n  integration:/, "\n\n  integration:"); printf "%s", $0 }' > "$scratch/latesupplemental.yml"
+cmp -s "$workflow" "$scratch/latesupplemental.yml" && { printf 'Mutation latesupplemental changed nothing.\n' >&2; exit 1; }
+expect_fail 'runs after the evidence is bound and uploaded' --workflow "$scratch/latesupplemental.yml"
+mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
+expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
+mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'
+expect_fail 'share result slot cameraagent-integration' --workflow "$scratch/sharedslot.yml"
+mutate trxname '/unit\/catalog-sqlite-performance/ s#unit-catalog-sqlite-performance.trx#unit-other.trx#'
+expect_fail 'must write TRX unit-catalog-sqlite-performance.trx' --workflow "$scratch/trxname.yml"
+mutate stepdocker '/^          DOCKER_HOST: unix:\/\/\/tmp\/hvo-no-docker.sock/d'
+expect_fail 'DOCKER_HOST unix:///tmp/hvo-no-docker.sock' --workflow "$scratch/stepdocker.yml"
+
+# The Docker-disabled Unit environment is part of the contract.
+mutate docker '/hvo-unit-docker-must-not-exist/{0,/hvo-unit-docker-must-not-exist/ s#hvo-unit-docker-must-not-exist#hvo-docker#}'
+expect_fail 'invalid Docker endpoint' --workflow "$scratch/docker.yml"
+
+# Inventory-driven: a new project that owns Unit cases must be selected, and a
+# selected project that owns none is stale. The fixture mirrors the real
+# inventories and project names without copying any test source.
+fixture="$scratch/tests"
+while IFS= read -r inventory; do
+  name="$(basename "$(dirname "$inventory")")"
+  mkdir -p "$fixture/$name"
+  cp "$inventory" "$fixture/$name/test-categories.json"
+  : > "$fixture/$name/$name.csproj"
+done < <(find "$repo_root/tests" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)
+expect_pass --workflow "$workflow" --tests-root "$fixture"
+mkdir -p "$fixture/HVO.SkyMonitor.New.Tests"
+printf '{"Unit":3,"Integration":0,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.New.Tests/test-categories.json"
+: > "$fixture/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj"
+expect_fail 'tests/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj owns 3 Unit case(s)' --workflow "$workflow" --tests-root "$fixture"
+rm -r "$fixture/HVO.SkyMonitor.New.Tests"
+printf '{"Unit":0,"Integration":1,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"
+expect_fail 'selects tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj, which owns no Unit cases' --workflow "$workflow" --tests-root "$fixture"
+
+# Each component's supplemental command is independently protected. Mutations
+# stay within one job, so a full-unit selection cannot mask a missing lane.
+while IFS='|' read -r job component name slot; do
+  range="/^  $job:/,/^  [a-z][a-z-]*:/"
+  mutate "$component-drop" "$range { /dotnet test .* --results-directory TestResults\\/unit\\/$slot --logger/d; }"
+  expect_fail "$job must contain exactly one TRX-only supplemental Unit command" --workflow "$scratch/$component-drop.yml"
+  for mutation in filter nobuild release collect settings slot trx duplicate endpoint condition; do
+    # The literal filter variable is part of the checked command grammar.
+    # shellcheck disable=SC2016
+    case "$mutation" in
+      filter) edit='s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#' ;;
+      nobuild) edit='s# --no-build##' ;;
+      release) edit='s#--configuration Release#--configuration Debug#' ;;
+      collect) edit='s# --logger# --collect:"XPlat Code Coverage" --logger#' ;;
+      settings) edit='s# --logger# --settings tests/coverage.runsettings --logger#' ;;
+      slot) edit="s#unit/$slot #unit/astronomy #" ;;
+      trx) edit="s#unit-$slot.trx#unit-other.trx#" ;;
+      duplicate) edit='p' ;;
+      endpoint) edit='s#hvo-no-docker.sock#hvo-unit-docker-must-not-exist.sock#' ;;
+      condition) edit='s#        run: |#        if: false\n        run: |#' ;;
+    esac
+    if [[ "$mutation" == endpoint ]]; then
+      mutate "$component-$mutation" "$range { /DOCKER_HOST: unix:\\/\\/\\/tmp\\/hvo-no-docker.sock/ { $edit; }; }"
+      needle="$job supplemental step must use"
+    elif [[ "$mutation" == condition ]]; then
+      mutate "$component-$mutation" "$range { /run: \\|/ { $edit; }; }"
+      needle="$job supplemental step must use"
+    else
+      mutate "$component-$mutation" "$range { /dotnet test .* --results-directory TestResults\\/unit\\/$slot --logger/ { $edit; }; }"
+      needle="$job must contain exactly one TRX-only supplemental Unit command"
+    fi
+    expect_fail "$needle" --workflow "$scratch/$component-$mutation.yml"
+  done
+  mutate "$component-envfilter" "$range { /^      UNIT_FILTER:/ s#TestCategory=Unit#TestCategory=Integration#; }"
+  expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-envfilter.yml"
+  mutate "$component-build-binding" "$range { s#run: ./scripts/ci:component-build $component#run: ./scripts/ci:component-build delivery#; }"
+  expect_fail "$job supplemental command must follow its component build" --workflow "$scratch/$component-build-binding.yml"
+  # Remove each owned root from the actual build script, rather than from a
+  # second hand-maintained root fixture.
+  sed "\#tests/$name/$name.csproj#d" "$repo_root/scripts/ci:component-build" > "$scratch/build-$component"
+  chmod +x "$scratch/build-$component"
+  expect_fail "$job component build plan omits tests/$name/$name.csproj" --component-build "$scratch/build-$component"
+done <<'COMPONENTS'
+shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
+cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
+logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
+combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
+COMPONENTS
+
+# Prove list mode describes the real restore/build invocations, with a dotnet
+# recorder: no SDK, solution build, foreign output or Docker is involved.
+mkdir "$scratch/bin"
+cat > "$scratch/bin/dotnet" <<'DOTNET'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$HVO_COMPONENT_BUILD_LOG"
+DOTNET
+chmod +x "$scratch/bin/dotnet"
+for component in shared cameraagent logichost combined delivery; do
+  "$repo_root/scripts/ci:component-build" "$component" --list-projects > "$scratch/plan"
+  awk '{ print "restore " $0 }' "$scratch/plan" > "$scratch/expected"
+  awk '{ print "build " $0 " --no-restore --configuration Release -warnaserror" }' "$scratch/plan" >> "$scratch/expected"
+  : > "$scratch/actual"
+  PATH="$scratch/bin:$PATH" HVO_COMPONENT_BUILD_LOG="$scratch/actual" \
+    "$repo_root/scripts/ci:component-build" "$component"
+  cmp "$scratch/expected" "$scratch/actual"
+done
+
+printf 'CI Unit selection contract passed (full job, four supplemental component selections/build roots, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'

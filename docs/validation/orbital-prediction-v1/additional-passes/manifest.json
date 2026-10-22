@@ -1,0 +1,153 @@
+{
+  "schema": "additional-pass-reference-source-manifest-v1",
+  "scope": "Two added immutable diagnostic numerical fixtures; no original expectations or tolerances changed.",
+  "sourceTle": {
+    "url": "https://raw.githubusercontent.com/aholinch/sgp4/552cb1489a52c3023ae70cb6c7e239e84c5950fe/data/SGP4-VER.TLE",
+    "originalRawSha256": "D246D1D9D768ACE445A38A965713FA9BA52D80FD8A41A0502FF83D7ACFFE2881",
+    "originalBytes": 8616,
+    "retainedSha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7",
+    "retainedBytes": 8505,
+    "transformation": "CRLF to LF; trim line-end whitespace; preserve fixed-width fields.",
+    "terms": "Included aholinch Unlicense notice; approved retained verification fixture, not production feed.",
+    "referenceArchiveUrl": "https://celestrak.org/publications/AIAA/2006-6753/AIAA-2006-6753.zip",
+    "referenceArchiveSha256": "3642043B706C76BE87CF012DB3F22E04DA6B80498D00F515E51879E0FFADC115"
+  },
+  "leapSource": {
+    "url": "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list",
+    "retrievedUtc": "2026-10-19T22:11:00Z",
+    "retrievalPrecision": "minute",
+    "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433",
+    "bytes": 5065,
+    "terms": "Raw file explicitly declares public domain.",
+    "coverageStartUtc": "1972-01-01T00:00:00Z",
+    "coverageEndExclusiveUtc": "2027-06-28T00:00:00Z"
+  },
+  "model": {
+    "gravity": "WGS72",
+    "operationMode": "a",
+    "nominalZeroEarthOrientation": true,
+    "conversionVersion": "teme-gmst82-ut1-pm-no-sp-nominal-rate-v1",
+    "refraction": "none",
+    "illumination": "Unknown"
+  },
+  "gates": {
+    "independentBracketMaximumSeconds": 0.001,
+    "rootEngineAgreementMaximumSeconds": 0.02
+  },
+  "softwareSources": [
+    {
+      "name": "python-sgp4",
+      "version": "2.27",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/sgp4/api.py",
+      "bytes": 882,
+      "sha256": "E61F7A4B1DDD026A0CFD147EF18CF2EAF1AEE9E05EAE9098677CBD811F519BF3"
+    },
+    {
+      "name": "python-sgp4",
+      "version": "2.27",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/sgp4/wrapper.py",
+      "bytes": 2283,
+      "sha256": "F73CBAF65E1594C3B6B565212677F066B90EFC9EBEC31EA3633A893EA3116D67"
+    },
+    {
+      "name": "Skyfield",
+      "version": "1.55",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/skyfield/sgp4lib.py",
+      "bytes": 14233,
+      "sha256": "385C73A4437CA96A926330DDC3166DE295015601C3014C95ABF44743F138E5E8"
+    },
+    {
+      "name": "Skyfield",
+      "version": "1.55",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/skyfield/toposlib.py",
+      "bytes": 13682,
+      "sha256": "280F95AA7D09DEA982BBCECF476312A31C7C16123C71D2D2E06F91C0F952D045"
+    },
+    {
+      "name": "Skyfield",
+      "version": "1.55",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/skyfield/timelib.py",
+      "bytes": 47950,
+      "sha256": "A949B768909835CE3B504E89321241FBB5647065CFB17B0DB225A285896109FD"
+    },
+    {
+      "name": "python-sgp4 compiled Vallado core",
+      "version": "2.27",
+      "path": "/home/roys/.codex/artifacts/satellite-research-2026-10-19/venv/lib/python3.12/site-packages/sgp4/vallado_cpp.abi3.so",
+      "bytes": 248600,
+      "sha256": "B732180C8B101D657E2F63EA6B186A1D747B0BE56288051E220CECD1BBE38183"
+    }
+  ],
+  "files": [
+    {
+      "path": "08195-passes.json",
+      "bytes": 51614,
+      "sha256": "B5918F21ED350683F810C8012C1D31EC2F4B52D68462C9EB3980150EA7748BF1"
+    },
+    {
+      "path": "28623-passes.json",
+      "bytes": 57444,
+      "sha256": "D0F2C40FD36DA34FD415042193959658A05844A127B805739124BA8044112969"
+    },
+    {
+      "path": "AHOLINCH-LICENSE.txt",
+      "bytes": 1210,
+      "sha256": "88D9B4EB60579C191EC391CA04C16130572D7EEDC4A86DAA58BF28C6E14C9BCD"
+    },
+    {
+      "path": "JPLEPHEM-LICENSE.txt",
+      "bytes": 1084,
+      "sha256": "31BBF940BAA5DA362EF4E16CCDA663CF09A096673B9EAC30413F899C1055981D"
+    },
+    {
+      "path": "NUMPY-LICENSE.txt",
+      "bytes": 46794,
+      "sha256": "4860083CAA0DE2AC3292CA98BD074BD8F45D8B32624E37B1E70A240BFF61E488"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7529,
+      "sha256": "748A786FFCDBB2DCD00D25C3F9488C6923CC9E8C1FF067130C64FFBB679FDFF0"
+    },
+    {
+      "path": "SGP4-VER.TLE",
+      "bytes": 8505,
+      "sha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7"
+    },
+    {
+      "path": "additional_pass_generator.py",
+      "bytes": 15576,
+      "sha256": "9EF0904C87B3101236E318E3BD9954AEC21801C705EDB4BDD2A0F845D13D3C67"
+    },
+    {
+      "path": "coordinate-PYTHON-SGP4-LICENSE.txt",
+      "bytes": 1086,
+      "sha256": "4474EA9ECCBB829C6BC3652381BFE78B1C815DE021D4A284A2A5B383A374D030"
+    },
+    {
+      "path": "coordinate-SKYFIELD-LICENSE.txt",
+      "bytes": 1101,
+      "sha256": "4B3CAD9301FC389F9545079B43384659B908E94D6AB271474B3F6DA2BD20D65A"
+    },
+    {
+      "path": "coordinate-reference-generator.py",
+      "bytes": 13890,
+      "sha256": "47DEFF6FA0B236598EB6EBF99716C69E2A6A8E08256E4695C3F7048BED51F4D7"
+    },
+    {
+      "path": "generation-summary.txt",
+      "bytes": 5055,
+      "sha256": "9952FE41EDA6467EC53D6550A7BD12D4E72343A187F0C9C44FFF2EE253F157C9"
+    },
+    {
+      "path": "leap-seconds.list",
+      "bytes": 5065,
+      "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 5055,
+      "sha256": "9952FE41EDA6467EC53D6550A7BD12D4E72343A187F0C9C44FFF2EE253F157C9"
+    }
+  ]
+}

@@ -299,14 +299,21 @@ public static class ResolvedFootprintSampler
         if (fromValid && toValid)
         {
             var middleValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(middle), out var middlePixel);
-            if (depth < MaximumSubdivisionDepth && (!middleValid ||
-                VisibleSceneBuilder.DistanceFromChord(middlePixel, fromPixel, toPixel) > MaximumChordErrorPixels))
+            if (!middleValid ||
+                Distance(middlePixel, new PixelPoint((fromPixel.X + toPixel.X) / 2, (fromPixel.Y + toPixel.Y) / 2)) > MaximumChordErrorPixels)
             {
-                AppendLimbChord(request, basis, limb, from, middle, depth + 1, output, ref clipped);
-                AppendLimbChord(request, basis, limb, middle, to, depth + 1, output, ref clipped);
+                if (depth < MaximumSubdivisionDepth)
+                {
+                    AppendLimbChord(request, basis, limb, from, middle, depth + 1, output, ref clipped);
+                    AppendLimbChord(request, basis, limb, middle, to, depth + 1, output, ref clipped);
+                }
+                else
+                {
+                    // A bounded sampler cannot join across an unresolved projection discontinuity.
+                    clipped = true;
+                }
                 return;
             }
-            if (!middleValid) clipped = true;
             AddClipped(request.Projection, fromPixel, toPixel, output, ref clipped);
             return;
         }
@@ -336,6 +343,11 @@ public static class ResolvedFootprintSampler
                 invalidParameter = candidate;
             }
         }
+        var boundaryMiddle = (validParameter + (fromValid ? from : to)) / 2;
+        var endpoint = fromValid ? fromPixel : toPixel;
+        if (!VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(boundaryMiddle), out var boundaryMiddlePixel) ||
+            Distance(boundaryMiddlePixel, new PixelPoint((endpoint.X + boundaryPixel.X) / 2, (endpoint.Y + boundaryPixel.Y) / 2)) > MaximumChordErrorPixels)
+            return;
         if (fromValid)
             AddClipped(request.Projection, fromPixel, boundaryPixel, output, ref clipped);
         else

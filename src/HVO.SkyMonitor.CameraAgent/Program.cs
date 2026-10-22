@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.CameraAgent.Extensions;
@@ -50,6 +52,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
+using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Settings;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -81,6 +85,10 @@ public class Program
                 localSettings.FindOverriddenKeys,
                 provider.GetRequiredService<ILogger<OperatorSettingsFile>>()));
         }
+        builder.Services.AddSingleton(provider => new CameraAgentSettingSources(
+            provider.GetRequiredService<IConfiguration>(),
+            localSettings is null ? static _ => false : localSettings.IsSettingsFileProvider));
+        builder.Services.AddSingleton(provider => new CurrentSkyRefreshSetting(provider.GetRequiredService<IConfiguration>()));
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -102,7 +110,9 @@ public class Program
             });
         }
 
-        builder.AddSkyMonitorObservability();
+        // The Software page reads the same informational version, so telemetry and the UI name one build identity.
+        builder.AddSkyMonitorObservability(
+            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
@@ -196,6 +206,7 @@ public class Program
             options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
         })
         .AddEntityFrameworkStores<ApplicationDbContext>()
+        .AddCameraAgentPasswordPolicy()
         .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>()
         .AddSignInManager()
         .AddDefaultTokenProviders();
@@ -238,6 +249,8 @@ public class Program
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(LocalAutomationTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
@@ -292,6 +305,9 @@ public class Program
             ConfigureApplicationCookie(options, localIdentitySettings.CookieName));
 
         builder.Services.AddCameraAgentAuthorization();
+        builder.Services.AddScoped<CameraAgentApiKeyStore>();
+        builder.Services.AddScoped<CameraAgentSettingsService>();
+        builder.Services.AddScoped<ICameraAgentSatelliteSetupUiService, CameraAgentSatelliteSetupUiService>();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
@@ -311,6 +327,9 @@ public class Program
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
+        builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
+        builder.Services.AddSingleton<SpaceWeatherUiProjectionSource>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
@@ -321,6 +340,9 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddCameraAgentSatellitePlanning(builder.Configuration);
+        builder.Services.AddCameraAgentTimeDataRefresh();
+        builder.Services.AddCameraAgentSatellitePlanningUi();
         builder.Services.AddSingleton<CalibrationOperationsTokenService>();
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
@@ -334,6 +356,8 @@ public class Program
             "deployment-location-reconciliation", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
+        healthChecks.AddCheck<OrbitalElementsHealthCheck>("orbital-elements", tags: ["dependency"]);
+        healthChecks.AddCheck<SpaceWeatherHealthCheck>("space-weather", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<TransientCandidateDeliveryHealthCheck>(
             "transient-candidate-delivery", tags: ["dependency"]);
@@ -405,6 +429,7 @@ public class Program
         app.UseRouting();
 
         app.UseAuthentication();
+        app.UseMiddleware<CameraAgentApiKeyAuthenticationMiddleware>();
         app.UseMiddleware<OwnerBootstrapGateMiddleware>();
         app.UseAuthorization();
 
@@ -423,10 +448,15 @@ public class Program
         app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentSystemOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
+        app.MapCameraAgentOrbitalOperationsEndpoints();
+        app.MapCameraAgentTimeDataOperationsEndpoints();
+        app.MapCameraAgentSpaceWeatherOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentSettingsEndpoints();
         app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
@@ -604,7 +634,15 @@ public class Program
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile must be a non-empty regular file no larger than 4096 bytes.");
         }
-        var password = File.ReadAllText(passwordFile).TrimEnd('\r', '\n');
+        string password;
+        try
+        {
+            password = OwnerPasswordFileText.Decode(File.ReadAllBytes(passwordFile));
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is not valid UTF-8.", exception);
+        }
         if (password.Length == 0)
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is empty.");

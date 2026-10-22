@@ -50,7 +50,7 @@ git switch -c feature/908-dependency-consolidation
 
 One issue per branch. Commit messages are sentences describing the change, not
 the issue number ("Consolidate the September dependency updates and move to
-.NET SDK 10.0.401"). Do not commit anything under `data/`, `App_Data/`, or
+.NET SDK 10.0.402"). Do not commit anything under `data/`, `App_Data/`, or
 other runtime state.
 
 ## 3. Local gates before the draft

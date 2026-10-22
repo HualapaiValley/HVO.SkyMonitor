@@ -109,7 +109,7 @@ internal sealed class OwnerBootstrapClient(
             new Uri("/api/internal/owner-bootstrap/status", UriKind.Relative), cancellationToken).ConfigureAwait(false);
         if (status.StatusCode != HttpStatusCode.OK)
         {
-            throw new InstallerException("The generated owner credential did not authenticate.");
+            throw new InstallerException("The owner bootstrap credential did not authenticate.");
         }
         using var json = JsonDocument.Parse(await status.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
         return json.RootElement.GetProperty("state").GetString()

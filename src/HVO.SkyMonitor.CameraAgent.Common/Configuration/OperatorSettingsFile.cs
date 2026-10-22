@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Buffers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -38,6 +39,7 @@ public sealed class OperatorSettingsFile : IDisposable
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     private readonly Action _reload;
+    private bool _reloadPending;
     private readonly Func<IEnumerable<string>, IReadOnlyList<string>> _findOverriddenKeys;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -130,6 +132,16 @@ public sealed class OperatorSettingsFile : IDisposable
             var next = SerializeFile(root);
             if (bytes is not null && next.AsSpan().SequenceEqual(bytes))
             {
+                // Visibility alone does not prove that an earlier replacement crossed its durability barrier.
+                EnsureNotLink();
+                var directory = Path.GetDirectoryName(FilePath)!;
+                RawIngressFileStore.SyncFile(directory, FilePath);
+                SyncPublishedDirectory(directory);
+                if (_reloadPending)
+                {
+                    _reload();
+                    _reloadPending = false;
+                }
                 return new(OperatorSettingsWriteStatus.Unchanged, current);
             }
 
@@ -139,6 +151,7 @@ public sealed class OperatorSettingsFile : IDisposable
                 return new(OperatorSettingsWriteStatus.Conflict, changed);
             }
             _reload();
+            _reloadPending = false;
             OperatorSettingsLog.Written(_logger, actor, string.Join(", ", values.Keys));
             return new(OperatorSettingsWriteStatus.Applied, Parse(next));
         }
@@ -327,9 +340,7 @@ public sealed class OperatorSettingsFile : IDisposable
             {
                 await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             if (!OperatingSystem.IsWindows())
             {
@@ -341,7 +352,8 @@ public sealed class OperatorSettingsFile : IDisposable
             {
                 return onDisk;
             }
-            File.Move(temporaryPath, FilePath, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, FilePath, overwrite: true);
+            _reloadPending = true;
             SyncPublishedDirectory(directory);
             return null;
         }
@@ -380,6 +392,9 @@ public sealed record OperatorSettingsSnapshot(string Version, bool Exists, strin
 
     /// <summary>Whether the file has an object at this configuration key, even an empty one.</summary>
     public bool HasSection(string key) => Find(key) is JsonObject;
+
+    /// <summary>Whether the file stores anything other than null at this configuration key: a value, an object or an array.</summary>
+    public bool HasValue(string key) => Find(key) is not null;
 
     private JsonNode? Find(string key)
     {

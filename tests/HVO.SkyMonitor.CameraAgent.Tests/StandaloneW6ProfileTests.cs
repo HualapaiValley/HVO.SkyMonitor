@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -18,6 +19,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class StandaloneW6ProfileTests
 {
+    private static readonly string[] ScenePresentationDependencies = ["projected-scene"];
+    private static readonly string[] EnvironmentPresentationDependencies = ["projected-scene", "combined-preview"];
+    private static readonly string[] CloudPresentationSchemas = ["cloud-assessment-v1"];
     private static readonly ObservatoryLocation Location = new(
         35.5599378,
         -113.9119818,
@@ -56,10 +60,12 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8",
+            "86F33CC1F53B39B3307B3100FB942348A16C4DB8AEFB3B1987C542E23D020CB5",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        // The W6 qualification keeps full catalog depth instead of the operator's scene object limit.
+        Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreEqual(
             "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
             HistoricalCatalogCapProfileSha256(configuration));
@@ -68,7 +74,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "6ED345566CC5D836EEB96CB07113F8682C0C9F8B813F4F8458A67F4C9C334221",
+            "2EB6E76393B69DDF3BC090488931B6179CB34FC7A4F60C1D75F0AA3E4C7B0729",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -100,6 +106,7 @@ public sealed class StandaloneW6ProfileTests
         {
             AssertMeasuredAssociationSceneContract(preview, graph, "scene-presentation", 2);
             var shared = graph.SharedPlan!;
+            AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(configuration, graph, preview);
             var scene = shared.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
             Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, scene.StepVersion);
             Assert.IsTrue(scene.Outputs.All(static output =>
@@ -153,10 +160,12 @@ public sealed class StandaloneW6ProfileTests
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD",
+            "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        // The mono8 W6 control keeps full catalog depth instead of the operator's scene object limit.
+        Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreEqual(
             "EEED95D733FB1DA82DAB7D0AEBE692BCD6C95703EC4EDADD98C3453E65BBB38B",
             HistoricalCatalogCapProfileSha256(configuration));
@@ -164,7 +173,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "995420F11CAB69DC4D5E092C3E736236D66482042A62BEA34474F40BF1A8FC94",
+            "FF5FA1CD6A6351AF64346027DDA9D630A102F273C7DE20C9050539B6406CA262",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -411,12 +420,96 @@ public sealed class StandaloneW6ProfileTests
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
     }
 
+    private static void AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(
+        CameraModuleConfig configuration, CaptureProcessingGraph graph, CaptureProcessingPlanPreview preview)
+    {
+        string[] accepted = ["projected-scene-v1", "projected-scene-v2", "projected-scene-v3"];
+        foreach (var id in new[] { "scene-presentation", "environment-presentation" })
+        {
+            var node = graph.Nodes.Single(item => item.Id == id);
+            var requirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements;
+            var scene = requirements.Single(static item => item.RecipeNames?.Contains(BuiltInProcessingRecipes.ProjectedScene) == true);
+            CollectionAssert.AreEqual(accepted, scene.SchemaVersions!.Order(StringComparer.Ordinal).ToArray());
+            CollectionAssert.AreEqual(new[] { FrameArtifactRole.Metadata }, scene.Roles.ToArray());
+            Assert.IsTrue(scene.Required);
+            CollectionAssert.AreEqual(new[] { BuiltInProcessingRecipes.ProjectedScene }, scene.RecipeNames!.ToArray());
+            CollectionAssert.AreEqual(id == "scene-presentation" ? ScenePresentationDependencies :
+                EnvironmentPresentationDependencies, node.DeclaredDependencies!.ToArray());
+            var sharedInput = graph.SharedPlan!.Nodes.Single(item => item.Definition.Id == id).Definition.Inputs
+                .Single(static input => input.RecipeNames.Contains(BuiltInProcessingRecipes.ProjectedScene));
+            CollectionAssert.AreEqual(accepted, sharedInput.SchemaVersions.Order(StringComparer.Ordinal).ToArray());
+            Assert.IsTrue(sharedInput.Required);
+            Assert.AreEqual(node.PlanSha256, ReconstructSceneConsumerHash(node, removeV3: false));
+        }
+        var producer = (ICaptureProcessingGraphStep)graph.Nodes.Single(static node => node.Id == "projected-scene").Step;
+        Assert.AreEqual("projected-scene-v1", producer.OutputSchemaVersion);
+        var cloud = ((IRequiredCaptureProcessingDependencies)graph.Nodes.Single(static node => node.Id == "cloud-presentation").Step)
+            .DependencyRequirements.Single();
+        CollectionAssert.AreEqual(CloudPresentationSchemas, cloud.SchemaVersions!.ToArray());
+
+        string Aggregate(bool removeV3) => CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+        {
+            SchemaVersion = configuration.Pipeline.SchemaVersion,
+            configuration.Pipeline.DependencyPolicy,
+            Nodes = graph.Nodes.Select(node => removeV3 && (node.Id is "scene-presentation" or "environment-presentation")
+                ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
+        }));
+        Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
+        Assert.AreEqual("7DD0899B6349AE0EDC8825C5DF03EA5AEFBBD5E0DA3A50DFD9E5E06579334229", Aggregate(removeV3: true),
+            "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
+    }
+
+    // Reconstruct only the two published consumer preimages, independently of the factory's private hasher.
+    private static string ReconstructSceneConsumerHash(CaptureProcessingGraphNode node, bool removeV3)
+    {
+        Assert.IsNotNull(node.Publication);
+        var step = (ICaptureProcessingGraphStep)node.Step;
+        var outputs = ((IMultiOutputCaptureProcessingGraphStep)node.Step).Outputs.Select(static output => new
+        {
+            output.Role,
+            output.Variant,
+            output.RecipeName,
+            output.SchemaVersion
+        }).ToArray();
+        var dependencyRequirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements.Select(requirement => new
+        {
+            Roles = requirement.Roles.Order().ToArray(),
+            RecipeNames = requirement.RecipeNames?.Order(StringComparer.Ordinal).ToArray(),
+            SchemaVersions = requirement.SchemaVersions?.Where(schema => !removeV3 || schema != "projected-scene-v3")
+                .Order(StringComparer.Ordinal).ToArray(),
+            requirement.Variant,
+            requirement.Required
+        }).ToArray();
+        var preimage = CaptureContractJson.SerializeToElement(new
+        {
+            Type = node.Alias,
+            implementationVersion = node.Step.ImplementationVersion,
+            sharedStepVersion = step.SharedStepVersion,
+            id = node.Step.Name,
+            order = node.Step.Order,
+            dependencies = node.DeclaredDependencies ?? node.Dependencies,
+            node.Required,
+            Options = node.EffectiveOptions,
+            recipe = step.RecipeName,
+            recipeIdentitySchema = ProcessingIdentity.BoundInputSchemaVersion,
+            outputRole = step.OutputRole,
+            outputVariant = step.OutputVariant,
+            outputSchemaVersion = step.OutputSchemaVersion,
+            outputs,
+            dependencyRequirements,
+            node.Publication
+        });
+        return CaptureContractJson.ComputeCanonicalJsonSha256(preimage);
+    }
+
     private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
     {
-        // Only the explicitly enlarged safety cap may change these pinned profile identities.
+        // Only the explicitly enlarged safety cap and the explicit exhaustive opt-out from the operator's scene
+        // object limit (#1277) may change these pinned profile identities.
         var options = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
             configuration.Module.Options!.Value.GetRawText())!;
         options["maximumResults"] = System.Text.Json.JsonSerializer.SerializeToElement(300);
+        options.Remove("stellarCandidateSelection");
         var historical = configuration with
         {
             Module = configuration.Module with

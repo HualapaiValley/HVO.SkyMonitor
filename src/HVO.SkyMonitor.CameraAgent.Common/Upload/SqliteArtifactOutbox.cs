@@ -405,7 +405,7 @@ public sealed class SqliteArtifactOutbox(
         string actor,
         string reason,
         CancellationToken cancellationToken)
-        => ResolveQuarantineAsync(root, idempotencyKey, actor, reason, abandon: false, cancellationToken);
+        => ResolveOperatorAsync(root, idempotencyKey, actor, reason, abandon: false, cancellationToken);
 
     public ValueTask AbandonAsync(
         string root,
@@ -413,7 +413,7 @@ public sealed class SqliteArtifactOutbox(
         string actor,
         string reason,
         CancellationToken cancellationToken)
-        => ResolveQuarantineAsync(root, idempotencyKey, actor, reason, abandon: true, cancellationToken);
+        => ResolveOperatorAsync(root, idempotencyKey, actor, reason, abandon: true, cancellationToken);
 
     public async ValueTask<ArtifactOutboxRecord?> ReadAsync(
         string root,
@@ -473,11 +473,14 @@ public sealed class SqliteArtifactOutbox(
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
+        // Bound each status arm by the (status, record_id) index before merging the page.
+        var cursorPredicate = cursor is null ? string.Empty : " AND record_id < $record_id";
         command.CommandText = string.Concat(
-            OperationsSelectColumns,
-            cursor is null
-                ? " WHERE status = 'quarantined' ORDER BY record_id DESC LIMIT $limit;"
-                : " WHERE status = 'quarantined' AND record_id < $record_id ORDER BY record_id DESC LIMIT $limit;");
+            "SELECT * FROM (SELECT * FROM (", OperationsSelectColumns,
+            " WHERE status = 'quarantined'", cursorPredicate, " ORDER BY record_id DESC LIMIT $limit)",
+            " UNION ALL SELECT * FROM (", OperationsSelectColumns,
+            " WHERE status = 'retry'", cursorPredicate, " ORDER BY record_id DESC LIMIT $limit))",
+            " ORDER BY record_id DESC LIMIT $limit;");
         command.Parameters.AddWithValue("$limit", pageSize + 1);
         if (cursor is not null)
         {
@@ -548,7 +551,7 @@ public sealed class SqliteArtifactOutbox(
         using var command = connection.CreateCommand();
         command.CommandText = string.Concat(
             OperationsSelectColumns,
-            " WHERE idempotency_key = $key AND status = 'quarantined';");
+            " WHERE idempotency_key = $key AND status IN ('quarantined', 'retry');");
         command.Parameters.AddWithValue("$key", recordKey);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadOperationsRecord(reader) : null;
@@ -638,7 +641,7 @@ public sealed class SqliteArtifactOutbox(
         {
             update.Transaction = transaction;
             update.CommandText = action == OutboxOperationAction.Abandon
-                ? "UPDATE artifact_outbox_records SET status = 'abandoned', terminal_actor = $actor, terminal_reason = $reason, terminal_unix_ms = $now, updated_unix_ms = $now WHERE idempotency_key = $key AND status = 'quarantined';"
+                ? "UPDATE artifact_outbox_records SET status = 'abandoned', terminal_actor = $actor, terminal_reason = $reason, terminal_unix_ms = $now, updated_unix_ms = $now WHERE idempotency_key = $key AND status IN ('quarantined', 'retry');"
                 : "UPDATE artifact_outbox_records SET status = 'pending', next_attempt_unix_ms = $now, last_reason = NULL, lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL, updated_unix_ms = $now WHERE idempotency_key = $key AND status = 'quarantined' AND manifest_kind != 'malformed-legacy';";
             update.Parameters.AddWithValue("$actor", actorKind);
             update.Parameters.AddWithValue("$reason", reasonCode);
@@ -646,7 +649,9 @@ public sealed class SqliteArtifactOutbox(
             update.Parameters.AddWithValue("$key", recordKey);
             if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-                throw new InvalidOperationException("Artifact outbox resolution requires one quarantined record.");
+                throw new InvalidOperationException(action == OutboxOperationAction.Abandon
+                    ? "Artifact outbox abandonment requires one quarantined or retry record."
+                    : "Artifact outbox replay requires one quarantined record.");
             }
         }
         using (var operation = connection.CreateCommand())
@@ -768,7 +773,7 @@ public sealed class SqliteArtifactOutbox(
             ReadCount(reader, 6), ReadCount(reader, 7), ReadCount(reader, 8), _timeProvider.GetUtcNow());
     }
 
-    private async ValueTask ResolveQuarantineAsync(
+    private async ValueTask ResolveOperatorAsync(
         string root,
         string idempotencyKey,
         string actor,
@@ -798,7 +803,7 @@ public sealed class SqliteArtifactOutbox(
                   UPDATE artifact_outbox_records
                   SET status = 'abandoned', terminal_actor = $actor, terminal_reason = $reason,
                       terminal_unix_ms = $now, updated_unix_ms = $now
-                  WHERE idempotency_key = $key AND status = 'quarantined';
+                  WHERE idempotency_key = $key AND status IN ('quarantined', 'retry');
                   """
                 : """
                   UPDATE artifact_outbox_records
@@ -813,7 +818,9 @@ public sealed class SqliteArtifactOutbox(
             command.Parameters.AddWithValue("$key", idempotencyKey);
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-                throw new InvalidOperationException("Artifact outbox resolution requires one quarantined record.");
+                throw new InvalidOperationException(abandon
+                    ? "Artifact outbox abandonment requires one quarantined or retry record."
+                    : "Artifact outbox replay requires one quarantined record.");
             }
         }
         await InsertAuditAsync(
@@ -1235,7 +1242,7 @@ public sealed class SqliteArtifactOutbox(
             DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)),
             reader.IsDBNull(11) ? null : OutboxOperationsReasonCodes.Sanitize(reader.GetString(11)),
             isQuarantined,
-            isQuarantined,
+            isQuarantined || status == ArtifactOutboxStatus.Retry,
             new ArtifactOutboxOperationsCursor(reader.GetInt64(0)));
     }
 

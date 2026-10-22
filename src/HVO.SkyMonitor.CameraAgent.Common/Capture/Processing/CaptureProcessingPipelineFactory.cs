@@ -704,10 +704,26 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 step.SharedOutputAlgorithms,
                 step.OutputMediaType)];
 
-    private static bool RequiresLinear16(string recipeName)
+    // Gain stays a window boundary everywhere except the mixed-gain recipe, whose frozen plan normalizes it.
+    internal static ImmutableArray<string> CreateWindowCompatibilityLabels(string? recipeName)
+        => string.Equals(
+            recipeName,
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.MixedGainNormalizedMean,
+            StringComparison.Ordinal)
+            ? [
+                "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                "sensor", "setpoint", "processing-profile", "location", GainNormalizationCompatibility.WindowLabel
+            ]
+            : [
+                "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                "sensor", "setpoint", "processing-profile", "location"
+            ];
+
+    internal static bool RequiresLinear16(string recipeName)
         => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
             HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ReferenceCalibration or
-            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment;
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment or
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.MixedGainNormalizedMean;
 
     private static bool ProcessingStoredCodeIsSupported(FrameLayoutDescriptor layout)
         => layout.StoredCodeTransform switch
@@ -819,10 +835,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 windowStep.MinimumInputCount,
                 windowStep.MaximumInputCount,
                 windowStep.RequiredPositions.ToImmutableArray(),
-                 [
-                     "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
-                     "sensor", "setpoint", "processing-profile", "location"
-                 ],
+                CreateWindowCompatibilityLabels(graphStep?.RecipeName),
                 windowStep.Timeout.Ticks,
                 windowStep.MissingInputOutcome)
             : null;
@@ -1160,6 +1173,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         ICaptureProcessingGraphStep? graphStep,
         IReadOnlyList<string> dependencies)
     {
+        var implementationVersion = step.ImplementationVersion;
+        var sharedStepVersion = ResolveSharedStepVersion(graphStep, config.Type, step);
+        if (string.IsNullOrWhiteSpace(implementationVersion) || string.IsNullOrWhiteSpace(sharedStepVersion))
+        {
+            throw new InvalidOperationException($"Capture processing step '{step.Name}' must declare a non-empty implementation version.");
+        }
         var outputs = graphStep is null ? [] : GetOutputs(graphStep).Select(static output => new
         {
             output.Role,
@@ -1181,6 +1200,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             ? JsonSerializer.SerializeToElement(new
             {
                 config.Type,
+                implementationVersion,
+                sharedStepVersion,
                 id = step.Name,
                 order = step.Order,
                 dependencies,
@@ -1197,6 +1218,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             : CaptureContractJson.SerializeToElement(new
             {
                 config.Type,
+                implementationVersion,
+                sharedStepVersion,
                 id = step.Name,
                 order = step.Order,
                 dependencies,

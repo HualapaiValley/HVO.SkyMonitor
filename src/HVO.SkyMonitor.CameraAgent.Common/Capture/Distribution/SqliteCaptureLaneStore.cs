@@ -18,7 +18,8 @@ internal sealed class SqliteCaptureLaneStore(
     CaptureLanePolicy policy,
     TimeProvider timeProvider,
     ICaptureLaneFaultInjector faultInjector,
-    Action<TimeSpan>? lockWaitRecorder = null) : ICaptureLaneStore
+    Action<TimeSpan>? lockWaitRecorder = null,
+    Action? evidenceInvalidated = null) : ICaptureLaneStore
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -245,6 +246,7 @@ internal sealed class SqliteCaptureLaneStore(
                     candidate.Required ? "evidence-invalid" : "evidence-expired",
                     cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                if (candidate.Required) evidenceInvalidated?.Invoke();
                 return null;
             }
 
@@ -334,6 +336,14 @@ internal sealed class SqliteCaptureLaneStore(
             command.Parameters.AddWithValue("$reason", reason);
             command.Parameters.AddWithValue("$work", candidate.WorkId);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        if (reason == "evidence-invalid")
+        {
+            using var quarantine = connection.CreateCommand();
+            quarantine.Transaction = transaction;
+            quarantine.CommandText = "UPDATE raw_captures SET state='quarantined', failure_reason='lane-evidence-invalid' WHERE raw_capture_row_id=$raw AND state='committed';";
+            quarantine.Parameters.AddWithValue("$raw", candidate.RawRowId);
+            await quarantine.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await RecomputeRetentionHoldAsync(
             connection, transaction, candidate.RawRowId, cancellationToken).ConfigureAwait(false);
@@ -596,10 +606,13 @@ internal sealed class SqliteCaptureLaneStore(
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        var executionColumns = _hasExecutionSchema
+        // Secondary lanes share the raw capture, but only standard work owns its live graph execution.
+        var includeExecution = _hasExecutionSchema &&
+            string.Equals(lane.Name, "standard", StringComparison.Ordinal);
+        var executionColumns = includeExecution
             ? ", e.execution_id, e.graph_revision_id, e.local_plan_identity_sha256, e.allow_automatic_publication, e.accepted_unix_ms, e.deadline_unix_ms, e.started_unix_ms"
             : ", NULL, NULL, NULL, NULL, NULL, NULL, NULL";
-        var executionJoin = _hasExecutionSchema
+        var executionJoin = includeExecution
             ? "LEFT JOIN processing_executions e ON e.capture_id = r.capture_id AND e.execution_class = 'Live'"
             : string.Empty;
         var orderedSql = $"""

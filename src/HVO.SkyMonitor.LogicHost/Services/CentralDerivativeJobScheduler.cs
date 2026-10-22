@@ -909,7 +909,8 @@ internal sealed class CentralDerivativeJobScheduler(
             if (projectedScene is not null && recipe.RecipeName == BuiltInProcessingRecipes.Annotation)
             {
                 job.ExpectedRecipeIdentitySha256 = BuiltInProcessingRecipes.CreateExecutionIdentity(
-                    recipe.RecipeName, recipe.Options, recipe.InputSelector, projectedScene.Annotation).IdentitySha256;
+                    recipe.RecipeName, recipe.Options, recipe.InputSelector, projectedScene.Annotation,
+                    projectedScene.PayloadInput is { } payloadInput ? [payloadInput] : null).IdentitySha256;
                 CentralProjectedSceneResolver.AddRequirement(job, projectedScene, now);
                 CentralProjectedSceneResolver.MaterializeReference(job, now);
             }

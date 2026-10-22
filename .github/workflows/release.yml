@@ -1,433 +1,462 @@
-name: Signed Distribution Release
+name: Release
+
+# A final release, vX.Y.Z, or a release candidate, vX.Y.Z-rc.N, is cut from a commit on main (install contract section
+# 3, #1310). Only the owner pushes v* tags; this workflow does the rest, and publishes only after the owner approves:
+#
+#   gate          admit the tag, read-only: annotated, names the product version (Directory.Build.props), on main, a
+#                 final release's notes present, not yet released, and the production-release environment requires a
+#                 reviewer (scripts/release:gate)
+#   ci            the CI qualification of the tagged commit: the whole CI workflow, called (ci.yml, workflow_call)
+#   image jobs    build amd64 and arm64 natively on GitHub-hosted runners, after the gate/qualification
+#   build         verify and combine their OCI archives, then build every release file from the qualified commit, read-only (scripts/release:assets)
+#   draft         push the image by its version tag, attest the image and every file, and create a draft release
+#   install-test  install and upgrade a throwaway instance from the draft's files, on linux-x64 and linux-arm64
+#   publish       held until a required reviewer approves it in production-release; check the draft still holds the
+#                 tested, attested files, then publish it, making it the latest release only when it is the newest
+#                 final release (scripts/release:publish)
+#   latest        when publishing made it the latest release, move the image's latest tag to its image
+#                 (scripts/release:tag-latest)
+#
+# A release candidate is published as a GitHub pre-release and never moves latest; neither does a fix to an older
+# version. Each tag's run is its own concurrency group, but publish and latest also share one release-wide group,
+# release-promotion, so two releases never decide or move latest at once. Nothing here changes a repository or
+# environment setting: the owner applies them (docs/runbooks/releases.md).
 
 on:
-  workflow_dispatch:
-    inputs:
-      train:
-        description: Independent release train
-        required: true
-        type: choice
-        options:
-          - installer
-          - catalog
-          - image
-      version:
-        description: Exact immutable release version
-        required: true
-        type: string
-      source_sha:
-        description: Exact 40-character commit on main
-        required: true
-        type: string
-      index_sequence:
-        description: Next signed index sequence
-        required: true
-        type: number
-      confirm:
-        description: Enter PUBLISH to create immutable releases
-        required: true
-        type: string
-
-concurrency:
-  group: signed-distribution-${{ inputs.train }}
-  cancel-in-progress: false
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  IMAGE_REPOSITORY: ghcr.io/hualapaivalley/skymonitor-cameraagent
+
 jobs:
-  build:
-    name: Reproducible Candidate
+  gate:
+    name: Release / Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     permissions:
       contents: read
       actions: read
-      checks: read
-      packages: write
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      tag: ${{ steps.gate.outputs.tag }}
+      commit: ${{ steps.gate.outputs.commit }}
+      created: ${{ steps.gate.outputs.created }}
+      prerelease: ${{ steps.gate.outputs.prerelease }}
     steps:
-      - name: Require explicit main-branch publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          CONFIRM: ${{ inputs.confirm }}
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          [[ "$GITHUB_REF" == "refs/heads/main" && "$CONFIRM" == "PUBLISH" ]]
-          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
-          # A dry-run candidate may carry an unscanned report, so its version must never reach publication.
-          [[ "$VERSION" != *-dryrun ]]
-          # The repository is not checked out yet, so this step repeats the naming scripts/ci:release-tag owns and
-          # publishes it, because a republish checks out a source revision from before that script existed.
-          case "$TRAIN" in
-            installer) package_tag="installer-v$VERSION" ;;
-            image) package_tag="image-v$VERSION" ;;
-            catalog) package_tag="catalog-$VERSION" ;;
-            *) exit 1 ;;
-          esac
-          printf 'PACKAGE_TAG=%s\n' "$package_tag" >> "$GITHUB_ENV"
-          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-          if gh release view "$package_tag" >/dev/null 2>&1; then
-            [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
-            compare_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...$main_sha" --jq .status)"
-            [[ "$compare_status" == ahead || "$compare_status" == identical ]]
-          else
-            [[ "$SOURCE_SHA" == "$GITHUB_SHA" && "$SOURCE_SHA" == "$main_sha" ]]
-          fi
-          mapfile -t ci_run_ids < <(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f branch=main -f event=push -f status=completed -f head_sha="$SOURCE_SHA" -f per_page=100 \
-            --jq '.workflow_runs[].id')
-          ci_passed=false
-          for ci_run_id in "${ci_run_ids[@]}"; do
-            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id/jobs" \
-              --jq '[.jobs[] | select(.name == "Required CI")][0].conclusion // empty')"
-            if [[ "$conclusion" == success ]]; then ci_passed=true; break; fi
-          done
-          [[ "$ci_passed" == true ]]
-      - name: Checkout exact source
+      - name: Checkout the tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate source ancestry and release identity
+      - name: Admit only an annotated release tag for the product version on main
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
+          TAG: ${{ github.ref_name }}
         run: |
-          git fetch --no-tags origin main
-          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
-          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
-          [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
-          if ! gh release view "$PACKAGE_TAG" >/dev/null 2>&1; then
-            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
-          fi
-      - name: Set up QEMU for multi-architecture image builds
-        if: inputs.train == 'image'
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      # buildx and BuildKit are pinned for the same reason the Trivy scanner is pinned by tag and digest: the
-      # SLSA predicate version BuildKit emits into the image attestations depends on this version, and that
-      # check runs after the immutable registry push, so a silent toolchain change would abort a release that
-      # has already consumed its version. The release script accepts both shipped predicate versions as well.
-      - name: Set up Buildx for multi-architecture image builds
-        if: inputs.train == 'image'
-        id: buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+          # A step with no shell: is bash -e without pipefail, which would let tee hide the gate's failure.
+          set -o pipefail
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]
+          ./scripts/release:gate "$TAG" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+
+  # The qualification main's pushes run, for the tagged commit, before anything is built from it.
+  ci:
+    name: Release / CI
+    needs: gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build-amd64:
+    name: Release / Image (amd64)
+    needs: [gate, ci]
+    uses: ./.github/workflows/release-image.yml
+    with:
+      architecture: amd64
+      version: ${{ needs.gate.outputs.version }}
+      commit: ${{ needs.gate.outputs.commit }}
+      created: ${{ needs.gate.outputs.created }}
+
+  build-arm64:
+    name: Release / Image (arm64)
+    needs: [gate, ci]
+    uses: ./.github/workflows/release-image.yml
+    with:
+      architecture: arm64
+      version: ${{ needs.gate.outputs.version }}
+      commit: ${{ needs.gate.outputs.commit }}
+      created: ${{ needs.gate.outputs.created }}
+
+  build:
+    name: Release / Build
+    needs: [gate, build-amd64, build-arm64]
+    runs-on: ubuntu-24.04
+    # Native image builds run in parallel above; this job verifies, combines and packages their output.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: v0.36.1
-          driver-opts: image=moby/buildkit:v0.26.1@sha256:8290a3b1183f45fb0c7ccd2faa7aa88eeb9af0ea85ff54458cbd8cbdb576e721
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Download the amd64 image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-platform-amd64-${{ github.run_id }}
+          path: ${{ runner.temp }}/platform-images
+      - name: Download the arm64 image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-platform-arm64-${{ github.run_id }}
+          path: ${{ runner.temp }}/platform-images
+      - name: Verify and combine the platform images
+        env:
+          AMD64_SHA256: ${{ needs.build-amd64.outputs.sha256 }}
+          ARM64_SHA256: ${{ needs.build-arm64.outputs.sha256 }}
+        run: |
+          ./scripts/release:combine-images --output "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" \
+            --amd64 "$RUNNER_TEMP/platform-images/amd64.oci.tar" --amd64-sha256 "$AMD64_SHA256" \
+            --arm64 "$RUNNER_TEMP/platform-images/arm64.oci.tar" --arm64-sha256 "$ARM64_SHA256"
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build the release's files
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          CREATED: ${{ needs.gate.outputs.created }}
+        run: |
+          ./scripts/release:assets \
+            --version "$VERSION" --commit "$COMMIT" --created "$CREATED" \
+            --prebuilt-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" \
+            --image-repository "$IMAGE_REPOSITORY" --install-script src/HVO.SkyMonitor.Deployment.Cli/install.sh \
+            --output "$RUNNER_TEMP/release" --image-oci "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar"
+      # Artifacts are named by run, not attempt, so re-running a failed install test or publish finds them; a full
+      # re-run replaces them, and then stops at the draft job while the earlier attempt's draft exists.
+      - name: Upload the release's files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-files-${{ github.run_id }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - name: Upload the image archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/image/skymonitor-cameraagent.oci.tar
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  draft:
+    name: Release / Draft
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The job that pushes, attests and creates the draft. It builds nothing: it runs the tagged commit's own scripts on
+    # the files the build job wrote. It pushes the image under its version tag alone; latest moves only after publishing.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Download the release's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-files-${{ github.run_id }}
+          path: ${{ runner.temp }}/release
+      - name: Download the image archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/image
+      - name: Check the files name the tagged release
+        id: files
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          CREATED: ${{ needs.gate.outputs.created }}
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check --strict SHA256SUMS
+          # Every file is listed in SHA256SUMS, and nothing else is here.
+          [[ "$(find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" == "$( (cut -c 67- SHA256SUMS; printf 'SHA256SUMS\n') | sort)" ]]
+          # A final release's release.json carries its upgrade notes; a release candidate's is marked a pre-release.
+          jq -e --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" --arg created "$CREATED" \
+            --argjson prerelease "$PRERELEASE" --arg repository "$IMAGE_REPOSITORY" '
+            .version == $version and .tag == $tag and .commit == $commit and .created == $created
+            and .prerelease == $prerelease
+            and ($prerelease or any(.upgradeNotes[]; .version == $version))
+            and .images.cameraAgent.repository == $repository
+            and .images.cameraAgent.tag == $version
+          ' release.json >/dev/null
+          digest="$(jq -er '.images.cameraAgent.digest' release.json)"
+          [[ "$(tar -xOf "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" index.json | jq -r '.manifests[0].digest')" == "$digest" ]]
+          # Each platform image is labelled with the release's version, commit and created time, and with the state
+          # contract release.json gives.
+          "$GITHUB_WORKSPACE/scripts/release:check-image-labels" "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" release.json
+          # A release is never replaced; this token also lists drafts, which the gate's could not. Every page is read
+          # strictly: a read that fails or is malformed fails the job, and never counts as there being no release.
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" unreleased "$TAG"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - name: Sign in to the image registry
-        if: inputs.train == 'image'
         env:
           GH_TOKEN: ${{ github.token }}
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: global.json
-      - name: Restore, build, and test release contracts
-        run: |
-          dotnet restore HVO.SkyMonitor.v9.slnx
-          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
-          dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit"
-      - name: Build deterministic unsigned assets
+      - name: Push the image under its version tag
+        id: push
         env:
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          DIGEST: ${{ steps.files.outputs.digest }}
         run: |
-          tree=$(git rev-parse "HEAD^{tree}")
-          created=$(date -u -d "$(git show -s --format=%cI "$SOURCE_SHA")" +%Y-%m-%dT%H:%M:%SZ)
-          candidate="$RUNNER_TEMP/candidate"
-          if [[ "$TRAIN" == "image" ]]; then
-            HVO_RELEASE_AMD64_BUILDER='${{ steps.buildx.outputs.name }}' \
-            HVO_RELEASE_ARM64_BUILDER='${{ steps.buildx.outputs.name }}' \
-              ./scripts/release:cameraagent-image \
-                --version "$VERSION" --revision "$SOURCE_SHA" --scanner trivy --push --output "$candidate"
-          elif [[ "$TRAIN" == "installer" ]]; then
-            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output "$RUNNER_TEMP/linux-x64"
-            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output "$RUNNER_TEMP/linux-arm64"
-            dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-installer \
-              --version "$VERSION" --revision "$SOURCE_SHA" --tree "$tree" --created-utc "$created" \
-              --linux-x64 "$RUNNER_TEMP/linux-x64/HVO.SkyMonitor.Deployment.Cli" \
-              --linux-arm64 "$RUNNER_TEMP/linux-arm64/HVO.SkyMonitor.Deployment.Cli" \
-              --notices THIRD-PARTY-NOTICES.md --output "$candidate"
-          else
-            ./scripts/catalog/build-hyg-v42.sh --fetch "$RUNNER_TEMP/catalog-build"
-            catalog_bundles=("$RUNNER_TEMP"/catalog-build/*.bundle)
-            [[ ${#catalog_bundles[@]} -eq 1 && -d "${catalog_bundles[0]}" ]]
-            jq --exit-status --arg version "$VERSION" '.package.version == $version' \
-              "${catalog_bundles[0]}/manifest.json" >/dev/null
-            dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-catalog \
-              --revision "$SOURCE_SHA" --tree "$tree" --created-utc "$created" \
-              --bundle "${catalog_bundles[0]}" --output "$candidate"
-          fi
-          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/unsigned-candidate.tar.gz" candidate
-      - name: Upload unsigned candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+          pushed="$(./scripts/release:push-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" "$IMAGE_REPOSITORY:$VERSION")"
+          [[ "$pushed" == "$DIGEST" ]]
+          printf 'digest=%s\n' "$pushed" >> "$GITHUB_OUTPUT"
+      - name: Attest the image's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          name: unsigned-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/unsigned-candidate.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
-  sign:
-    name: Key Vault Signing
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    environment: production-release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout release tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest every file's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          ref: main
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: global.json
-      - name: Download unsigned candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: unsigned-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/unsigned
-      - name: Restore release tooling and candidate
-        run: |
-          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
-          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/unsigned/unsigned-candidate.tar.gz"
-      - name: Revalidate protected main head before signing
+          subject-path: ${{ runner.temp }}/release/*
+      - name: Verify the image's attestation from the registry
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          git fetch --no-tags origin main
-          [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]]
-          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
-          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
-          if ! gh release view "$package_tag" >/dev/null 2>&1; then
-            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
-          fi
-      - name: Azure OIDC login
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Sign exact release bytes and signed index
+          gh attestation verify "oci://$IMAGE_REPOSITORY@$DIGEST" --bundle-from-oci --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            --source-ref "$GITHUB_REF" --source-digest "$COMMIT" --deny-self-hosted-runners >/dev/null
+      - name: Sign out of the image registry
+        if: always()
+        run: docker logout ghcr.io
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
-          KEY_VAULT: ${{ vars.AZURE_KEY_VAULT_NAME }}
-          KEY_NAME: ${{ vars.AZURE_RELEASE_KEY_NAME }}
-          KEY_VERSION: ${{ vars.AZURE_RELEASE_KEY_VERSION }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          set -euo pipefail
-          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
-          candidate="$RUNNER_TEMP/candidate"
-          manifest="$candidate/$(scripts/ci:release-tag --manifest "$TRAIN")"
-          sign_file() {
-            local input="$1" output="$2"
-            local digest value
-            digest=$("${tool[@]}" digest --input "$input")
-            value=$(az keyvault key sign --vault-name "$KEY_VAULT" --name "$KEY_NAME" --version "$KEY_VERSION" --algorithm ES256 --digest "$digest" --query value --output tsv --only-show-errors)
-            "${tool[@]}" write-azure-signature --value "$value" --signature "$output"
-            "${tool[@]}" verify-signature --input "$input" --signature "$output"
-          }
-          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
-          existing_package="$RUNNER_TEMP/existing-package"
-          if gh release view "$package_tag" >/dev/null 2>&1; then
-            [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
-            mkdir -m 700 "$existing_package"
-            gh release download "$package_tag" --dir "$existing_package"
-            for source_file in "$candidate"/*; do cmp "$source_file" "$existing_package/$(basename "$source_file")"; done
-            "${tool[@]}" verify --manifest "$manifest" --signature "$existing_package/$(basename "$manifest").sig" --asset-root "$candidate"
-            "${tool[@]}" verify-signature --input "$candidate/SHA256SUMS" --signature "$existing_package/SHA256SUMS.sig"
-            cp "$existing_package/$(basename "$manifest").sig" "$manifest.sig"
-            cp "$existing_package/SHA256SUMS.sig" "$candidate/SHA256SUMS.sig"
-          else
-            sign_file "$manifest" "$manifest.sig"
-            sign_file "$candidate/SHA256SUMS" "$candidate/SHA256SUMS.sig"
-          fi
-          "${tool[@]}" verify --manifest "$manifest" --signature "$manifest.sig" --asset-root "$candidate"
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            if [[ "$PRERELEASE" == true ]]; then
+              echo "Release candidate $VERSION, from \`$COMMIT\` on main. It is published as a pre-release and never becomes the latest release."
+            else
+              echo "SkyMonitor $VERSION, from \`$COMMIT\` on main."
+            fi
+            echo
+            ./scripts/release:notes --body "$VERSION"
+            cat <<NOTES
+          ## Checking the files
 
-          created=$(date -u -d "$(git show -s --format=%cI "$SOURCE_SHA")" +%Y-%m-%dT%H:%M:%SZ)
-          index_args=(create-index --train "$TRAIN" --sequence "$INDEX_SEQUENCE" --created-utc "$created" \
-            --manifest "$manifest" --manifest-signature "$manifest.sig" --output "$RUNNER_TEMP/index")
-          if (( INDEX_SEQUENCE > 1 )); then
-            previous=$((INDEX_SEQUENCE - 1))
-            previous_root="$RUNNER_TEMP/previous-index"
-            mkdir -m 700 "$previous_root"
-            gh release download "$(scripts/ci:release-tag --index "$TRAIN" "$previous")" --dir "$previous_root" --pattern "$TRAIN-release-index.json*"
-            index_args+=(--previous-index "$previous_root/$TRAIN-release-index.json" --previous-index-signature "$previous_root/$TRAIN-release-index.json.sig")
-          fi
-          "${tool[@]}" "${index_args[@]}"
-          index_path="$RUNNER_TEMP/index/$TRAIN-release-index.json"
-          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
-          existing_index="$RUNNER_TEMP/existing-index"
-          if gh release view "$index_tag" >/dev/null 2>&1; then
-            [[ "$(gh release view "$index_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
-            mkdir -m 700 "$existing_index"
-            gh release download "$index_tag" --dir "$existing_index"
-            cmp "$index_path" "$existing_index/$TRAIN-release-index.json"
-            "${tool[@]}" verify-index --index "$index_path" --signature "$existing_index/$TRAIN-release-index.json.sig"
-            cp "$existing_index/$TRAIN-release-index.json.sig" "$index_path.sig"
-          else
-            sign_file "$index_path" "$index_path.sig"
-          fi
-          if [[ "$TRAIN" == installer ]]; then
-            mirror="$RUNNER_TEMP/bootstrap-mirror"
-            mkdir -p "$mirror"
-            chmod 0700 "$mirror"
-            mkdir -m 700 "$mirror/$package_tag"
-            cp "$candidate"/* "$mirror/$package_tag/"
-            HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-exact" \
-              scripts/install-hvo-skymonitor.sh "$VERSION" "$RUNNER_TEMP/bootstrap-exact" "$candidate"
-            HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-index" \
-              scripts/install-hvo-skymonitor.sh --index "$index_path" --asset-base "$mirror" "$RUNNER_TEMP/bootstrap-index"
-          fi
-          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/signed-candidate.tar.gz" candidate index
-      - name: Upload signed candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+          CameraAgent image: \`$IMAGE_REPOSITORY:$VERSION@$DIGEST\`
+
+          Check the files with \`sha256sum --check SHA256SUMS\` and their build provenance with
+          \`gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml\`,
+          then install or upgrade with \`install.sh\` or \`--release <folder>\`: see docs/runbooks/releases.md.
+          NOTES
+          } > "$notes"
+          prerelease=()
+          [[ "$PRERELEASE" != true ]] || prerelease=(--prerelease)
+          gh release create "$TAG" "$RUNNER_TEMP"/release/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft "${prerelease[@]}" --latest=false \
+            --title "SkyMonitor $VERSION" --notes-file "$notes"
+      - name: Read the draft's files back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft"
+          diff -r "$RUNNER_TEMP/release" "$RUNNER_TEMP/draft"
+      # The install tests run the draft's own bytes, read back above with this job's token, so the self-hosted runner
+      # never holds a token that can write.
+      - name: Upload the draft's files for the install tests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: signed-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/signed-candidate.tar.gz
+          name: release-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/draft/
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
-  publish:
-    name: Immutable Publication
-    needs: sign
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+  install-test:
+    name: Release / Install and Upgrade (${{ matrix.platform }})
+    needs: [gate, draft]
+    # Tag pushes alone; the arm64 runner never runs a pull request's code.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: '"ubuntu-24.04"'
+          - platform: linux-arm64
+            runner: '["self-hosted", "linux", "ARM64", "hvo-skymonitor-arm64"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
+      packages: read
     steps:
-      - name: Checkout release tooling
+      - name: Checkout the tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ needs.gate.outputs.commit }}
           persist-credentials: false
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - name: Download the draft's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          global-json-file: global.json
-      - name: Download signed candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: signed-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/signed
-      - name: Refuse collisions and publish package
+          name: release-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install from the offline archive, then upgrade by digest from the registry
         env:
           GH_TOKEN: ${{ github.token }}
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+          RELEASE: ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          set -euo pipefail
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/signed/signed-candidate.tar.gz"
-          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
-          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
-          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
-          tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
-          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
-          package_check="$RUNNER_TEMP/package-check"
-          index_check="$RUNNER_TEMP/index-check"
-          mkdir -m 700 "$package_check" "$index_check"
-          validate_existing() {
-            local kind="$1" source_root="$2" check_root="$3"
-            diff -u <(find "$source_root" -maxdepth 1 -type f -printf '%f\n' | sort) \
-              <(find "$check_root" -maxdepth 1 -type f -printf '%f\n' | sort)
-            for source_file in "$source_root"/*; do
-              cmp "$source_file" "$check_root/$(basename "$source_file")"
-            done
-            if [[ "$kind" == "package" ]]; then
-              manifest="$(scripts/ci:release-tag --manifest "$TRAIN")"
-              "${tool[@]}" verify --manifest "$check_root/$manifest" --signature "$check_root/$manifest.sig" --asset-root "$check_root"
-              "${tool[@]}" verify-signature --input "$check_root/SHA256SUMS" --signature "$check_root/SHA256SUMS.sig"
-            else
-              "${tool[@]}" verify-index --index "$check_root/$TRAIN-release-index.json" --signature "$check_root/$TRAIN-release-index.json.sig"
-            fi
-          }
-          ensure_draft() {
-            local release_tag="$1" source_root="$2" check_root="$3" kind="$4" state_variable="$5"
-            if gh release view "$release_tag" >/dev/null 2>&1; then
-              [[ "$(gh release view "$release_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
-              gh release download "$release_tag" --dir "$check_root"
-              validate_existing "$kind" "$source_root" "$check_root"
-              printf -v "$state_variable" '%s' "$(gh release view "$release_tag" --json isDraft --jq .isDraft)"
-              return
-            fi
-            if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1; then
-              printf 'Release tag collision: %s\n' "$release_tag" >&2
-              return 1
-            fi
-            gh release create "$release_tag" "$source_root"/* --draft --latest=false --target "$SOURCE_SHA" --title "$release_tag"
-            gh release download "$release_tag" --dir "$check_root"
-            diff -qr "$source_root" "$check_root"
-            printf -v "$state_variable" '%s' true
-          }
-          package_draft=false
-          index_draft=false
-          ensure_draft "$tag" "$RUNNER_TEMP/candidate" "$package_check" package package_draft
-          ensure_draft "$index_tag" "$RUNNER_TEMP/index" "$index_check" index index_draft
-          printf 'Index release remains draft before public package verification: %s\n' "$index_draft"
-          [[ "$package_draft" == false ]] || gh release edit "$tag" --draft=false --latest=false
-      - name: Verify package through anonymous public release URLs
+          # The registry login lives in this run's own Docker configuration, not the runner's, and goes with it.
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$DOCKER_CONFIG"
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          ./scripts/test:release-install --release "$RELEASE" --upgrade-source registry
+      - name: Remove the draft's files
+        if: always()
         env:
-          TRAIN: ${{ inputs.train }}
-          VERSION: ${{ inputs.version }}
-          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
-        run: |
-          set -euo pipefail
-          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
-          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
-          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
-          tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
-          manifest="$(scripts/ci:release-tag --manifest "$TRAIN")"
-          public="$RUNNER_TEMP/public"
-          mkdir -m 700 "$public"
-          download() {
-            curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 1800 --max-filesize "$3" --output "$public/$2" \
-              "https://github.com/$GITHUB_REPOSITORY/releases/download/$1/$2"
-          }
-          download "$tag" "$manifest" 262144
-          download "$tag" "$manifest.sig" 128
-          while IFS=$'\t' read -r asset length; do download "$tag" "$asset" "$length"; done < <("${tool[@]}" list-assets --manifest "$public/$manifest" --signature "$public/$manifest.sig")
-          download "$tag" "SHA256SUMS.sig" 128
-          "${tool[@]}" verify --manifest "$public/$manifest" --signature "$public/$manifest.sig" --asset-root "$public"
-          "${tool[@]}" verify-signature --input "$public/SHA256SUMS" --signature "$public/SHA256SUMS.sig"
-      - name: Publish and anonymously verify signed index
+          RELEASE: ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$RELEASE" "$RUNNER_TEMP/docker-config-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  publish:
+    name: Release / Publish
+    needs: [gate, draft, install-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # GitHub holds this job until a required reviewer of production-release approves it. The first step checks the
+    # environment still requires one, so an environment without the rule never lets the job publish unapproved.
+    environment: production-release
+    # Promotion is serialized across every release: every run's latest job shares this group. A running job is never
+    # cancelled, but GitHub keeps only one job waiting: one queued behind it cancels it before it writes anything, and
+    # that run is re-run (docs/runbooks/releases.md). Inside the group, release:publish reads again before it writes.
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    outputs:
+      moved: ${{ steps.publish.outputs.moved }}
+    steps:
+      # The tagged commit's scripts make every check below and the publish itself.
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Require the owner's approval rule
         env:
           GH_TOKEN: ${{ github.token }}
-          TRAIN: ${{ inputs.train }}
-          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+        run: ./scripts/release:check-environment production-release
+      - name: Download the tested files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/tested
+      - name: Check the draft still holds the tested, attested files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          DIGEST: ${{ needs.draft.outputs.digest }}
         run: |
-          set -euo pipefail
-          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
-          if [[ "$(gh release view "$index_tag" --json isDraft --jq .isDraft)" == true ]]; then
-            gh release edit "$index_tag" --draft=false --latest=false
-          fi
-          public="$RUNNER_TEMP/public-index"
-          mkdir -m 700 "$public"
-          curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize 262144 \
-            --output "$public/$TRAIN-release-index.json" "https://github.com/$GITHUB_REPOSITORY/releases/download/$index_tag/$TRAIN-release-index.json"
-          curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize 128 \
-            --output "$public/$TRAIN-release-index.json.sig" "https://github.com/$GITHUB_REPOSITORY/releases/download/$index_tag/$TRAIN-release-index.json.sig"
-          dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- \
-            verify-index --index "$public/$TRAIN-release-index.json" --signature "$public/$TRAIN-release-index.json.sig"
+          # Drafts are not served by releases/tags/<tag>, so the whole list is read strictly: exactly one release has
+          # the tag, and it is still the draft its tag calls for.
+          ./scripts/release:prerelease-check draft "$TAG"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft"
+          diff -r "$RUNNER_TEMP/tested" "$RUNNER_TEMP/draft"
+          cd "$RUNNER_TEMP/draft"
+          sha256sum --check --strict SHA256SUMS
+          # Each file's provenance names this workflow at this tag and commit, built on a GitHub-hosted runner.
+          for file in *; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+              --source-ref "$GITHUB_REF" --source-digest "$COMMIT" --deny-self-hosted-runners >/dev/null
+          done
+          # The draft job verified the image's attestation from the registry; it is still on record for the digest.
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" attested "$DIGEST"
+      - name: Publish, moving latest only for the newest final release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -o pipefail
+          ./scripts/release:publish "$TAG" | tee -a "$GITHUB_OUTPUT"
+
+  latest:
+    name: Release / Latest Image
+    needs: [gate, draft, publish]
+    # Only after publishing made this release the latest release. Re-running this job alone moves latest again.
+    if: needs.publish.outputs.moved == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The publish job's group: another release is published or tagged latest before or after this, never meanwhile.
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Sign in to the image registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Move the image's latest tag to the release's image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          DIGEST: ${{ needs.draft.outputs.digest }}
+        run: ./scripts/release:tag-latest "$IMAGE_REPOSITORY" "$TAG" "$DIGEST"
+      - name: Sign out of the image registry
+        if: always()
+        run: docker logout ghcr.io

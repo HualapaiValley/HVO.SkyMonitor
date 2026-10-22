@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prove the full-qualification Unit job lists every test project that owns Unit
+# cases (issue #1255), plus the four supplemental component selections (#1261).
+#
+# Bounded guarantee: for each inventory-derived Unit-bearing project, the full
+# `unit` job holds exactly one supported selecting command, whose arguments and
+# report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
+# checked, in a step of a closed grammar, ahead of the evidence bind and upload.
+# Component checks use that grammar for the four explicitly named supplemental
+# commands, with the same strict TRX-only arguments and their own build roots.
+# It is not proof of arbitrary shell execution, of whole-job artifact membership
+# or publication, of installed catalog availability, or of checkout trust: those
+# remain accepted gaps requiring workflow review; Required CI alone does not prove
+# supplemental TRX publication, catalog availability or checkout trust (see the
+# Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
+#
+# Each test project declares its cases in tests/<project>/test-categories.json,
+# and tests/Directory.Build.props compile-links shared contract tests into
+# projects whose name does not say "Tests", so a project can own Unit cases
+# while looking like an Integration-only assembly. The Unit job in
+# .github/workflows/ci.yml is a hand-written list; that list silently omitted
+# four such assemblies (16 cases) until this check existed. Deriving the
+# expectation from the inventories keeps it attached to what the repository
+# contains instead of to someone remembering to extend the list.
+#
+# A project whose command collects coverage must be a canonical slot of the
+# Coverage job, and a command without --collect is a supplemental run that must
+# not be one, so a supplemental TRX-only run can neither add a duplicate report
+# to the canonical merge nor drop a canonical one. A supplemental run also takes
+# no --settings, writes a result directory and TRX of its own, and runs under the
+# Docker endpoint the assembly hooks recognize as disabled.
+#
+# Every selecting command must sit in a step that always runs: an `if:` or
+# `continue-on-error:` on its step would let the list stay complete while the
+# selection never executes. Component checks below cover only their four named
+# supplemental selecting commands and the corresponding component build roots.
+#
+# Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>] [--component-build <path>]
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+workflow="$repo_root/.github/workflows/ci.yml"
+tests_root="$repo_root/tests"
+component_build="$repo_root/scripts/ci:component-build"
+
+while (($#)); do
+  case "$1" in
+    --workflow) workflow="${2:?--workflow requires a path}"; shift 2 ;;
+    --component-build) component_build="${2:?--component-build requires a path}"; shift 2 ;;
+    --tests-root) tests_root="${2:?--tests-root requires a directory}"; shift 2 ;;
+    *) printf 'Usage: %s [--workflow <path>] [--tests-root <dir>] [--component-build <path>]\n' "${BASH_SOURCE[0]##*/}" >&2; exit 2 ;;
+  esac
+done
+
+[[ -f "$workflow" ]] || { printf 'Workflow not found: %s\n' "$workflow" >&2; exit 2; }
+[[ -d "$tests_root" ]] || { printf 'Tests root not found: %s\n' "$tests_root" >&2; exit 2; }
+
+job_block() {
+  awk -v name="$1" '
+    $0 == "  " name ":" { on = 1; next }
+    on && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+    on { print }
+  ' "$workflow"
+}
+
+unit_job="$(job_block unit)"
+coverage_job="$(job_block coverage)"
+errors=0
+fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
+
+# Split captured output without another input delivery (including a here-string
+# temporary file). Command substitutions already remove trailing newlines.
+split_lines() {
+  local -n result="$1"
+  local text="$2"
+  result=()
+  [[ -n "$text" ]] || return 0
+  while [[ "$text" == *$'\n'* ]]; do
+    result+=("${text%%$'\n'*}")
+    text="${text#*$'\n'}"
+  done
+  result+=("$text")
+}
+
+matches_line() {
+  local pattern="$1" line
+  local -a lines=()
+  split_lines lines "$2"
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ $pattern ]] && return 0
+  done
+  return 1
+}
+
+# Optional grep scans distinguish clean absence (1) from an inspection error.
+# Check both pipeline statuses: failed input delivery is never clean absence.
+# Callers capture the output in an assignment checked by set -e/pipefail; use
+# consuming grep modes, not -q, so an early match cannot SIGPIPE the producer.
+optional_grep() {
+  local text="$1"
+  local -a statuses=()
+  shift
+  if printf '%s\n' "$text" | grep "$@"; then
+    return 0
+  else
+    statuses=("${PIPESTATUS[@]}")
+  fi
+  if ((statuses[0] == 0 && statuses[1] == 1)); then
+    return 0
+  fi
+  printf 'Unit selection: could not inspect input (delivery=%d, grep=%d).\n' "${statuses[@]}" >&2
+  if ((statuses[1] > 1)); then
+    return "${statuses[1]}"
+  fi
+  return 2
+}
+
+declare -a export_lines=() commands=() coverage_slots=() inventories=() projects=()
+
+[[ -n "$unit_job" ]] || { printf 'Unit selection: the unit job is missing from %s\n' "$workflow" >&2; exit 1; }
+[[ -n "$coverage_job" ]] || { printf 'Unit selection: the coverage job is missing from %s\n' "$workflow" >&2; exit 1; }
+
+grep -qxF '      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock' <<<"$unit_job" ||
+  fail 'the Unit job must run with the intentionally invalid Docker endpoint'
+grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+  fail 'the Unit job must use the positive Unit filter'
+
+# Anything that changes how the Unit job's steps execute is part of the selection: a
+# `defaults:` block (an inherited `shell:` such as `bash -n` runs no test), job-level or
+# workflow-level env beyond the supported keys, or an earlier step exporting a variable
+# through GITHUB_ENV or GITHUB_PATH (a narrowed UNIT_FILTER, a different PATH) would
+# leave every selecting step in the grammar while changing what it runs.
+mapping_keys() { # mapping_keys <env-line-regex> <indent-of-keys>: keys of the mapping that follows
+  # Prints each key; a line inside the mapping that is not a plain `KEY: value` (a quoted
+  # key, a flow mapping, a continuation of a value) is printed as BAD so it fails the check
+  # instead of being read past.
+  awk -v head="$1" -v pad="$2" '
+    $0 ~ head { on = 1; next }
+    on && $0 ~ /^[[:space:]]*(#|$)/ { next }
+    on && $0 ~ "^" pad "[A-Za-z_][A-Za-z0-9_]*: [^ ]" { sub("^" pad, ""); sub(/:.*/, ""); print; next }
+    on && $0 ~ "^" pad { print "BAD " $0; next }
+    on { exit }
+  '
+}
+# A defaults key in any spelling (spaced colon, quoted, flow mapping) at any scope would be
+# inherited by the selecting steps, and so would a shell key anywhere in the Unit job.
+# shellcheck disable=SC2016
+key_pattern='(^|[^A-Za-z0-9_-])["'"'"']?%s["'"'"']?[[:space:]]*:'
+# Read failures are fatal. Optional-key matching stays in memory: a large
+# here-string can fail to create its temporary file inside an if condition and
+# otherwise be mistaken for a key that is absent (#1265). Match each line with
+# the original grep grammar: [[:space:]] must not consume a newline before `:`.
+if ! workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow")"; then
+  fail 'could not inspect workflow settings'
+  exit 1
+fi
+if ! unit_text="$(job_block unit | grep -vE '^[[:space:]]*#')"; then
+  fail 'could not inspect Unit job settings'
+  exit 1
+fi
+# shellcheck disable=SC2059
+printf -v defaults_pattern "$key_pattern" defaults
+if matches_line "$defaults_pattern" "$workflow_text"; then
+  fail 'the workflow must not set defaults (workflow or job scope), which the selecting steps would inherit'
+fi
+# shellcheck disable=SC2059
+printf -v shell_pattern "$key_pattern" shell
+if matches_line "$shell_pattern" "$unit_text"; then
+  fail 'the Unit job must not set a shell, which could stop a selecting command executing'
+fi
+workflow_env="$(mapping_keys '^env:[[:space:]]*$' '  ' < "$workflow" | sort | paste -sd, -)"
+[[ "$workflow_env" == 'DOTNET_CLI_TELEMETRY_OPTOUT,DOTNET_NOLOGO' ]] ||
+  fail "the workflow env may set only DOTNET_NOLOGO and DOTNET_CLI_TELEMETRY_OPTOUT as plain single-line KEY: value entries, found: ${workflow_env:-none}"
+job_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
+[[ "$job_env" == 'DOCKER_HOST,UNIT_FILTER' ]] ||
+  fail "the Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line KEY: value entries, found: ${job_env:-none}"
+# The one supported export is the catalog bundle path that the restore step verifies.
+# shellcheck disable=SC2016
+bundle_export='          printf '"'"'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n'"'"' "$bundle_path" >> "$GITHUB_ENV"'
+exports="$(optional_grep "$unit_job" -E 'GITHUB_(ENV|PATH)')"
+split_lines export_lines "$exports"
+for exporting in "${export_lines[@]}"; do
+  [[ "$exporting" == "$bundle_export" ]] ||
+    fail "the Unit job exports environment through GITHUB_ENV or GITHUB_PATH beyond the catalog bundle, which could change the selection: ${exporting# }"
+done
+
+# Evidence is bound and uploaded from TestResults/unit, so a selection that runs after
+# those steps passes while its TRX never reaches the artifact.
+bind_line="$(optional_grep "$unit_job" -nxF '      - name: Bind Unit evidence' | cut -d: -f1)"
+upload_line="$(optional_grep "$unit_job" -nxF '      - name: Upload Unit evidence' | cut -d: -f1)"
+if [[ -z "$bind_line" || -z "$upload_line" ]] || ((bind_line > upload_line)); then
+  fail 'the Unit job must bind its evidence and then upload it, as steps named Bind Unit evidence and Upload Unit evidence'
+fi
+grep -qxF '          path: TestResults/unit/' <<<"$unit_job" ||
+  fail 'the Unit evidence artifact must upload TestResults/unit/, where every selection writes its TRX'
+
+command_text="$(optional_grep "$unit_job" -E '^[[:space:]]+dotnet test tests/')"
+split_lines commands "$command_text"
+
+# Tag each line of a step read from stdin: ENV <entry> for its DOCKER_HOST scalar (the
+# only env a selecting step may set, so no step-level UNIT_FILTER or PATH override),
+# BAD <line> for anything outside the selecting-step grammar described at its use.
+validate_step() {
+  awk '
+    BEGIN {
+      command_pattern = "^          dotnet test tests/[A-Za-z0-9._/-]+[.]csproj "
+    }
+    { sub(/[ \t\r]+$/, "") }
+    NR == 1 { if ($0 !~ /^      - name: [^ ]/) print "BAD " $0; next }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $0 == "        env:" { if (seen_env || seen_run) print "BAD " $0; seen_env = 1; section = "env"; next }
+    $0 == "        run: |" { if (seen_run) print "BAD " $0; seen_run = 1; section = "run"; next }
+    section == "env" && /^          DOCKER_HOST: [^ ]/ { print "ENV " substr($0, 11); next }
+    section == "run" && $0 ~ command_pattern {
+      # Only these execution-preserving options may follow the project; any other
+      # token (--list-tests, --no-restore overrides, a shell operator) is left over.
+      rest = $0; sub(/^          dotnet test tests\/[A-Za-z0-9._\/-]+[.]csproj/, "", rest)
+      gsub(/ --no-build/, "", rest)
+      gsub(/ --configuration Release/, "", rest)
+      gsub(/ --filter "[$]UNIT_FILTER"/, "", rest)
+      gsub(/ --settings tests\/coverage[.]runsettings/, "", rest)
+      gsub(/ --collect:"XPlat Code Coverage"/, "", rest)
+      gsub(/ --results-directory TestResults\/unit\/[a-z0-9-]+/, "", rest)
+      gsub(/ --logger "trx;LogFileName=[A-Za-z0-9._-]+"/, "", rest)
+      if (rest !~ /^ *$/) print "BAD " $0
+      next
+    }
+    { print "BAD " $0 }
+  '
+}
+
+# The workflow step (from its `- name:` line to the next step) holding a command.
+step_of() {
+  awk -v cmd="$1" '
+    function flush() { if (hit && !done) { printf "%s", buf; done = 1; exit } buf = "" }
+    /^      - / { flush() }
+    { buf = buf $0 "\n"; if ($0 ~ /^[[:space:]]+dotnet test tests\// && index($0, cmd)) hit = 1 }
+    END { flush() }
+  ' <<<"$unit_job"
+}
+coverage_text="$(optional_grep "$coverage_job" -oE "TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml" | sed -E 's#TestResults/unit/([a-z0-9-]+)/.*#\1#')"
+split_lines coverage_slots "$coverage_text"
+
+declare -A expected=()
+if ! inventory_text="$(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)"; then
+  fail 'could not inspect inventory paths'
+  exit 1
+fi
+split_lines inventories "$inventory_text"
+for inventory in "${inventories[@]}"; do
+  unit="$(jq -r '.Unit' "$inventory")"
+  ((unit > 0)) || continue
+  dir="$(dirname "$inventory")"
+  if ! project_text="$(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')"; then
+    fail 'could not inspect project paths'
+    exit 1
+  fi
+  split_lines projects "$project_text"
+  ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
+  expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
+done
+
+((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
+
+declare -A slot_owner=()
+for project in "${!expected[@]}"; do
+  matches=()
+  for command in "${commands[@]}"; do
+    [[ "$command" == *"dotnet test $project "* ]] && matches+=("$command")
+  done
+  if ((${#matches[@]} != 1)); then
+    fail "$project owns ${expected[$project]} Unit case(s) but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
+    continue
+  fi
+  command="${matches[0]}"
+  step="$(step_of "$command")"
+  command_line="$(grep -nF -- "$command" <<<"$unit_job" | sed -n '1p' | cut -d: -f1)"
+  if [[ -n "$bind_line" ]] && ((command_line > bind_line)); then
+    fail "$project command runs after the evidence is bound and uploaded, so its results never reach the artifact"
+  fi
+  # A selecting step must match a closed grammar: its `- name:` opening line, an
+  # optional `env:` mapping holding only DOCKER_HOST, then one `run: |` block of
+  # `dotnet test tests/<project>.csproj` lines using only the options checked
+  # below. Anything else -- an `if:` or `continue-on-error:` key in any spelling, a reindented or flow-style step, a
+  # shell structure that could stop a line executing (heredoc, `||`, `;`, `&`) --
+  # is rejected rather than interpreted, so a complete list cannot hide a selection
+  # that never runs and an env-looking line inside a script is never read as env.
+  parsed="$(validate_step <<<"$step")"
+  unsupported="$(optional_grep "$parsed" '^BAD ' | sed -n '1p')"
+  if [[ -n "$unsupported" ]]; then
+    fail "$project command sits in a step outside the supported grammar, so its selection may not run: ${unsupported#BAD }"
+  fi
+  # The needles are literal command text, including the unexpanded $UNIT_FILTER.
+  # shellcheck disable=SC2016
+  for required in ' --no-build ' ' --configuration Release ' ' --filter "$UNIT_FILTER" ' ' --logger "trx;'; do
+    [[ "$command" == *"$required"* ]] || fail "$project command lacks${required% }"
+  done
+  slot="$(sed -nE 's#.* --results-directory TestResults/unit/([a-z0-9-]+)( .*|$)#\1#p' <<<"$command")"
+  if [[ -z "$slot" ]]; then
+    fail "$project command does not write to TestResults/unit/<slot>"
+    continue
+  fi
+  canonical=false
+  for covered in "${coverage_slots[@]}"; do
+    [[ "$covered" == "$slot" ]] && canonical=true
+  done
+  collects=false
+  [[ "$command" == *' --collect:"XPlat Code Coverage"'* && "$command" == *' --settings tests/coverage.runsettings '* ]] && collects=true
+  if $canonical && ! $collects; then
+    fail "$project slot $slot is a canonical coverage slot but its command does not collect coverage"
+  fi
+  if ! $canonical && [[ "$command" == *' --collect'* && "$slot" != processing-runner ]]; then
+    fail "$project slot $slot collects coverage that the Coverage job never merges"
+  fi
+  if ! $canonical && [[ "$slot" != processing-runner ]]; then
+    [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs take none"
+    grep -qxF 'ENV DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' <<<"$parsed" ||
+      fail "$project slot $slot must run in a step with DOCKER_HOST unix:///tmp/hvo-no-docker.sock, the endpoint its assembly hook treats as Docker-disabled"
+  fi
+  [[ "$command" == *" --logger \"trx;LogFileName=unit-$slot.trx\""* ]] ||
+    fail "$project slot $slot must write TRX unit-$slot.trx"
+  if [[ -n "${slot_owner[$slot]:-}" ]]; then
+    fail "$project and ${slot_owner[$slot]} share result slot $slot, so one overwrites the other's evidence"
+  fi
+  slot_owner[$slot]="$project"
+done
+
+for command in "${commands[@]}"; do
+  project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
+  [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
+done
+
+# These four compile-linked Unit-bearing assemblies supplement existing component
+# coverage runs. This is a selecting-command/build-plan contract, not a whole-job
+# YAML interpreter or proof of checkout, prerequisites or artifact publication.
+while IFS='|' read -r job component name slot; do
+  unit_job="$(job_block "$job")" # step_of reads the current job.
+  project="tests/$name/$name.csproj"
+  [[ -n "${expected[$project]:-}" ]] || fail "$job supplemental project owns no Unit cases: $project"
+  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+    fail "$job must use the complete positive Unit filter"
+  component_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
+  [[ "$component_env" == 'INTEGRATION_FILTER,UNIT_FILTER' ]] ||
+    fail "$job env must hold only plain INTEGRATION_FILTER and UNIT_FILTER scalars"
+  # Pin the supplemental command's supported arguments, including its own TRX-only
+  # slot. The step grammar rejects conditions, shell operators and env overrides.
+  required_command="          dotnet test $project --no-build --configuration Release --filter \"\$UNIT_FILTER\" --results-directory TestResults/unit/$slot --logger \"trx;LogFileName=unit-$slot.trx\""
+  count="$(optional_grep "$unit_job" -cxF -- "$required_command")"
+  if [[ "$count" != 1 ]]; then
+    fail "$job must contain exactly one TRX-only supplemental Unit command for $project (found $count)"
+  else
+    command_line="$(grep -nxF -- "$required_command" <<<"$unit_job" | cut -d: -f1)"
+    build_line="$(optional_grep "$unit_job" -nxF "        run: ./scripts/ci:component-build $component" | cut -d: -f1)"
+    upload_line="$(optional_grep "$unit_job" -nE '^      - name: Upload .* component evidence$' | cut -d: -f1)"
+    if [[ ! "$build_line" =~ ^[0-9]+$ || ! "$upload_line" =~ ^[0-9]+$ ]] ||
+        ((command_line < build_line || command_line > upload_line)); then
+      fail "$job supplemental command must follow its component build and precede its evidence upload"
+    fi
+    step="$(step_of "$required_command")"
+    parsed="$(validate_step <<<"$step")"
+    [[ "$parsed" == 'ENV DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' ]] ||
+      fail "$job supplemental step must use the supported grammar and exact Docker-disabled endpoint"
+  fi
+  # A second writer to this directory can overwrite the supplemental report.
+  writers="$(optional_grep "$unit_job" -Ec -- "^[[:space:]]+dotnet test .* --results-directory TestResults/unit/$slot( |$)")"
+  [[ "$writers" == 1 ]] || fail "$job supplemental result slot $slot must have exactly one writer"
+  for covered in "${coverage_slots[@]}"; do
+    [[ "$covered" != "$slot" ]] || fail "$job supplemental result slot $slot collides with canonical coverage"
+  done
+  # List mode is the very array restore/build executes, with no solution-wide
+  # build or foreign-lane output assumed.
+  if ! plan="$("$component_build" "$component" --list-projects)"; then
+    fail "$job component build plan could not be read"
+  elif ! grep -qxF "$project" <<<"$plan"; then
+    fail "$job component build plan omits $project"
+  fi
+done <<'COMPONENTS'
+shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
+cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
+logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
+combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
+COMPONENTS
+
+if ((errors)); then
+  printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
+  exit 1
+fi
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) plus four component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"

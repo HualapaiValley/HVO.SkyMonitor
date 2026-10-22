@@ -56,6 +56,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
+            .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -119,6 +120,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CalibrationTelemetry>();
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
+        services.AddSingleton<IRawEvidenceOperations>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IProjectedSceneStageOwnerProvider>(provider => provider.GetRequiredService<RawCaptureIngress>());
@@ -127,6 +129,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteNamedRigProfileStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<SqliteCalibrationFamilyStore>();
+        services.AddSingleton<CalibrationFamilyActivationService>();
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
@@ -173,16 +177,22 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<IConstellationTopology>(),
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
-        services.AddSingleton<ICameraAgentSkyMapProjection>(provider => new CameraAgentSkyMapProjection(
-            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            provider.GetRequiredService<ICelestialCatalog>(),
-            provider.GetRequiredService<TimeProvider>(),
-            provider.GetService<IConstellationTopology>(),
-            provider.GetService<IDeploymentLocationStore>(),
-            provider.GetService<ILatestFrameAccessor>(),
-            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
-            SkyMapObjectBound(configuration),
-            provider.GetService<IPlanetEphemeris>()));
+        // One live operator limit governs both the sky map and VirtualSky capture, which resolves it optionally.
+        services.AddSingleton<ISceneObjectBound>(new ConfigurationSceneObjectBound(SkyMapObjectBound(configuration)));
+        services.AddSingleton<ICameraAgentSkyMapProjection>(provider =>
+        {
+            var sceneObjectBound = provider.GetRequiredService<ISceneObjectBound>();
+            return new CameraAgentSkyMapProjection(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<ICelestialCatalog>(),
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetService<IConstellationTopology>(),
+                provider.GetService<IDeploymentLocationStore>(),
+                provider.GetService<ILatestFrameAccessor>(),
+                provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
+                () => sceneObjectBound.Current,
+                provider.GetService<IPlanetEphemeris>());
+        });
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();
@@ -244,6 +254,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalCaptureTriggerBridge>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CapturePipelineTraceStore>();
+        services.AddSingleton<CaptureMaintenanceGate>();
         services.AddSingleton<CaptureAdmissionCoordinator>();
         services.AddSingleton<CaptureScheduleRuntimeCoordinator>();
         services.AddSingleton<CameraAgentStorageResolver>();
@@ -283,6 +294,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
         services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
         services.AddSingleton<ICameraAgentStructuredLayerAvailability, CameraAgentStructuredLayerAvailability>();
+        services.AddSingleton<ICameraAgentProcessingCompletion, CameraAgentProcessingCompletionReader>();
         services.AddSingleton<ICameraAgentCurrentImagePresentationService, CameraAgentCurrentImagePresentationService>();
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
@@ -332,8 +344,12 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
                 provider.GetService<IAcceptanceRetentionControl>(),
-                provider.GetRequiredService<SqliteTimeLapseStore>()));
+                provider.GetRequiredService<SqliteTimeLapseStore>(),
+                provider.GetRequiredService<SqliteCalibrationFamilyStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
+        services.AddSingleton<ActiveCalibrationFamilySelector>();
+        services.AddSingleton<NormalizationPlanFreezer>();
+        services.AddSingleton<GainNormalizationPreparer>();
         var replayProfile = configuration.GetValue(
             "CameraAgent:ProcessingGraphs:ReplayProfile",
             ReplayExecutionProfile.InProcess);
@@ -352,7 +368,9 @@ public static class CameraAgentServiceCollectionExtensions
             return new CameraAgentRecipeExecutionAdapter(
                 provider.GetRequiredService<IProcessingRecipeExecutor>(),
                 replayProfile,
-                runner);
+                runner,
+                // Resolved on first use by a mixed-gain node: composing any graph must not require the durable stores.
+                provider.GetRequiredService<GainNormalizationPreparer>);
         });
         services.AddSingleton<ArtifactOutboxState>();
         services.AddSingleton<ArtifactOutboxTelemetry>();
@@ -424,6 +442,11 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
+        // Registers the orbital store initializer, so it runs before the automation runner's first sweep.
+        services.AddCameraAgentOrbitalElements();
+        services.AddCameraAgentSpaceWeather();
+        services.AddSingleton<LocalAutomationOffSweepWorker>();
+        services.AddHostedService(static provider => provider.GetRequiredService<LocalAutomationOffSweepWorker>());
         services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());

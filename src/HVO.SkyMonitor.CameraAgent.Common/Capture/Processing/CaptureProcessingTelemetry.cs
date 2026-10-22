@@ -60,6 +60,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _meter.CreateObservableGauge("camera_agent.processing.replay.pending", () => _state.Snapshot.ReplayPendingCount, "{execution}");
         _meter.CreateObservableGauge("camera_agent.processing.replay.retry", () => _state.Snapshot.ReplayRetryCount, "{execution}");
         _meter.CreateObservableGauge("camera_agent.processing.replay.terminal", () => _state.Snapshot.ReplayTerminalCount, "{execution}");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.abandoned", () => _state.Snapshot.ReplayAbandonedCount, "{execution}");
         _meter.CreateObservableGauge("camera_agent.processing.replay.oldest.age", ObserveOldestReplayAge, "s");
         _meter.CreateObservableGauge("camera_agent.processing.replay.pending.bytes", () => _state.Snapshot.ReplayPendingBytes, "By");
     }

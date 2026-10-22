@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CurrentSkyPageTests
+public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
     [DataRow("Available", "35.33°, -113.99° / 1100 m")]
@@ -447,10 +447,16 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
 
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations", StringComparison.Ordinal);
+        Assert.AreEqual("Sky annotations", cut.Find(".sky-layer-controls input[data-layer-target]").ParentElement!.QuerySelector("strong")!.TextContent);
+        Assert.AreEqual("Sky annotations", cut.Find(".fullscreen-layer-list strong").TextContent);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "arrives with #525", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "measured product not produced", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("arrives with #525", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Sun footprint", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Moon footprint", StringComparison.Ordinal));
         StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "arrives with #523", StringComparison.Ordinal);
         await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
@@ -499,9 +505,11 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        Assert.HasCount(14, cut.FindAll(".scene-panel input:disabled"));
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sun footprint", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Moon footprint", StringComparison.Ordinal);
+        Assert.HasCount(12, cut.FindAll(".scene-panel input:disabled"));
+        var annotations = cut.FindAll(".scene-panel label").Single(label => label.QuerySelector("strong")?.TextContent == "Sky annotations");
+        StringAssert.Contains(annotations.TextContent, "expected / not retained for this capture", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Sun footprint", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Moon footprint", StringComparison.Ordinal));
         Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
     }
 
@@ -669,7 +677,7 @@ public sealed class CurrentSkyPageTests
 
     private const string CombinedDisplayUrl = "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000104/preview?displayReference=00000000-0000-0000-0000-000000000104";
 
-    private static CameraAgentCurrentImagePresentation WithStructuredBase()
+    internal static CameraAgentCurrentImagePresentation WithStructuredBase()
     {
         var source = OperatorUiTestData.CurrentImage();
         return source with
@@ -1028,7 +1036,7 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task LayerSelectionSurvivesPollingAndResetsForNewCapture()
+    public async Task LayerSelectionSurvivesPollingAndANewCapture()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -1048,12 +1056,13 @@ public sealed class CurrentSkyPageTests
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
 
+        // The next capture's layer of the same kind keeps the operator's choice, not the profile default.
         current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".layers-link").GetAttribute("href"));
-            Assert.IsTrue(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
+            Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
         });
     }
 
@@ -1146,7 +1155,7 @@ public sealed class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
     }
 
-    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
+    internal static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
         captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('A', 64),
         new string('B', 64), new string('C', 64), 640, 480,
         [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],

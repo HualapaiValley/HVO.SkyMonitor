@@ -27,7 +27,10 @@ internal sealed record LifecycleContinuity(
     long ProcessingLeased,
     long OutboxPending,
     long OutboxLeased,
-    bool CaptureInitialized = true);
+    bool CaptureInitialized = true,
+    long ReplayPending = 0,
+    long ReplayLeased = 0,
+    bool ReplayCatalogIndependent = false);
 
 // Time budgets for one lifecycle exchange with a CameraAgent. A command shares
 // the drain deadline with the boundary poll that confirms it, because the
@@ -266,6 +269,10 @@ internal sealed class CameraAgentLifecycleClient(
                     throw new InstallerException(
                         $"CameraAgent reported capture control '{state.CaptureState}' instead of the durable lifecycle pause.");
                 }
+                // Archived replay is deliberately absent: a capture pause keeps processing accepted work, so an
+                // operator-requested replay backlog could hold the boundary far past its deadline. Replay pins its
+                // inputs at submission and never builds a scene from the mounted catalog, and a host stop returns
+                // in-flight replay to its queue without consuming an attempt.
                 if (state.CaptureState == "Paused" && state.CaptureInitialized && state.RawLeased == 0 && state.LaneLeased == 0 &&
                     state.ProcessingLeased == 0 && state.OutboxLeased == 0)
                 {
@@ -295,9 +302,13 @@ internal sealed class CameraAgentLifecycleClient(
         return message + ".";
     }
 
+    // Archived replay is reported but never waited for, so it is named only when present.
     private static string Describe(LifecycleContinuity state)
         => $"last observed capture control '{state.CaptureState}' (initialized: {state.CaptureInitialized}, " +
-            $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased})";
+            $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased}" +
+            (state.ReplayPending > 0 || state.ReplayLeased > 0
+                ? $"; archived replay pending/leased {state.ReplayPending}/{state.ReplayLeased}, which the drain does not wait for)"
+                : ")");
 
     // Timers resolve to whole milliseconds and truncate, so a budget or delay
     // that ends a fraction of a millisecond before the deadline would wake the
@@ -394,6 +405,10 @@ internal sealed class CameraAgentLifecycleClient(
         var lanes = Value(root, "captureLanes");
         var processing = Value(root, "captureProcessing");
         var outbox = Value(root, "artifactOutbox");
+        // A CameraAgent image that predates the archived-replay section omits it; its replay is reported as none.
+        var replay = root.TryGetProperty("archivedReplay", out var replaySection)
+            ? replaySection.GetProperty("value")
+            : (JsonElement?)null;
         return new LifecycleContinuity(
             control.GetProperty("state").GetString() ?? string.Empty,
             control.GetProperty("version").GetInt64(),
@@ -409,7 +424,12 @@ internal sealed class CameraAgentLifecycleClient(
             // A CameraAgent image that predates the operations summary omits the
             // flag; treating it as initialized deliberately keeps that image's
             // fast-fail contract on "Unavailable".
-            !control.TryGetProperty("isInitialized", out var initialized) || initialized.GetBoolean());
+            !control.TryGetProperty("isInitialized", out var initialized) || initialized.GetBoolean(),
+            replay?.GetProperty("pendingCount").GetInt64() ?? 0,
+            replay?.GetProperty("leasedCount").GetInt64() ?? 0,
+            // An image that predates the replay guard omits the declaration, so its archived replay may still
+            // annotate from whichever catalog is mounted when it runs.
+            root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean());
     }
 
     private static JsonElement Value(JsonElement root, string name) => root.GetProperty(name).GetProperty("value");

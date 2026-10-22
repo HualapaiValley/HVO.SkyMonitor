@@ -1,0 +1,16 @@
+@page "/operations/space-weather"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Space weather</PageTitle>
+
+<OperationsPageHeading Eyebrow="Processing / external facts" Title="Space weather" HeadingId="space-weather-page-heading"
+                       Description="@Description" />
+
+<div class="space-weather-page">
+    <SpaceWeatherPanel />
+</div>

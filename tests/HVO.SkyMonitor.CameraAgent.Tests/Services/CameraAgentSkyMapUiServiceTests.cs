@@ -587,6 +587,131 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.AreEqual(new CameraAgentObjectLimitSetting("profile-version", "750", false), result.Value!.ObjectLimit);
     }
 
+    [TestMethod]
+    public async Task SaveCurrentSkyRefreshAsync_WhenTheMutatePolicyFails_DeniesWithoutWritingAsync()
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: false);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var result = await service.SaveCurrentSkyRefreshAsync(60, OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, result.Kind);
+        Assert.IsFalse(System.IO.File.Exists(settings.Path));
+    }
+
+    [TestMethod]
+    public async Task SaveCurrentSkyRefreshAsync_WritesTheIntervalReportsAnUnchangedSaveAndRemovesItAsync()
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var saved = await service.SaveCurrentSkyRefreshAsync(60, OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, saved.Kind);
+        Assert.AreEqual("60", saved.Value!.SavedValue);
+        Assert.IsFalse(saved.Value.Unchanged);
+        Assert.IsFalse(saved.Value.Overridden);
+        Assert.Contains("\"MinimumRefreshSeconds\": 60", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false), StringComparison.Ordinal);
+
+        var again = await service.SaveCurrentSkyRefreshAsync(60, saved.Value.Version, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Success, again.Kind);
+        Assert.IsTrue(again.Value!.Unchanged);
+
+        var cleared = await service.SaveCurrentSkyRefreshAsync(null, again.Value.Version, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, cleared.Kind);
+        Assert.IsNull(cleared.Value!.SavedValue);
+        Assert.IsFalse(cleared.Value.Unchanged);
+        Assert.AreEqual("{}\n", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(14, "absent")]
+    [DataRow(3601, "absent")]
+    [DataRow(60, " ")]
+    public async Task SaveCurrentSkyRefreshAsync_WithAnInvalidCommand_WritesNothingAsync(int seconds, string expectedVersion)
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var result = await service.SaveCurrentSkyRefreshAsync(seconds, expectedVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+        Assert.AreEqual("Minimum image refresh must be a whole number from 15 to 3,600.", result.Message);
+        Assert.IsFalse(System.IO.File.Exists(settings.Path));
+    }
+
+    [TestMethod]
+    [DataRow("stale", "changed since this page was read", "Conflict")]
+    [DataRow("unreadable", "not valid settings JSON", "Invalid")]
+    [DataRow("no-file", "loads no operator settings file", "Unavailable")]
+    public async Task SaveCurrentSkyRefreshAsync_WhenTheFileCannotTakeTheEdit_LeavesItAsItIsAsync(
+        string scenario,
+        string expected,
+        string kind)
+    {
+        using var settings = new TemporarySettingsFile();
+        const string content = "{ \"CameraAgent\": ";
+        await System.IO.File.WriteAllTextAsync(settings.Path, scenario == "unreadable" ? content : "{}").ConfigureAwait(false);
+        var version = (await settings.File.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Version;
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal,
+            authorization.Object,
+            new RecordingSiteProfileStore(),
+            settingsFile: scenario == "no-file" ? null : settings.File);
+
+        var result = await service.SaveCurrentSkyRefreshAsync(
+            60, scenario == "stale" ? OperatorSettingsFile.AbsentVersion : version, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(Enum.Parse<OperatorUiResultKind>(kind), result.Kind);
+        Assert.Contains(expected, result.Message!, StringComparison.Ordinal);
+        Assert.AreEqual(scenario == "unreadable" ? content : "{}", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task GetSiteAsync_ReportsTheSavedRefreshAtTheProfilesVersionAsync()
+    {
+        using var settings = new TemporarySettingsFile(overridden: ["CameraAgent:CurrentSky:MinimumRefreshSeconds"]);
+        await System.IO.File.WriteAllTextAsync(settings.Path, """{ "CameraAgent": { "CurrentSky": { "MinimumRefreshSeconds": 45 } } }""").ConfigureAwait(false);
+        var profiles = new RecordingSiteProfileStore { State = ProfileState("profile-version") };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(principal, authorization.Object, profiles, settingsFile: settings.File);
+
+        var result = await service.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // Like the object limit, it carries the version the profile was read at, so a save after a hand edit conflicts.
+        Assert.AreEqual(new CameraAgentCurrentSkyRefreshSetting("profile-version", "45", Overridden: true), result.Value!.CurrentSkyRefresh);
+    }
+
+    [TestMethod]
+    [DataRow("owner@cameraagent.local")]
+    [DataRow(" OWNER@CameraAgent.local ")]
+    public async Task GetSiteAsync_DoesNotOfferThePlaceholderOwnerEmailAsAContactAsync(string adminEmail)
+    {
+        var profiles = new RecordingSiteProfileStore { State = ProfileState("profile-version") };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(principal, authorization.Object, profiles, adminEmail: adminEmail);
+
+        var result = await service.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // An installation without --owner-email has only the non-routable default, which is nobody's contact.
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.IsNull(result.Value!.OwnerLoginEmail);
+    }
+
     private static readonly SiteProfileValues SavedProfile = new(
         "Hualapai Valley Observatory", "East dome", "Night Owner", "owner@home.lan");
 
@@ -606,7 +731,8 @@ public sealed class CameraAgentSkyMapUiServiceTests
         IDeviceSecretStore? secrets = null,
         Dictionary<string, ApplicationUser>? users = null,
         DeploymentLocationReconciliationState? reconciliation = null,
-        OperatorSettingsFile? settingsFile = null)
+        OperatorSettingsFile? settingsFile = null,
+        string adminEmail = "  owner@home.lan ")
     {
         var userStore = new Mock<IUserStore<ApplicationUser>>();
         userStore
@@ -625,7 +751,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             {
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
             }),
-            Options.Create(new LocalIdentityOptions { AdminEmail = "  owner@home.lan " }),
+            Options.Create(new LocalIdentityOptions { AdminEmail = adminEmail }),
             secrets,
             reconciliation,
             new UserManager<ApplicationUser>(

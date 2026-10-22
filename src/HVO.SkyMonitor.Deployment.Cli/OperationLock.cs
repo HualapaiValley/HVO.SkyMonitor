@@ -55,6 +55,17 @@ internal sealed class OperationLock : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes the lock at <paramref name="path"/> when its file already exists, creating nothing; returns
+    /// <see langword="null"/> when there is no lock file. A plan takes its locks this way, so it reads the same state a
+    /// command would and writes nothing, not even a lock file (#1315).
+    /// </summary>
+    public static OperationLock? AcquireExisting(
+        string path,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+        => File.Exists(path) || new FileInfo(path).LinkTarget is not null ? Acquire(path, timeout, cancellationToken) : null;
+
     public void Dispose()
     {
         stream.Unlock(0, 1);

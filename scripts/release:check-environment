@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Checks, read-only, that a deployment environment holds a release until a person approves it (install contract
+# section 3, #1310): the environment exists, and its protection rules require at least one reviewer. The release
+# workflow's publish job runs in the production-release environment, and GitHub holds the job until a required reviewer
+# approves; an environment without that rule would let the job run unapproved, so the workflow refuses to publish
+# instead. It changes nothing: the owner applies the environment's settings (docs/runbooks/releases.md).
+#
+#   scripts/release:check-environment <environment>
+#
+# It needs gh, signed in or with GH_TOKEN (actions: read), and jq. The read is strict (scripts/lib/github-api.sh): only
+# GitHub's own 404 means the environment does not exist, and a read that fails, is cut short, or answers anything but
+# one JSON document of the expected shape fails the check naming what it could not read. The shape is fail-safe: the
+# answer names this environment, and every required_reviewers rule lists its reviewers as an array of users and teams,
+# each with a positive integer ID; a reviewer of any other shape is not an answer, never a reviewer. It prints the
+# reviewers and the other rules it found.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || fail "usage: scripts/release:check-environment <environment>"
+environment="$1"
+[[ "$environment" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$ ]] || fail "'$environment' is not an environment name."
+repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
+
+# The name was checked above to hold only letters, digits, '.', '_' and '-', so it stands in the jq string as it is.
+shape='type == "object" and .name == "'"$environment"'"
+    and (.protection_rules | type == "array" and all(.[]; type == "object" and (.type | type == "string")
+        and (.type != "required_reviewers" or (.reviewers | type == "array" and all(.[]; type == "object"
+            and (.type == "User" or .type == "Team")
+            and (.reviewer | type == "object" and (.id | type == "number" and . > 0 and . == floor)))))))'
+read_status=0
+answer="$(github_api_read --absent-ok "the environment $environment" "$shape" "repos/$repository/environments/$environment")" ||
+    read_status=$?
+case "$read_status" in
+    0) ;;
+    "$GITHUB_API_ABSENT")
+        fail "The environment $environment does not exist, so nothing would hold the release for approval. Create it with a required reviewer (docs/runbooks/releases.md)."
+        ;;
+    *) exit 1 ;;
+esac
+
+# Each required reviewer as GitHub names it, a user's login or a team's slug, or by its ID when it has no name.
+reviewers="$(jq -r '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]
+    | ((.reviewer.login // .reviewer.slug) | strings | select(length > 0)) // "\(.type | ascii_downcase) \(.reviewer.id)"]
+    | join(", ")' <<<"$answer")"
+[[ -n "$reviewers" ]] ||
+    fail "The environment $environment requires no reviewer, so its jobs would run unapproved. Add a required reviewer (docs/runbooks/releases.md)."
+printf 'The environment %s requires a reviewer: %s.\n' "$environment" "$reviewers"
+jq -r 'def shown: if . == null then "not reported" else tostring end;
+    ([.protection_rules[] | select(.type == "required_reviewers") | .prevent_self_review][0] | shown) as $self
+    | "Prevent self-review: \($self); administrators may bypass: \(.can_admins_bypass | shown)."' <<<"$answer"

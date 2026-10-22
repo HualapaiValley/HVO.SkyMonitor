@@ -43,7 +43,7 @@ internal sealed record CameraAgentStatePreflightReport(
 
 /// <summary>
 /// The contract identities every canonical CameraAgent image declares and an upgrade requires the candidate to
-/// match. Shared by the upgrade's contract-identity gate and the signed-release preflight so the two cannot drift.
+/// match, as the upgrade's contract-identity gate and the installer's image validation check them.
 /// </summary>
 internal static class CameraAgentImageContract
 {
@@ -76,29 +76,6 @@ internal static class CameraAgentImageContract
 }
 
 /// <summary>
-/// The contract identities a candidate declares, taken from a signed release's image identity and compatibility
-/// record. These are the values the upgrade's contract-identity gate compares against the instance, so a
-/// read-only preflight can reach that gate's verdict without loading the image. The loaded image's label
-/// agreement with the signed record remains an upgrade-time check.
-/// </summary>
-internal sealed record CameraAgentContractIdentity(
-    string? Component,
-    string? ConfigurationContract,
-    string? CatalogContract,
-    string? ReplayRunnerContract)
-{
-    public static CameraAgentContractIdentity From(DistributionImageIdentity image)
-    {
-        ArgumentNullException.ThrowIfNull(image);
-        return new(
-            image.Component,
-            image.Compatibility.ConfigurationContract,
-            image.Compatibility.CatalogContract,
-            image.Compatibility.ReplayRunnerContract);
-    }
-}
-
-/// <summary>
 /// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
 /// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
 /// </summary>
@@ -117,24 +94,6 @@ internal sealed record CameraAgentStateRequirements(
         ParseVersion(image.RawIngressSchema),
         ParseVersion(image.CatalogManifestVersion),
         image.RawIngressMigration);
-
-    /// <summary>
-    /// The boundaries a signed image release declares. These are exactly the label values an upgrade requires the
-    /// prepared image to carry, so evaluating persisted state against them reaches the same verdict the upgrade's
-    /// own in-flight state preflight will reach, without a local copy of the image. The upgrade's separate
-    /// contract-identity and label-agreement gates are not evaluated here.
-    /// </summary>
-    public static CameraAgentStateRequirements From(DistributionImageCompatibility compatibility)
-    {
-        ArgumentNullException.ThrowIfNull(compatibility);
-        return new(
-            compatibility.StateContract,
-            compatibility.MinimumCompatibleRevision,
-            compatibility.IdentityMigration,
-            compatibility.RawIngressSchema,
-            compatibility.CatalogManifestVersion,
-            compatibility.RawIngressMigration);
-    }
 
     private static int? ParseVersion(string? value)
         => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
@@ -169,27 +128,18 @@ internal static class CameraAgentStatePreflight
         uint gid,
         ContractReplayProfile replayProfile,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
-        CameraAgentContractIdentity? candidateContracts = null,
-        string? instanceConfigurationContract = null,
-        string? installedImageId = null,
-        string? signedOfflineArchiveImageId = null,
-        string? signedPlatformManifestDigest = null)
+        CameraAgentStateDatabaseView? databases = null,
+        IReadOnlySet<string>? preparedSources = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(requirements);
+        databases ??= CameraAgentStateDatabaseView.Live(paths);
         var findings = new List<CameraAgentStatePreflightFinding>();
         EvaluateStateContract(findings, requirements, installedStateContract, contractPolicy);
-        if (candidateContracts is not null)
-        {
-            EvaluateContractIdentity(
-                findings, candidateContracts, instanceConfigurationContract, replayProfile, Path.GetFileName(paths.CatalogRoot));
-        }
-        EvaluateCandidateImageIdentity(
-            findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
         EvaluateCatalog(findings, paths, requirements);
-        EvaluateIdentityLineage(findings, paths, requirements);
-        EvaluateRawIngressSchema(findings, paths, requirements, contractPolicy);
-        EvaluateBindSources(findings, paths, uid, gid, replayProfile);
+        EvaluateIdentityLineage(findings, databases.IdentityDatabasePath, requirements);
+        EvaluateRawIngressSchema(findings, databases.RawIngressDatabasePath, requirements, contractPolicy);
+        EvaluateBindSources(findings, paths, uid, gid, replayProfile, preparedSources);
         var compatible = !findings.Any(static finding => finding.Blocking);
         return new CameraAgentStatePreflightReport(
             SchemaVersion,
@@ -204,29 +154,6 @@ internal static class CameraAgentStatePreflight
             compatible,
             findings,
             DateTimeOffset.UtcNow);
-    }
-
-    private static void EvaluateCandidateImageIdentity(
-        List<CameraAgentStatePreflightFinding> findings,
-        string? installedImageId,
-        string? signedOfflineArchiveImageId,
-        string? signedPlatformManifestDigest)
-    {
-        if (string.IsNullOrWhiteSpace(installedImageId) ||
-            (!string.Equals(installedImageId, signedOfflineArchiveImageId, StringComparison.Ordinal) &&
-             !string.Equals(installedImageId, signedPlatformManifestDigest, StringComparison.Ordinal)))
-        {
-            return;
-        }
-
-        findings.Add(new CameraAgentStatePreflightFinding(
-            "candidate-image-already-active",
-            "image-identity",
-            Blocking: false,
-            "instance-manifest.image.imageId",
-            installedImageId,
-            "a signed candidate identity different from the installed image",
-            "Choose another signed release, or take no upgrade action because this image is already active."));
     }
 
     /// <summary>
@@ -245,7 +172,9 @@ internal static class CameraAgentStatePreflight
         bool renderToStandardError,
         CancellationToken cancellationToken,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
-        string? candidateRelease = null)
+        string? candidateRelease = null,
+        CameraAgentStateDatabaseView? databases = null,
+        IReadOnlySet<string>? preparedSources = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -253,7 +182,7 @@ internal static class CameraAgentStatePreflight
             paths,
             instanceId,
             candidate.ImageId,
-            // image-distribution.json is written only once the image is accepted, so a refused signed upgrade
+            // image-distribution.json is written only once the image is accepted, so a refused release upgrade
             // leaves this report as the operator's only artifact; it must name the release it refused.
             candidateRelease,
             CameraAgentStateRequirements.From(candidate),
@@ -261,7 +190,9 @@ internal static class CameraAgentStatePreflight
             uid,
             gid,
             replayProfile,
-            contractPolicy);
+            contractPolicy,
+            databases: databases,
+            preparedSources: preparedSources);
         var reportPath = Path.Combine(paths.DeploymentStateRoot, "state-preflight.json");
         if (persist)
         {
@@ -276,29 +207,50 @@ internal static class CameraAgentStatePreflight
             return report;
         }
 
-        // The rendered report carries every boundary at once, but a --json invocation reserves standard error for
-        // exactly one JSON object, so that form relies on the enumerated codes and the retained report instead.
+        // The rendered report carries every boundary at once, but a --json invocation keeps standard error to one-line
+        // JSON objects ending in its one error object, so that form relies on the enumerated codes and the retained
+        // report instead.
         if (renderToStandardError)
         {
             await Console.Error.WriteLineAsync(Render(report)).ConfigureAwait(false);
         }
         var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
             .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
-        throw new InstallerException(
+        throw InstallerException.Refused(
             $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
     }
+
+    /// <summary>A diagnostic-only view; persisted preflight evidence keeps its measured values.</summary>
+    internal static CameraAgentStatePreflightReport ForOutput(CameraAgentStatePreflightReport report)
+        => report with
+        {
+            InstanceRoot = CameraAgentStateDiagnostics.Text(report.InstanceRoot),
+            CandidateImageId = report.CandidateImageId is null ? null : CameraAgentStateDiagnostics.Text(report.CandidateImageId),
+            CandidateRelease = report.CandidateRelease is null ? null : CameraAgentStateDiagnostics.Text(report.CandidateRelease),
+            CandidateStateContract = CameraAgentStateDiagnostics.Text(report.CandidateStateContract),
+            MinimumCompatibleRevision = report.MinimumCompatibleRevision is null ? null : CameraAgentStateDiagnostics.Text(report.MinimumCompatibleRevision),
+            InstalledStateContract = CameraAgentStateDiagnostics.Text(report.InstalledStateContract),
+            Findings = report.Findings.Select(static finding => finding with
+            {
+                Path = CameraAgentStateDiagnostics.Text(finding.Path),
+                Observed = finding.Observed is null ? null : CameraAgentStateDiagnostics.Text(finding.Observed),
+                Expected = finding.Expected is null ? null : CameraAgentStateDiagnostics.Text(finding.Expected),
+                Remediation = CameraAgentStateDiagnostics.Text(finding.Remediation)
+            }).ToArray()
+        };
 
     /// <summary>Renders every finding at once so an operator resolves the complete boundary set in one pass.</summary>
     public static string Render(CameraAgentStatePreflightReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
+        report = ForOutput(report);
         var builder = new StringBuilder();
         builder.Append(CultureInfo.InvariantCulture, $"CameraAgent state preflight for instance {report.InstanceId:D}: ");
         builder.AppendLine(report.Compatible ? "compatible." : "incompatible.");
         if (report.CandidateRelease is { Length: > 0 } release)
         {
             builder.AppendLine(CultureInfo.InvariantCulture,
-                $"Candidate signed release: {release} ({report.CandidateImageId ?? "no immutable image ID published"}).");
+                $"Candidate release: {release} ({report.CandidateImageId ?? "no immutable image ID published"}).");
         }
         builder.AppendLine(CultureInfo.InvariantCulture,
             $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
@@ -375,55 +327,6 @@ internal static class CameraAgentStatePreflight
         }
     }
 
-    /// <summary>
-    /// The upgrade's contract-identity gate, evaluated from the signed declaration: the candidate's component,
-    /// configuration, catalog, and (for a LocalRunner instance) replay-runner contract identities must match this
-    /// instance, or the upgrade refuses the image after acquiring it. Each mismatch is its own blocking finding so
-    /// the operator learns every disagreement at once. Architecture is not compared here because the release's
-    /// platform is selected for the instance's recorded daemon architecture before this evaluation runs.
-    /// </summary>
-    private static void EvaluateContractIdentity(
-        List<CameraAgentStatePreflightFinding> findings,
-        CameraAgentContractIdentity candidate,
-        string? instanceConfigurationContract,
-        ContractReplayProfile replayProfile,
-        string selectedCatalogId)
-    {
-        const string boundary = "contract-identity";
-        const string remediation =
-            "Select a CameraAgent release built for this instance's contracts; the upgrade refuses a candidate whose declared contract identities differ from the instance.";
-        if (!string.Equals(candidate.Component, CameraAgentImageContract.Component, StringComparison.Ordinal))
-        {
-            findings.Add(new CameraAgentStatePreflightFinding(
-                "contract-component", boundary, Blocking: true, "io.hvo.skymonitor.component",
-                candidate.Component ?? "none", CameraAgentImageContract.Component, remediation));
-        }
-        if (!string.Equals(candidate.ConfigurationContract, instanceConfigurationContract, StringComparison.Ordinal))
-        {
-            findings.Add(new CameraAgentStatePreflightFinding(
-                "contract-configuration", boundary, Blocking: true, "io.hvo.skymonitor.configuration-contract",
-                candidate.ConfigurationContract ?? "none", instanceConfigurationContract ?? "unspecified", remediation));
-        }
-        // The candidate must be able to resolve the catalog this instance has selected, not merely some catalog.
-        if (!CameraAgentImageContract.SupportsCatalog(candidate.CatalogContract, selectedCatalogId))
-        {
-            findings.Add(new CameraAgentStatePreflightFinding(
-                "contract-catalog", boundary, Blocking: true, "io.hvo.skymonitor.catalog-contract",
-                candidate.CatalogContract ?? "none",
-                $"{CameraAgentImageContract.CatalogContract} (selected catalog {selectedCatalogId})", remediation));
-        }
-        // An in-process instance never dispatches to the local replay runner, so it imposes no requirement here;
-        // a LocalRunner instance requires the runner contract exactly as the upgrade does.
-        if (replayProfile == ContractReplayProfile.LocalRunner &&
-            !string.Equals(candidate.ReplayRunnerContract, CameraAgentImageContract.ReplayRunnerContract, StringComparison.Ordinal))
-        {
-            findings.Add(new CameraAgentStatePreflightFinding(
-                "contract-replay-runner", boundary, Blocking: true, "io.hvo.skymonitor.replay-runner-contract",
-                candidate.ReplayRunnerContract ?? "none", CameraAgentImageContract.ReplayRunnerContract,
-                "This instance runs the local replay runner, so its candidate must declare the runner contract; select a release that publishes it."));
-        }
-    }
-
     private static void EvaluateCatalog(
         List<CameraAgentStatePreflightFinding> findings,
         InstallationPaths paths,
@@ -448,12 +351,13 @@ internal static class CameraAgentStatePreflight
                 "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"a readable manifest declaring version {CatalogSnapshotResolver.SupportedManifestVersion}"),
+                    $"a readable manifest declaring version {CatalogSnapshotResolver.MinimumSupportedManifestVersion}"),
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        // A candidate that declares no manifest version is still compared against the resolver the runtime uses.
-        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.SupportedManifestVersion;
+        // The catalog library also reads composed manifests, but an undeclared legacy image keeps its stars-only
+        // version-2 boundary. Composed image adoption requires a separately declared image contract.
+        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.MinimumSupportedManifestVersion;
         if (manifest.Value.ManifestVersion != expectedManifestVersion)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
@@ -476,7 +380,7 @@ internal static class CameraAgentStatePreflight
 
     private static void EvaluateIdentityLineage(
         List<CameraAgentStatePreflightFinding> findings,
-        InstallationPaths paths,
+        string databasePath,
         CameraAgentStateRequirements requirements)
     {
         const string boundary = "identity";
@@ -484,7 +388,6 @@ internal static class CameraAgentStatePreflight
         {
             return;
         }
-        var databasePath = CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;
@@ -496,7 +399,7 @@ internal static class CameraAgentStatePreflight
         {
             (applied, uninitialized) = ReadIdentityLineage(databasePath);
         }
-        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException or InstallerException)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "identity-lineage-unreadable", boundary, Blocking: true, databasePath,
@@ -519,7 +422,7 @@ internal static class CameraAgentStatePreflight
 
     private static void EvaluateRawIngressSchema(
         List<CameraAgentStatePreflightFinding> findings,
-        InstallationPaths paths,
+        string databasePath,
         CameraAgentStateRequirements requirements,
         CameraAgentStateContractPolicy contractPolicy)
     {
@@ -528,7 +431,6 @@ internal static class CameraAgentStatePreflight
         {
             return;
         }
-        var databasePath = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;
@@ -541,11 +443,13 @@ internal static class CameraAgentStatePreflight
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if ((observed == 14 && expected == 14) ||
+            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) ||
                 (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract))
+                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract) ||
+                (observed is 13 or 14 && expected == 15 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract))
             {
-                canonical = observed == 14
+                canonical = observed is 14 or 15
                     ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
                     : RawIngressV13Schema.IsCanonical(database.Connection);
                 if (canonical)
@@ -573,17 +477,17 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == expected && expected != 14) || (observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == expected && expected is not (14 or 15)) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            observed == 14 && expected == 14
-                ? "The v14 journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
-                : observed == 13 && expected == 14
-                ? "The v13 journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before the v14 image can migrate it; resolve drift or restore a healthy canonical backup."
+            observed == expected && expected is 14 or 15
+                ? "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
+                : observed is 13 or 14 && expected is 14 or 15
+                ? "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup."
                 : "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
     }
 
@@ -592,11 +496,18 @@ internal static class CameraAgentStatePreflight
         InstallationPaths paths,
         uint uid,
         uint gid,
-        ContractReplayProfile replayProfile)
+        ContractReplayProfile replayProfile,
+        IReadOnlySet<string>? preparedSources)
     {
         const string boundary = "bind-source";
         foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, replayProfile))
         {
+            // A plan creates nothing: a source the command would create or set the mode of, which the plan has checked
+            // it can, is evaluated as the command leaves it.
+            if (preparedSources?.Contains(source.HostPath) == true)
+            {
+                continue;
+            }
             if (!Directory.Exists(source.HostPath))
             {
                 findings.Add(new CameraAgentStatePreflightFinding(
@@ -699,11 +610,16 @@ internal static class CameraAgentStatePreflight
             {
                 using var command = connection.CreateCommand();
                 command.CommandText =
-                    "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+                    "SELECT typeof(MigrationId), MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    migrations.Add(reader.GetString(0));
+                    // A recovery can read a history a candidate wrote, so a row in another shape is a lineage the
+                    // preflight cannot read, reported as such rather than cast.
+                    var type = reader.GetString(0);
+                    if (type != "text")
+                        throw new InstallerException($"The Identity migration history holds a migration ID stored as {type}, not text.");
+                    migrations.Add(reader.GetString(1));
                 }
             }
         }
@@ -720,7 +636,7 @@ internal static class CameraAgentStatePreflight
 
     internal static long ReadRawIngressVersion(string databasePath) => ReadRawIngressSchema(databasePath).UserVersion;
 
-    private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
+    internal static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var database = ReadOnlyDatabase.Open(databasePath);
         return ReadRawIngressSchema(database.Connection);
@@ -766,7 +682,7 @@ internal static class CameraAgentStatePreflight
     /// alternative — copying a database a writer holds — is what the first two cases exist to avoid, and where
     /// the third case has no choice but to copy, the copy is checked rather than assumed.
     /// </summary>
-    private sealed class ReadOnlyDatabase : IDisposable
+    internal sealed class ReadOnlyDatabase : IDisposable
     {
         private readonly DirectoryInfo? snapshotRoot;
 
@@ -975,10 +891,23 @@ internal static class CameraAgentStatePreflight
 }
 
 /// <summary>
+/// The Identity and raw-ingress databases a preflight reads. A rollback that restores a retained database snapshot
+/// evaluates that snapshot's copies, which are what the rollback image will start on, rather than the live stores.
+/// </summary>
+internal sealed record CameraAgentStateDatabaseView(string IdentityDatabasePath, string RawIngressDatabasePath)
+{
+    public static CameraAgentStateDatabaseView Live(InstallationPaths paths)
+        => new(
+            CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot),
+            CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot));
+}
+
+/// <summary>
 /// Resolves the installed instance and candidate image for the operator-facing
 /// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never pulls, loads,
-/// starts, mutates, or deletes anything, and it writes nothing into the instance, the release media, or the
-/// distribution cache. A journal carrying unreplayed recovery state is read through a private temporary copy.
+/// starts, mutates, or deletes anything, and it writes nothing into the instance. A candidate is an image already in
+/// Docker, named by <c>--image-ref</c>. A journal carrying unreplayed recovery state is read through a private
+/// temporary copy.
 /// </summary>
 internal static class CameraAgentStatePreflightManager
 {
@@ -990,8 +919,7 @@ internal static class CameraAgentStatePreflightManager
     internal static async Task<CameraAgentStatePreflightReport> ExecuteAsync(
         CameraAgentStatePreflightRequest request,
         IProcessRunner processRunner,
-        CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
@@ -1016,38 +944,10 @@ internal static class CameraAgentStatePreflightManager
 
         var requirements = CameraAgentStateRequirements.From(manifest.Image);
         var candidateImageId = manifest.Image.ImageId;
-        string? candidateRelease = null;
-        CameraAgentContractIdentity? candidateContracts = null;
-        string? signedOfflineArchiveImageId = null;
-        string? signedPlatformManifestDigest = null;
         // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
         // in-place upgrade, which additionally requires the current durable state contract.
         var policy = CameraAgentStateContractPolicy.AllowLegacy;
-        if (request.NamesSignedImageRelease)
-        {
-            policy = CameraAgentStateContractPolicy.RequireCurrent;
-            using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
-            var release = await acquirer.ResolveImageAsync(
-                                  request.ImageSelection(), manifest.DockerDaemon.Architecture, cancellationToken)
-                              .ConfigureAwait(false)
-                          ?? throw new InstallerException(
-                              "The signed CameraAgent image release did not resolve a candidate image.");
-            // The release is verified and its platform selected exactly as an upgrade does, for the instance's
-            // recorded Docker daemon architecture rather than this process's, but the offline
-            // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
-            // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
-            // command read-only and lets an operator evaluate a release the host has not received yet. The signed
-            // declaration also carries the contract identities the upgrade's contract-identity gate compares, so
-            // that gate is reached here too; only the loaded image's label agreement with this record remains an
-            // upgrade-time check, so a clean report here is still not a promise the upgrade proceeds.
-            requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
-            candidateContracts = CameraAgentContractIdentity.From(release.Image);
-            signedOfflineArchiveImageId = release.Platform.OfflineArchiveImageId;
-            signedPlatformManifestDigest = release.Platform.ManifestDigest;
-            candidateImageId = signedOfflineArchiveImageId ?? signedPlatformManifestDigest;
-            candidateRelease = release.Release.Tag;
-        }
-        else if (request.ImageReference is { Length: > 0 } reference)
+        if (request.ImageReference is { Length: > 0 } reference)
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             var docker = new DockerClient(processRunner);
@@ -1061,7 +961,7 @@ internal static class CameraAgentStatePreflightManager
                 // The preflight never mutates, so the candidate is inspected locally and never pulled or loaded.
                 NoDownload = true
             };
-            var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, signedImage: null, cancellationToken)
+            var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, release: null, cancellationToken)
                 .ConfigureAwait(false);
             requirements = CameraAgentStateRequirements.From(prepared.Image);
             candidateImageId = prepared.Image.ImageId;
@@ -1071,19 +971,12 @@ internal static class CameraAgentStatePreflightManager
             paths,
             instanceId,
             candidateImageId,
-            candidateRelease,
+            null,
             requirements,
             manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
             manifest.RuntimeUid,
             manifest.RuntimeGid,
             manifest.ReplayProfile,
-            policy,
-            candidateContracts,
-            manifest.ComponentSchemaVersion,
-            manifest.Image.ImageId,
-            signedOfflineArchiveImageId,
-            signedPlatformManifestDigest);
+            policy);
     }
-
-    private static DistributionAcquirer CreateDistributionAcquirer() => new();
 }

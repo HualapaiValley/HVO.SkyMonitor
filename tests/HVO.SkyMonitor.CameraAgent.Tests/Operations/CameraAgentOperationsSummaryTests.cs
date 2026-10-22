@@ -53,7 +53,8 @@ public sealed class CameraAgentOperationsSummaryTests
                 PendingCaptures: [new("agent-operations", 3), new("agent-operations", 4)])
         ]);
         var processing = new CaptureProcessingState();
-        processing.SetDurable(5, 2, 1, now.AddMinutes(-3));
+        processing.SetDurable(5, 3, 2, 1, now.AddMinutes(-3));
+        processing.SetReplayDurable(6, 2, 1, 4, now.AddMinutes(-7), 600, 3);
         var artifactOutbox = new ArtifactOutboxState();
         artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
         var storage = new StoragePressureState();
@@ -130,6 +131,16 @@ public sealed class CameraAgentOperationsSummaryTests
             new long[] { 3, 4 },
             summary.CaptureLanes.Value.Lanes[1].PendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
         Assert.AreEqual(1L, summary.CaptureProcessing.Value.TerminalCount);
+        Assert.AreEqual(3L, summary.CaptureProcessing.Value.LeasedCount, "Leased capture processing is reported, not hard-coded to zero.");
+        Assert.AreEqual(5L, summary.CaptureProcessing.Value.PendingCount, "Archived replay is not folded into live processing.");
+        Assert.AreEqual("durable-processing-refresh", summary.ArchivedReplay.Source);
+        Assert.AreEqual(6L, summary.ArchivedReplay.Value.PendingCount);
+        Assert.AreEqual(600L, summary.ArchivedReplay.Value.PendingBytes);
+        Assert.AreEqual(2L, summary.ArchivedReplay.Value.LeasedCount, "Leased archived replay is reported for the lifecycle boundary.");
+        Assert.AreEqual(1L, summary.ArchivedReplay.Value.RetryCount);
+        Assert.AreEqual(4L, summary.ArchivedReplay.Value.TerminalCount);
+        Assert.AreEqual(3L, summary.ArchivedReplay.Value.AbandonedCount, "Abandoned archived replay is reported apart from terminal failures.");
+        Assert.AreEqual(now.AddMinutes(-7), summary.ArchivedReplay.Value.OldestPendingUtc);
         Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
         Assert.IsFalse(summary.Storage.Value[0].ProbeSucceeded);
@@ -149,6 +160,12 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
 
         var json = JsonSerializer.Serialize(summary, SerializerOptions);
+        using (var response = JsonDocument.Parse(json))
+        {
+            var replay = response.RootElement.GetProperty("archivedReplay").GetProperty("value");
+            Assert.AreEqual(4L, replay.GetProperty("terminalCount").GetInt64());
+            Assert.AreEqual(3L, replay.GetProperty("abandonedCount").GetInt64());
+        }
         Assert.IsFalse(json.Contains(root, StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("secret-", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("https://", StringComparison.OrdinalIgnoreCase));
@@ -219,6 +236,50 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(OperationsFreshness.Fresh, summary.RawIngress.Freshness);
     }
 
+    /// <summary>
+    /// Capture control is the coordinator's live state, read when the summary is taken; its time is when the state last
+    /// changed, not when it was last observed. A camera left running for longer than the stale window is still current, so
+    /// <c>hvo-sky status</c> must not read "Running (stale)" (#1384).
+    /// </summary>
+    [TestMethod]
+    public async Task GetAsyncReportsCaptureControlFreshLongAfterItsLastChange()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 10, 19, 6, 0, 0, TimeSpan.Zero));
+        var root = Path.Combine(Path.GetTempPath(), "private-operations-root-capture-control");
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        var configuration = new CameraAgentConfigurationAccessor();
+        using var moduleOptions = JsonDocument.Parse("""{}""");
+        configuration.SetConfiguration(CreateConfiguration(moduleOptions.RootElement.Clone()));
+        using var captureTelemetry = new CaptureControlTelemetry();
+        using var coordinator = new CaptureAdmissionCoordinator(new NullIngress(), options, clock, captureTelemetry);
+        var provider = new CameraAgentOperationsSummaryProvider(
+            clock,
+            coordinator,
+            new RawIngressState(clock),
+            new RecordingLaneSnapshotRefresher(),
+            new CaptureLaneState(clock, options),
+            new CaptureProcessingState(),
+            new ArtifactOutboxState(),
+            new StoragePressureState(),
+            new FleetRuntimeState(clock),
+            new FleetHeartbeatState(),
+            new EnvironmentalObservationDeliveryState(),
+            new ExecutionEvidenceExportState(),
+            new TransientWorkerState(clock),
+            new CaptureTelemetrySink(),
+            configuration,
+            new CameraAgentStorageResolver(configuration, options),
+            options);
+        var changed = coordinator.Snapshot.UpdatedUtc;
+
+        clock.Now = changed.AddHours(1);
+        var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperationsFreshness.Fresh, summary.CaptureControl.Freshness);
+        // The time it reports is still when the state last changed.
+        Assert.AreEqual(changed, summary.CaptureControl.ObservedUtc);
+    }
+
     private static CameraModuleConfig CreateConfiguration(JsonElement moduleOptions)
         => new(
             new ObservatoryLocation(20, -155, 1000, "Pacific/Honolulu"),
@@ -241,6 +302,13 @@ public sealed class CameraAgentOperationsSummaryTests
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private sealed class RecordingLaneSnapshotRefresher : IOperationsQueueSnapshotRefresher

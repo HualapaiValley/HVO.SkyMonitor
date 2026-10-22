@@ -3,7 +3,7 @@
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
 # Copy solution and project files
@@ -34,7 +34,7 @@ WORKDIR /src/src/HVO.SkyMonitor.LogicHost
 RUN dotnet publish HVO.SkyMonitor.LogicHost.csproj -c Release -o /app/publish
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac
 WORKDIR /app
 
 # Install curl for health checks
@@ -43,8 +43,9 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 # Copy published application
 COPY --from=build /app/publish .
 
-# Set environment
+# URLS owns the HTTP binding; clear the runtime image's inherited port default.
 ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_HTTP_PORTS= \
     ASPNETCORE_URLS=http://+:8080
 
 # Expose port

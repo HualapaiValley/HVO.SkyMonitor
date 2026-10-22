@@ -6,8 +6,8 @@ This is the authoritative architecture, virtual-first requirements, phase-order,
 and completion source for HVO SkyMonitor. The repository-visible
 [product roadmap](roadmap.md) owns stable portfolio initiative IDs, planning
 horizons, and top-level epic mappings. The completed
-[Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
-and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) retain
+[Virtual-First Platform Completion milestone](https://github.com/HualapaiValley/HVO.SkyMonitor/milestone/1)
+and [epic #89](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/89) retain
 the delivery history; active coordination belongs to each current initiative's
 owning roadmap epic.
 Detailed execution rules and reusable agent prompts are maintained in:
@@ -136,8 +136,7 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral object-storage services and provider adapters, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
-| `HVO.SkyMonitor.Deployment.Distribution` | Immutable release/catalog signature, trust, checksum, and distribution verification | Installation mutation, Docker/Compose, application runtime, or host workflow ownership |
-| `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across signed distribution, catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
+| `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across releases (`release.json` and `SHA256SUMS`), catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
 
 CameraAgent and LogicHost must never reference each other. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
@@ -171,8 +170,7 @@ AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 Common --------------------> CameraAgent and LogicHost only
 Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
 
-Deployment.Contracts --> Deployment.Distribution
-AgentCore + Catalog.Sqlite + Deployment.Contracts + Deployment.Distribution
+AgentCore + Catalog.Sqlite + Deployment.Contracts
   +--> Deployment.Cli
 ```
 
@@ -362,7 +360,7 @@ silently substitute a different role.
 ### 3.10 Maintainability and structural evolution
 
 Cross-cutting maintainability hypotheses and structural guardrails are tracked by
-[#242 Evaluate maintainability and structural complexity before further platform growth](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/242).
+[#242 Evaluate maintainability and structural complexity before further platform growth](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/242).
 That review is non-blocking and does not approve a broad refactor. Static review,
 file size, constructor size, and interface count identify candidates only; a
 change must show concrete duplication, ownership ambiguity, test friction, or
@@ -382,7 +380,7 @@ require a concrete architectural need rather than organizational preference.
 
 SQL Server and SQLite critical-section, access-plan, schema-ownership, and
 shared-server readiness work is coordinated by
-[#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243).
+[#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/243).
 The existing technology split remains authoritative: LogicHost uses EF Core and
 named parameterized SQL Server-specific operations, CameraAgent workflow state
 uses direct SQLite, local CameraAgent Identity uses isolated EF Core SQLite, and
@@ -474,7 +472,7 @@ are defined in the execution protocol and standalone course correction.
 
 Cross-cutting performance hypotheses and their required current-head evaluation
 are tracked by
-[#241 Evaluate cross-cutting CPU, memory, and I/O performance opportunities](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/241).
+[#241 Evaluate cross-cutting CPU, memory, and I/O performance opportunities](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/241).
 That review is a non-blocking suggestion and evidence backlog, not an accepted
 architecture or final performance conclusion. Historical measurements and static
 code review motivate investigation only; each candidate must be profiled and
@@ -483,7 +481,7 @@ or an approved milestone requirement.
 
 Low-overhead production metrics, Linux/.NET profiling escalation, telemetry
 cardinality and sampling policy, and diagnostic security are deferred under
-[#244 Define low-overhead production profiling and observability operations](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/244).
+[#244 Define low-overhead production profiling and observability operations](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/244).
 That follow-up does not block the virtual-first milestone merely by existing.
 Routine metrics should identify the pressured stage or resource with bounded
 cost; method-level CPU, allocation, lock, heap-root, syscall, and kernel evidence
@@ -551,9 +549,9 @@ central pipeline.
 
 Issues:
 
-- [#90 Consolidate the virtual-first master plan and retire obsolete plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90)
-- [#91 Remove production test-support coupling and enforce architecture boundaries](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/91)
-- [#110 Enforce CI categories and protected-main quality gates](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/110)
+- [#90 Consolidate the virtual-first master plan and retire obsolete plans](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/90)
+- [#91 Remove production test-support coupling and enforce architecture boundaries](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/91)
+- [#110 Enforce CI categories and protected-main quality gates](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/110)
 
 Requirements:
 
@@ -594,11 +592,11 @@ Exit gate `GATE-P00`:
 
 Issue:
 
-- [#92 Add reconstructable capture contracts and manifest v2](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/92)
+- [#92 Add reconstructable capture contracts and manifest v2](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/92)
 
 Umbrella relationship:
 
-- [#60 Complete reprocessable raw artifact identity and central job scheduling](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
+- [#60 Complete reprocessable raw artifact identity and central job scheduling](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/60)
 
 Requirements:
 
@@ -625,7 +623,7 @@ Exit gate `GATE-P01`:
 
 Issue:
 
-- [#93 Add shared canonical processing recipes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/93)
+- [#93 Add shared canonical processing recipes](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/93)
 
 Requirements:
 
@@ -675,8 +673,8 @@ Exit gate `GATE-P02`:
 
 Issues:
 
-- [#94 Add SQLite-backed durable raw ingress](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/94)
-- [#59 Add durable raw ingress and independent processing lanes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
+- [#94 Add SQLite-backed durable raw ingress](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/94)
+- [#59 Add durable raw ingress and independent processing lanes](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/59)
 
 Requirements:
 
@@ -701,8 +699,8 @@ Exit gate `GATE-P03`:
 
 Issues:
 
-- [#95 Add durable capture distribution and independent lanes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/95)
-- [#59 umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
+- [#95 Add durable capture distribution and independent lanes](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/95)
+- [#59 umbrella](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/59)
 
 Required lanes:
 
@@ -739,7 +737,7 @@ Exit gate `GATE-P04`:
 
 Issue:
 
-- [#96 Finish dependency-based CameraAgent processing and persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/96)
+- [#96 Finish dependency-based CameraAgent processing and persistence](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/96)
 
 Requirements:
 
@@ -766,8 +764,8 @@ Exit gate `GATE-P05`:
 
 Issues:
 
-- [#58 Add capture cadence modes and host-metered exposure control](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58)
-- [#102 Add durable CameraAgent heartbeat and fleet telemetry](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/102)
+- [#58 Add capture cadence modes and host-metered exposure control](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/58)
+- [#102 Add durable CameraAgent heartbeat and fleet telemetry](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/102)
 
 Requirements:
 
@@ -798,7 +796,7 @@ Physical timing measurements are not required to close #58.
 
 Issue:
 
-- [#97 Add operational manifest-v2 outbox and quarantine](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/97)
+- [#97 Add operational manifest-v2 outbox and quarantine](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/97)
 
 Requirements:
 
@@ -824,9 +822,9 @@ Exit gate `GATE-P07`:
 
 Issues:
 
-- [#98 Add reconstructable LogicHost ingest and exact rig binding](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/98)
-- [#99 Add authorized central artifact retrieval](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/99)
-- [#60 umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
+- [#98 Add reconstructable LogicHost ingest and exact rig binding](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/98)
+- [#99 Add authorized central artifact retrieval](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/99)
+- [#60 umbrella](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/60)
 
 Requirements:
 
@@ -852,7 +850,7 @@ Exit gate `GATE-P08`:
 
 Issue:
 
-- [#100 Execute central derivative jobs with shared recipes](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/100)
+- [#100 Execute central derivative jobs with shared recipes](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/100)
 
 Requirements:
 
@@ -881,7 +879,7 @@ Exit gate `GATE-P09`:
 
 Issue:
 
-- [#101 Add multi-source and windowed central processing](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/101)
+- [#101 Add multi-source and windowed central processing](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/101)
 
 Requirements:
 
@@ -906,10 +904,10 @@ Exit gate `GATE-P10`:
 
 Issues:
 
-- [#103 Add environmental observation contracts and persistence](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/103)
-- [#157 Add durable environmental observation delivery](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/157)
-- [#104 Add deterministic VirtualSky cloud scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/104)
-- [#105 Add shared cloud assessment and masks](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/105)
+- [#103 Add environmental observation contracts and persistence](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/103)
+- [#157 Add durable environmental observation delivery](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/157)
+- [#104 Add deterministic VirtualSky cloud scenarios](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/104)
+- [#105 Add shared cloud assessment and masks](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/105)
 
 Requirements:
 
@@ -937,17 +935,17 @@ Exit gate `GATE-P11`:
 
 Issues:
 
-- [#61 Add deterministic VirtualSky transient scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61)
-- [#62 shared-detector umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62)
-- [#113 Define transient event contracts and linear detector inputs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/113)
-- [#115 Implement transient compatibility, masks, and temporal backgrounds](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/115)
-- [#121 Extract and assess transient candidates with structured geometry](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/121)
-- [#119 Establish deterministic transient detection and performance baselines](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/119)
-- [#63 Add optional CameraAgent transient detection lane](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/63)
-- [#64 central transient umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64)
-- [#116 Execute and persist central transient validation jobs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/116)
-- [#118 Add transient reconstruction, reprocessing, and review state](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/118)
-- [#65 Epic: Fireball and transient detection](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65)
+- [#61 Add deterministic VirtualSky transient scenarios](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/61)
+- [#62 shared-detector umbrella](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/62)
+- [#113 Define transient event contracts and linear detector inputs](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/113)
+- [#115 Implement transient compatibility, masks, and temporal backgrounds](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/115)
+- [#121 Extract and assess transient candidates with structured geometry](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/121)
+- [#119 Establish deterministic transient detection and performance baselines](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/119)
+- [#63 Add optional CameraAgent transient detection lane](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/63)
+- [#64 central transient umbrella](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/64)
+- [#116 Execute and persist central transient validation jobs](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/116)
+- [#118 Add transient reconstruction, reprocessing, and review state](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/118)
+- [#65 Epic: Fireball and transient detection](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/65)
 
 Requirements:
 
@@ -979,13 +977,13 @@ Physical sensitivity and real-world false-positive claims remain unverified.
 
 Issues:
 
-- [#205 Epic: Complete standalone CameraAgent operational experience](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/205)
-- [#206 Make VirtualSky sensor and readout simulation configuration-driven](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/206)
-- [#207 Add local CameraAgent scheduling and versioned profile control](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/207)
-- [#208 Add CameraAgent calibration library and virtual reference acquisition](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/208)
-- [#209 Add virtual environmental acquisition and standalone local history](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/209)
-- [#210 Complete CameraAgent pipeline composition and operator controls](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/210)
-- [#211 Prove full-catalog ASI676MC standalone CameraAgent operation](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/211)
+- [#205 Epic: Complete standalone CameraAgent operational experience](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/205)
+- [#206 Make VirtualSky sensor and readout simulation configuration-driven](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/206)
+- [#207 Add local CameraAgent scheduling and versioned profile control](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/207)
+- [#208 Add CameraAgent calibration library and virtual reference acquisition](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/208)
+- [#209 Add virtual environmental acquisition and standalone local history](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/209)
+- [#210 Complete CameraAgent pipeline composition and operator controls](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/210)
+- [#211 Prove full-catalog ASI676MC standalone CameraAgent operation](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/211)
 
 Requirements:
 
@@ -1028,8 +1026,8 @@ Exit gate `GATE-P12A`:
 
 Issues:
 
-- [#106 Add CameraAgent operations and gallery UI](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/106)
-- [#107 Add LogicHost imaging, jobs, weather, and event UI](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/107)
+- [#106 Add CameraAgent operations and gallery UI](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/106)
+- [#107 Add LogicHost imaging, jobs, weather, and event UI](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/107)
 
 Requirements:
 
@@ -1054,13 +1052,13 @@ Exit gate `GATE-P13`:
 
 Issues:
 
-- [#108 Add full VirtualSky two-host E2E and fault matrix](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/108)
-- [#109 production-readiness umbrella](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109)
-- [#110 Enforce CI categories and protected-main quality gates](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/110)
-- [#111 Package and verify production astronomy catalog snapshots](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/111)
-- [#114 Persist and recover CameraAgent and shared-service state](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/114)
-- [#120 Replace stale identity and security operations guidance](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/120)
-- [#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243)
+- [#108 Add full VirtualSky two-host E2E and fault matrix](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/108)
+- [#109 production-readiness umbrella](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/109)
+- [#110 Enforce CI categories and protected-main quality gates](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/110)
+- [#111 Package and verify production astronomy catalog snapshots](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/111)
+- [#114 Persist and recover CameraAgent and shared-service state](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/114)
+- [#120 Replace stale identity and security operations guidance](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/120)
+- [#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/243)
 
 Requirements:
 

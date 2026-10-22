@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -55,6 +56,15 @@ public sealed class SqliteNamedRigProfileStore(
     CaptureScheduleRuntimeCoordinator? scheduleRuntime = null)
 {
     private static readonly JsonSerializerOptions EquipmentJson = new(JsonSerializerDefaults.Web);
+    private const string SkyLightingField = "illuminationMode";
+    private const string FixedSkyBackgroundOption = "backgroundElectronsPerSecond";
+    // The only VirtualSky module option an operator may set; every other option is restored from the basis revision.
+    private static readonly string[] SkyLightingChoices =
+    [
+        nameof(VirtualSkyIlluminationMode.LegacyScalarSolar),
+        nameof(VirtualSkyIlluminationMode.SolarDriven),
+        nameof(VirtualSkyIlluminationMode.ControlledNight)
+    ];
     private static readonly JsonSerializerOptions ScheduleJson = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -90,7 +100,7 @@ public sealed class SqliteNamedRigProfileStore(
 
     public async Task<NamedRigCatalog> GetAsync(CancellationToken cancellationToken)
     {
-        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var result = await ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
@@ -314,7 +324,7 @@ public sealed class SqliteNamedRigProfileStore(
         CaptureScheduleRevisionSnapshot active, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(active);
-        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var existing = await ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
@@ -841,6 +851,16 @@ public sealed class SqliteNamedRigProfileStore(
     {
         string? expectedModel = null;
         bool? unvalidated = null;
+        string? skyLighting = null;
+        bool? fixedSkyBackground = null;
+        if (camera.Module?.Type == "VirtualSky")
+        {
+            skyLighting = SkyLightingOf(camera.Module.Options);
+            fixedSkyBackground = camera.Module.Options is { ValueKind: JsonValueKind.Object } virtualOptions &&
+                virtualOptions.EnumerateObject().Any(field =>
+                    field.Name.Equals(FixedSkyBackgroundOption, StringComparison.OrdinalIgnoreCase) &&
+                    field.Value.ValueKind == JsonValueKind.Number);
+        }
         if (camera.Module?.Type == "ZwoAsi" && camera.Module.Options is { ValueKind: JsonValueKind.Object } options)
         {
             var modelFields = options.EnumerateObject().Where(field =>
@@ -866,8 +886,53 @@ public sealed class SqliteNamedRigProfileStore(
             camera.Sensor,
             camera.Readout,
             ExpectedModel = expectedModel,
-            UseUnvalidatedCameraAtOwnRisk = unvalidated
+            UseUnvalidatedCameraAtOwnRisk = unvalidated,
+            IlluminationMode = skyLighting,
+            FixedSkyBackground = fixedSkyBackground
         };
+    }
+
+    /// <summary>The sky lighting choice the VirtualSky options select, or <see langword="null"/> when it cannot be read.</summary>
+    private static string? SkyLightingOf(JsonElement? options)
+    {
+        if (options is null or { ValueKind: JsonValueKind.Null })
+            return nameof(VirtualSkyIlluminationMode.LegacyScalarSolar);
+        if (options.Value.ValueKind != JsonValueKind.Object) return null;
+        var fields = options.Value.EnumerateObject()
+            .Where(field => field.Name.Equals(SkyLightingField, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (fields.Length == 0) return nameof(VirtualSkyIlluminationMode.LegacyScalarSolar);
+        return fields.Length == 1 && fields[0].Value.ValueKind == JsonValueKind.String
+            ? SkyLightingChoices.FirstOrDefault(choice =>
+                choice.Equals(fields[0].Value.GetString(), StringComparison.OrdinalIgnoreCase))
+            : null;
+    }
+
+    /// <summary>
+    /// Returns the basis options with only the sky lighting choice changed. An unchanged choice keeps the basis options
+    /// exactly; the default choice is written by omission, as the installer profile and historical revisions do.
+    /// </summary>
+    private static JsonElement? WithSkyLighting(JsonElement? options, string choice)
+    {
+        if (string.Equals(SkyLightingOf(options), choice, StringComparison.Ordinal)) return options;
+        JsonObject optionsNode;
+        try
+        {
+            optionsNode = options is { ValueKind: JsonValueKind.Object } value
+                ? JsonNode.Parse(value.GetRawText()) as JsonObject ?? throw new ArgumentException("Invalid VirtualSky camera options.")
+                : options is null or { ValueKind: JsonValueKind.Null }
+                    ? new JsonObject()
+                    : throw new ArgumentException("Invalid VirtualSky camera options.");
+        }
+        catch (JsonException exception)
+        {
+            throw new ArgumentException("Invalid VirtualSky camera options.", exception);
+        }
+        foreach (var key in optionsNode.Select(property => property.Key)
+            .Where(key => key.Equals(SkyLightingField, StringComparison.OrdinalIgnoreCase)).ToArray())
+            optionsNode.Remove(key);
+        if (choice != nameof(VirtualSkyIlluminationMode.LegacyScalarSolar))
+            optionsNode[SkyLightingField] = choice;
+        return JsonSerializer.SerializeToElement(optionsNode);
     }
 
     public async Task<NamedEquipmentDefinition> SaveEquipmentAsync(string? definitionId, string kind,
@@ -908,6 +973,7 @@ public sealed class SqliteNamedRigProfileStore(
             typed is NamedCameraEquipment camera && string.IsNullOrWhiteSpace(camera.Module.Type))
             throw new ArgumentException("Equipment definition is incomplete.");
         JsonElement? overrideModel = null;
+        string? skyLighting = null;
         if (kind == "camera" && (definitionId is not null || basisRevisionId is not null))
         {
             foreach (var field in definition.EnumerateObject())
@@ -916,6 +982,14 @@ public sealed class SqliteNamedRigProfileStore(
                 {
                     if (overrideModel is not null) throw new ArgumentException("Duplicate model override.");
                     overrideModel = field.Value;
+                }
+                else if (field.Name.Equals(SkyLightingField, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (skyLighting is not null) throw new ArgumentException("Duplicate sky lighting choice.");
+                    skyLighting = field.Value.ValueKind == JsonValueKind.String &&
+                        SkyLightingChoices.Contains(field.Value.GetString(), StringComparer.Ordinal)
+                            ? field.Value.GetString()
+                            : throw new ArgumentException("Unsupported sky lighting choice.");
                 }
                 else if (!field.Name.Equals("module", StringComparison.OrdinalIgnoreCase) &&
                          !field.Name.Equals("sensor", StringComparison.OrdinalIgnoreCase) &&
@@ -930,6 +1004,11 @@ public sealed class SqliteNamedRigProfileStore(
                 throw new ArgumentException("A model override requires explicit risk acknowledgement on a new camera.");
             if (overrideModel is null && riskFields.Length != 0)
                 throw new ArgumentException("Risk acknowledgement requires a model override.");
+        }
+        else if (kind == "camera" && definition.EnumerateObject().Any(field =>
+            field.Name.Equals(SkyLightingField, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException("A sky lighting choice requires a basis revision.");
         }
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -995,6 +1074,12 @@ public sealed class SqliteNamedRigProfileStore(
                     optionsNode["ExpectedModel"] = expected;
                     optionsNode["UseUnvalidatedCameraAtOwnRisk"] = true;
                     moduleOptions = JsonSerializer.SerializeToElement(optionsNode);
+                }
+                if (skyLighting is not null)
+                {
+                    if (original.Module.Type != "VirtualSky")
+                        throw new ArgumentException("A sky lighting choice requires a VirtualSky camera basis.");
+                    moduleOptions = WithSkyLighting(moduleOptions, skyLighting);
                 }
                 typed = revised with { Module = revised.Module with { Options = moduleOptions } };
             }

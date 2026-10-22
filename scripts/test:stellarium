@@ -88,7 +88,7 @@ fi
 ubuntu_digest="$(jq -r '.stellarium.ubuntuAmd64ImageDigest' "$FIXTURES/hualapai-fisheye-v1.json")"
 certificate_digest="$(jq -r '.stellarium.certificateImageDigest' "$FIXTURES/hualapai-fisheye-v1.json")"
 grep -Fqx "FROM ubuntu:24.04@${ubuntu_digest}" "$DOCKERFILE"
-grep -Fqx "FROM alpine:3.22@${certificate_digest} AS certificates" "$DOCKERFILE"
+grep -Fqx "FROM alpine:3.24.2@${certificate_digest} AS certificates" "$DOCKERFILE"
 for package in ca-certificates stellarium stellarium-data xvfb xauth libgl1-mesa-dri imagemagick jq fonts-dejavu-core fontconfig; do
     grep -Eq "^[[:space:]]*${package}=[^[:space:]\\\\]+" "$DOCKERFILE"
 done

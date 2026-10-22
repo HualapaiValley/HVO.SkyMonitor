@@ -605,13 +605,22 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        await db.CentralDerivativeJobs.Where(job => job.Status != CentralDerivativeJobStatus.Completed)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
-                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
-                .SetProperty(job => job.LeaseToken, (Guid?)null)
-                .SetProperty(job => job.LeaseExpiresAtUtc, (DateTimeOffset?)null))
-            .ConfigureAwait(false);
+        await Infrastructure.DerivativeResetDiagnostics.RunAsync(db, "runner", async () =>
+        {
+            await db.CentralDerivativeJobs.Where(job => job.Status != CentralDerivativeJobStatus.Completed)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
+                    .SetProperty(job => job.LeaseToken, (Guid?)null)
+                    .SetProperty(job => job.LeaseExpiresAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }, async cancellationToken =>
+        {
+            var container = AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.SqlServer);
+            var result = await container.ExecAsync(["sh", "-c", Infrastructure.DerivativeResetDiagnostics.ContainerCounters], cancellationToken)
+                .ConfigureAwait(false);
+            return (container.Id, result.ExitCode, result.Stdout);
+        }).ConfigureAwait(false);
         await db.CentralProcessingRunners.Where(runner => runner.Status != CentralProcessingRunnerStatus.Retired)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(runner => runner.Status, CentralProcessingRunnerStatus.Retired)

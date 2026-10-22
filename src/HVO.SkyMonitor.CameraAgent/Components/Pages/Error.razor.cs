@@ -9,9 +9,6 @@ public partial class Error : ComponentBase
     [CascadingParameter]
     private HttpContext? HttpContext { get; set; }
 
-    [Inject]
-    private NavigationManager NavigationManager { get; set; } = default!;
-
     private string? RequestId { get; set; }
     private bool ShowRequestId => !string.IsNullOrEmpty(RequestId);
     private string? CorrelationId { get; set; }
@@ -23,10 +20,5 @@ public partial class Error : ComponentBase
         CorrelationId = HttpContext?.Request.Query.TryGetValue("correlationId", out var values) == true
             ? values.ToString()
             : null;
-    }
-
-    private void Reload()
-    {
-        NavigationManager.NavigateTo(NavigationManager.Uri, forceLoad: true);
     }
 }

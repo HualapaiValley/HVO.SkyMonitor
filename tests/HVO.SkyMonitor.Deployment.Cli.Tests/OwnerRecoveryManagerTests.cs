@@ -42,6 +42,60 @@ public sealed class OwnerRecoveryManagerTests
     }
 
     [TestMethod]
+    [DataRow("abcdefgh\n", "abcdefgh")]
+    [DataRow("abcdefghijklmno\r\n", "abcdefghijklmno")]
+    public async Task Execute_EightToFifteenCharacterPasswordFileCompletesRecovery(string content, string expectedPassword)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var passwordFile = fixture.WriteOwnerFile("operator-password", content);
+        var recoveryClient = new FakeRecoveryClient();
+
+        var result = await OwnerRecoveryManager.ExecuteAsync(
+            fixture.Request(passwordFile: passwordFile),
+            _ => recoveryClient,
+            fixture.Uid,
+            fixture.Gid,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(expectedPassword, recoveryClient.Password);
+    }
+
+    [TestMethod]
+    [DataRow("abcd efgh\n")]
+    [DataRow("abcdefg\n")]
+    public async Task Execute_PasswordOutsideTheRecoveryRulesRetainsNoOperationOrStagedCopy(string content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var passwordFile = fixture.WriteOwnerFile("operator-password", content);
+        var recoveryClient = new FakeRecoveryClient();
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => OwnerRecoveryManager.ExecuteAsync(
+            fixture.Request(passwordFile: passwordFile),
+            _ => recoveryClient,
+            fixture.Uid,
+            fixture.Gid,
+            CancellationToken.None)).ConfigureAwait(false);
+
+        // Nothing reached CameraAgent, nothing was recorded for a resume to repeat, and no copy of the refused
+        // credential stays behind, so a fresh recovery is not blocked.
+        Assert.AreEqual(0, recoveryClient.RequestCount);
+        var operationsRoot = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId).OperationsRoot;
+        Assert.IsFalse(File.Exists(Path.Combine(operationsRoot, $"cameraagent-{fixture.InstanceId:D}.owner-recovery.json")));
+        var stagedRoot = Path.Combine(operationsRoot, "owner-recovery");
+        Assert.IsFalse(Directory.Exists(stagedRoot) && Directory.EnumerateFiles(stagedRoot, "*", SearchOption.AllDirectories).Any());
+        var result = await OwnerRecoveryManager.ExecuteAsync(
+            fixture.Request(),
+            _ => recoveryClient,
+            fixture.Uid,
+            fixture.Gid,
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Outcome);
+    }
+
+    [TestMethod]
     public async Task Execute_ResumeReusesOperationAndCredentialAfterLostAcknowledgement()
     {
         using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
@@ -273,11 +327,19 @@ public sealed class OwnerRecoveryManagerTests
         internal uint Uid { get; }
         internal uint Gid { get; }
 
-        internal OwnerRecoveryRequest Request(bool resume = false)
-            => new(InstanceId, Root, null, GeneratePassword: true, Resume: resume, Json: false)
+        internal OwnerRecoveryRequest Request(bool resume = false, string? passwordFile = null)
+            => new(InstanceId, Root, passwordFile, GeneratePassword: passwordFile is null, Resume: resume, Json: false)
             {
                 AllowTestProductRoot = true
             };
+
+        internal string WriteOwnerFile(string name, string content)
+        {
+            var path = Path.Combine(Root, name);
+            File.WriteAllText(path, content);
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            return path;
+        }
 
         internal void RemoveRecoverySocket()
         {

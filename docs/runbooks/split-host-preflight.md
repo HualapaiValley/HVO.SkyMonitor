@@ -280,7 +280,7 @@ never skips or synthesizes preflight. Each target explicitly declares
 root helper, password, interactive privilege, or ownership-escalation path.
 The immediate parent of a missing runtime root must already be owned and writable
 by that SSH user while remaining non-writable to group and world.
-The example assumes packaging has provisioned `/var/lib/hvo/skymonitor`, plus
+The example assumes packaging has provisioned `/var/lib/hvo-sky`, plus
 its `cameraagents`, `logichosts`, and `catalogs` children, to user `hvo` without
 making them group/world writable. Application roots are UUID children beneath
 their component directory.
@@ -434,7 +434,9 @@ evidence. `images` rejects dirty source even when preflight declared
 `allow-dirty`. It records the committed Git tree ID and checks clean HEAD and
 that tree before and after every component build and again throughout resume and
 distribution. Builds label the revision, tree ID, commit timestamp, source
-repository/tag, component, and pinned .NET SDK version. The source tag must be
+repository/tag, component, and pinned .NET SDK version. CameraAgent builds also
+pass the revision as `HVO_SOURCE_REVISION`, so the Software page and telemetry
+name the same commit as the label. The source tag must be
 exactly `rev-<source.revision>`; `latest`, embedded tags or digests, URL schemes,
 credentials, and ports in repository values are rejected.
 
@@ -445,6 +447,11 @@ running, the declared control endpoint to be present, and every required
 platform to be supplied by at least one node. This permits a native AMD64/ARM64
 multi-node builder without weakening control-daemon correlation. The selected
 builder is passed to every build and registry inspect.
+Registry distribution requires the `docker-container` driver for CameraAgent's
+timestamp-rewriting image exporter. The unpacking `docker` driver conflicts with
+rewriting on the containerd image store and can silently skip it on the classic
+store; inventory validation rejects it before pushing a registry tag. Archive
+distribution supports both drivers.
 Ambient `DOCKER_CONTEXT` is cleared and the selected/default builder is never
 trusted. The phase does not create, alter, stop, or remove builders. LogicHost is
 built for `linux/amd64`; CameraAgent platforms are the unique `amd64` and/or
@@ -461,9 +468,12 @@ does not read secret values.
 Before a push, the phase durably records `push-intended` with the exact component,
 tag, platform set, revision/tree-bound labels, timestamp, and SDK. If the tag is
 already present, including after an abrupt post-push exit, it is adopted only
-after the canonical parent digest, exact non-attestation platform descriptors and
-child digests, optional well-formed attestation descriptors, and every child
-image config label all match the intent. A mismatched existing tag is never
+after the canonical parent digest, platform set and image config labels all match
+the intent. A plain single-platform OCI or Docker manifest is accepted with its
+platform checked from the config. An index is checked against the exact platform
+descriptors and child digests; attestation-free indexes are accepted, as are
+indexes with optional well-formed attestation descriptors. Every child config
+must match the intended labels. A mismatched existing tag is never
 overwritten. A missing tag is pushed once and subjected to the same checks before
 the intent becomes `built`. Targets pull only the resulting
 `repository@sha256:<parent-manifest>` reference.
@@ -501,8 +511,10 @@ before progress publication. All artifacts are owner-only and atomic; bounded
 errors and evidence contain no raw Docker/registry output, secret-source path,
 credentials, or secret values.
 
-The Dockerfiles pin the build SDK to `10.0.401` and the ASP.NET runtime to
-`10.0.12`, both by reviewed multiarchitecture digest. Debian package inputs still
+The Dockerfiles pin the build SDK (the exact version `global.json` requires) and
+the ASP.NET runtime, both by reviewed multiarchitecture digest; Dependabot proposes
+digest refreshes and runtime patch releases for review
+([Base-Image Updates](ci-pipeline.md#base-image-updates)). Debian package inputs still
 come from the base image package indexes and can change between uncached builds.
 The produced application manifests, archives, config IDs, and deployed references
 are recorded and verified by digest; this runbook does not claim the apt layer is
@@ -838,7 +850,11 @@ campaign-index envelope; the existing runtime artifact schema remains unchanged.
 
 Manual CI retains the focused historical acceptance inventory contract:
 
+Build the current checkout in Release first. The inventory reads compiled enum
+metadata without executing target assemblies.
+
 ```bash
+dotnet build HVO.SkyMonitor.v9.slnx --configuration Release -warnaserror
 ./scripts/test:phase14-acceptance
 ```
 

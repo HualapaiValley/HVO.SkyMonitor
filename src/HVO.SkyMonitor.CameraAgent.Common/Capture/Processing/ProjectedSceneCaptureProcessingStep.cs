@@ -12,7 +12,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     ProjectedSceneCaptureProcessingStepOptions options,
     IProjectedSceneStagingStore stagingStore,
     IProjectedSceneStagingReader stagingReader,
-    CameraAgentRecipeExecutionAdapter adapter)
+    CameraAgentRecipeExecutionAdapter adapter,
+    CaptureMaintenanceGate? maintenance = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
@@ -24,8 +25,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
-    // The plan-level contract names the projected-scene family root, so existing plan identities are unchanged.
-    // A product carries its own schema: projected-scene-v2 exactly when the scene has resolved footprints.
+    // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
+    // Actual products carry v3 for a curated collection, v2 for resolved footprints, otherwise v1.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.ProjectedSceneMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -206,6 +207,20 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: { Length: 64 } stageKey
             }) return;
+        // A snapshot restore can rewind this node, and its re-run reads the stage again, so the stage is removed only
+        // under the capture maintenance barrier; a held removal runs once capture admission opens, and if a restart
+        // forgets it, the node's durable completion releases the stage to stage reconciliation instead.
+        using var lease = maintenance?.TryEnterIfInitialized();
+        if (maintenance is not null && lease is null)
+        {
+            maintenance.DeferUntilRunning(token => RemoveStageAsync(stageKey, token));
+            return;
+        }
+        await RemoveStageAsync(stageKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask RemoveStageAsync(string stageKey, CancellationToken cancellationToken)
+    {
         await stagingStore.MarkCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
         await stagingStore.DeleteCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
     }
@@ -229,9 +244,12 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public IReadOnlyList<SolarSystemBody> SolarSystemBodies { get; init; } = [];
     public bool IncludeConstellationEndpointStars { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
         if (ConstellationIds.Count > 128 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);
         if (SolarSystemBodies.Count > Enum.GetValues<SolarSystemBody>().Length || SolarSystemBodies.Any(static value => !Enum.IsDefined(value)))

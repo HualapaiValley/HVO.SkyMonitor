@@ -273,6 +273,33 @@ public sealed class ReplayRunnerComposeTests
             CameraAgentReplayProfile.LocalRunner));
     }
 
+    // An image built without HVO_SOURCE_REVISION carries the revision label "unknown" (#1297); the installer must keep
+    // refusing it, and any revision that is not a full lowercase object ID.
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("unknown")]
+    [DataRow("e536b78")]
+    [DataRow("E536B78FDB656D96B20C06FE8DBFDB716A444419")]
+    public void InstallerRejectsAnImageWithoutAFullSourceRevisionLabel(string? sourceRevision)
+    {
+        var image = new ImageInstallationIdentity(
+            "registry",
+            $"sha256:{new string('a', 64)}",
+            $"sha256:{new string('a', 64)}",
+            "amd64",
+            null,
+            UpgradeCompatibility: "backward-compatible",
+            SourceRevision: new string('b', 40),
+            Component: "CameraAgent",
+            ConfigurationContract: "cameraagent-install-v1",
+            CatalogContract: "hyg-v42-production-p3-s2");
+
+        Assert.IsTrue(CameraAgentInstaller.IsValid(image, CameraAgentReplayProfile.InProcess));
+        Assert.IsFalse(CameraAgentInstaller.IsValid(
+            image with { SourceRevision = sourceRevision },
+            CameraAgentReplayProfile.InProcess));
+    }
+
     // The installer always renders Compose as the invoking Docker-capable user, and writing a bind source now
     // authenticates that identity, so the fixture must use the real runtime UID/GID rather than a fixed pair.
     private static ComposeFiles Write(InstallRequest request, InstallationPaths paths) => ComposeDeployment.Write(
@@ -287,7 +314,8 @@ public sealed class ReplayRunnerComposeTests
         Path.Combine(paths.ConfigRoot, "owner-password"),
         "verification-token",
         "lifecycle-token",
-        passwordAuthorityEnabled: false);
+        passwordAuthorityEnabled: false,
+        CameraAgentContainerResources.Default);
 
     private static (InstallRequest Request, InstallationPaths Paths) CreateRequest(
         string root,

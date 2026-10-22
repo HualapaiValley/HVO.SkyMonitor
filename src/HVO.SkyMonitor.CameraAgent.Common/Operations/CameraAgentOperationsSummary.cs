@@ -27,7 +27,8 @@ public sealed record OperationsSection<T>(
 
 /// <summary>
 /// The freshness vocabulary of an operations section. <c>fresh</c>/<c>stale</c> are derived from
-/// the observation time; <c>unknown</c> means an observation was expected and none exists;
+/// the observation time, except capture control, which is live state and always <c>fresh</c>;
+/// <c>unknown</c> means an observation was expected and none exists;
 /// <c>disabled</c> means the subsystem is switched off by configuration; <c>static</c> means the
 /// value is a startup fact that is never re-observed.
 /// </summary>
@@ -49,6 +50,22 @@ public sealed record OperationsQueueState(
     long QuarantineCount,
     long TerminalCount,
     DateTimeOffset? OldestPendingUtc);
+
+/// <summary>
+/// Archived replay in the queue shape of <see cref="OperationsQueueState"/>, plus the replays abandoned because this
+/// version no longer builds their frozen plan. Abandonment is final but not a failure, so it is never part of
+/// <see cref="TerminalCount"/>.
+/// </summary>
+public sealed record OperationsArchivedReplayState(
+    string Availability,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long RetryCount,
+    long QuarantineCount,
+    long TerminalCount,
+    DateTimeOffset? OldestPendingUtc,
+    long AbandonedCount);
 
 public sealed record OperationsLaneState(
     string Name,
@@ -199,7 +216,8 @@ public sealed record CameraAgentOperationsSummary(
     OperationsSection<OperationsExecutionEvidenceExportState> ExecutionEvidenceExport,
     OperationsSection<OperationsTransientWorkerState> TransientWorker,
     OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
-    OperationsSection<OperationsConfigurationState> Configuration);
+    OperationsSection<OperationsConfigurationState> Configuration,
+    OperationsSection<OperationsArchivedReplayState> ArchivedReplay);
 
 public sealed class CameraAgentOperationsSummaryProvider(
     TimeProvider timeProvider,
@@ -252,7 +270,9 @@ public sealed class CameraAgentOperationsSummaryProvider(
 
         return new CameraAgentOperationsSummary(
             now,
-            Section("durable-capture-control", control.UpdatedUtc, now, new OperationsCaptureControlState(
+            // Capture control is the coordinator's live state, read now, so it is always current; its time is when the
+            // state last changed, which a camera left running for hours never does, not when it was observed (#1384).
+            Section("durable-capture-control", OperationsFreshness.Fresh, control.UpdatedUtc, new OperationsCaptureControlState(
                 control.State.ToString(), control.Version, control.IsInitialized)),
             Section("raw-ingress-state", ingress.EvaluatedUtc, now, new OperationsQueueState(
                 ingress.Availability.ToString(), ingress.PendingCount, ingress.PendingBytes, 0, 0,
@@ -268,7 +288,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 lanes.PendingCount, lanes.PendingBytes, lanes.LeasedCount, lanes.RetryCount, lanes.QuarantineCount,
                 lanes.OldestPendingUtc)),
             Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
-                processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,
+                processing.Availability.ToString(), processing.PendingCount, 0, processing.LeasedCount, processing.RetryCount,
                 0, processing.TerminalCount, processing.OldestPendingUtc)),
             Section("artifact-outbox-state", centralDisabled, outbox.EvaluatedUtc, now, new OperationsQueueState(
                 centralDisabled ? "Disabled" : outbox.Availability.ToString(),
@@ -360,7 +380,13 @@ public sealed class CameraAgentOperationsSummaryProvider(
             Section("validated-configuration", OperationsFreshness.Static, null, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", startupConfig?.AgentId,
                 startupConfig?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
-                hostOptions.Value.TransientDetection.Mode.ToString())));
+                hostOptions.Value.TransientDetection.Mode.ToString())),
+            // Archived replay shares the processing refresh but is reported apart from live processing: the
+            // lifecycle drain waits on live leases only, and records replay in its continuity boundary.
+            Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsArchivedReplayState(
+                processing.Availability.ToString(), processing.ReplayPendingCount, processing.ReplayPendingBytes,
+                processing.ReplayLeasedCount, processing.ReplayRetryCount, 0, processing.ReplayTerminalCount,
+                processing.OldestReplayPendingUtc, processing.ReplayAbandonedCount)));
     }
 
     private static OperationsSection<T> Section<T>(

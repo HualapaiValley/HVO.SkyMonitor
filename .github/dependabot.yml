@@ -7,6 +7,19 @@ updates:
       day: "monday"
     open-pull-requests-limit: 10
     groups:
+      dotnet-servicing:
+        patterns:
+          - "Microsoft.AspNetCore.*"
+          - "Microsoft.EntityFrameworkCore*"
+          - "Microsoft.Extensions.*"
+          - "Microsoft.Data.Sqlite"
+        update-types:
+          - "patch"
+      aws-sdk:
+        patterns:
+          - "AWSSDK.*"
+        update-types:
+          - "patch"
       opentelemetry:
         patterns:
           - "OpenTelemetry*"
@@ -32,3 +45,47 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+
+  # Digest-pinned base images in every repository Dockerfile (#1321, #1345).
+  # Group each dependency across directories so identical tags keep one digest.
+  - package-ecosystem: "docker"
+    directories:
+      - "/.devcontainer"
+      - "/docker/stellarium"
+      - "/src/HVO.SkyMonitor.CameraAgent"
+      - "/src/HVO.SkyMonitor.LogicHost"
+      - "/src/HVO.SkyMonitor.ProcessingRunner"
+      - "/tools/HVO.SkyMonitor.TimeLapseBenchmark"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      dotnet-images:
+        group-by: dependency-name
+        patterns:
+          - "*"
+    ignore:
+      # global.json pins the SDK exactly (rollForward: disable), so a new SDK tag is a coordinated manual
+      # bump; Dependabot only refreshes the digest of the pinned SDK tag.
+      - dependency-name: "dotnet/sdk"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      # A new .NET major version is a target-framework migration, not a base-image refresh.
+      - dependency-name: "dotnet/aspnet"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "dotnet/runtime-deps"
+        update-types:
+          - "version-update:semver-major"
+      # Ubuntu stays on its LTS release (24.04, Noble), whose packages the Stellarium image pins. Dependabot only
+      # refreshes the digest of the pinned tag and never proposes an interim release such as 25.10; moving to the
+      # next LTS is a deliberate manual change (#1429).
+      - dependency-name: "ubuntu"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    # No labels key: Dependabot applies its default "dependencies" and "docker" labels and creates "docker",
+    # whereas a listed label that the repository lacks would be ignored.

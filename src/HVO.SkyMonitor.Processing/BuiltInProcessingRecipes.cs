@@ -23,6 +23,7 @@ public static class BuiltInProcessingRecipes
     public const string Keogram = "keogram";
     public const string StarTrail = "star-trail";
     public const string KeogramAssembly = "keogram-assembly";
+    public const string MixedGainNormalizedMean = "mixed-gain-normalized-mean";
 
     /// <summary>Auxiliary input through which Annotation receives the frame's measured stellar associations.</summary>
     public const string MeasuredStellarAssociationsInputName = "measured-stellar-associations";
@@ -120,7 +121,8 @@ public static class BuiltInProcessingRecipes
         new MeasuredStellarAssociationRecipe(),
         new KeogramRecipe(),
         new StarTrailRecipe(),
-        new KeogramAssemblyRecipe()
+        new KeogramAssemblyRecipe(),
+        new MixedGainNormalizedMeanRecipe()
     ];
 }
 
@@ -752,6 +754,20 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
+        ReadOnlyMemory<byte> annotatedPixels = annotation.Pixels;
+        var curatedScene = CuratedDeepSkyAnnotation.FindScene(input, auxiliarySources);
+        if (curatedScene is not null)
+        {
+            var layer = PresentationDeepSkyLayerProducer.Create(curatedScene,
+                new PresentationDeepSkyStyleV1(MaximumLabels: options.DrawLabels ? 24 : 0,
+                    LegendBaselinePixels: CuratedDeepSkyAnnotation.LegendBaseline(request.Annotation.MetadataOverlay)),
+                request.Annotation.Transform, display.Width, display.Height,
+                CuratedDeepSkyAnnotation.ReservedLabels(objects, request.Annotation.Transform, annotationOptions));
+            annotatedPixels = PresentationLayerCompositor.Composite(
+                new ImageLayout(display.Width, display.Height, format, packedStride), annotatedPixels,
+                [new(layer.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellationToken);
+            algorithms.AddRange(CuratedDeepSkyAnnotation.Algorithms(curatedScene));
+        }
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
             request.Annotation.Objects, request.Annotation.ProjectionOverlay, options.ExpectedPositionDiagnostics)));
         algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
@@ -760,7 +776,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         FrameLayoutDescriptor? outputLayout;
         if (options.OutputEncoding == "Packed")
         {
-            output = annotation.Pixels;
+            output = annotatedPixels;
             mediaType = "application/x-hvo-packed-image";
             outputLayout = ProcessingRecipeSupport.CreatePackedLayout(display.Width, display.Height, format);
         }
@@ -768,7 +784,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         {
             output = JpegImageCodec.EncodeToJpeg(
                 new ImageLayout(display.Width, display.Height, format, packedStride),
-                annotation.Pixels,
+                annotatedPixels,
                 options.JpegQuality,
                 cancellationToken);
             mediaType = JpegImageCodec.MediaType;
@@ -1108,8 +1124,10 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel ||
                 layout.StoredCodeTransform != firstLayout.StoredCodeTransform ||
                 layout.LevelCodeSpace != firstLayout.LevelCodeSpace || layout.Readout != firstLayout.Readout) ||
-            selected.Any(source => source.Compatibility != firstCompatibility
-                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)))
+            selected.Any(source => source.Compatibility != firstCompatibility) ||
+            !(GainNormalizationCompatibility.IsNormalized(firstCompatibility)
+                ? selected.All(IsVerifiedNormalizedProduct)
+                : SharesRecipeAndGain(selected, firstRecipeIdentity)))
         {
             layouts = [];
             return false;
@@ -1118,6 +1136,28 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
         layouts = values;
         return true;
     }
+
+    // The arithmetic mean never combines gains (#1475): inputs share one recipe identity and one gain.
+    private static bool SharesRecipeAndGain(List<ProcessingArtifact> selected, string? firstRecipeIdentity)
+        => selected.All(source => string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)) &&
+           selected
+               .Where(static source => source.Conditions is not null)
+               .Select(static source => source.Conditions!.Gain)
+               .Distinct()
+               .Count() <= 1;
+
+    // A normalized gain hides the inputs' gains (#1475). The label alone proves nothing, so each input must be a combined
+    // product whose descriptor, under the input's own recipe identity, names the mixed-gain recipe or a rolling mean of
+    // its products. Successive mixed-gain products each name their own frozen plan, so their identities may differ; the
+    // one normalized compatibility already checked fixes the family, policy and response, and so the scale they share.
+    private static bool IsVerifiedNormalizedProduct(ProcessingArtifact source)
+        => source.Role == FrameArtifactRole.Combined &&
+           source.RecipeDescriptor is { } recipe &&
+           GainNormalizationCompatibility.MayCarryNormalizedGain(recipe.Name, recipe.SemanticVersion) &&
+           string.Equals(
+               ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+               source.RecipeIdentitySha256,
+               StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed class ImageQualityRecipe : IProcessingRecipe

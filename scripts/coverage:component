@@ -64,6 +64,20 @@ component_slots() {
   esac
 }
 
+# A host lane measures only the assemblies it owns, as ci:classify's project
+# lists assign them. Coverlet instruments every HVO assembly in a test project's
+# output, so unfiltered, shared code a host references but never calls would
+# count against the host's floor (#1420); the shared lane and the aggregate
+# rollup measure it. Shared suites reference only shared assemblies, and the
+# combined baseline floors shared contracts, so neither lane is filtered.
+component_assembly_filter() {
+  case "$1" in
+    cameraagent) printf '%s\n' '+HVO.SkyMonitor.CameraAgent;+HVO.SkyMonitor.CameraAgent.*' ;;
+    logichost) printf '%s\n' '+HVO.SkyMonitor.LogicHost' ;;
+    delivery) printf '%s\n' '+HVO.SkyMonitor.Deployment.*;+HVO.SkyMonitor.TerminalUi' ;;
+  esac
+}
+
 case "${1:-}" in
   --list-components)
     printf '%s\n' shared cameraagent logichost combined delivery
@@ -94,12 +108,17 @@ for slot in "${slots[@]}"; do
   reports+=("${matches[0]}")
 done
 
+report_filters=()
+assembly_filter="$(component_assembly_filter "$component")"
+[[ -z "$assembly_filter" ]] || report_filters+=("-assemblyfilters:$assembly_filter")
+
 printf 'Enforcing %s component coverage across %s expected reports.\n' "$component" "${#reports[@]}"
 target_dir="coverage-report/$component"
 dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \
-  -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Cobertura"
+  -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Cobertura" \
+  "${report_filters[@]}"
 "$repo_root/scripts/coverage:enforce" \
   --baseline "$repo_root/scripts/coverage/baseline.$component.json" \
   --merged "$target_dir/Cobertura.xml"

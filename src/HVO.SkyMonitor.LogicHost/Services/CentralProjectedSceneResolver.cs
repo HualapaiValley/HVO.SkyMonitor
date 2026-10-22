@@ -19,12 +19,20 @@ internal sealed record CentralProjectedSceneReference(
     string SceneId,
     string AnnotationIdentitySha256,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? SchemaVersion = null);
+    string? SchemaVersion = null)
+{
+    // Released v1/v2 selectors retain their original bytes and legacy annotation mapping.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayloadSchemaVersion { get; init; }
+}
 
 internal sealed record CentralProjectedSceneSelection(
     CentralArtifact Artifact,
     CentralProjectedSceneReference Reference,
-    ProcessingAnnotationInput Annotation);
+    ProcessingAnnotationInput Annotation)
+{
+    public ProcessingAuxiliaryInput? PayloadInput { get; init; }
+}
 
 /// <summary>Resolves geometry without copying it into capture or job persistence.</summary>
 internal sealed class CentralProjectedSceneResolver(
@@ -72,6 +80,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState == CentralReconstructionState.Complete)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0) return null;
         if (candidates.Length != 1) throw new CentralArtifactIntegrityException("projected-scene.ambiguous");
@@ -83,9 +92,20 @@ internal sealed class CentralProjectedSceneResolver(
             throw new CentralArtifactIntegrityException("projected-scene.raw-source-mismatch");
         ValidateSource(artifact, scene, frame.FrameId, provenance);
         var annotation = CreateAnnotation(scene, provenance.SceneId);
+        var curated = scene.SchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion;
+        var descriptor = curated
+            ? StructuredProcessingProductManifestJson.ParseDescriptor(artifact.StructuredProduct!.DescriptorJson) : null;
         return new(artifact, new(artifact.Id, artifact.ArtifactId, frame.FrameId, artifact.ChecksumSha256,
             scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256,
-            scene.SchemaVersion), annotation);
+            scene.SchemaVersion)
+        { PayloadSchemaVersion = curated ? scene.SchemaVersion : null }, annotation)
+        {
+            PayloadInput = descriptor is null ? null : new ProcessingAuxiliaryInput(BindingName,
+                ProcessingAuxiliaryInputKind.Artifact, ProcessingInputSelector.RecipeResult(
+                    descriptor.Artifact.Role, descriptor.Artifact.Variant,
+                    ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256),
+                ArtifactId: descriptor.Artifact.ArtifactId)
+        };
     }
 
     internal async Task ValidateInlineGeometryAsync(
@@ -98,6 +118,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState != CentralReconstructionState.Quarantined)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0)
             throw new ArtifactSceneReferencePendingException("Mixed scene provenance awaits its canonical projected scene.");
@@ -150,6 +171,9 @@ internal sealed class CentralProjectedSceneResolver(
         // The frozen descriptor hash authenticates the source after raw retention. Geometry execution
         // needs the held scene artifact; it does not reread or acquire an undeclared raw pixel input.
         ValidateSource(artifact, scene, reference.CaptureId);
+        if (reference.PayloadSchemaVersion != (scene.SchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion
+                ? scene.SchemaVersion : null))
+            throw new CentralDerivativeJobStateException("The frozen projected-scene payload schema is not bound to this execution.");
         // Historical annotation references omitted schema, including resolved-footprint scenes. Their existing
         // checksum/content identity still authenticates the payload; new references also freeze its actual schema.
         if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256 ||
@@ -257,11 +281,12 @@ internal sealed class CentralProjectedSceneResolver(
             item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
             item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray();
         // A projected-scene-v1 artifact keeps its released point-mark mapping, so its bytes and identity are unchanged.
-        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal)
-            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments)
-            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
+        // v2 and v3 share the edge mapping, which draws solar-system footprints and leaves deep-sky ones to their layer.
+        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal)
+            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
                 scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments);
+                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments)
+            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments);
     }
 
     // The existing immutable requirement selector carries the compact reference. The artifact input keeps
@@ -307,7 +332,8 @@ internal sealed class CentralProjectedSceneResolver(
     }
 
     internal static IEnumerable<CentralDerivativeJobLeaseInput> RecipeInputs(CentralDerivativeJobLease lease)
-        => (lease.Inputs ?? []).Where(input => lease.ProjectedScene is null || input.BindingName != BindingName);
+        => (lease.Inputs ?? []).Where(input => lease.ProjectedScene is null ||
+            lease.ProjectedScene.PayloadSchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion || input.BindingName != BindingName);
 
     internal static CentralDerivativeJobInput? MaterializeReference(CentralDerivativeJob job, DateTimeOffset now)
     {

@@ -1720,3 +1720,66 @@ BEGIN
     THROW 51000, 'Public record publication decision history is immutable.', 1;
 END
 GO
+
+-- TR_ExecutionEvidenceBindings_Immutable
+CREATE TRIGGER [TR_ExecutionEvidenceBindings_Immutable] ON [ExecutionEvidenceBindings]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51838, 'Imported execution evidence is immutable.', 1;
+END
+GO
+
+-- TR_ImportedExecutionEvidenceUnits_Immutable
+CREATE TRIGGER [TR_ImportedExecutionEvidenceUnits_Immutable] ON [ImportedExecutionEvidenceUnits]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51838, 'Imported execution evidence is immutable.', 1;
+END
+GO
+
+-- TR_ImportedExecutionEvidenceConflicts_Immutable
+CREATE TRIGGER [TR_ImportedExecutionEvidenceConflicts_Immutable] ON [ImportedExecutionEvidenceConflicts]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51838, 'Imported execution evidence is immutable.', 1;
+END
+GO
+
+-- TR_ImportedExecutionEvidenceArtifacts_Immutable
+CREATE TRIGGER [TR_ImportedExecutionEvidenceArtifacts_Immutable] ON [ImportedExecutionEvidenceArtifacts]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51838, 'Imported execution evidence is immutable.', 1;
+END
+GO
+
+-- TR_ImportedExecutionEvidenceObservations_Immutable
+CREATE TRIGGER [TR_ImportedExecutionEvidenceObservations_Immutable] ON [ImportedExecutionEvidenceObservations]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51838, 'Imported execution evidence is immutable.', 1;
+END
+GO
+
+-- TR_ImportedExecutionEvidenceOrigins_Identity
+CREATE TRIGGER [TR_ImportedExecutionEvidenceOrigins_Identity] ON [ImportedExecutionEvidenceOrigins]
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT [Id], [BindingId], [IdentitySha256], [BootSessionId], [SoftwareVersion], [FirstReceivedAtUtc] FROM deleted
+        EXCEPT SELECT [Id], [BindingId], [IdentitySha256], [BootSessionId], [SoftwareVersion], [FirstReceivedAtUtc] FROM inserted)
+        OR EXISTS (SELECT 1 FROM inserted i INNER JOIN deleted d ON i.Id = d.Id
+            WHERE i.HighestSeenSequence < d.HighestSeenSequence OR i.ContiguousThroughSequence < d.ContiguousThroughSequence)
+        THROW 51839, 'Imported execution origin identity and accepted prefix cannot be replaced.', 1;
+END
+GO

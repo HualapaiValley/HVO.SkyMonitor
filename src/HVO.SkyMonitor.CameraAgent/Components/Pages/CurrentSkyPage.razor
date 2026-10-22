@@ -5,6 +5,7 @@
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@attribute [StreamRendering]
 @rendermode InteractiveServer
 
 <PageTitle>@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
@@ -102,6 +103,14 @@
                     }
                 </div>
             </header>
+
+            @if (!IsArchived && (_initialLoading || _refreshDeadlineMessage is not null))
+            {
+                <div class="state-notice sky-refresh-notice" role="status" aria-live="polite">
+                    <strong>Current Sky page refresh</strong>
+                    <span>@(_refreshDeadlineMessage ?? "The current image is still loading. Retrying automatically.")</span>
+                </div>
+            }
 
             <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
                 <div class="sky-image-stage" style="@StageAspectStyle">
@@ -244,24 +253,43 @@
                 <p>Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image.</p>
                 <div class="overlay-list sky-layer-controls">
                     <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
+                        <button class="text-button refresh-measured-evidence" type="button" disabled="@(_layers is null || _layerLoading || _saving || _viewerOpen)" @onclick="RefreshMeasuredEvidenceAsync">@(_layerLoading ? "Reading measured evidence..." : "Refresh measured evidence")</button>
                         <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Associated stars</strong><small>source-association / arrives with #526</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>OpenNGC aliases + extents / arrives with #525</small></span></label>
+                        @foreach (var layer in RetainedLayers("Measured")) { @LayerToggle(layer) }
+                        @if (!HasLayer("MeasuredTransientTrails"))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Measured transient trails</strong><small>@(_layers?.TrailEvidence?.Reason ?? (_layers?.TrailEvidence?.State == "NoRecordedCandidate" ? "No recorded candidate for this capture" : "Compatible measured trail evidence is unavailable"))</small></span></label>
+                        }
+                        @if (_layers?.TrailEvidence is { Trails.Count: > 0 } trailEvidence)
+                        {
+                            <p>Positional uncertainty unavailable. No uncertainty band is drawn.</p>
+                            <ul class="source-list">
+                                @foreach (var trail in trailEvidence.Trails)
+                                {
+                                    <li><a href="/transients/@trail.CandidateId.ToString("D")">@OperationsPage.SplitWords(trail.State)</a>
+                                        <a href="/gallery/@trail.SourceManifest.Descriptor.Capture.CaptureId.ToString("D")">Capture #@trail.SourceManifest.Descriptor.Capture.CaptureSequence</a>
+                                        <time datetime="@trail.DetectorInput.Source.ObservationStartedUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture)">@SiteTime.Format(trail.DetectorInput.Source.ObservationStartedUtc)</time>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>measured product not produced</small></span></label>
                     </div>
                     <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
                         @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
-                        @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Catalog stars</strong><small>expected / not retained for this capture</small></span></label> }
+                        @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Sky annotations</strong><small>expected / not retained for this capture</small></span></label> }
                         @if (!HasLayer("scene-constellations", "constellations")) { <label><input type="checkbox" disabled /><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>expected / not retained for this capture</small></span></label> }
-                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Sun footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Moon footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
                         @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }
                     </div>
                     <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
+                        @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>No compatible prediction retained for this capture</small></span></label>
+                        }
                         @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
                         @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
-                        <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Meteor tracks</strong><small>measured track overlay not retained for this capture</small></span></label>
                         @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }
                         @if (!HasLayer("environment", "corner-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch environment"></span><span><strong>Frame facts</strong><small>source and coordinate provenance / not retained</small></span></label> }
                     </div>

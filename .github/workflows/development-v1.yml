@@ -22,7 +22,7 @@ jobs:
   preflight:
     name: Development v1 / Preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 4
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,6 +50,10 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
 
+      # Offline and cheap enough to run on every draft/push (#1345).
+      - name: Check Dockerfile base images
+        run: ./scripts/ci:base-images
+
       - name: Check CI control contracts
         run: |
           ./scripts/ci:shell-syntax
@@ -57,6 +61,43 @@ jobs:
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
+
+      # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens, and scripts/docs:terminal-screenshots, which
+      # replaces docs/images/terminal with them (#1317).
+      - name: Test the terminal screenshot converter and script
+        run: python3 -m unittest discover -s tests/cli -p 'test_*.py' -v
+
+      # The full-history checkout above is what the scan reads (#1321).
+      - name: Scan history for secrets
+        env:
+          HVO_GITLEAKS_CACHE_DIR: ${{ runner.temp }}/gitleaks
+        run: |
+          ./scripts/ci:secret-scan
+
+      - name: Classify secret scanner contract inputs
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: GITHUB_STEP_SUMMARY='' ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      # Only a successful, explicit false may skip the contract. Missing outputs
+      # or classifier failures still run it, and a failed classifier stays red.
+      - name: Test secret scanner contract
+        if: ${{ !cancelled() && (steps.classify.outcome != 'success' || steps.classify.outputs.secret_scan_contract != 'false') }}
+        env:
+          HVO_GITLEAKS_CACHE_DIR: ${{ runner.temp }}/gitleaks
+        run: |
+          ./scripts/test:ci-secret-scan
+
+      # The same classification selects the pre-release scripts' tests: their
+      # scripts, the pre-release workflow, the release tool or this wiring. As
+      # above, only a successful, explicit false skips them.
+      - name: Test release scripts
+        if: ${{ !cancelled() && (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts != 'false') }}
+        run: |
+          ./scripts/test:release-scripts
 
   build-unit:
     name: Development v1 / Build and Unit
@@ -110,10 +151,12 @@ jobs:
 
       # Whole-repository ShellCheck and exhaustive category discovery are owned by
       # ci.yml's Quality and Build jobs on the main/release qualification path (#1142).
+      # The terminal programs' render tests save each screen to HVO_TERMINAL_RENDERS_DIR (#1317), inside the evidence.
       - name: Run Docker-disabled Unit selection
         id: unit
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+          HVO_TERMINAL_RENDERS_DIR: ${{ runner.temp }}/development-v1/terminal-renders
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
@@ -125,6 +168,13 @@ jobs:
               --filter "TestCategory=Unit" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
               --logger trx
+
+      # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
+      - name: Draw terminal screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
+          ./scripts/docs:terminal-screenshots --draw "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
 
       - name: Write evidence summary
         if: always()
@@ -165,7 +215,7 @@ jobs:
 
       - name: Upload development CI evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: development-v1-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/development-v1/

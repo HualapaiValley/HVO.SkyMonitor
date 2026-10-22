@@ -24,6 +24,37 @@ Retention fails closed for a storage root before deleting anything when:
 - a pending payload is missing;
 - cancellation is requested while pending manifests are scanned.
 
+Retention, derived-product reconciliation and projected-scene stage reconciliation
+delete nothing while capture admission is not running. An installer upgrade or
+rollback pauses admission durably before it stops the previous image and resumes
+it only after the swap is decided, so a candidate image cannot delete frames,
+archives or derived products the previous image still needs. An operator pause
+holds them too; nothing new is captured while paused. Only the deletions wait:
+retention still measures capacity and publishes disk pressure, and derived-product
+reconciliation still refreshes its evidence inventory. Each skipped pass logs
+`<maintenance> held while capture admission is <state>; nothing was deleted` at
+Information, and the next pass after capture resumes runs normally.
+
+The pause is a barrier, not a flag each pass happens to read. A pass enters capture
+admission before it deletes anything, and the pause is acknowledged only after every
+admitted pass has finished, including one still waiting for its storage lock; no new
+pass is admitted until capture resumes.
+
+The same barrier covers every other deletion a restored database row could depend on:
+- An uploaded payload is not removed after its acknowledgement; retention removes it later, on its root's schedule.
+- A projected-scene stage is removed after its processing node commits only once capture opens. That removal waits in
+  memory, so a restart forgets it, and stage ownership does not depend on it: a stage whose projected-scene node is
+  durably complete belongs to no capture, and stage reconciliation removes it once capture runs. A snapshot restore
+  rewinds the node with the journal, so a stage the restored node still needs stays owned.
+- A frame sidecar is upgraded in place only once capture opens; until then the node retries.
+- Raw-ingress evidence is quarantined when the journal opens only once capture opens. Until then raw ingress reports
+  Degraded (`reconciliation-held`), and the quarantine runs as soon as capture resumes.
+- Stage cleanup when the journal opens, and the calibration bundle quarantine at host start, wait the same way.
+
+A first initialization reads the durable admission state from the journal, because admission initialization waits for
+it; a later one takes a lease without initializing admission. See
+[Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
+
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires
 operator investigation; do not edit the outbox database or delete evidence
@@ -71,8 +102,9 @@ transport. Browsing reads only that canonical form. A malformed, unversioned,
 or unsupported sidecar is skipped and never downgraded to another parser.
 Before publishing a v2 sidecar, storage verifies every overlapping frame and
 artifact fact, writes the payload, then streams SHA-256 from the published file.
-An ordinary v2 save failure makes a best-effort attempt to remove payload or
-sidecar files published by that invocation without hiding the original error.
+An ordinary v2 save failure removes only that invocation's temporary files.
+Already-published immutable payloads and sidecars remain for idempotent retry and
+reconciliation; a failed compatibility-index append does not discard evidence.
 Browsing also requires the sidecar path and byte length to match the selected
 payload; checksum verification remains mandatory when bytes are reconstructed
 or transferred rather than forcing a full-frame scan for every gallery listing.
@@ -128,13 +160,28 @@ OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.
 
-To resolve quarantined work, authenticate as the configured local site owner and
-list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
+To inspect artifact retries or resolve quarantined work, authenticate as the
+configured local site owner and list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
 time-limited action token returned by that owner-only API when posting a bounded
 reason code to `/api/v1/operations/outboxes/artifacts/replay` or
 `/api/v1/operations/outboxes/artifacts/abandon`; do not expose a storage root,
 SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
-for valid deliverable evidence. Abandonment releases the delivery hold only
+for quarantined records with valid deliverable evidence. Retry records are also
+listed in the Quarantine and retry browser (`/operations/quarantine`) with their
+artifact age, age since the latest durable update, attempt count, next attempt
+and last reason. Artifact age uses the immutable manifest creation timestamp;
+the latest-update age uses the outbox status timestamp. These remain meaningful
+for newly queued archived payloads and survive retry and restart. The API names
+them `artifactAgeSeconds` and `lastUpdateAgeSeconds` beside `createdUtc` and
+`updatedUtc`. First-enqueue time is not retained by the current outbox. All retries are
+visible, so a persistent failure needs no arbitrary age threshold to become
+operable. Automatic retry and its backoff remain unchanged; retry records do not
+have a replay action.
+
+The owner may abandon either a quarantined or retry record. The terminal update
+requires that status at commit: a record already leased or acknowledged rejects
+the action without an abandonment receipt. Refresh after an active delivery
+finishes before retrying the decision. Abandonment releases the delivery hold only
 after the actor, UTC time, and reason commit to the audit table. Preserve or
 export the payload, sidecar, journal, and conflict evidence before abandonment.
 
@@ -170,9 +217,20 @@ binding visit one retained manifest at a time. Reconciliation releases each SQLi
 payload files or repairing state, so payload scanning does not pin a WAL reader
 for the whole history. Compact path and stage-key sets still scale with capture
 count; manifest bytes and decoded scene objects do not accumulate with history.
-Startup continues to read and checksum retained payloads and sidecars, and its
-I/O duration therefore scales with retained bytes. No resource default, schema,
-retention policy, or evidence-validation rule changes.
+Startup compares each committed capture's sidecar with its journaled manifest
+and checks that the payload exists with its committed length. It reads no
+payload bytes except those of captures processing reported, described below, so
+its I/O does not scale with retained payload bytes. Evidence a crash left
+without a committed journal row is still checksummed in full before it is
+recovered. Processing, replay, window inputs, transients, time-lapses, downloads
+and uploads verify a committed payload's checksum before using it; an upload
+whose payload fails that check is quarantined as `payload-checksum-mismatch`
+without sending it. When processing finds committed evidence it cannot use, its
+lane work ends as `evidence-unavailable`, and every reconciliation from then on,
+the next startup's included, checksums that capture's payload and quarantines a
+mismatch, as startup did before. Resuming capture after a start under the
+installer's pause runs only the maintenance that start held, not a second
+reconciliation.
 
 The protected deployment-location history, the protected manual-coordinate record
 `manual-deployment-location.v1.protected` that carries the governing local seed
@@ -348,3 +406,42 @@ Dispatch `CameraAgent Real-Duration Soak` on a runner labeled
 `self-hosted`, `linux`, and `skymonitor-soak`, or run
 `./scripts/run:cameraagent-soak 24h`. The workflow retains compact logs and a
 JSON inventory; it does not upload the complete image tree.
+
+## Derived-product reconciliation lock budget
+
+Derived-product reconciliation releases the storage lifecycle lock between individual
+products, temporary-file deletions and durable lifecycle operations. Reclaimed orphan
+records use a fixed batch of 16. Directory enumeration, payload reads, checksums and
+manifest validation run outside the lock. Crash recovery also compares duplicate source
+and destination copies outside the lock, revalidates their identities, then resumes all
+moves and database transitions as one locked operation. The configured reconciliation page size
+controls progress per pass, not the number of products held under one lock.
+
+The diagnostic wait budget is **250 ms**. A caller queued behind reconciliation
+waits for its current metadata/publication unit, rather than all retained products.
+This is an operating budget, not a real-time filesystem guarantee or a cancellation
+timeout: a slow filesystem, directory sync, SQLite transaction, or another lock owner
+can exceed it. Durable mutations finish safely. The next pre-release Pi smoke test
+must verify capture storage and Current Sky during a 512-product pass.
+
+After unlocked validation, reconciliation rechecks the canonical paths, file lengths,
+last-write and creation timestamps, and committed database identity/state under the
+lock. A changed or removed product is deferred to a subsequent pass; stale validation
+never authorizes a quarantine, availability update or deletion. Publication, quarantine
+moves, retention checks and artifact handle pinning still use the same per-root lock.
+Frozen-output pin admission rejects outputs with a delete operation in `planned` or
+`moved` phase inside its existing SQLite transaction. Recovery can therefore release
+the lock for duplicate-copy comparison without accepting a replay input it will delete.
+`database-completed` and `files-deleted` only clean up tombstones and do not block
+a valid output recreated with the same identity.
+The existing outcome counters count inspected evidence and completed decisions;
+a deferred observation contributes no available, missing or quarantine decision.
+
+The existing `HVO.SkyMonitor.CameraAgent.ProcessingGraph` meter exposes
+`camera_agent.storage.lifecycle.wait.duration` in seconds, tagged only by the bounded
+`caller` values `capture-storage`, `artifact-read`, `reconciliation`, `gallery`,
+`retention`, `outbox`, `upload`, `trail-composition` and `replay`. Acquisitions add
+`storage.lifecycle.lock.acquired` events to the current diagnostic activity with
+`caller` and `wait.duration`. Debug event 8450 records each completed or canceled wait. Warning
+8451 is emitted only when the measured wait exceeds 250 ms. No path or artifact
+identity is a metric label or diagnostic field. Canceled waits contribute wait timing and a `storage.lifecycle.lock.cancelled` event without claiming acquisition.

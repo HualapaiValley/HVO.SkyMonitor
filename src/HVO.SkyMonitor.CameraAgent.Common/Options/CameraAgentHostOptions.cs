@@ -67,6 +67,12 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public LocalAutomationOptions Automation { get; init; } = new();
 
     [Required]
+    public OrbitalElementsOptions OrbitalElements { get; init; } = new();
+
+    [Required]
+    public SpaceWeatherOptions SpaceWeather { get; init; } = new();
+
+    [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
 
     public TimeLapseOptions TimeLapses { get; init; } = new();
@@ -349,6 +355,20 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         {
             yield return result;
         }
+
+        var orbitalResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            OrbitalElements,
+            new ValidationContext(OrbitalElements),
+            orbitalResults,
+            validateAllProperties: true);
+        foreach (var result in orbitalResults)
+        {
+            yield return result;
+        }
+        var spaceWeatherResults = new List<ValidationResult>();
+        Validator.TryValidateObject(SpaceWeather, new ValidationContext(SpaceWeather), spaceWeatherResults, validateAllProperties: true);
+        foreach (var result in spaceWeatherResults) yield return result;
     }
 }
 
@@ -619,6 +639,9 @@ public sealed class CentralIntegrationOptions
 
 public sealed class ArtifactReadOptions
 {
+    /// <summary>Allows optional measured-trail metadata queries and composition for retained captures.</summary>
+    public bool MeasuredTransientTrailsEnabled { get; init; } = true;
+
     [Range(1, 2_048)]
     public int MaximumPreviewDimension { get; init; } = 2_048;
 

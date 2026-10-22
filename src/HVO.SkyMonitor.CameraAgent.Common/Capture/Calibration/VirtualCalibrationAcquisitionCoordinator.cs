@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -482,8 +483,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         var agentId = configuration.AgentId!;
         var input = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
         var rigIdentity = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
-        var sensorIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(
-            JsonSerializer.SerializeToElement(configuration.Rig.Sensor));
+        var sensorIdentity = SensorProfileIdentity.ComputeSha256(configuration.Rig.Sensor);
         var rigId = $"rig-{rigIdentity[..16].ToUpperInvariant()}";
         var jobMaterial = string.Join('\n', requestIdentity, agentId, rigId,
             CaptureContractJson.ComputeCanonicalJsonSha256(input));
@@ -785,17 +785,48 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         ReadOnlyMemory<byte> ManifestJson);
 }
 
+[SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+    Justification = "The dependency injection container owns the acquisition coordinator.")]
 public sealed class VirtualCalibrationAcquisitionRecoveryService(
-    VirtualCalibrationAcquisitionCoordinator coordinator) : IHostedService
+    VirtualCalibrationAcquisitionCoordinator coordinator,
+    IRawCaptureIngress? ingress = null) : BackgroundService
 {
     private readonly VirtualCalibrationAcquisitionCoordinator _coordinator = coordinator;
+    private readonly IRawCaptureIngress? _ingress = ingress;
+    private bool _awaitingEvidenceRecovery;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        while (await _coordinator.ResumePendingAsync(cancellationToken).ConfigureAwait(false) is not null)
+        _awaitingEvidenceRecovery = !await TryResumeAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!_awaitingEvidenceRecovery) return;
+        while (!await TryResumeAsync(stoppingToken).ConfigureAwait(false))
         {
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
         }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    private async Task<bool> TryResumeAsync(CancellationToken cancellationToken)
+    {
+        if (_ingress is not null && !await _ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false)) return false;
+        try
+        {
+            while (await _coordinator.ResumePendingAsync(cancellationToken).ConfigureAwait(false) is not null) { }
+            return true;
+        }
+        catch (InvalidDataException)
+        {
+            if (_ingress is null || await _ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false)) throw;
+            return false;
+        }
+        catch (CaptureAdmissionUnavailableException)
+        {
+            if (_ingress is null || await _ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false)) throw;
+            return false;
+        }
+    }
 }

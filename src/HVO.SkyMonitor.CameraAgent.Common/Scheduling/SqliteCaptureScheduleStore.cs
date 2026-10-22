@@ -36,9 +36,14 @@ internal sealed record CaptureScheduleOperatorStoreState(
     IReadOnlyList<CaptureScheduleRevisionSnapshot> History,
     string FileConfigurationProfileSha256);
 
-internal sealed record CaptureScheduleMutationResult(
+/// <summary>The original command receipt, current durable state and atomic transaction disposition.</summary>
+/// <param name="Receipt">The original command result, including when a later state is current.</param>
+/// <param name="Current">The current durable state; replay must not restore an older receipt.</param>
+/// <param name="Replayed">True only when the transaction found and verified an existing command.</param>
+public sealed record CaptureScheduleMutationResult(
     CaptureScheduleStoreSnapshot Receipt,
-    CaptureScheduleStoreSnapshot Current);
+    CaptureScheduleStoreSnapshot Current,
+    bool Replayed);
 
 public sealed class CaptureScheduleStoreConflictException : InvalidOperationException
 {
@@ -115,7 +120,8 @@ public sealed class SqliteCaptureScheduleStore(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        // Configuration metadata remains available while validated raw evidence awaits audited recovery.
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -348,13 +354,33 @@ public sealed class SqliteCaptureScheduleStore(
 
     public async Task<CaptureScheduleStoreSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
         var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return snapshot;
+    }
+
+    /// <summary>The original action and target of a revision command; payload matching remains the mutation's job.</summary>
+    internal async Task<(bool Rollback, string RevisionId)?> FindRevisionCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT command_kind, result_active_revision_id FROM capture_schedule_commands WHERE idempotency_key = $key;";
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        return reader.GetString(0) switch
+        {
+            "activate" => (false, reader.GetString(1)),
+            "rollback" => (true, reader.GetString(1)),
+            _ => throw new CaptureScheduleStoreConflictException("The idempotency key belongs to another command.")
+        };
     }
 
     public async Task<CaptureScheduleRevisionSnapshot> GetRevisionAsync(
@@ -1274,7 +1300,7 @@ public sealed class SqliteCaptureScheduleStore(
                     .ConfigureAwait(false)
                     ?? throw new InvalidDataException("The current capture schedule state is missing.");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new CaptureScheduleMutationResult(replaySnapshot, currentSnapshot);
+                return new CaptureScheduleMutationResult(replaySnapshot, currentSnapshot, Replayed: true);
             }
 
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
@@ -1312,7 +1338,7 @@ public sealed class SqliteCaptureScheduleStore(
                     : DBNull.Value),
                 ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new CaptureScheduleMutationResult(result, result);
+            return new CaptureScheduleMutationResult(result, result, Replayed: false);
         }
         finally
         {

@@ -223,6 +223,57 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
+    [DataRow(false, false, false)]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, false)]
+    [DataRow(true, false, true)]
+    [DataRow(true, true, true)]
+    public void CreateGraph_PlanHashIncludesImplementationVersion(
+        bool explicitV2, bool publication, bool graphStep)
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var config = new CaptureProcessingStepConfig("Versioned", "versioned", DependsOn: explicitV2 ? ["$raw"] : [],
+            Publication: publication ? new(CaptureProcessingPersistenceMode.MemoryOnly) : null);
+        string Hash(string implementationVersion, string sharedVersion)
+        {
+            using var services = new ServiceCollection()
+                .AddSingleton(new GraphTestImplementationVersion(implementationVersion, sharedVersion)).BuildServiceProvider();
+            var factory = new CaptureProcessingPipelineFactory(services,
+                [new("Versioned", graphStep ? typeof(GraphVersionedProductStep) : typeof(GraphVersionedStep), typeof(GraphTestOptions))],
+                NullLogger<CaptureProcessingPipelineFactory>.Instance, telemetry);
+            var graph = factory.CreateGraph(explicitV2 ? CreateExplicitConfig(config) : CreateLegacyConfig(config));
+            var hash = graph.Nodes.Single().PlanSha256;
+            graph.DisposeSteps();
+            return hash;
+        }
+
+        var first = Hash("step-v1", "shared-v1");
+        Assert.AreEqual(first, Hash("step-v1", "shared-v1"), "Identical code versions and configuration must retain identity.");
+        Assert.AreNotEqual(first, Hash("step-v2", "shared-v1"), "A step-only implementation bump must supersede the plan.");
+        if (graphStep)
+        {
+            Assert.AreNotEqual(first, Hash("step-v1", "shared-v2"), "A shared implementation bump must supersede the plan.");
+        }
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow(" ")]
+    public void CreateGraph_RejectsEmptyImplementationVersion(string version)
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection()
+            .AddSingleton(new GraphTestImplementationVersion(version, "shared-v1")).BuildServiceProvider();
+        var factory = new CaptureProcessingPipelineFactory(services,
+            [new("Versioned", typeof(GraphVersionedStep), typeof(GraphTestOptions))],
+            NullLogger<CaptureProcessingPipelineFactory>.Instance, telemetry);
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateLegacyConfig(
+            new CaptureProcessingStepConfig("Versioned", "versioned", DependsOn: []))));
+        StringAssert.Contains(exception.Message, "non-empty implementation version", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void CreateGraph_PlanHashChangesForOutputSchemaAndOrderedMultiOutputContract()
     {
         using var telemetry = new CaptureProcessingTelemetry();
@@ -1287,4 +1338,32 @@ public sealed class GraphRepeatedMetadataStep(
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { "metadata-b" }, new HashSet<string> { "schema-b" })
     ];
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+public sealed record GraphTestImplementationVersion(string Step, string Shared);
+
+public class GraphVersionedStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options,
+    GraphTestImplementationVersion version) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options)
+{
+    protected GraphTestImplementationVersion Version { get; } = version;
+
+    public override string ImplementationVersion => Version.Step;
+
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
+}
+
+public sealed class GraphVersionedProductStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options,
+    GraphTestImplementationVersion version) : GraphVersionedStep(metadata, options, version), ICaptureProcessingGraphStep
+{
+    public bool Enabled => true;
+    public string RecipeName => "versioned-product";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Preview;
+    public string OutputVariant => "preview";
+    public string? SharedStepVersion => Version.Shared;
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
 }

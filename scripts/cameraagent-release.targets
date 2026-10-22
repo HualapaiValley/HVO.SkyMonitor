@@ -1,0 +1,33 @@
+<Project>
+  <!-- SDK 10.0.402 generates Last-Modified from wall-clock writes of compressed/scoped assets.
+       Feed the immutable release time into endpoint generation, before either publish manifest is written.
+       This task/operation is also used by the SDK's ScopedCss targets:
+       https://github.com/dotnet/sdk/blob/v10.0.402/src/StaticWebAssetsSdk/Tasks/UpdateStaticWebAssetEndpoints.cs
+       Imported for R2R releases and image builds with SOURCE_DATE_EPOCH. -->
+  <Target Name="HvoCameraAgentReleaseAssetTime"
+          BeforeTargets="GenerateStaticWebAssetsPublishManifest"
+          Condition="'$(MSBuildProjectName)' == 'HVO.SkyMonitor.CameraAgent'">
+    <Error Condition="'$(HvoReleaseCreatedUtc)' == ''" Text="A release publish requires HvoReleaseCreatedUtc." />
+    <Error Condition="'@(StaticWebAssetEndpoint)' == ''" Text="CameraAgent release static endpoints were not generated." />
+    <!-- The standard RFC1123 R format uses the invariant culture by definition. -->
+    <PropertyGroup>
+      <_HvoReleaseLastModified>$([System.DateTime]::Parse('$(HvoReleaseCreatedUtc)').ToUniversalTime().ToString('R'))</_HvoReleaseLastModified>
+    </PropertyGroup>
+    <ItemGroup>
+      <_HvoReleaseAssetHeader Include="Replace">
+        <UpdateTarget>Header</UpdateTarget>
+        <Name>Last-Modified</Name>
+        <NewValue>$(_HvoReleaseLastModified)</NewValue>
+      </_HvoReleaseAssetHeader>
+    </ItemGroup>
+    <UpdateStaticWebAssetEndpoints EndpointsToUpdate="@(StaticWebAssetEndpoint)"
+                                   AllEndpoints="@(StaticWebAssetEndpoint)"
+                                   Operations="@(_HvoReleaseAssetHeader)">
+      <Output TaskParameter="UpdatedEndpoints" ItemName="_HvoReleaseAssetEndpoints" />
+    </UpdateStaticWebAssetEndpoints>
+    <ItemGroup>
+      <StaticWebAssetEndpoint Remove="@(_HvoReleaseAssetEndpoints)" />
+      <StaticWebAssetEndpoint Include="@(_HvoReleaseAssetEndpoints)" />
+    </ItemGroup>
+  </Target>
+</Project>

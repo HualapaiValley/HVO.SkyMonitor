@@ -15,10 +15,12 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class CentralProjectedSceneResolverTests
 {
     [TestMethod]
-    [DataRow(false, DisplayName = "projected-scene-v1")]
-    [DataRow(true, DisplayName = "projected-scene-v2")]
-    public async Task SelectionWaitsForRawThenFrozenSceneSurvivesRawExpiryAndRejectsChangedIdentity(bool resolvedSun)
+    [DataRow(1, DisplayName = "projected-scene-v1")]
+    [DataRow(2, DisplayName = "projected-scene-v2")]
+    [DataRow(3, DisplayName = "projected-scene-v3 curated")]
+    public async Task SelectionWaitsForRawThenFrozenSceneSurvivesRawExpiryAndRejectsChangedIdentity(int schema)
     {
+        var resolvedSun = schema == 2;
         await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
@@ -39,12 +41,28 @@ public sealed class CentralProjectedSceneResolverTests
             visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, utc,
                 new AltAzPoint(90, 0), 10, 0, 1, 0, 149600000)]);
         }
+        if (schema == 3)
+        {
+            var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+                AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, "And",
+                null, null, null, null, null, null, null, 31, null, null, null);
+            var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+            visible = visible.WithCuratedDeepSky(new DeepSkyCatalog(semantics, [item],
+                [new("NGC 224", item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []), ProjectedSceneDeepSkySelection.Default);
+        }
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(2, 2),
             new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId,
                 raw.IdempotencyKey), "calibration-v1", visible.Request.ProjectionVersion);
-        Assert.AreEqual(resolvedSun ? ProjectedSceneV1.ResolvedFootprintSchemaVersion : ProjectedSceneV1.CurrentSchemaVersion,
-            scene.SchemaVersion);
+        Assert.AreEqual(schema switch
+        {
+            2 => ProjectedSceneV1.ResolvedFootprintSchemaVersion,
+            3 => ProjectedSceneV1.DeepSkySchemaVersion,
+            _ => ProjectedSceneV1.CurrentSchemaVersion
+        }, scene.SchemaVersion);
         var provenance = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
             scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
             scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: utc,
@@ -125,6 +143,20 @@ public sealed class CentralProjectedSceneResolverTests
         var unsupported = Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralProjectedSceneResolver.ReadReference(job));
         Assert.AreEqual("The frozen projected-scene schema is unsupported.", unsupported.Message);
         requirement.SelectorJson = originalSelector;
+        if (schema == 3)
+        {
+            Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, selected.Reference.PayloadSchemaVersion);
+            Assert.IsNotNull(selected.PayloadInput);
+            Assert.AreEqual(artifactDescriptor.ArtifactId, selected.PayloadInput.ArtifactId);
+            await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => resolver.ResolveAsync(
+                selected.Reference with { PayloadSchemaVersion = null }, CancellationToken.None)).ConfigureAwait(false);
+        }
+        else
+        {
+            Assert.IsNull(selected.PayloadInput);
+            Assert.IsFalse(JsonSerializer.Serialize(selected.Reference, JsonSerializerOptions.Web)
+                .Contains("payloadSchemaVersion", StringComparison.Ordinal), "Released legacy selectors keep the old JSON shape.");
+        }
         var retention = new CentralArtifactRetentionReferences(db);
         Assert.IsTrue(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
             "compact image consumers hold geometry independently of job lifetime");
@@ -316,6 +348,76 @@ public sealed class CentralProjectedSceneResolverTests
             return;
         }
         Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(0, false)]
+    [DataRow(1, false)]
+    [DataRow(3, false)]
+    [DataRow(0, true)]
+    [DataRow(1, true)]
+    [DataRow(3, true)]
+    public async Task SqliteSceneProbesRemainBoundedAndRejectAmbiguity(int count, bool validateInline)
+    {
+        await using var fixture = new SqliteRowLimitFixture();
+        var db = fixture.Db;
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
+        var scene = await CreateSceneAsync(raw, "perspective-v1", "calibration-v1", resolvedSun: false);
+        var inline = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
+            scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
+            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: scene.EffectiveUtc,
+            EphemerisModelVersion: scene.EphemerisModelVersion);
+        var frame = await SeedAsync(db, raw, scene, inline.WithoutProjectedGeometry());
+        var first = await db.CentralArtifacts.SingleAsync(item => item.Role == FrameArtifactRole.Metadata);
+        if (count == 0)
+        {
+            db.Remove(first.StructuredProduct!);
+            db.Remove(first);
+            await db.SaveChangesAsync();
+        }
+        for (var index = 1; index < count; index++)
+            fixture.Insert(new CentralArtifact
+            {
+                CentralFrameId = frame.Id,
+                ArtifactId = Guid.NewGuid(),
+                Role = FrameArtifactRole.Metadata,
+                MediaType = first.MediaType,
+                ObjectState = CentralArtifactObjectState.Available,
+                ReconstructionState = CentralReconstructionState.Complete
+            });
+        var reader = new SceneReader(ProjectedSceneJson.Serialize(scene));
+        var resolver = new CentralProjectedSceneResolver(db, reader);
+        fixture.Queries.Commands.Clear();
+        if (validateInline)
+        {
+            if (count > 1)
+                await Assert.ThrowsExactlyAsync<ArtifactIngestConflictException>(
+                    () => resolver.ValidateInlineGeometryAsync(frame, inline, CancellationToken.None));
+            else if (count == 0)
+                await Assert.ThrowsExactlyAsync<ArtifactSceneReferencePendingException>(
+                    () => resolver.ValidateInlineGeometryAsync(frame, inline, CancellationToken.None));
+            else
+                await resolver.ValidateInlineGeometryAsync(frame, inline with
+                {
+                    Objects = scene.Objects.Select(item => new ProjectedObjectProvenance(item.Id, item.DisplayName,
+                        item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray()
+                }, CancellationToken.None);
+        }
+        else if (count > 1)
+        {
+            var error = await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(
+                () => resolver.SelectAsync(frame, CancellationToken.None));
+            Assert.AreEqual("projected-scene.ambiguous", error.ReasonCode);
+        }
+        else if (count == 0)
+            Assert.IsNull(await resolver.SelectAsync(frame, CancellationToken.None));
+        else
+            Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None));
+        if (count != 1) Assert.AreEqual(0, reader.ReadCount);
+        var probes = fixture.Queries.Commands.Where(sql => sql.Contains("LIMIT", StringComparison.Ordinal)).ToArray();
+        Assert.HasCount(1, probes);
+        foreach (var sql in probes)
+            StringAssert.Contains(sql, "ORDER BY");
     }
 
     private static async Task<ProjectedSceneV1> CreateSceneAsync(

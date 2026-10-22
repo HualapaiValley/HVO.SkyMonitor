@@ -38,6 +38,27 @@ internal static class SafeFileSystem
         }
     }
 
+    /// <summary>
+    /// Flushes every directory from <paramref name="directory"/> up to and including <paramref name="stopAt"/>, so each
+    /// one's entry in its parent is durable, including directories an earlier step created without syncing.
+    /// </summary>
+    public static void FlushDirectoryChain(string directory, string stopAt)
+    {
+        var stop = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stopAt));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (!string.Equals(current, stop, StringComparison.Ordinal) &&
+            !current.StartsWith(stop + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new InstallerException($"Directory '{directory}' is not beneath '{stopAt}'.");
+        }
+        while (true)
+        {
+            NativeLinux.FlushDirectory(current);
+            if (string.Equals(current, stop, StringComparison.Ordinal)) return;
+            current = Path.GetDirectoryName(current)!;
+        }
+    }
+
     public static void CreateOwnerDirectory(string path)
     {
         EnsureSafeExistingAncestors(path);
@@ -81,6 +102,37 @@ internal static class SafeFileSystem
         {
             File.SetUnixFileMode(path, OwnerDirectoryMode);
         }
+    }
+
+    /// <summary>
+    /// What <see cref="CreateRuntimeDirectory"/> would do to <paramref name="path"/>, without doing it: true when it would
+    /// create the directory or set its mode, false when it would leave it as it is, and the same failure where it would
+    /// fail. A plan checks the bind sources this way, so it creates nothing (#1315).
+    /// </summary>
+    public static bool CheckRuntimeDirectory(string path, uint uid, uint gid)
+    {
+        EnsureSafeExistingAncestors(path);
+        if (!Directory.Exists(path))
+        {
+            // The directory would be created by this process, so it would belong to this process's identity.
+            if (NativeLinux.getuid() != uid || NativeLinux.getgid() != gid)
+            {
+                throw new InstallerException(
+                    $"Writable bind source '{path}' is owned by {NativeLinux.getuid()}:{NativeLinux.getgid()} instead of the configured runtime {uid}:{gid}; complete the CameraAgent reset procedure or restore its ownership before deploying.");
+            }
+            return true;
+        }
+        if (new DirectoryInfo(path).LinkTarget is not null)
+        {
+            throw new InstallerException($"Writable bind source '{path}' must not be a symbolic link.");
+        }
+        var identity = NativeLinux.GetDirectoryIdentity(path);
+        if (identity.Uid != uid || identity.Gid != gid)
+        {
+            throw new InstallerException(
+                $"Writable bind source '{path}' is owned by {identity.Uid}:{identity.Gid} instead of the configured runtime {uid}:{gid}; complete the CameraAgent reset procedure or restore its ownership before deploying.");
+        }
+        return (identity.Mode & AllPermissions) != OwnerDirectoryMode;
     }
 
     public static async Task WriteJsonAtomicAsync<T>(

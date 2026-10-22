@@ -247,6 +247,7 @@ public static class ProcessingGraphCompiler
             ValidateOutputs(node.Outputs, $"{path}.outputs", diagnostics, node.OperationKind);
             ValidateInputs(node.Inputs, $"{path}.inputs", diagnostics);
             ValidateWindow(node.Window, $"{path}.window", diagnostics);
+            ValidateGainNormalizationWindow(node, $"{path}.window", diagnostics);
             if ((node.OperationKind == ProcessingOperationKind.Window) != (node.Window is not null))
             {
                 Add(diagnostics, ProcessingGraphReasonCodes.InvalidWindow, $"{path}.window",
@@ -657,6 +658,28 @@ public static class ProcessingGraphCompiler
         {
             Add(diagnostics, ProcessingGraphReasonCodes.InvalidWindow, path,
                 "Processing graph window contract is invalid or incompatible with its mode.");
+        }
+    }
+
+    // A window that crosses a gain change is admissible only for the mixed-gain recipe at the version that defines the
+    // gain-normalization contract; on any other node the label would silently weaken gain as a window boundary.
+    private static void ValidateGainNormalizationWindow(
+        ProcessingGraphNodeDefinition node,
+        string path,
+        List<ProcessingGraphDiagnostic> diagnostics)
+    {
+        if (node.Window is not { CompatibilityLabels.IsDefault: false } window ||
+            !window.CompatibilityLabels.Contains(GainNormalizationCompatibility.WindowLabel, StringComparer.Ordinal))
+        {
+            return;
+        }
+        if (node.Outputs.IsDefaultOrEmpty || node.Outputs.Any(static output =>
+                output?.Recipe is not { } recipe ||
+                !GainNormalizationCompatibility.IsNormalizationRecipe(recipe.Name, recipe.SemanticVersion)))
+        {
+            Add(diagnostics, ProcessingGraphReasonCodes.InvalidWindow, path,
+                $"Processing graph window label '{GainNormalizationCompatibility.WindowLabel}' is only valid for the " +
+                $"'{BuiltInProcessingRecipes.MixedGainNormalizedMean}' {GainNormalizationCompatibility.RecipeSemanticVersion} recipe.");
         }
     }
 

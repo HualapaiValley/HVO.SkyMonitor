@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="696" height="486" viewBox="0 0 696.00 486.00" role="img" aria-label="hvo-sky ui">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="696.00" height="486.00" rx="8" fill="#0d1420"/>
+<rect x="0" y="0" width="696.00" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="696.00" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="348.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky ui</text>
+<rect x="12.00" y="60" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="78" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="96" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="96" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="87.60" y="312" width="92.80" height="18.4" fill="#58a6ff"/>
+<rect x="205.20" y="312" width="84.40" height="18.4" fill="#111c2a"/>
+<rect x="675.60" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="366" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="384" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="20.40" y="384" width="92.80" height="18.4" fill="#2563eb"/>
+<rect x="112.80" y="384" width="17.20" height="18.4" fill="#05070d"/>
+<rect x="129.60" y="384" width="101.20" height="18.4" fill="#111c2a"/>
+<rect x="230.40" y="384" width="17.20" height="18.4" fill="#05070d"/>
+<rect x="247.20" y="384" width="92.80" height="18.4" fill="#111c2a"/>
+<rect x="339.60" y="384" width="17.20" height="18.4" fill="#05070d"/>
+<rect x="356.40" y="384" width="92.80" height="18.4" fill="#111c2a"/>
+<rect x="448.80" y="384" width="235.60" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="402" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="420" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="457.20" y="438" width="92.80" height="18.4" fill="#2563eb"/>
+<rect x="12.00" y="456" width="672.40" height="18.4" fill="#05070d"/>
+<line x1="24.60" y1="104.40" x2="24.60" y2="213.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.60" y1="230.40" x2="24.60" y2="357.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="105.00" x2="37.80" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="112.20" y1="105.00" x2="672.00" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="671.40" y1="104.40" x2="671.40" y2="213.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="671.40" y1="230.40" x2="671.40" y2="357.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="75.00" y1="176.40" x2="75.00" y2="339.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="74.40" y1="177.00" x2="88.20" y2="177.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="238.20" y1="177.00" x2="621.60" y2="177.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="621.00" y1="176.40" x2="621.00" y2="339.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="213.00" x2="71.40" y2="213.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="624.60" y1="213.00" x2="672.00" y2="213.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="231.00" x2="37.80" y2="231.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="624.60" y1="231.00" x2="672.00" y2="231.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="74.40" y1="339.00" x2="621.60" y2="339.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="357.00" x2="672.00" y2="357.00" stroke="#3a4a60" stroke-width="1.2"/>
+<text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
+<text x="348.00" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="415.20" y="55.50" fill="#3fb950" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="558.00" y="73.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="45.60" y="109.50" fill="#58a6ff" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO-SKY</text>
+<text x="37.20" y="127.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Version</text>
+<text x="121.20" y="127.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">0.9.0-test+cccccccccccccccccccccccccccccccccccccccc</text>
+<text x="37.20" y="145.50" fill="#98a7bb" textLength="25.20" lengthAdjust="spacingAndGlyphs">Key</text>
+<text x="121.20" y="145.50" fill="#f7f9fc" textLength="134.40" lengthAdjust="spacingAndGlyphs">0123456789abcdef</text>
+<text x="37.20" y="163.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Access</text>
+<text x="121.20" y="163.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">read-write</text>
+<text x="37.20" y="181.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">From</text>
+<text x="96.00" y="181.50" fill="#58a6ff" textLength="134.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">RESTART / REVIEW</text>
+<text x="37.20" y="199.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">File</text>
+<text x="87.60" y="199.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs">until it is back.</text>
+<text x="87.60" y="217.50" fill="#98a7bb" textLength="495.60" lengthAdjust="spacingAndGlyphs">Settings and a staged rig that apply at its next start take</text>
+<text x="45.60" y="235.50" fill="#58a6ff" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAM</text>
+<text x="87.60" y="235.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">effect. The interface waits for the new process.</text>
+<text x="37.20" y="253.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Vers</text>
+<text x="37.20" y="271.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Runt</text>
+<text x="37.20" y="289.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Star</text>
+<text x="37.20" y="307.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Upti</text>
+<text x="37.20" y="325.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Cata</text>
+<text x="87.60" y="325.50" fill="#05070d" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Restart ]</text>
+<text x="205.20" y="325.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Cancel ]</text>
+<text x="37.20" y="343.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Rest</text>
+<text x="20.40" y="397.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Sign in ]</text>
+<text x="129.60" y="397.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Sign out ]</text>
+<text x="247.20" y="397.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Restart ]</text>
+<text x="356.40" y="397.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Refresh ]</text>
+<text x="20.40" y="433.50" fill="#98a7bb" textLength="546.00" lengthAdjust="spacingAndGlyphs">hvo-sky's own version shows even when CameraAgent cannot be read.</text>
+<text x="28.80" y="451.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">F1 Status</text>
+<text x="129.60" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F2 Settings</text>
+<text x="247.20" y="451.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">F3 Camera</text>
+<text x="348.00" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F4 Schedule</text>
+<text x="457.20" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F5 System]</text>
+<text x="600.00" y="451.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
+<text x="20.40" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
+<text x="54.00" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
+<text x="104.40" y="469.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
+<text x="154.80" y="469.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
+<text x="222.00" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
+<text x="255.60" y="469.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="469.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="469.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="633.60" y="469.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">80x24</text>
+</g>
+</svg>

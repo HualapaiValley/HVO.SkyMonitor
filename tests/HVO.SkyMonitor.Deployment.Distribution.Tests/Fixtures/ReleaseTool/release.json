@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "product": "HVO SkyMonitor",
+  "version": "1.2.0-dev.3",
+  "tag": "v1.2.0-dev.3",
+  "prerelease": true,
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "created": "2026-10-17T18:00:00Z",
+  "repository": "https://github.com/HualapaiValley/HVO.SkyMonitor",
+  "images": {
+    "cameraAgent": {
+      "repository": "ghcr.io/hualapaivalley/skymonitor-cameraagent",
+      "tag": "1.2.0-dev.3",
+      "digest": "sha256:bf5b53308a72180fd3b97dd7f02e3981bb469ce1ad9a6d6111e3ee725510ace3",
+      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@sha256:bf5b53308a72180fd3b97dd7f02e3981bb469ce1ad9a6d6111e3ee725510ace3",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "offlineArchives": [
+        {
+          "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
+          "platform": "linux/amd64",
+          "size": 10240,
+          "sha256": "6d60a558a31793ff15dcd5c81b81cf73c639ef39d0c0f0c2dcce2aa25f0a08bf",
+          "manifestDigest": "sha256:6d355af990fa8c0483c03dc9ccb68d2f6aa48440288cf8584f3457cc32d639d0",
+          "configDigest": "sha256:917af1daaec2e3d4da4804b0615c8caa6b566f86324df762f94672717455f1f4"
+        },
+        {
+          "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
+          "platform": "linux/arm64",
+          "size": 10240,
+          "sha256": "242d467173c9d08016dd03c1941b595f3a20edd8445b25b49600ee331c3e2f4a",
+          "manifestDigest": "sha256:1465e19e381cca1d0dd5112a49824c4cf9fad96a0152728c0c92f762d7873be8",
+          "configDigest": "sha256:107be59056f76bbd0312989e63a44e1376ccf230bee41d354b406462ad80c756"
+        }
+      ]
+    }
+  },
+  "stateContracts": {
+    "cameraAgent": {
+      "identity": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "rawIngress": {
+        "writes": 15,
+        "reads": {
+          "min": 13,
+          "max": 15
+        }
+      },
+      "artifactOutbox": {
+        "writes": 2,
+        "reads": {
+          "min": 2,
+          "max": 2
+        }
+      },
+      "fleetStatus": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "environmentalOutbox": {
+        "writes": 3,
+        "reads": {
+          "min": 3,
+          "max": 3
+        }
+      },
+      "executionEvidenceOutbox": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "timeLapses": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "nightlyProducts": {
+        "writes": 2,
+        "reads": {
+          "min": 2,
+          "max": 2
+        }
+      },
+      "localAutomations": {
+        "writes": 3,
+        "reads": {
+          "min": 3,
+          "max": 3
+        }
+      },
+      "orbitalElements": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "spaceWeather": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      }
+    }
+  },
+  "upgradeNotes": [
+    {
+      "version": "1.1.0",
+      "text": "Eleven.\nSecond line."
+    },
+    {
+      "version": "1.2.0",
+      "text": "Twelve.\n\tIndented."
+    }
+  ],
+  "assets": [
+    {
+      "name": "hvo-sky-install-linux-arm64",
+      "kind": "installer",
+      "platform": "linux-arm64",
+      "size": 64,
+      "sha256": "a6d2ee30fd07f2bf7b2c92b8baab89a9bda02d94807bd0e41f7696caac90b745"
+    },
+    {
+      "name": "hvo-sky-install-linux-x64",
+      "kind": "installer",
+      "platform": "linux-x64",
+      "size": 64,
+      "sha256": "f108ada4f0fe1063f9357310ff10bd5f0ea584267935e79f44e7f9facad307fc"
+    },
+    {
+      "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
+      "kind": "image-archive",
+      "platform": "linux-x64",
+      "size": 10240,
+      "sha256": "6d60a558a31793ff15dcd5c81b81cf73c639ef39d0c0f0c2dcce2aa25f0a08bf"
+    },
+    {
+      "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
+      "kind": "image-archive",
+      "platform": "linux-arm64",
+      "size": 10240,
+      "sha256": "242d467173c9d08016dd03c1941b595f3a20edd8445b25b49600ee331c3e2f4a"
+    }
+  ]
+}

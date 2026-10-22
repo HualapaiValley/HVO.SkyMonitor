@@ -45,7 +45,6 @@ internal static class RawCaptureDescriptorFactory
         ValidateScheduleEvidence(configuration, submission.CycleEvidence?.ScheduleAdmission);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
-        var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
         var processingSteps = configuration.Pipeline.Steps;
         var processingProfile = CreateProcessingProfile(configuration);
         var calibrationSteps = processingSteps
@@ -112,7 +111,10 @@ internal static class RawCaptureDescriptorFactory
                 Profile("rig", configuration.Rig.ProfileVersion, rigElement),
                 calibrationProfile,
                 Profile("mask", "none-v1", NoneOptions),
-                Profile(configuration.Rig.Sensor.Name, configuration.Rig.Sensor.SensorRecipeVersion, sensorElement),
+                new ProfileIdentityDescriptor(
+                    configuration.Rig.Sensor.Name,
+                    configuration.Rig.Sensor.SensorRecipeVersion,
+                    SensorProfileIdentity.ComputeSha256(configuration.Rig.Sensor)),
                 processingProfile),
             layout,
             new ArtifactDescriptor(

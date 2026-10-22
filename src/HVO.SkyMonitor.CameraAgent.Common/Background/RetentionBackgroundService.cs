@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
@@ -34,7 +35,8 @@ public sealed class RetentionBackgroundService(
     ILogger<RetentionBackgroundService> logger,
     IRawIngressRetentionHolds? rawIngressHolds = null,
     IProcessingRetentionHolds? processingHolds = null,
-    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null,
+    CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -49,6 +51,9 @@ public sealed class RetentionBackgroundService(
         Justification = "The dependency injection container owns the schedule coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleCoordinator = scheduleCoordinator;
     private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The dependency injection container owns the capture admission coordinator.")]
+    private readonly CaptureAdmissionCoordinator? _admission = admission;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -90,114 +95,136 @@ public sealed class RetentionBackgroundService(
         {
             return;
         }
-
-        Exception? firstFailure = null;
-        foreach (var plan in plans)
+        // Capacity and disk pressure are still measured and published while the hold is in force; only the deletions
+        // wait, because the operations summary and capture back-pressure read the pressure state. An admitted pass keeps
+        // its maintenance lease through every lock wait and deletion below, so a pause cannot be acknowledged under it.
+        using var maintenance = await CaptureMaintenanceHold.EnterAsync(_admission, cancellationToken).ConfigureAwait(false);
+        if (maintenance.HeldBy is { } holdingState)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var rawIngressGate = _rawIngressHolds is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)
-                ? RawIngressLifecycleLock.ForRoot(plan.StorageRoot)
-                : null;
-            var processingHoldsUnderLifecycleLock = rawIngressGate is not null && _processingHolds is not null
-                ? _processingHolds as IRawIngressLifecycleProcessingRetentionHolds
-                    ?? throw new InvalidOperationException(
-                        "Processing retention holds used under the raw-ingress lifecycle lock must provide a non-initializing read path.")
-                : null;
-            if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
+            _logger.MaintenanceHeld("Retention", holdingState);
+        }
+
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, maintenance.InterruptionToken);
+        var sweepToken = interruption.Token;
+        Exception? firstFailure = null;
+        try
+        {
+            foreach (var plan in plans)
             {
-                // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
-                await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            }
-            if (rawIngressGate is not null)
-            {
-                await rawIngressGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            var lifecycleGate = StorageLifecycleLock.ForRoot(plan.StorageRoot);
-            var lifecycleGateAcquired = false;
-            try
-            {
-                await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                lifecycleGateAcquired = true;
-                StorageCapacity capacity;
+                sweepToken.ThrowIfCancellationRequested();
+                var rawIngressGate = _rawIngressHolds is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)
+                    ? RawIngressLifecycleLock.ForRoot(plan.StorageRoot)
+                    : null;
+                var processingHoldsUnderLifecycleLock = rawIngressGate is not null && _processingHolds is not null
+                    ? _processingHolds as IRawIngressLifecycleProcessingRetentionHolds
+                        ?? throw new InvalidOperationException(
+                            "Processing retention holds used under the raw-ingress lifecycle lock must provide a non-initializing read path.")
+                    : null;
+                if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
+                {
+                    // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
+                    await rawIngress.InitializeForMaintenanceAsync(cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
+                }
+                if (rawIngressGate is not null)
+                {
+                    await rawIngressGate.WaitAsync(sweepToken).ConfigureAwait(false);
+                }
+                var lifecycleGate = StorageLifecycleLock.ForRoot(plan.StorageRoot);
+                var lifecycleGateAcquired = false;
                 try
                 {
-                    capacity = _capacityProvider.GetCapacity(plan.StorageRoot);
-                    if (capacity.TotalBytes <= 0 || capacity.AvailableBytes < 0 || capacity.AvailableBytes > capacity.TotalBytes)
+                    await StorageLifecycleLock.WaitAsync(lifecycleGate, "retention", _logger, sweepToken).ConfigureAwait(false);
+                    lifecycleGateAcquired = true;
+                    StorageCapacity capacity;
+                    try
                     {
-                        throw new IOException($"Invalid storage capacity returned for '{plan.StorageRoot}'.");
+                        capacity = _capacityProvider.GetCapacity(plan.StorageRoot);
+                        if (capacity.TotalBytes <= 0 || capacity.AvailableBytes < 0 || capacity.AvailableBytes > capacity.TotalBytes)
+                        {
+                            throw new IOException($"Invalid storage capacity returned for '{plan.StorageRoot}'.");
+                        }
                     }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        var prior = _pressureState.Get(plan.StorageRoot);
+                        _pressureState.Set(new StoragePressureSnapshot(
+                            plan.StorageRoot, default, prior?.IsUnderPressure ?? false,
+                            prior?.EffectiveRetentionDays ?? plan.RetentionDays, _timeProvider.GetUtcNow(), ex.Message));
+                        _logger.StorageCapacityProbeFailed(plan.StorageRoot, ex);
+                        throw;
+                    }
+                    var previous = _pressureState.Get(plan.StorageRoot);
+                    var underPressure = previous?.IsUnderPressure == true
+                        ? capacity.AvailablePercent < _hostOptions.DiskPressureRecoveryPercent
+                        : capacity.AvailablePercent < _hostOptions.DiskPressureThresholdPercent;
+                    var effectiveRetentionDays = underPressure
+                        ? Math.Min(plan.RetentionDays, _hostOptions.DiskPressureRetentionDays)
+                        : plan.RetentionDays;
+                    var evaluatedUtc = _timeProvider.GetUtcNow();
+                    _pressureState.Set(new StoragePressureSnapshot(
+                        plan.StorageRoot, capacity, underPressure, effectiveRetentionDays, evaluatedUtc));
+                    if (_rawIngressPressureReporter is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot))
+                    {
+                        _rawIngressPressureReporter.ReportPressure(underPressure);
+                    }
+                    if (underPressure && previous?.IsUnderPressure != true)
+                    {
+                        _logger.DiskPressureEntered(plan.StorageRoot, capacity.AvailablePercent);
+                    }
+                    else if (!underPressure && previous?.IsUnderPressure == true)
+                    {
+                        _logger.DiskPressureRecovered(plan.StorageRoot, capacity.AvailablePercent);
+                    }
+
+                    if (maintenance.Held)
+                    {
+                        continue;
+                    }
+
+                    var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
+                    // Frame day directories and index file names are written in UTC by every
+                    // producer, so the prunes that read those names compare whole days rather than
+                    // instants. DateOnly carries no time zone, which is what keeps the comparison in
+                    // the writers' frame on a host whose local zone is not UTC. See issue #823.
+                    var cutoffDay = DateOnly.FromDateTime(cutoffDate);
+                    var pending = await ReadPendingArtifactsAsync(
+                        plan.StorageRoot, processingHoldsUnderLifecycleLock, sweepToken).ConfigureAwait(false);
+                    pending = AddPolicyRetentionHolds(plan, evaluatedUtc, pending, sweepToken);
+                    var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDay, pending, sweepToken);
+                    var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
+                    await indexGate.WaitAsync(sweepToken).ConfigureAwait(false);
+                    try
+                    {
+                        deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDay, pending.ArtifactIds, sweepToken);
+                    }
+                    finally
+                    {
+                        indexGate.Release();
+                    }
+                    deletedFiles += _processingHolds is IProcessingOutputExpiration expiration
+                        ? await expiration.ExpireOutputsAsync(
+                            plan.StorageRoot, new DateTimeOffset(cutoffDate, TimeSpan.Zero),
+                            pending.AbsolutePaths, cancellationToken, sweepToken).ConfigureAwait(false)
+                        : PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, sweepToken);
+                    _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    var prior = _pressureState.Get(plan.StorageRoot);
-                    _pressureState.Set(new StoragePressureSnapshot(
-                        plan.StorageRoot, default, prior?.IsUnderPressure ?? false,
-                        prior?.EffectiveRetentionDays ?? plan.RetentionDays, _timeProvider.GetUtcNow(), ex.Message));
-                    _logger.StorageCapacityProbeFailed(plan.StorageRoot, ex);
-                    throw;
-                }
-                var previous = _pressureState.Get(plan.StorageRoot);
-                var underPressure = previous?.IsUnderPressure == true
-                    ? capacity.AvailablePercent < _hostOptions.DiskPressureRecoveryPercent
-                    : capacity.AvailablePercent < _hostOptions.DiskPressureThresholdPercent;
-                var effectiveRetentionDays = underPressure
-                    ? Math.Min(plan.RetentionDays, _hostOptions.DiskPressureRetentionDays)
-                    : plan.RetentionDays;
-                var evaluatedUtc = _timeProvider.GetUtcNow();
-                _pressureState.Set(new StoragePressureSnapshot(
-                    plan.StorageRoot, capacity, underPressure, effectiveRetentionDays, evaluatedUtc));
-                if (_rawIngressPressureReporter is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot))
-                {
-                    _rawIngressPressureReporter.ReportPressure(underPressure);
-                }
-                if (underPressure && previous?.IsUnderPressure != true)
-                {
-                    _logger.DiskPressureEntered(plan.StorageRoot, capacity.AvailablePercent);
-                }
-                else if (!underPressure && previous?.IsUnderPressure == true)
-                {
-                    _logger.DiskPressureRecovered(plan.StorageRoot, capacity.AvailablePercent);
-                }
-
-                var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
-                // Frame day directories and index file names are written in UTC by every
-                // producer, so the prunes that read those names compare whole days rather than
-                // instants. DateOnly carries no time zone, which is what keeps the comparison in
-                // the writers' frame on a host whose local zone is not UTC. See issue #823.
-                var cutoffDay = DateOnly.FromDateTime(cutoffDate);
-                var pending = await ReadPendingArtifactsAsync(
-                    plan.StorageRoot, processingHoldsUnderLifecycleLock, cancellationToken).ConfigureAwait(false);
-                pending = AddPolicyRetentionHolds(plan, evaluatedUtc, pending, cancellationToken);
-                var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDay, pending, cancellationToken);
-                var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
-                await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDay, pending.ArtifactIds, cancellationToken);
+                    firstFailure ??= ex;
                 }
                 finally
                 {
-                    indexGate.Release();
+                    if (lifecycleGateAcquired)
+                    {
+                        lifecycleGate.Release();
+                    }
+                    rawIngressGate?.Release();
                 }
-                deletedFiles += _processingHolds is IProcessingOutputExpiration expiration
-                    ? await expiration.ExpireOutputsAsync(
-                        plan.StorageRoot, new DateTimeOffset(cutoffDate, TimeSpan.Zero),
-                        pending.AbsolutePaths, cancellationToken).ConfigureAwait(false)
-                    : PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
-                _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                firstFailure ??= ex;
-            }
-            finally
-            {
-                if (lifecycleGateAcquired)
-                {
-                    lifecycleGate.Release();
-                }
-                rawIngressGate?.Release();
-            }
+        }
+        catch (OperationCanceledException) when (maintenance.InterruptionToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Yielding to a pause is normal; the next pass rediscovers every remaining file and durable output.
         }
         if (firstFailure is not null)
         {
@@ -532,16 +559,18 @@ public sealed class RetentionBackgroundService(
                                 deletedFiles++;
                             }
                         }
-                        DeleteEmptyDirectories(dayDirectory);
+                        DeleteEmptyDirectories(dayDirectory, cancellationToken);
                     }
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!Directory.EnumerateFileSystemEntries(monthDirectory).Any())
                 {
                     Directory.Delete(monthDirectory, recursive: false);
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(yearDirectory).Any())
             {
                 Directory.Delete(yearDirectory, recursive: false);
@@ -626,6 +655,7 @@ public sealed class RetentionBackgroundService(
         {
             cancellationToken.ThrowIfCancellationRequested();
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
                 Directory.Delete(directory, recursive: false);
@@ -634,16 +664,18 @@ public sealed class RetentionBackgroundService(
         return deletedFiles;
     }
 
-    private static void DeleteEmptyDirectories(string root)
+    private static void DeleteEmptyDirectories(string root, CancellationToken cancellationToken)
     {
         foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
                      .OrderByDescending(static directory => directory.Length))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
                 Directory.Delete(directory);
             }
         }
+        cancellationToken.ThrowIfCancellationRequested();
         if (!Directory.EnumerateFileSystemEntries(root).Any())
         {
             Directory.Delete(root);

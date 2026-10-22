@@ -178,7 +178,7 @@ internal static class CameraAgentStateResetManager
 
     private static string NextCommand(Guid instanceId) => string.Create(
         CultureInfo.InvariantCulture,
-        $"hvo-skymonitor cameraagent install --instance-id {instanceId:D} <same immutable inputs>");
+        $"{InstallerProgram.Current} cameraagent install --instance-id {instanceId:D} <same immutable inputs>");
 
     private static IReadOnlyList<string> PreservedPaths(InstallationPaths paths) =>
     [

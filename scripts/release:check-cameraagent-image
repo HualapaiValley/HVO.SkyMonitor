@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Build CameraAgent twice without cache; compare image config/manifest digests AND complete OCI archives, retaining diagnostics."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def inspect(path):
+    with tarfile.open(path) as archive:
+        def read(name):
+            return archive.extractfile(name).read()
+
+        def blob(digest):
+            algorithm, value = digest.split(':')
+            if algorithm != 'sha256' or len(value) != 64 or any(c not in '0123456789abcdef' for c in value):
+                raise ValueError('Invalid OCI blob digest')
+            data = read(f'blobs/sha256/{value}')
+            if hashlib.sha256(data).hexdigest() != value:
+                raise ValueError('OCI blob digest mismatch')
+            return data
+
+        manifest = json.loads(read('index.json'))
+        manifest_digest = None
+        while 'manifests' in manifest:
+            if len(manifest['manifests']) != 1:
+                raise ValueError('Expected one platform and no attestations')
+            manifest_digest = manifest['manifests'][0]['digest']
+            manifest = json.loads(blob(manifest_digest))
+        config_digest = manifest['config']['digest']
+        config = json.loads(blob(config_digest))
+        entries = {}
+        for entry in archive:
+            digest = hashlib.sha256(read(entry.name)).hexdigest() if entry.isfile() else None
+            entries[entry.name] = [digest, entry.size, entry.mtime, entry.mode, entry.uid, entry.gid,
+                                   entry.uname, entry.gname, entry.linkname, entry.pax_headers]
+    with path.open('rb') as stream:
+        archive_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return {'configDigest': config_digest, 'manifestDigest': manifest_digest, 'config': config, 'layers': manifest['layers'],
+            'archiveSha256': archive_digest, 'entries': entries}
+
+
+def differences(first, second):
+    messages = []
+    if first['configDigest'] != second['configDigest']:
+        keys = sorted(set(first['config']) | set(second['config']))
+        messages.append('image config differs: ' + ', '.join(
+            key for key in keys if first['config'].get(key) != second['config'].get(key)))
+    if first['manifestDigest'] != second['manifestDigest']:
+        messages.append('image manifest digest differs')
+    if first['layers'] != second['layers']:
+        messages.append('layers differ: inspect package state and published bytes as well as COPY mtimes')
+    if first['archiveSha256'] != second['archiveSha256']:
+        names = sorted(set(first['entries']) | set(second['entries']))
+        changed = [name for name in names if first['entries'].get(name) != second['entries'].get(name)]
+        messages.append('OCI archive bytes/layout differ: ' + (', '.join(changed) or 'tar ordering/padding/header encoding'))
+    return messages
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--platform', required=True, choices=('linux/amd64', 'linux/arm64'))
+    parser.add_argument('--evidence', required=True, type=Path, help='New directory; retains both archives and JSON reports')
+    parser.add_argument('--builder')
+    parser.add_argument('--ready-to-run', action='store_true')
+    parser.add_argument('--created')
+    parser.add_argument('--version')
+    args = parser.parse_args()
+    native = subprocess.check_output(['uname', '-m'], text=True).strip()
+    if (args.platform, native) not in (('linux/amd64', 'x86_64'), ('linux/arm64', 'aarch64'), ('linux/arm64', 'arm64')):
+        parser.error('Run on the native platform; this check does not qualify emulation')
+    args.evidence.mkdir(parents=True, exist_ok=False)
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    epoch = subprocess.check_output(['git', 'show', '-s', '--format=%ct', commit], cwd=ROOT, text=True).strip()
+    output = args.evidence.resolve() / 'image.oci.tar'
+    command = [str(ROOT / 'scripts/build:cameraagent-image'), '--commit', commit,
+               '--platform', args.platform, '--no-cache', '--tag', 'hvo-cameraagent:reproducibility',
+               '--output', f'type=oci,dest={output}']
+    if args.builder:
+        command += ['--builder', args.builder]
+    if args.ready_to_run:
+        command += ['--build-arg', 'HVO_READY_TO_RUN=true']
+    for key, value in [('HVO_CREATED', args.created), ('HVO_VERSION', args.version)]:
+        if value is not None:
+            command += ['--build-arg', f'{key}={value}']
+    (args.evidence / 'inputs.json').write_text(json.dumps(
+        {'commit': commit, 'sourceDateEpoch': epoch, 'command': command}, indent=2) + '\n')
+    trials = []
+    for trial in (1, 2):
+        subprocess.run(command, cwd=ROOT, check=True)
+        archive = args.evidence / f'trial-{trial}.oci.tar'
+        output.rename(archive)
+        report = inspect(archive)
+        (args.evidence / f'trial-{trial}.json').write_text(json.dumps(report, indent=2) + '\n')
+        trials.append(report)
+        print(f'Trial {trial}: config {report["configDigest"]}, manifest {report["manifestDigest"]}, OCI SHA-256 {report["archiveSha256"]}', flush=True)
+    messages = differences(*trials)
+    if messages:
+        print('\n'.join(messages) + f'\nEvidence retained in {args.evidence}', file=sys.stderr)
+        return 1
+    print('PASS: both clean builds have identical image config/manifest digests and OCI archive bytes')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f'CameraAgent image repeatability check failed: {error}', file=sys.stderr)
+        sys.exit(1)

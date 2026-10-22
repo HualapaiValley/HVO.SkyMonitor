@@ -4,7 +4,7 @@
 
 This document defines the subsystem architecture for optional meteor, fireball,
 satellite, aircraft, and transient detection. The umbrella work item is issue
-[#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
+[#65](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/65).
 
 Portfolio status lives in [`docs/roadmap.md`](../roadmap.md), virtual-first phase
 history in [`docs/project-plan.md`](../project-plan.md), and current execution
@@ -15,6 +15,26 @@ readiness rules in `docs/planning/agent-execution.md`.
 The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source
 evidence, and reviewable reason-coded classifications.
+
+### Satellite software activation (2026-10-19)
+
+The operator-issued two-host assignment under #1391 activates a bounded satellite
+software slice independently of broader stream-native V2 research. The
+[roadmap activation](../roadmap.md#bounded-satellite-and-sky-context-activation--2026-10-19)
+and [#527 decision checkpoint](../planning/orbital-data-decision-527.md) govern
+its actual start, integration and release gates. #527 remains research; #1402
+delivers approved shared executable contracts. #528 acquisition and #529
+frozen-fixture propagation can then develop in parallel, with refreshed
+snapshot integration still required before supported live use.
+
+#530 additionally requires the approved measured-geometry and transient inputs;
+the assignment does not transfer calibration work from #523. Detect from pixels
+before orbital association, preserve uncertain/multiple/no matches and original
+evidence, and keep predicted and measured layers distinct. #1395 measures the
+entire required live result before the next completed image at five-second
+arrivals. Causal processing uses available history; centered future-frame
+refinement is a separately identified later result. This software activation
+provides no physical sensitivity, clock, calibration or orbital-accuracy claim.
 
 ## 2. Compatibility Constraints
 
@@ -102,7 +122,7 @@ When automatic controls change, `ICameraSetpointController` applies the complete
 next setpoint before durable ingress begins. Modules that cannot provide that
 boundary cannot enable camera-native or host-metered ownership.
 
-Issue [#58](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58) owns this
+Issue [#58](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/58) owns this
 work.
 
 ## 5. Raw Ingress and Processing Isolation
@@ -129,7 +149,7 @@ The standard lane is required. Upload is required when central operation is
 enabled. The transient/secondary lane is optional by default; an operator may
 make it required only with explicit retention and pressure consequences.
 
-Issue [#59](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59) owns this
+Issue [#59](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/59) owns this
 work.
 
 ## 6. Reprocessable Central Artifacts
@@ -152,7 +172,7 @@ model with lease, expiry, retry/backoff, quarantine, algorithm version, and
 source references. Neighboring frames are selected by capture sequence, not
 ingestion order, so delayed offline uploads remain valid.
 
-Issue [#60](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60) owns this
+Issue [#60](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/60) owns this
 generic infrastructure.
 
 ## 7. Detection Model
@@ -201,7 +221,7 @@ of that data, not the authoritative result.
 families initially include meteor, satellite, aircraft, sensor artifact,
 environmental artifact, and unknown.
 
-Issue [#62](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62) coordinates
+Issue [#62](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/62) coordinates
 the shared detector. Processing owns candidate/event/assessment contracts and
 recipe-facing outcomes; Imaging owns pure pixel, mask, background, component,
 and geometry algorithms.
@@ -244,9 +264,9 @@ The edge lane keeps a restart-safe candidate journal and never waits for future
 frames in the standard pipeline. Central jobs tolerate out-of-order ingest,
 support historical reprocessing, and preserve prior algorithm assessments.
 
-Issue [#63](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/63) owns edge
+Issue [#63](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/63) owns edge
 execution. Issue
-[#64](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64) owns central
+[#64](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/64) owns central
 validation, event persistence, reconstruction, and review.
 
 ## 10. Deterministic Simulation
@@ -276,10 +296,10 @@ Recurring profile and primitive identities must not encode meteor, fireball,
 expected classification, review outcome, or notification eligibility. Raw scene
 provenance retains only generic reconstruction parameters. Semantic expectations
 remain in private test/campaign oracles and are never copied into detector input
-or detector receipts. Issue [#331](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/331)
+or detector receipts. Issue [#331](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/331)
 owns the recurring deployment slice.
 
-Issue [#61](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61) owns this
+Issue [#61](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/61) owns this
 work.
 
 ## 11. Dependency Order
@@ -333,17 +353,17 @@ is accepted.
 
 ## 13. Issue Index
 
-- [#58 Continuous cadence and metering](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/58)
-- [#59 Durable raw ingress and processing lanes epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/59)
-- [#60 Reconstructable artifacts and central processing epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/60)
-- [#61 Deterministic transient scenarios](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61)
-- [#62 Shared detector and event contracts epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/62)
-  ([#113 contracts/inputs](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/113),
-  [#115 compatibility/backgrounds](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/115),
-  [#121 extraction/assessment](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/121),
-  [#119 baselines](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/119))
-- [#63 Optional CameraAgent transient lane](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/63)
-- [#64 LogicHost transient validation and review epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/64)
-  ([#116 central validation](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/116),
-  [#118 reconstruction/review](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/118))
-- [#65 Fireball and transient detection epic](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65)
+- [#58 Continuous cadence and metering](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/58)
+- [#59 Durable raw ingress and processing lanes epic](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/59)
+- [#60 Reconstructable artifacts and central processing epic](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/60)
+- [#61 Deterministic transient scenarios](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/61)
+- [#62 Shared detector and event contracts epic](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/62)
+  ([#113 contracts/inputs](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/113),
+  [#115 compatibility/backgrounds](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/115),
+  [#121 extraction/assessment](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/121),
+  [#119 baselines](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/119))
+- [#63 Optional CameraAgent transient lane](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/63)
+- [#64 LogicHost transient validation and review epic](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/64)
+  ([#116 central validation](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/116),
+  [#118 reconstruction/review](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/118))
+- [#65 Fireball and transient detection epic](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/65)

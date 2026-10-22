@@ -23,7 +23,7 @@ internal sealed record OnDemandMaterializationResult(
     long ByteLength,
     bool Replayed);
 
-internal sealed class CaptureProcessingPersistence(
+internal sealed partial class CaptureProcessingPersistence(
     IOptions<CameraAgentHostOptions> options,
     SqliteCaptureProcessingStore store,
     IFrameStorageService frameStorage,
@@ -33,6 +33,7 @@ internal sealed class CaptureProcessingPersistence(
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;
+    internal Action<string>? BeforeMetadataDirectorySyncForTest { get; set; }
 
     internal async ValueTask<DurableProcessingOutput> RequireCommittedSceneAsync(
         Guid captureId, ProcessingProduct product, CancellationToken cancellationToken)
@@ -132,7 +133,7 @@ internal sealed class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -339,11 +340,23 @@ internal sealed class CaptureProcessingPersistence(
             ? _store.ReadRetentionHoldsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
 
+    /// <summary>
+    /// The library masters named by the normalization plans of pending and running executions, and of ended executions'
+    /// nodes whose outputs are still kept (#1475).
+    /// </summary>
+    internal ValueTask<IReadOnlyList<Guid>> GetNormalizationPlanMasterArtifactIdsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+        => PathsEqual(storageRoot, _storageRoot)
+            ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
+            : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
+
     public async ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
@@ -359,6 +372,7 @@ internal sealed class CaptureProcessingPersistence(
             var checkedOutput = cursorOutput;
             do
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 var page = unavailable
                     ? await _store.ReadUnavailableExpirationPageAsync(
                         _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
@@ -368,6 +382,7 @@ internal sealed class CaptureProcessingPersistence(
                         _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
                 foreach (var candidate in page.Items)
                 {
+                    interruptionToken.ThrowIfCancellationRequested();
                     var sourcePaths = candidate.AvailabilityState == "Quarantined" && candidate.QuarantineRelativePath is { } quarantine
                         ? Directory.Exists(ResolveSafePath(quarantine))
                             ? Directory.EnumerateFiles(ResolveSafePath(quarantine)).Order(StringComparer.Ordinal).ToArray()
@@ -417,12 +432,14 @@ internal sealed class CaptureProcessingPersistence(
         long? diagnosticId = null;
         do
         {
+            interruptionToken.ThrowIfCancellationRequested();
             var diagnostics = await _store.ReadDiagnosticExpirationPageAsync(
                 _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
                 diagnosticTimestamp, diagnosticId, _lifecycleOptions.ReconciliationBatchSize,
                 cancellationToken).ConfigureAwait(false);
             foreach (var diagnostic in diagnostics.Items)
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 if (diagnostic.QuarantineRelativePath is { } quarantine)
                 {
                     var path = ResolveSafePath(quarantine);
@@ -536,7 +553,8 @@ internal sealed class CaptureProcessingPersistence(
             {
                 ProductKind = restored.Product.Kind,
                 SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
+                RecipeDescriptor = restored.Product.Recipe.Descriptor
             });
         }
         return artifacts;
@@ -595,6 +613,21 @@ internal sealed class CaptureProcessingPersistence(
         return artifacts;
     }
 
+    // Reads every raw input frozen for the execution, so a historical input that is missing, no longer committed or
+    // pinned, or damaged fails the check rather than shortening the window.
+    internal async ValueTask EnsureFrozenExecutionRawInputsIntactAsync(
+        Guid executionId,
+        CancellationToken cancellationToken)
+    {
+        var nodes = await _store.ReadFrozenExecutionRawInputNodesAsync(executionId, cancellationToken).ConfigureAwait(false);
+        foreach (var (nodeId, inputCount) in nodes)
+        {
+            var inputs = await ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
+            if (inputs.Count != inputCount)
+                throw new InvalidDataException("A frozen replay input is no longer retained.");
+        }
+    }
+
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadFrozenExecutionRawInputsAsync(
         Guid executionId,
         string nodeId,
@@ -631,7 +664,16 @@ internal sealed class CaptureProcessingPersistence(
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
                     entry.Descriptor.Timing.ExposureStartedUtc,
                     entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    entry.Descriptor.Controls.EffectiveExposure),
+                Conditions: new ProcessingCaptureConditions(
+                    entry.Descriptor.Controls.EffectiveGain,
+                    entry.Descriptor.Controls.EffectiveOffset,
+                    entry.Descriptor.Controls.EffectiveTemperatureC))
+            {
+                // The capture evidence a frozen normalization plan binds each light to.
+                CaptureId = entry.Descriptor.Capture.CaptureId,
+                DescriptorIdentitySha256 = entry.DescriptorSha256
+            });
         }
         return artifacts;
     }
@@ -677,7 +719,7 @@ internal sealed class CaptureProcessingPersistence(
             ValidateProductForPublication(product);
         }
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             if (execution is not null)
@@ -868,7 +910,7 @@ internal sealed class CaptureProcessingPersistence(
             sourceDescriptor,
             node.Id,
             product,
-            cancellationToken).ConfigureAwait(false);
+            BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
 
     internal static async ValueTask<DurableProcessingOutput> CopyMetadataProductAsync(
         string storageRoot,
@@ -876,18 +918,19 @@ internal sealed class CaptureProcessingPersistence(
         string sourceId,
         ProcessingProduct product,
         CancellationToken cancellationToken)
-        => await PersistMetadataProductAsync(
-            Path.GetFullPath(storageRoot),
-            sourceDescriptor,
-            sourceId,
-            product,
-            cancellationToken).ConfigureAwait(false);
+    {
+        storageRoot = Path.GetFullPath(storageRoot);
+        return await PersistMetadataProductAsync(
+            storageRoot, sourceDescriptor, sourceId, product, null, provisionStorageRoot: true, cancellationToken).ConfigureAwait(false);
+    }
 
     private static async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
         string storageRoot,
         ReconstructionDescriptor sourceDescriptor,
         string sourceId,
         ProcessingProduct product,
+        Action<string>? beforeDirectorySync,
+        bool provisionStorageRoot,
         CancellationToken cancellationToken)
     {
         var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
@@ -995,13 +1038,13 @@ internal sealed class CaptureProcessingPersistence(
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
 
-        var directoryExisted = Directory.Exists(directory);
+        if (provisionStorageRoot) CameraAgentFileSystem.EnsureStorageRootDurable(storageRoot);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
-        }
+        // Visibility can be left behind by a failed earlier namespace barrier. Reestablish
+        // the entire owned directory chain before acknowledging an idempotent retry.
+        beforeDirectorySync?.Invoke(directory);
+        RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var existingEvidence = await ValidateExistingMetadataEvidenceAsync(
             payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
         if (existingEvidence is not null)
@@ -1011,11 +1054,19 @@ internal sealed class CaptureProcessingPersistence(
         }
         if (!File.Exists(payloadPath))
         {
-            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            RawIngressFileStore.SyncFile(storageRoot, payloadPath);
         }
         if (!File.Exists(sidecarPath))
         {
-            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            RawIngressFileStore.SyncFile(storageRoot, sidecarPath);
         }
 
         var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
@@ -1189,6 +1240,7 @@ internal sealed class CaptureProcessingPersistence(
         string storageRoot,
         string destinationPath,
         ReadOnlyMemory<byte> content,
+        Action<string>? beforeDirectorySync,
         CancellationToken cancellationToken)
     {
         var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
@@ -1204,25 +1256,25 @@ internal sealed class CaptureProcessingPersistence(
             {
                 await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, Path.GetDirectoryName(destinationPath)!);
             try
             {
-                File.Move(temporaryPath, destinationPath, overwrite: false);
+                CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, destinationPath, overwrite: false);
             }
-            catch (IOException) when (File.Exists(destinationPath))
+            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(destinationPath))
             {
+                RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
                 var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
                 if (!existing.AsSpan().SequenceEqual(content.Span))
                 {
                     throw new InvalidDataException("Existing metadata evidence conflicts with immutable content.");
                 }
-                return;
+                RawIngressFileStore.SyncFile(storageRoot, destinationPath);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
+            beforeDirectorySync?.Invoke(Path.GetDirectoryName(destinationPath)!);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
         finally
@@ -1289,7 +1341,8 @@ internal sealed class CaptureProcessingPersistence(
             SchemaVersion = restored.Product.SchemaVersion,
             ContentIdentitySha256 = restored.Product.ContentIdentitySha256 ?? restored.Product.OutputIdentitySha256,
             CaptureId = output.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = restored.Product.Recipe.Descriptor
         };
     }
 

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -86,7 +87,8 @@ internal sealed class OwnerPasswordRecoveryService(
         if (operationId == Guid.Empty ||
             string.IsNullOrWhiteSpace(challenge) ||
             temporaryPassword is null ||
-            temporaryPassword.Length is < 16 or > 256 ||
+            temporaryPassword.Length < CameraAgentIdentityPolicy.MinimumPasswordLength ||
+            temporaryPassword.Length > CameraAgentIdentityPolicy.MaximumRecoveryPasswordLength ||
             temporaryPassword.Any(static character => character is < '!' or > '~') ||
             !PasswordBootstrapAuthorityWasRemoved())
         {
@@ -133,6 +135,7 @@ internal sealed class OwnerPasswordRecoveryService(
             return Reject(operationId, "stale-challenge", OwnerPasswordRecoveryOutcome.Conflict).Outcome;
         }
 
+        var revokedApiKeys = 0;
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
         try
@@ -146,6 +149,10 @@ internal sealed class OwnerPasswordRecoveryService(
             }
 
             owner.PasswordChangeRequired = true;
+            // Local recovery proves owner authority, so it also clears a sign-in lockout and the failure count that
+            // would otherwise keep the recovered owner out until the lockout expires.
+            owner.LockoutEnd = null;
+            owner.AccessFailedCount = 0;
             var update = await userManager.UpdateAsync(owner).ConfigureAwait(false);
             if (!update.Succeeded)
             {
@@ -164,6 +171,9 @@ internal sealed class OwnerPasswordRecoveryService(
                 return Reject(operationId, "receipt-update", OwnerPasswordRecoveryOutcome.Conflict).Outcome;
             }
 
+            // Recovery answers a lost or exposed password, so no key issued under the old one keeps working.
+            revokedApiKeys = await CameraAgentApiKeyStore.RemoveAllAsync(dbContext, owner.Id, cancellationToken)
+                .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException)
@@ -180,6 +190,11 @@ internal sealed class OwnerPasswordRecoveryService(
                 operationId);
         }
 
+        if (revokedApiKeys > 0)
+        {
+            CameraAgentApiKeyStore.LogRevokedAll(logger, revokedApiKeys, owner.Id);
+        }
+
         return OwnerPasswordRecoveryOutcome.Completed;
     }
 
@@ -190,6 +205,7 @@ internal sealed class OwnerPasswordRecoveryService(
     {
         var owners = await userManager.Users
             .Where(static candidate => candidate.IsSiteOwner)
+            .OrderBy(static candidate => candidate.Id)
             .Take(2)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

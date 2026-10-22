@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>What the terminal programs share: HVO Dark for Terminal.Gui, used by hvo-sky's interface and the installer.</Description>
+    <!-- Terminal.Gui only. No product project: the installer (HVO.SkyMonitor.Deployment.Cli) and hvo-sky both build on
+         this, and the architecture test TerminalUiBoundaryIsNarrow keeps it reference-free. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Terminal.Gui" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />
+  </ItemGroup>
+
+</Project>

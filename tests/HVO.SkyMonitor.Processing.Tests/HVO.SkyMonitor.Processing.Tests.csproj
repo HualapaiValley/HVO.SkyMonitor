@@ -10,8 +10,24 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Video.FFmpeg\HVO.SkyMonitor.Video.FFmpeg.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../tools/HVO.SkyMonitor.VirtualSkyPoc/NominalCausalEvaluation.cs" Link="Tools/NominalCausalEvaluation.cs" />
+    <Compile Include="../../tools/HVO.SkyMonitor.VirtualSkyPoc/NominalPredictionComparison.cs" Link="Tools/NominalPredictionComparison.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/leap-seconds.list" Link="Fixtures/Nominal/leap-seconds.list" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/iss/track-03.json" Link="Fixtures/Nominal/iss/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/starlink-56838/track-03.json" Link="Fixtures/Nominal/starlink-56838/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/starlink-65283/track-03.json" Link="Fixtures/Nominal/starlink-65283/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="..\fixtures\processing\*.json" Link="Fixtures\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/space-weather/swpc-v1/**/*" Link="Fixtures/space-weather/swpc-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/contracts/space-weather-facts-v1.md" Link="Fixtures/space-weather/space-weather-facts-v1.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

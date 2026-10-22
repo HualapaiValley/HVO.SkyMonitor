@@ -1,10 +1,13 @@
+using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
 using System.Text.Json;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -43,6 +46,34 @@ public sealed class OwnerPasswordRecoveryServiceTests
             fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
         Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
             fixture.Owner, RecoveryFixture.RecoveryPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_RevokesEveryApiKeyOfTheOwnerInTheSameTransaction()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var keys = fixture.ApiKeys();
+        var first = await keys.CreateAsync(fixture.Owner.Id, "laptop", ApiKeyAccessLevel.ReadWrite, CancellationToken.None)
+            .ConfigureAwait(false);
+        var second = await keys.CreateAsync(fixture.Owner.Id, "automation", ApiKeyAccessLevel.Read, CancellationToken.None)
+            .ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var completed = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            RecoveryFixture.RecoveryPassword,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, completed);
+        Assert.IsNull(await keys.FindAsync(first.Token!, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNull(await keys.FindAsync(second.Token!, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsEmpty(await keys.ListAsync(fixture.Owner.Id, CancellationToken.None).ConfigureAwait(false));
+        // The recovery receipt, kept in the same table, survives.
+        Assert.IsNotNull(await fixture.UserManager.GetAuthenticationTokenAsync(
+            fixture.Owner, "HVO.SkyMonitor.OwnerRecovery", "LastCompletedOperation").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -113,16 +144,82 @@ public sealed class OwnerPasswordRecoveryServiceTests
         var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
             .ConfigureAwait(false);
 
+        // Long enough and printable, but refused by the password policy because it is the documented default.
         var outcome = await fixture.Service.CompleteAsync(
             operationId,
             challenge.Challenge!,
-            "alllowercasepassword",
+            "SkyMonitor",
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, outcome);
         Assert.IsFalse(fixture.Owner.PasswordChangeRequired);
         Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
             fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_AcceptsAnEightCharacterPasswordWithoutCharacterClasses()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            "abcdefgh",
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, outcome);
+        Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(fixture.Owner, "abcdefgh").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("abcdefg")]
+    [DataRow("contains space")]
+    public async Task Recovery_RejectsAShortOrNonPrintablePasswordBeforeChangingTheOwner(string password)
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var securityStamp = fixture.Owner.SecurityStamp;
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            password,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, outcome);
+        Assert.AreEqual(securityStamp, fixture.Owner.SecurityStamp);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
+            fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_ClearsASignInLockout()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        Assert.IsTrue((await fixture.UserManager.SetLockoutEndDateAsync(
+            fixture.Owner, DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false)).Succeeded);
+        Assert.IsTrue((await fixture.UserManager.AccessFailedAsync(fixture.Owner).ConfigureAwait(false)).Succeeded);
+        Assert.IsTrue(await fixture.UserManager.IsLockedOutAsync(fixture.Owner).ConfigureAwait(false));
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            RecoveryFixture.RecoveryPassword,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, outcome);
+        Assert.IsFalse(await fixture.UserManager.IsLockedOutAsync(fixture.Owner).ConfigureAwait(false));
+        Assert.AreEqual(0, await fixture.UserManager.GetAccessFailedCountAsync(fixture.Owner).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -176,6 +273,23 @@ public sealed class OwnerPasswordRecoveryServiceTests
         Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, missingPassword);
     }
 
+    [TestMethod]
+    public async Task Recovery_DuplicateOwnersUseAnOrderedBoundedProbeAndRefuseAChallenge()
+    {
+        var queries = new IdentityRowLimitQueryRecorder();
+        using var fixture = await RecoveryFixture.CreateAsync(queries: queries).ConfigureAwait(false);
+        await fixture.AddOwnerAsync("last-owner@cameraagent.test").ConfigureAwait(false);
+        await fixture.AddOwnerAsync("first-owner@cameraagent.test").ConfigureAwait(false);
+        queries.Commands.Clear();
+
+        var result = await fixture.Service.CreateChallengeAsync(Guid.NewGuid(), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Conflict, result.Outcome);
+        Assert.IsNull(result.Challenge);
+        queries.AssertOrderedBy("Id");
+    }
+
     private sealed class RecoveryFixture : IDisposable
     {
         internal const string OriginalPassword = "OriginalOwner!515";
@@ -211,22 +325,39 @@ public sealed class OwnerPasswordRecoveryServiceTests
         internal IDataProtectionProvider DataProtectionProvider { get; }
         internal OwnerPasswordRecoveryService Service { get; }
 
+        internal CameraAgentApiKeyStore ApiKeys()
+            => new(
+                _scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                TimeProvider.System,
+                NullLogger<CameraAgentApiKeyStore>.Instance);
+
         internal Task<IdentityResult> ReplacePasswordAsync(string newPassword)
             => new OwnerPasswordReplacementService(
                     _scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
                     UserManager)
                 .ReplaceAsync(Owner, RecoveryPassword, newPassword);
 
-        internal static async Task<RecoveryFixture> CreateAsync(bool passwordAuthorityRemoved = true)
+        internal static async Task<RecoveryFixture> CreateAsync(
+            bool passwordAuthorityRemoved = true,
+            IdentityRowLimitQueryRecorder? queries = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddDataProtection().UseEphemeralDataProtectionProvider();
-            services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(connection));
+            services.AddDbContext<ApplicationDbContext>(options =>
+            {
+                options.UseSqlite(connection)
+                    .ConfigureWarnings(warnings => warnings.Throw(CoreEventId.RowLimitingOperationWithoutOrderByWarning));
+                if (queries is not null)
+                {
+                    options.AddInterceptors(queries);
+                }
+            });
             services.AddIdentityCore<ApplicationUser>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
+                .AddCameraAgentPasswordPolicy()
                 .AddDefaultTokenProviders();
             services.AddSingleton(Options.Create(new LocalIdentityOptions
             {

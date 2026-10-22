@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -35,22 +36,26 @@ internal sealed record StagedProjectedSceneDocument(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ProjectedSceneKind? IntendedKind = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StageSceneIdentitySha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null)
+    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ProjectedDeepSky? DeepSky = null)
 {
     internal const string CurrentSchemaVersion = "projected-scene-stage-v1";
 
     internal ProjectedSceneV1 Bind(ProjectedSceneSource source, ProjectedSceneKind kind)
     {
-        // The bound scene's schema follows its content: only a stage that carries resolved footprints is v2, and
-        // validation rejects a stage that records an empty footprint list.
+        // The bound scene's schema follows its content: a stage that carries a deep-sky collection is v3, one that
+        // carries only resolved footprints is v2, and validation rejects a stage that records an empty list.
         var scene = new ProjectedSceneV1(
-            ResolvedFootprints is null
-                ? ProjectedSceneV1.CurrentSchemaVersion
-                : ProjectedSceneV1.ResolvedFootprintSchemaVersion,
+            DeepSky is not null
+                ? ProjectedSceneV1.DeepSkySchemaVersion
+                : ResolvedFootprints is null
+                    ? ProjectedSceneV1.CurrentSchemaVersion
+                    : ProjectedSceneV1.ResolvedFootprintSchemaVersion,
             string.Empty, kind, EffectiveUtc, Observer, Catalog, Selection,
             Projection, ImageTransform, ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge,
             HorizonPolicy, Refraction, AstronomyAlgorithmVersion, ConstellationTopology, EphemerisModelVersion,
-            source, Objects, Segments, ResolvedFootprints);
+            source, Objects, Segments, ResolvedFootprints, DeepSky);
         scene = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
         ProjectedSceneJson.Validate(scene);
         return scene;
@@ -86,7 +91,8 @@ internal interface IProjectedSceneStagingReconciler
 {
     ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
         IReadOnlySet<string> ownedStageKeys,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default);
 }
 
 internal sealed record ProjectedSceneStageReconciliationResult(int Inspected, int Deleted, int BacklogCount);
@@ -105,6 +111,7 @@ internal sealed class ProjectedSceneStagingStore :
         new Guid("11111111-1111-1111-1111-111111111111"),
         new Guid("22222222-2222-2222-2222-222222222222"),
         new string('A', 64));
+    internal Action<string>? BeforeDirectorySyncForTest { get; set; }
     private readonly string _root;
     private readonly string _durableRoot;
     private readonly string _cursorPath;
@@ -184,7 +191,7 @@ internal sealed class ProjectedSceneStagingStore :
             projected.HorizonPolicy, projected.Refraction, projected.AstronomyAlgorithmVersion,
             projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments,
             facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256,
-            projected.ResolvedFootprints);
+            projected.ResolvedFootprints, projected.DeepSky);
         document = document with { StageIdentitySha256 = ComputeIdentity(document) };
         var bytes = Serialize(document);
 
@@ -233,7 +240,7 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
                     await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                    RandomAccess.FlushToDisk(stream.SafeFileHandle);
+                    CameraAgentFileSystem.FlushFile(stream.SafeFileHandle, temporary);
                 }
                 finally
                 {
@@ -329,8 +336,11 @@ internal sealed class ProjectedSceneStagingStore :
                 if (OperatingSystem.IsLinux())
                 {
                     using var directory = OpenLinuxStageDirectory(create: false);
-                    if (directory is not null && LinuxUnlink(directory, $"{stageKey}.json"))
-                        RandomAccess.FlushToDisk(directory);
+                    if (directory is not null)
+                    {
+                        _ = LinuxUnlink(directory, $"{stageKey}.json");
+                        SyncLinuxDirectory(directory);
+                    }
                 }
                 else
                 {
@@ -373,6 +383,8 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     using var completed = LinuxOpenAtFile(directory, completedName);
                     if (completed is not null) EnsureLinuxRegularFile(completed);
+                    // A visible completion or absence can follow a failed rename/unlink barrier.
+                    SyncLinuxDirectory(directory);
                     return;
                 }
                 if (!TryRenameNoReplace(directory, activeName, completedName, out var exists))
@@ -386,7 +398,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
                     _ = LinuxUnlink(directory, activeName);
                 }
-                RandomAccess.FlushToDisk(directory);
+                SyncLinuxDirectory(directory);
                 return;
             }
 
@@ -430,7 +442,11 @@ internal sealed class ProjectedSceneStagingStore :
             if (OperatingSystem.IsLinux())
             {
                 using var directory = OpenLinuxStageDirectory(create: false);
-                if (directory is not null && LinuxUnlink(directory, name)) RandomAccess.FlushToDisk(directory);
+                if (directory is not null)
+                {
+                    _ = LinuxUnlink(directory, name);
+                    SyncLinuxDirectory(directory);
+                }
                 return;
             }
             var path = Path.Combine(_root, name);
@@ -448,10 +464,13 @@ internal sealed class ProjectedSceneStagingStore :
 
     public async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
         IReadOnlySet<string> ownedStageKeys,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         ArgumentNullException.ThrowIfNull(ownedStageKeys);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var passToken = interruption.Token;
+        await _gate.WaitAsync(passToken).ConfigureAwait(false);
         try
         {
             if (!Directory.Exists(_root)) return new(0, 0, 0);
@@ -477,12 +496,13 @@ internal sealed class ProjectedSceneStagingStore :
             if (start < 0) start = 0;
             var inspected = 0;
             var deleted = 0;
-            string? lastName = null;
+            var lastName = cursor?.LastName;
             var passLimit = Math.Min(_options.MaximumReconciliationEntries, remaining);
             for (var offset = 0; offset < entries.Length && inspected < passLimit; offset++)
             {
                 var index = (start + offset) % entries.Length;
                 cancellationToken.ThrowIfCancellationRequested();
+                if (interruptionToken.IsCancellationRequested) break;
                 var name = Path.GetFileName(entries[index]);
                 lastName = name;
                 inspected++;
@@ -625,11 +645,10 @@ internal sealed class ProjectedSceneStagingStore :
 
     private void EnsurePhysicalDirectory()
     {
-        var existed = Directory.Exists(_root);
         EnsureAncestorChainHasNoLinks(_root);
         Directory.CreateDirectory(_root);
         EnsureAncestorChainHasNoLinks(_root);
-        if (!existed) RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
+        RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
     }
 
     private static void EnsurePhysicalFile(string path)
@@ -731,7 +750,11 @@ internal sealed class ProjectedSceneStagingStore :
         if (OperatingSystem.IsLinux())
         {
             using var directory = OpenLinuxStageDirectory(create: false);
-            if (directory is not null && LinuxUnlink(directory, name)) RandomAccess.FlushToDisk(directory);
+            if (directory is not null)
+            {
+                _ = LinuxUnlink(directory, name);
+                SyncLinuxDirectory(directory);
+            }
             return;
         }
         var path = Path.Combine(_root, name);
@@ -797,15 +820,21 @@ internal sealed class ProjectedSceneStagingStore :
         }
     }
 
+    private void SyncLinuxDirectory(SafeFileHandle directory)
+    {
+        BeforeDirectorySyncForTest?.Invoke(_root);
+        CameraAgentFileSystem.SyncDirectory(directory, _root);
+    }
+
     private static SafeFileHandle LinuxOpenAtDirectory(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxDirectoryFlag() |
             LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
 
     private static StagingOpenFlags LinuxDirectoryFlag()
-        => (StagingOpenFlags)Storage.LinuxOpenFlags.Directory;
+        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.Directory;
 
     private static StagingOpenFlags LinuxNoFollowFlag()
-        => (StagingOpenFlags)Storage.LinuxOpenFlags.NoFollow;
+        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.NoFollow;
 
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxNoFollowFlag() |
@@ -831,7 +860,7 @@ internal sealed class ProjectedSceneStagingStore :
         {
             cancellationToken.ThrowIfCancellationRequested();
             RandomAccess.Write(temporary, bytes, 0);
-            RandomAccess.FlushToDisk(temporary);
+            CameraAgentFileSystem.FlushFile(temporary, temporaryName);
             temporary.Dispose();
             if (!TryRenameNoReplace(directory, temporaryName, finalName, out var exists))
             {
@@ -847,7 +876,7 @@ internal sealed class ProjectedSceneStagingStore :
             {
                 published = true;
             }
-            RandomAccess.FlushToDisk(directory);
+            SyncLinuxDirectory(directory);
         }
         catch
         {
@@ -856,7 +885,7 @@ internal sealed class ProjectedSceneStagingStore :
                 try
                 {
                     _ = LinuxUnlink(directory, finalName);
-                    RandomAccess.FlushToDisk(directory);
+                    SyncLinuxDirectory(directory);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {

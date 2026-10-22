@@ -388,6 +388,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return OperatorUiResult<T>.Success(await mutation(actor, cancellationToken).ConfigureAwait(false));
         }
+        catch (ProcessingGraphRevisionSupersededException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "Graph registry state changed. Refresh and review the command again.");

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 public enum CaptureProcessingAvailability { Healthy, Degraded, Unhealthy }
@@ -19,7 +21,10 @@ public sealed record CaptureProcessingSnapshot(
     long ReplayTerminalCount = 0,
     DateTimeOffset? OldestReplayPendingUtc = null,
     long ReplayPendingBytes = 0,
-    string? SupersededActiveRevisionId = null);
+    string? SupersededActiveRevisionId = null,
+    long LeasedCount = 0,
+    long ReplayLeasedCount = 0,
+    long ReplayAbandonedCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -38,6 +43,7 @@ public sealed class CaptureProcessingState
 {
     private readonly object _gate = new();
     private long _pending;
+    private long _leased;
     private long _retry;
     private long _terminal;
     private long _quarantine;
@@ -47,13 +53,31 @@ public sealed class CaptureProcessingState
     private bool _reconciliationFailed;
     private bool _hasDurableSnapshot;
     private long _replayPending;
+    private long _replayLeased;
     private long _replayRetry;
     private long _replayTerminal;
     private long _replayPendingBytes;
+    private long _replayAbandoned;
     private DateTimeOffset? _oldestReplay;
     private string? _supersededActiveRevision;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
+
+    /// <summary>Attempts to capture processing state without waiting beyond the lock-acquisition timeout.</summary>
+    public bool TrySnapshot(TimeSpan timeout, [NotNullWhen(true)] out CaptureProcessingSnapshot? snapshot)
+    {
+        if (!Monitor.TryEnter(_gate, timeout))
+        {
+            snapshot = null;
+            return false;
+        }
+        try
+        {
+            snapshot = Compose();
+            return true;
+        }
+        finally { Monitor.Exit(_gate); }
+    }
 
     internal void GraphStarted()
     {
@@ -75,12 +99,13 @@ public sealed class CaptureProcessingState
         }
     }
 
-    internal void SetDurable(long pending, long retry, long terminal, DateTimeOffset? oldestPendingUtc)
+    internal void SetDurable(long pending, long leased, long retry, long terminal, DateTimeOffset? oldestPendingUtc)
     {
         lock (_gate)
         {
             _hasDurableSnapshot = true;
             _pending = pending;
+            _leased = leased;
             _retry = retry;
             _terminal = terminal;
             _oldest = oldestPendingUtc;
@@ -91,18 +116,22 @@ public sealed class CaptureProcessingState
     internal void SetRefreshFailure() { lock (_gate) _durableUnavailable = true; }
     internal void SetReplayDurable(
         long pending,
+        long leased,
         long retry,
         long terminal,
         DateTimeOffset? oldestPendingUtc,
-        long pendingBytes)
+        long pendingBytes,
+        long abandoned)
     {
         lock (_gate)
         {
             _replayPending = pending;
+            _replayLeased = leased;
             _replayRetry = retry;
             _replayTerminal = terminal;
             _oldestReplay = oldestPendingUtc;
             _replayPendingBytes = pendingBytes;
+            _replayAbandoned = abandoned;
         }
     }
     internal void SetActiveRevisionSuperseded(string? revisionId) { lock (_gate) _supersededActiveRevision = revisionId; }
@@ -136,6 +165,6 @@ public sealed class CaptureProcessingState
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
             _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
-            _supersededActiveRevision);
+            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned);
     }
 }

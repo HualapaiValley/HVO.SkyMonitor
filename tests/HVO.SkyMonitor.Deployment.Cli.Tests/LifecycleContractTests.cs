@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class LifecycleContractTests
+public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -30,119 +30,394 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_SignedReleaseWithoutThisHostArchitecture_FailsBeforeAnyMutation()
+    public async Task UpgradeAsync_ReleaseWithoutThisHostArchitecture_FailsBeforeAnyMutation()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        var other = DistributionAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
-        using var release = SignedImageReleaseFixture.Create(
-            fixture.Root,
-            $"sha256:{new string('b', 64)}",
-            SignedImageReleaseFixture.ContractLabels,
-            publishedArchitectures: [other]);
+        var other = ReleaseAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
+        using var release = ReleaseFixture.Create(fixture.Root, platforms: [$"linux/{other}"]);
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
+            Release = release.Folder,
             MigrationBackwardCompatible = true
         };
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
             CameraAgentLifecycleManager.ExecuteAsync(
-                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
-                release.CreateAcquirer));
+                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
 
         // The upgrade selects for the instance's recorded daemon, which this fixture records as the process
         // architecture by default (on amd64 and arm64 runners alike), so the release that publishes only the other
         // architecture is refused and the refusal names the daemon as the selecting authority.
         StringAssert.Contains(exception.Message, "does not support the instance's recorded Docker daemon's", StringComparison.Ordinal);
-        // The release is resolved before the instance is touched, so no lifecycle operation is journaled.
+        // The release is read before the instance is touched, so no lifecycle operation is journaled and Docker is
+        // never asked anything.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.IsFalse(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json")));
+        Assert.AreEqual(0, fixture.Runner.InvocationCount);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_SignedReleaseSelectsTheRecordedDaemonArchitectureNotTheProcess()
+    public async Task UpgradeAsync_ReleaseSelectsTheRecordedDaemonArchitectureNotTheProcess()
     {
         // The instance was installed against a daemon whose architecture differs from the CLI process (a remote or
         // cross-architecture DOCKER_HOST). The release publishes only that architecture.
-        var daemonArchitecture = DistributionAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
+        var daemonArchitecture = ReleaseAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner,
             daemonArchitecture: daemonArchitecture);
-        var candidateImageId = $"sha256:{new string('9', 64)}";
-        using var release = SignedImageReleaseFixture.Create(
-            fixture.Root, candidateImageId, CandidateContractLabels(), publishedArchitectures: [daemonArchitecture]);
+        using var release = CandidateRelease(fixture, out var candidateImageId, platforms: [$"linux/{daemonArchitecture}"]);
         fixture.Runner.CandidateRawIngressSchema = "13";
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Upgrade) with
             {
-                ImageManifest = release.ManifestPath,
-                NoDownload = true,
+                Release = release.Folder,
                 MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+            fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(candidateImageId, result.Image!.ImageId);
         Assert.AreEqual(daemonArchitecture, result.Image.Architecture);
+        Assert.AreEqual("archive", result.Image.Source);
+        Assert.AreEqual((string)release.Archive($"linux/{daemonArchitecture}")["sha256"]!, result.Image.ArchiveSha256);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_SignedReleaseWithoutTheRecordedDaemonArchitecture_FailsBeforeAnyDownload()
+    public async Task UpgradeAsync_ReleaseWithoutTheRecordedDaemonArchitecture_FailsBeforeAnyLoad()
     {
         // The release publishes only the CLI process's architecture, which the recorded daemon cannot run: the
-        // refusal names the published platforms and the daemon, and nothing is acquired or journalled.
-        var processArchitecture = DistributionAcquirer.HostImageArchitecture();
+        // refusal names the published platforms and the daemon, and nothing is loaded or journalled.
+        var processArchitecture = ReleaseAcquirer.HostImageArchitecture();
         var daemonArchitecture = processArchitecture == "amd64" ? "arm64" : "amd64";
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, daemonArchitecture: daemonArchitecture);
-        using var release = SignedImageReleaseFixture.Create(
-            fixture.Root, $"sha256:{new string('b', 64)}", SignedImageReleaseFixture.ContractLabels,
-            publishedArchitectures: [processArchitecture]);
+        using var release = ReleaseFixture.Create(fixture.Root, platforms: [$"linux/{processArchitecture}"]);
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
+            Release = release.Folder,
             MigrationBackwardCompatible = true
         };
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
             CameraAgentLifecycleManager.ExecuteAsync(
-                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
-                release.CreateAcquirer));
+                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, $"linux/{processArchitecture}", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, $"linux/{daemonArchitecture}", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "Docker daemon", StringComparison.Ordinal);
+        Assert.AreEqual(
+            $"Release v{release.Version} publishes the CameraAgent image for linux/{processArchitecture} and does not support " +
+            $"the instance's recorded Docker daemon's linux/{daemonArchitecture} architecture.",
+            exception.Message);
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
-        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Root, "distribution-cache", "images")),
-            "nothing may be acquired for a platform the recorded daemon cannot run");
+        Assert.AreEqual(0, fixture.Runner.InvocationCount, "nothing may be loaded for a platform the recorded daemon cannot run");
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UninstallAsync_AlreadyUninstalled_IsIdempotentAndPreservesState()
+    public async Task UpgradeAsync_ReleaseThatFailsVerification_IsRefusedBeforeTheJournalOrDocker()
     {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
-        var stateSentinel = Path.Combine(fixture.Paths.StateRoot, "sentinel");
-        await File.WriteAllTextAsync(stateSentinel, "preserved");
-        var request = fixture.Request(LifecycleOperationKind.Uninstall);
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        using var release = CandidateRelease(fixture, out _);
+        // release.json changed after SHA256SUMS was written: it is not the release.json the release published.
+        await File.AppendAllTextAsync(Path.Combine(release.Folder, ReleaseManifest.FileName), " ");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentLifecycleManager.ExecuteAsync(
+                fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder },
+                fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.StartsWith(exception.Message, "release.json does not match its SHA-256 in SHA256SUMS", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(0, fixture.Runner.InvocationCount);
+        Assert.IsTrue(exception.IsRefusal, "the release is checked before the instance is touched, so it is a refusal (exit 3)");
+    }
+
+    /// <summary>
+    /// A release whose offline archive holds an image that is not the release's, or not one this instance can run, is
+    /// refused from the archive before the journal entry and before Docker is asked to load anything.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("created-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("contract-label", "!The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
+    [DataRow("state-contract", "!The candidate image declares state compatibility")]
+    public async Task UpgradeAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeTheJournalOrALoad(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out _, labels: labels =>
+        {
+            switch (fault)
+            {
+                case "version-label": labels["org.opencontainers.image.version"] = "9.9.9"; break;
+                case "created-label": labels.Remove("org.opencontainers.image.created"); break;
+                case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
+                case "state-contract": labels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1"; break;
+            }
+        });
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder, MigrationBackwardCompatible = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var platform = $"linux/{fixture.Manifest.DockerDaemon.Architecture}";
+        if (expected.StartsWith('!'))
+            StringAssert.StartsWith(exception.Message, expected[1..], StringComparison.Ordinal);
+        else
+            Assert.AreEqual($"The offline archive {(string)release.Archive(platform)["name"]!} {expected}", exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "the archive is checked before the journal or a load, so it is a refusal (exit 3)");
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
+        Assert.AreEqual(0, fixture.Runner.LoadCount, "a refused archive must never be loaded");
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!);
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
+    }
+
+    /// <summary>
+    /// A registry release image is read from its registry by the digest release.json names, and refused there, before
+    /// anything is pulled and before the journal entry, so the instance, its journal and Docker end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
+    [DataRow("created-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
+    [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
+    [DataRow("state-contract", "!The candidate image declares state compatibility")]
+    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
+    public async Task UpgradeAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnyPullOrTheJournal(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId, labels: labels =>
+        {
+            switch (fault)
+            {
+                case "version-label": labels["org.opencontainers.image.version"] = "9.9.9"; break;
+                case "created-label": labels.Remove("org.opencontainers.image.created"); break;
+                case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
+                case "state-contract": labels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1"; break;
+            }
+        });
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent)
+        {
+            Unavailable = fault == "unavailable" ? "docker: 'buildx' is not a docker command." : null
+        };
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var message = expected.Replace("{reference}", release.DigestReference, StringComparison.Ordinal);
+        if (message.StartsWith('!'))
+            StringAssert.StartsWith(exception.Message, message[1..], StringComparison.Ordinal);
+        else
+            Assert.AreEqual(message, exception.Message);
+        Assert.IsGreaterThan(0, fixture.Runner.Registry!.Reads);
+        Assert.AreEqual(0, fixture.Runner.PullCount, "a refused registry image must never be pulled");
+        Assert.IsEmpty(fixture.Runner.RemovedImages, "nothing was pulled, so nothing is removed");
+        Assert.IsTrue(exception.IsRefusal, "nothing was pulled, so it is a refusal (exit 3)");
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
+    }
+
+    /// <summary>
+    /// The checks on the pulled image stay as the second line: a registry whose metadata is the release's, but whose
+    /// pulled image Docker then reports otherwise, has that image removed again before the journal entry, so the
+    /// instance, its journal and Docker end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("created-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
+    public async Task UpgradeAsync_PulledImageDockerReportsAsAnotherRelease_IsRemovedBeforeTheJournal(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        // The registry's metadata is the release's, but Docker reports the image it pulled otherwise.
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        switch (fault)
+        {
+            case "version-label": fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9"; break;
+            case "created-label": fixture.Runner.CandidateLabels["org.opencontainers.image.created"] = null; break;
+            case "contract-label": fixture.Runner.CandidateLabels["io.hvo.skymonitor.configuration-contract"] = null; break;
+        }
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.AreEqual(expected, exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "the pull is removed before the journal, so it is a refusal (exit 3)");
+        Assert.AreEqual(1, fixture.Runner.PullCount);
+        CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference);
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the refused pull is still in Docker");
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
+    }
+
+    /// <summary>
+    /// An upgrade cancelled while Docker pulls the release's image, after the image arrived, removes it again before the
+    /// journal entry, so the instance, its journal and Docker end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_CancelledWhileTheReleaseImageIsPulled_RemovesItBeforeTheJournal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        using var cancellation = new CancellationTokenSource();
+        fixture.Runner.CancelDuringPull = cancellation;
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, cancellation.Token));
+
+        Assert.AreEqual(1, fixture.Runner.PullCount);
+        CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference);
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the cancelled pull is still in Docker");
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a cancelled pull must not open the journal");
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a cancelled pull changed the instance");
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+    }
+
+    /// <summary>
+    /// Every path under the instance root with its length, relative and sorted, for before-and-after comparison. Lock
+    /// files coordinate operations and hold no state, so they are left out.
+    /// </summary>
+    private static string[] InstanceTree(LifecycleFixture fixture)
+        => [.. Directory.EnumerateFileSystemEntries(fixture.Paths.InstanceRoot, "*", SearchOption.AllDirectories)
+            .Where(static path => !path.EndsWith(".lock", StringComparison.Ordinal))
+            .Select(path => $"{Path.GetRelativePath(fixture.Paths.InstanceRoot, path)} {(File.Exists(path) ? new FileInfo(path).Length : -1)}")
+            .Order(StringComparer.Ordinal)];
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_ReleaseOlderThanTheRecordedRelease_IsRefusedBeforeTheJournal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        using var release = CandidateRelease(fixture, out _);
+        await RecordInstalledReleaseAsync(fixture, "1.3.0");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentLifecycleManager.ExecuteAsync(
+                fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder, MigrationBackwardCompatible = true },
+                fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+                fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.StartsWith(
+            exception.Message, $"1.3.0 is installed, which is newer than the upgrade target {release.Version}; an upgrade never goes back.",
+            StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_Release_ShowsItsUpgradeNotesAndRecordsItsVersionForTheNextUpgrade()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId, notes: [("1.1.0", "Eleven."), ("1.2.0", "Twelve.")]);
+        fixture.Runner.CandidateRawIngressSchema = "13";
+        await RecordInstalledReleaseAsync(fixture, "1.1.0");
+        using var output = new StringWriter();
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder, MigrationBackwardCompatible = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: TextWriter.Null);
 
         Assert.AreEqual("completed", result.Outcome);
-        Assert.IsTrue(File.Exists(stateSentinel));
-        Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
-        Assert.IsNotNull(result.ResumeCommand);
-        Assert.AreEqual($"hvo-skymonitor cameraagent reinstall --instance-id {fixture.InstanceId:D}", result.ResumeCommand);
+        // Only the notes after the installed 1.1.0, up to the release 1.2.0-dev.3 belongs to.
+        Assert.AreEqual("1.1.0", result.UpgradeNotes!.InstalledVersion);
+        Assert.AreEqual(release.Version, result.UpgradeNotes.TargetVersion);
+        Assert.AreEqual("1.2.0", UpgradeNotesTests.Versions(result.UpgradeNotes.Notes));
+        StringAssert.Contains(output.ToString(), $"Upgrading from 1.1.0 to {release.Version}.", StringComparison.Ordinal);
+        Assert.AreEqual(
+            release.Version,
+            await UpgradeNotes.InstalledVersionAsync(fixture.Paths, result.Image!, CancellationToken.None));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_ReleaseFromTheRegistry_PullsItsDigestReference()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        // A pulled image is inspected by the digest reference it was pulled by.
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.CandidateRawIngressSchema = "13";
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(candidateImageId, result.Image!.ImageId);
+        Assert.AreEqual(release.DigestReference, result.Image.ImmutableReference);
+        Assert.AreEqual("registry", result.Image.Source);
+        // The index, the platform manifest and the configuration were read before anything was pulled.
+        Assert.AreEqual(3, fixture.Runner.Registry!.Reads);
+        Assert.IsGreaterThan(0, fixture.Runner.PullCount);
     }
 
     [TestMethod]
@@ -246,13 +521,14 @@ public sealed class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         Assert.IsFalse(Directory.Exists(fixture.Paths.InstanceRoot));
         Assert.IsTrue(File.Exists(Path.Combine(sibling, "sentinel")));
+        Assert.AreEqual(0, fixture.Runner.SudoCount);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PurgeAsync_InterruptedTombstoneResumesDeletionWithoutRepublishing()
     {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled, catalogId: "hyg-v44-production");
         var request = fixture.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = fixture.InstanceId };
         var operation = await CameraAgentLifecycleManager.BeginAsync(
             request, fixture.Paths, LifecycleOperationKind.Purge, fixture.Manifest, CancellationToken.None);
@@ -281,6 +557,7 @@ public sealed class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         Assert.IsFalse(Directory.Exists(fixture.Paths.InstanceRoot));
         Assert.IsFalse(Directory.EnumerateDirectories(parent, ".purge-*", SearchOption.TopDirectoryOnly).Any());
+        Assert.Contains(fixture.Paths.CatalogRoot, result.PreservedPaths);
     }
 
     [TestMethod]
@@ -498,7 +775,7 @@ public sealed class LifecycleContractTests
             resume: false,
             json: false);
 
-        Assert.AreEqual("9c011238407c7dee794989a757c89a4dc2ae6fceb8905f546293eb26e201478e", request.ComputeRequestSha256());
+        Assert.AreEqual("1333fe883fe6083f51c80f612b6ae0164741f300e7a4c72270c269578cc3d7f3", request.ComputeRequestSha256());
     }
 
     [TestMethod]
@@ -647,14 +924,90 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public void CatalogTransition_RequiresImageDeclaringCatalogIndependentReplay()
+    {
+        var declared = new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0,
+            ReplayPending: 3, ReplayLeased: 1, ReplayCatalogIndependent: true);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogSelect);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogRollback);
+
+        // The declaration is refused even with no replay visible: the summary counts are a periodic refresh, so an
+        // empty count cannot prove nothing was accepted under the current catalog.
+        var undeclared = declared with { ReplayPending = 0, ReplayLeased = 0, ReplayCatalogIndependent = false };
+        var selection = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogSelect));
+        StringAssert.Contains(selection.Message, "Catalog selection refused", StringComparison.Ordinal);
+        StringAssert.Contains(selection.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        var rollback = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogRollback));
+        StringAssert.Contains(rollback.Message, "Catalog rollback refused", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RetainedResult_WithoutTheDefaultPasswordFlag_RemainsValidAndReadsAsNotDefault()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(fixture.Paths.ResultPath))!.AsObject();
+        Assert.IsTrue(json.Remove("ownerPasswordIsDefault"), "The result did not record whether the owner password is the default.");
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+
+        // A result written before issue #1278 omits the flag; it reads as a generated or supplied password.
+        var legacy = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        json["ownerPasswordIsDefault"] = true;
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+        var current = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+
+        Assert.IsFalse(legacy.OwnerPasswordIsDefault);
+        Assert.IsTrue(current.OwnerPasswordIsDefault);
+        Assert.AreEqual(legacy with { OwnerPasswordIsDefault = true }, current);
+        Assert.AreEqual($"Temporary password file: {legacy.PasswordFile}", Program.OwnerSignInInstruction(legacy));
+        Assert.AreEqual(
+            "Sign in as admin / skymonitor; a password change is required at first sign-in.",
+            Program.OwnerSignInInstruction(current));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation()
+    {
+        // Bundle-free coverage of the refusal inside the selection itself, so a lane without the production bundle
+        // still fails if the check is removed or moved after the pause. The candidate is synthetic: after candidate
+        // validation the selection reads only its identity, never its files, until the check has passed.
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidateVersion };
+        var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
+        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(
+            request, fixture.Paths, LifecycleOperationKind.CatalogSelect, fixture.Manifest, CancellationToken.None);
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CatalogLifecycleManager.SelectAsync(
+            request, fixture.Paths, fixture.Manifest, result,
+            CameraAgentLifecycleManager.ComposeFrom(fixture.Paths, fixture.Manifest, result), new DockerClient(fixture.Runner),
+            _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), "lifecycle-token", "verification-token",
+            candidate, operation, CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(fixture.Manifest.Catalog.PackageVersion, await File.ReadAllTextAsync(
+            Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion")));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+        Assert.IsFalse(File.Exists(Path.Combine(
+            fixture.Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "previous-catalog-version")));
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
-        // Deliberately environment-gated; see the note in InstallerFlowTests. The CI Unit lane
-        // restores the catalog bundle and asserts it exists before exporting this variable, so a
-        // skip there means the restore broke rather than that the gate is working as intended.
+        // Deliberately environment-gated; see the note in InstallerFlowTests. The full-qualification Unit lane in
+        // ci.yml restores the catalog bundle and asserts it exists before exporting this variable, so a skip there
+        // means the restore broke. Development v1 Build and Unit does not restore the bundle and skips this test;
+        // CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation covers the refusal there.
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());
@@ -691,10 +1044,28 @@ public sealed class LifecycleContractTests
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
 
+        // An image that does not declare catalog-independent archived replay may annotate accepted replay from the newly
+        // mounted catalog, so the selection is refused before the setting or the container changes.
+        var settingPath = Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion");
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
+            fixture.Runner, _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
+            CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(previous.PackageVersion, await File.ReadAllTextAsync(settingPath));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+
+        // Archived replay never builds a scene from the mounted catalog; a retained annotation node with neither a
+        // projected-scene dependency nor scene provenance recorded with the frame fails closed in replay. A switch cannot
+        // change what accepted replay produces, so replay pending or leased at the boundary does not refuse the selection
+        // the way uncommitted live work does.
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 },
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
 
         var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -921,7 +1292,7 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('8', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
+        var lifecycle = new FakeLifecycleClient { RejectNextResume = true, DrainedReplayPending = 4, DrainedReplayLeased = 1 };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -939,6 +1310,9 @@ public sealed class LifecycleContractTests
         Assert.IsTrue(retained.MutationStarted);
         Assert.IsNotNull(retained.PreMutationContinuity);
         Assert.IsNotNull(retained.PostMutationContinuity);
+        // The drain does not wait for archived replay, so the boundary records what it left behind.
+        Assert.AreEqual(4, retained.PreMutationContinuity.ReplayPending);
+        Assert.AreEqual(1, retained.PreMutationContinuity.ReplayLeased);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
@@ -955,28 +1329,24 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_SignedReleaseResumeAfterLostAcknowledgementRetainsReleaseRecord()
+    public async Task UpgradeAsync_ReleaseResumeAfterLostAcknowledgementRetainsReleaseRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        var candidateImageId = $"sha256:{new string('9', 64)}";
-        using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, CandidateContractLabels());
+        using var release = CandidateRelease(fixture, out var candidateImageId);
         fixture.Runner.CandidateRawIngressSchema = "13";
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
         var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
+            Release = release.Folder,
             MigrationBackwardCompatible = true
         };
         var evidencePath = Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json");
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+            fixture.Uid, fixture.Gid, CancellationToken.None));
 
         // The record is settled with the durable commit, before the resume whose acknowledgement was lost.
         var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
@@ -988,7 +1358,7 @@ public sealed class LifecycleContractTests
         File.Delete(evidencePath);
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+            fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(candidateImageId, result.Image!.ImageId);
@@ -999,32 +1369,28 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_ImageReferenceUpgradeOfSignedInstanceWithdrawsReleaseRecord()
+    public async Task UpgradeAsync_ImageReferenceUpgradeOfReleaseInstanceWithdrawsReleaseRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        var signedImageId = $"sha256:{new string('9', 64)}";
-        using var release = SignedImageReleaseFixture.Create(fixture.Root, signedImageId, CandidateContractLabels());
+        using var release = CandidateRelease(fixture, out var signedImageId);
         fixture.Runner.CandidateRawIngressSchema = "13";
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            signedImageId, signedImageId, fixture.Uid, fixture.Gid);
         var lifecycle = new FakeLifecycleClient();
         var evidencePath = Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json");
 
         var signed = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Upgrade) with
             {
-                ImageManifest = release.ManifestPath,
-                NoDownload = true,
+                Release = release.Folder,
                 MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+            fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", signed.Outcome);
         Assert.AreEqual(signedImageId, await ReadEvidenceImageIdAsync(evidencePath));
 
-        // Move the instance to an operator-supplied image that no signed release named.
+        // Move the instance to an operator-supplied image that no release named.
         var operatorReference = $"ghcr.io/example/cameraagent@sha256:{new string('c', 64)}";
         var operatorImageId = $"sha256:{new string('d', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, signedImageId, signedImageId,
@@ -1041,41 +1407,37 @@ public sealed class LifecycleContractTests
 
         Assert.AreEqual("completed", moved.Outcome);
         Assert.AreEqual(operatorImageId, moved.Image!.ImageId);
-        Assert.IsFalse(File.Exists(evidencePath), "The superseded release record survived an upgrade to an image no signed release named.");
+        Assert.IsFalse(File.Exists(evidencePath), "The superseded release record survived an upgrade to an image no release named.");
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_SignedReleaseRefusedBeforeMutationLeavesInstanceOperableWithoutResume()
+    public async Task UpgradeAsync_ReleaseRefusedBeforeMutationLeavesInstanceOperableWithoutResume()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        var candidateImageId = $"sha256:{new string('9', 64)}";
-        // The signed compatibility record contradicts the minimum compatible revision the fake daemon reports for
-        // the candidate image, so the label-agreement gate refuses the release after the journal is opened and
-        // before any mutation, exactly the refusal the installer campaign pins.
-        var contradicting = CandidateContractLabels();
-        contradicting["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
-        using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, contradicting);
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        // The image the archive loads names another version than the release, so the release-agreement gate refuses
+        // it after the journal is opened and before any mutation.
+        fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9";
         var lifecycle = new FakeLifecycleClient();
         var evidencePath = Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json");
         var manifestBefore = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
         var refused = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
+            Release = release.Folder,
             MigrationBackwardCompatible = true
         };
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+            fixture.Uid, fixture.Gid, CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "minimum compatible revision", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, $"is not labelled as CameraAgent {release.Version}", StringComparison.Ordinal);
         Assert.AreEqual(0, lifecycle.PauseCount);
+        // The load runs after the journal entry, so the refusal is settled in the journal and is a failure (exit 1) (#1315).
+        Assert.IsFalse(exception.IsRefusal, "refused after the journal entry, so a journaled failure (exit 1)");
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
         Assert.IsFalse(File.Exists(evidencePath), "A refused release wrote a release record.");
@@ -1086,13 +1448,13 @@ public sealed class LifecycleContractTests
         Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
         Assert.AreEqual(LifecycleOperationPhase.Prepared, retained.Phase);
         Assert.IsFalse(retained.MutationStarted);
-        StringAssert.Contains(retained.FailureMessage!, "minimum compatible revision", StringComparison.Ordinal);
+        StringAssert.Contains(retained.FailureMessage!, "is not labelled as CameraAgent", StringComparison.Ordinal);
         var refusedJournal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
 
         // Resuming the refused command is refused in turn: there is no incomplete operation to resume.
         var resumeRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             refused with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+            fixture.Uid, fixture.Gid, CancellationToken.None));
         StringAssert.Contains(resumeRefusal.Message, "No incomplete matching lifecycle operation exists", StringComparison.Ordinal);
         Assert.AreEqual(refusedJournal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
         // Nor does a --resume of a different kind find anything to continue.
@@ -1144,8 +1506,9 @@ public sealed class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
 
-        // Upgrading to the image that is already active is refused after the journal is opened and before any
-        // mutation, the same window the label-agreement gate occupies.
+        // Upgrading to the image that is already active is refused before anything is written, so the journal still
+        // holds the completed upgrade (#1315).
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
         var refused = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -1156,10 +1519,8 @@ public sealed class LifecycleContractTests
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
         StringAssert.Contains(exception.Message, "already active", StringComparison.Ordinal);
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(InstallationStatus.Failed, retained!.Status);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
-        Assert.IsFalse(retained.MutationStarted);
+        Assert.IsTrue(exception.IsRefusal);
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(1, lifecycle.PauseCount);
 
         var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -1187,11 +1548,12 @@ public sealed class LifecycleContractTests
             NoDownload = true,
             MigrationBackwardCompatible = true
         };
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained!.FailureCode);
+        // Refused before anything is written: no journal entry is left to block the uninstall (#1315).
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
 
         var uninstalled = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner, _ => lifecycle, null,
@@ -1312,12 +1674,8 @@ public sealed class LifecycleContractTests
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        var candidateImageId = $"sha256:{new string('9', 64)}";
-        var contradicting = CandidateContractLabels();
-        contradicting["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
-        using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, contradicting);
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9";
         // Once the journal has been opened, replace it with bytes the settlement cannot read, so the settlement's
         // own failure competes with the gate's refusal. (The owner-directory normalisation inside the atomic
         // writer defeats a read-only directory as the fault, so the fault is the retained bytes themselves.)
@@ -1327,14 +1685,13 @@ public sealed class LifecycleContractTests
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Upgrade) with
             {
-                ImageManifest = release.ManifestPath,
-                NoDownload = true,
+                Release = release.Folder,
                 MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+            fixture.Uid, fixture.Gid, CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "minimum compatible revision", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "is not labelled as CameraAgent", StringComparison.Ordinal);
         // The settlement failed and changed nothing; the journal is exactly what the fault left.
         Assert.AreEqual(corrupted, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
     }
@@ -1418,7 +1775,13 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('5', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        fixture.Runner.OnCandidateInspect = () => throw new OperationCanceledException("simulated cancellation during preparation");
+        // The admission before any write inspects the candidate first; the cancellation lands on the preparation's own
+        // inspection, after the journal entry and before any mutation.
+        var inspections = 0;
+        fixture.Runner.OnCandidateInspect = () =>
+        {
+            if (++inspections == 2) throw new OperationCanceledException("simulated cancellation during preparation");
+        };
         var lifecycle = new FakeLifecycleClient();
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
@@ -1468,6 +1831,34 @@ public sealed class LifecycleContractTests
         Assert.IsTrue(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, candidateVersion, CancellationToken.None));
     }
 
+    /// <summary>
+    /// A backup manifest an earlier installer left under <c>operations/backups</c> still holds the catalog it names, so
+    /// garbage collection never removes a catalog such a backup was taken with. #1353 removed the code that wrote these
+    /// manifests; this read stays for the ones already on a host.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogGarbageCollection_LegacyBackupManifestHoldsItsCatalog()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string backedUpVersion = "hyg-v4.2-p3-s2-r2";
+        Assert.IsFalse(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, backedUpVersion, CancellationToken.None));
+        var backupsRoot = Path.Combine(fixture.Paths.OperationsRoot, "backups");
+        var backupRoot = Path.Combine(backupsRoot, Guid.NewGuid().ToString("D"));
+        SafeFileSystem.CreateOwnerDirectory(backupsRoot);
+        SafeFileSystem.CreateOwnerDirectory(backupRoot);
+        var legacy = new InstanceBackupManifest(
+            1, Guid.NewGuid(), fixture.InstanceId, Guid.NewGuid(), DateTimeOffset.UtcNow,
+            new string('1', 64), new string('2', 64), new string('3', 64), new string('4', 64),
+            fixture.Manifest.Catalog with { PackageVersion = backedUpVersion }, fixture.Manifest.Image,
+            [new BackupFileIdentity("config/instance.env", 42, new string('5', 64))], new string('6', 64), 4096);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            Path.Combine(backupRoot, "backup-manifest.json"), legacy, DeploymentJsonContext.Default.InstanceBackupManifest,
+            CancellationToken.None);
+
+        Assert.IsTrue(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, backedUpVersion, CancellationToken.None));
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReadOperationAsync_RefusedRecordThatClaimsMutationIsRejected()
@@ -1496,14 +1887,36 @@ public sealed class LifecycleContractTests
     }
 
     /// <summary>
-    /// The signed compatibility record must agree with the labels the fake daemon reports for the candidate image,
-    /// whose revision differs from the fixture's default, or the label-agreement gate refuses the release.
+    /// A release of <paramref name="version"/> whose image, for the instance's recorded daemon platform, is the candidate
+    /// the fake daemon loads from its archive: the archive's configuration carries the labels the fake daemon reports for
+    /// the candidate, with the release's version and commit, and its digest is the candidate's image ID, which
+    /// <paramref name="candidateImageId"/> returns. A test that changes the fake's candidate labels afterwards makes Docker
+    /// report an image other than the one the archive declares.
     /// </summary>
-    private static Dictionary<string, string> CandidateContractLabels()
-        => new(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
-        {
-            ["org.opencontainers.image.revision"] = new string('9', 40)
-        };
+    private static ReleaseFixture CandidateRelease(
+        LifecycleFixture fixture,
+        out string candidateImageId,
+        IReadOnlyList<string>? platforms = null,
+        IReadOnlyList<(string Version, string Text)>? notes = null,
+        string version = "1.2.0-dev.3",
+        Action<Dictionary<string, string>>? labels = null)
+    {
+        fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = version;
+        fixture.Runner.CandidateLabels["org.opencontainers.image.revision"] = ReleaseFixture.Commit;
+        fixture.Runner.CandidateLabels["org.opencontainers.image.created"] = ReleaseFixture.Created;
+        var archived = fixture.Runner.CandidateImageLabels();
+        labels?.Invoke(archived);
+        var release = ReleaseFixture.Create(
+            fixture.Root,
+            version: version,
+            platforms: platforms,
+            upgradeNotes: notes,
+            labels: archived);
+        candidateImageId = release.ConfigDigest($"linux/{fixture.Manifest.DockerDaemon.Architecture}");
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+        return release;
+    }
 
     private static async Task<string?> ReadEvidenceImageIdAsync(string evidencePath)
     {
@@ -1838,7 +2251,7 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [DataRow("stop")]
-    [DataRow("backup")]
+    [DataRow("snapshot")]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_InterruptedPreRecreateBoundaryRestoresOriginalRuntime(string failurePoint)
     {
@@ -1848,7 +2261,13 @@ public sealed class LifecycleContractTests
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
         fixture.Runner.RejectNextStop = failurePoint == "stop";
-        fixture.Runner.RejectNextBackup = failurePoint == "backup";
+        if (failurePoint == "snapshot")
+        {
+            // A store with recovery files but no database cannot be snapshotted, so the snapshot fails after the stop.
+            var orphan = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, "raw/.fleet/fleet-status.db") + "-wal";
+            Directory.CreateDirectory(Path.GetDirectoryName(orphan)!);
+            await File.WriteAllTextAsync(orphan, "orphaned log");
+        }
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -1955,6 +2374,7 @@ public sealed class LifecycleContractTests
         var upgraded = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, upgraded.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image, upgraded.PreviousImage);
+        Assert.AreEqual(CameraAgentContainerResources.Default, upgraded.Resources);
         var retainedRollbackCompose = Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous-compose.yml");
         await File.WriteAllTextAsync(retainedRollbackCompose, "services: {}\nnetworks:\n  foreign: {}\n");
 
@@ -1979,7 +2399,12 @@ public sealed class LifecycleContractTests
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, rolledBack.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
+        // The previous image runs its exact retained Compose model with the limits the instance records: the upgrade
+        // moved this instance, recorded without limits, to the defaults, and rolling back keeps them.
+        Assert.AreEqual(CameraAgentContainerResources.Default, rolledBack.Resources);
+        Assert.AreEqual(
+            originalCompose.Replace("    cpus: \"1\"\n    mem_limit: 1G\n", "    cpus: \"2\"\n    mem_limit: 4G\n", StringComparison.Ordinal),
+            await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
     }
 
     [TestMethod]
@@ -2242,6 +2667,7 @@ public sealed class LifecycleContractTests
     [DataRow("post-sequence")]
     [DataRow("negative-count")]
     [DataRow("negative-pre")]
+    [DataRow("negative-replay")]
     [DataRow("uninitialized")]
     [DataRow("receipt-missing")]
     [DataRow("receipt-version")]
@@ -2263,6 +2689,7 @@ public sealed class LifecycleContractTests
             "post-sequence" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureSequence = 1811 } },
             "negative-count" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { OutboxLeased = -1 } },
             "negative-pre" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { CaptureVersion = -1 } },
+            "negative-replay" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { ReplayLeased = -1 } },
             "uninitialized" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureInitialized = false } },
             "receipt-missing" => operation with { RestoreResumeReceipt = null },
             "receipt-version" => operation with { RestoreResumeReceipt = operation.RestoreResumeReceipt! with { Version = 5 } },
@@ -2488,7 +2915,7 @@ public sealed class LifecycleContractTests
         Assert.AreEqual(0, fixture.Runner.LoggedContainers.Count);
     }
 
-    private sealed class LifecycleFixture : IDisposable
+    internal sealed class LifecycleFixture : IDisposable
     {
         private LifecycleFixture(
             string root,
@@ -2526,7 +2953,8 @@ public sealed class LifecycleContractTests
             bool seedCatalogSelection = true,
             string? daemonArchitecture = null,
             bool recoveryState = false,
-            string catalogId = HygV42.CatalogId)
+            string catalogId = HygV42.CatalogId,
+            Func<ImageInstallationIdentity, ImageInstallationIdentity>? installedImage = null)
         {
             // Every approved catalog is a valid selection; the fixture records the pinned identity of the requested
             // one, and a non-default catalog needs an image declaring the multi-catalog contract.
@@ -2535,16 +2963,22 @@ public sealed class LifecycleContractTests
             // By default the fixture records the architecture of the process running the tests, as a real
             // installation on this machine would, so host-relative tests stay deterministic on amd64 and arm64
             // runners alike; tests that prove daemon-over-process selection pass a different value explicitly.
-            daemonArchitecture ??= DistributionAcquirer.HostImageArchitecture();
+            daemonArchitecture ??= ReleaseAcquirer.HostImageArchitecture();
             var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
             var paths = InstallationPaths.Create(root, instanceId, catalogId);
+            // Owner-only, as the installer makes them, whatever the umask: a backup refuses a folder above its own that
+            // others can write (#1353 PR-1369-R2 F18).
             foreach (var directory in new[]
             {
                 paths.ProductRoot, Path.Combine(paths.ProductRoot, "cameraagents"), paths.InstanceRoot,
                 paths.ConfigRoot, paths.StateRoot, paths.DeploymentStateRoot,
                 Path.Combine(paths.ConfigRoot, "compose"), paths.OperationsRoot
-            }) Directory.CreateDirectory(directory);
+            })
+            {
+                Directory.CreateDirectory(directory);
+                File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
             // The state preflight reads the selected catalog manifest before any lifecycle mutation, so the fixture
             // publishes the same manifest-version and catalog-identity pointer a real installation exposes. Tests
             // that install a real bundle into this root opt out because the adopted root needs its lineage binding.
@@ -2583,11 +3017,15 @@ public sealed class LifecycleContractTests
                 IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
                 CatalogManifestVersion: recoveryState ? "2" : null,
                 MinimumCompatibleRevision: recoveryState ? new string('7', 40) : null);
+            if (installedImage is not null) image = installedImage(image);
             var installationId = Guid.NewGuid();
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
             var applicationIdentity = Guid.NewGuid();
-            const string composeModel = "services: {}\n";
+            // The CameraAgent service carries the limit lines every installer writes. The fixture records no limits, as an
+            // instance an earlier installer completed does, so it runs the original ones until its next upgrade.
+            const string composeModel =
+                "services:\n  cameraagent:\n    image: ${CAMERAAGENT_IMAGE}\n    cpus: \"1\"\n    mem_limit: 1G\n    pids_limit: 256\n";
             var manifest = new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent,
                 instanceId, "Test Camera", applicationIdentity, $"installer-{instanceId:D}", 1,
@@ -2595,7 +3033,7 @@ public sealed class LifecycleContractTests
                 paths.ProductRoot, paths.ConfigRoot, paths.StateRoot, composeTemplateVersion,
                 new string('e', 64), new string('f', 64), new string('1', 64), "default", "1", "1", "active",
                 ComposeDeployment.ComputeSha256("verification-token"), ComposeDeployment.ComputeSha256(composeModel),
-                catalog, image, null, daemon, "backward-compatible",
+                catalog, image, null, daemon, image.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 DateTimeOffset.UtcNow, LifecycleCondition: condition, Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"),
                 ReplayProfile: replayProfile);
@@ -2722,7 +3160,7 @@ public sealed class LifecycleContractTests
         }
     }
 
-    private sealed class FakeRunner(DockerDaemonIdentity daemon, bool localRunner = false) : IProcessRunner
+    internal sealed class FakeRunner(DockerDaemonIdentity daemon, bool localRunner = false) : IProcessRunner
     {
         // Compose mounts the catalog root the instance environment names, so a cross-lineage selection that rewrites
         // HVO_CATALOG_ROOT is observed as a different read-only catalog mount, exactly as the daemon would report it.
@@ -2751,6 +3189,15 @@ public sealed class LifecycleContractTests
         private bool running;
 
         public string? ActiveImageId => activeImageId;
+        public bool Running => running;
+        /// <summary>Runs after each Compose <c>up</c>, with the image it started, as that image's own startup would.</summary>
+        public Action<string>? OnComposeUp { get; set; }
+        /// <summary>What a host restart after a power loss brings back: the last container, running unless it was stopped.</summary>
+        public void Reboot(string? image, bool wasRunning)
+        {
+            activeImageId = image;
+            running = image is not null && wasRunning;
+        }
         public int InvocationCount { get; private set; }
         public int ComposeDownCount { get; private set; }
         public int ComposeUpCount { get; private set; }
@@ -2768,12 +3215,131 @@ public sealed class LifecycleContractTests
         public bool RetainOwnedOrphanAfterDown { get; set; }
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
-        public bool RejectNextBackup { get; set; }
         public string CandidateRawIngressSchema { get; set; } = "12";
+        /// <summary>Candidate image labels to set, or with a null value to remove, over the defaults below.</summary>
+        public Dictionary<string, string?> CandidateLabels { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>The labels the daemon reports for the candidate image now, which a release's archive declares too.</summary>
+        public Dictionary<string, string> CandidateImageLabels() => ImageLabels(isCandidate: true);
+
+        private Dictionary<string, string> ImageLabels(bool isCandidate)
+        {
+            var labels = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
+                ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
+                ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+                ["io.hvo.skymonitor.raw-ingress-schema"] = isCandidate ? CandidateRawIngressSchema : "12",
+                ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
+                ["org.opencontainers.image.revision"] = isCandidate ? new string('9', 40) : new string('8', 40),
+                ["io.hvo.skymonitor.component"] = "CameraAgent",
+                ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
+                ["io.hvo.skymonitor.catalog-contract"] = CatalogContract
+            };
+            if (localRunner)
+            {
+                labels["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1";
+            }
+            if (isCandidate)
+            {
+                foreach (var (name, value) in CandidateLabels)
+                {
+                    if (value is null) labels.Remove(name);
+                    else labels[name] = value;
+                }
+            }
+            return labels;
+        }
         public string CatalogContract { get; set; } = "hyg-v42-production-p3-s2";
         public Action? OnCandidateInspect { get; set; }
+        public Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>>? Sudo { get; set; }
+        public int SudoCount { get; private set; }
+        public bool ListOwnedOrphan { get; set; }
         public List<string> Events { get; } = [];
         public List<string> LoggedContainers { get; } = [];
+
+        /// <summary>
+        /// The names Docker holds the candidate image by, when a test follows what Docker holds: a load or pull adds it,
+        /// an inspect of a name it does not hold fails, and a removal by any name takes it away. The running image is
+        /// always held. <see langword="null"/> keeps every inspect successful, as the other flows assume.
+        /// </summary>
+        public HashSet<string>? CandidateHeld { get; set; }
+
+        /// <summary>Every name an <c>image rm</c> was asked to remove, in order.</summary>
+        public List<string> RemovedImages { get; } = [];
+
+        public int LoadCount { get; private set; }
+
+        public int PullCount { get; private set; }
+
+        /// <summary>The registry a release candidate is read from before it is pulled.</summary>
+        public FakeRegistry? Registry { get; set; }
+
+        /// <summary>Whether the daemon reports the containerd image store, which names an image by its index digest.</summary>
+        public bool ContainerdImageStore { get; set; }
+
+        private static readonly string[][] ContainerdDriverStatus = [["driver-type", "io.containerd.snapshotter.v1"]];
+
+        /// <summary>Cancels this source while a pull runs, after Docker has the image, as a Ctrl+C mid-pull does.</summary>
+        public CancellationTokenSource? CancelDuringPull { get; set; }
+
+        /// <summary>Runs while a pull runs, after Docker has the image, as another run changing the instance meanwhile does.</summary>
+        public Action? OnPull { get; set; }
+
+        /// <summary>Makes every <c>image rm</c> exit 1 and remove nothing, as Docker refusing a removal does.</summary>
+        public bool FailImageRemoval { get; set; }
+
+        /// <summary>Makes Docker unreadable once an <c>image rm</c> has run, as a daemon that stops answering does.</summary>
+        public bool FailDaemonReadAfterRemoval { get; set; }
+
+        /// <summary>
+        /// Makes every <c>image inspect</c> exit 1 once an <c>image rm</c> has run while <c>docker info</c> still answers, as
+        /// the containerd image store does when it cannot list images (#1315 PR-1355-R5 R5-1).
+        /// </summary>
+        public bool FailImageInspectAfterRemoval { get; set; }
+
+        /// <summary>Makes <c>image ls</c> exit 1.</summary>
+        public bool FailImageListing { get; set; }
+
+        /// <summary>
+        /// Whether <c>docker info</c> reports that Docker enforces each CameraAgent limit, and the CPUs it reports (#1357).
+        /// By default Docker enforces all three on a host with more CPUs than any limit; <see langword="null"/> is a
+        /// capability Docker does not report.
+        /// </summary>
+        public bool? MemoryLimit { get; set; } = true;
+
+        public bool? CpuCfsQuota { get; set; } = true;
+
+        public bool? PidsLimit { get; set; } = true;
+
+        public int Cpus { get; set; } = 64;
+
+        /// <summary>The Compose model of each <c>up</c> Docker accepted, in order.</summary>
+        public List<string> StartedModels { get; } = [];
+
+        /// <summary>The Compose model each <c>restart</c> was given, in order.</summary>
+        public List<string> RestartedModels { get; } = [];
+
+        /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
+        public bool MalformedImageListing { get; set; }
+
+        /// <summary>
+        /// One line of <c>docker image ls --all --digests --no-trunc --format '{{json .}}'</c> that shows the image
+        /// <paramref name="id"/> under <paramref name="name"/>.
+        /// </summary>
+        internal static string ListingLine(string id, string name)
+        {
+            var at = name.IndexOf('@', StringComparison.Ordinal);
+            return JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["Containers"] = "N/A",
+                ["Digest"] = at > 0 ? name[(at + 1)..] : "<none>",
+                ["ID"] = name.StartsWith("sha256:", StringComparison.Ordinal) ? name : id,
+                ["Repository"] = at > 0 ? name[..at] : "<none>",
+                ["Size"] = "1MB",
+                ["Tag"] = "<none>"
+            });
+        }
 
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
@@ -2805,19 +3371,26 @@ public sealed class LifecycleContractTests
             InvocationCount++;
             if (fileName == "tar")
             {
+                // No lifecycle operation archives instance state any more; a tar run is counted so tests can prove it.
                 if (arguments.Contains("--create", StringComparer.Ordinal)) BackupCount++;
-                if (RejectNextBackup && arguments.Contains("--create", StringComparer.Ordinal))
-                {
-                    RejectNextBackup = false;
-                    return Task.FromResult(new ProcessResult(1, string.Empty, "simulated backup interruption"));
-                }
                 return new ProcessRunner().RunAsync(fileName, arguments, cancellationToken);
+            }
+            if (fileName == "sudo")
+            {
+                // Only the purge namespace handoff escalates; a test that expects no escalation leaves the hook unset.
+                SudoCount++;
+                Assert.IsNotNull(Sudo, "The privileged purge helper was invoked unexpectedly.");
+                return Sudo(arguments, cancellationToken);
             }
             Assert.AreEqual("docker", fileName);
             if (arguments is ["context", "inspect", ..])
                 return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
             if (arguments.Count >= 2 && arguments[0] == "--host") arguments = arguments.Skip(2).ToArray();
+            if (FakeRegistry.IsRead(arguments))
+                return Task.FromResult(Registry?.Answer(arguments) ?? throw new AssertFailedException("The test gave no registry."));
             if (arguments[0] == "image") ImagePreparationCount++;
+            if (arguments is ["info", ..] && FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
             if (arguments is ["info", ..])
             {
                 infoCallCount++;
@@ -2831,35 +3404,73 @@ public sealed class LifecycleContractTests
                     ID = currentDaemon.Id,
                     Name = currentDaemon.Name,
                     Architecture = currentDaemon.Architecture,
-                    ServerVersion = currentDaemon.ServerVersion
+                    ServerVersion = currentDaemon.ServerVersion,
+                    MemoryLimit,
+                    CpuCfsQuota,
+                    PidsLimit,
+                    CgroupVersion = "2",
+                    NCPU = Cpus,
+                    MemTotal = 64L * 1024 * 1024 * 1024,
+                    DriverStatus = ContainerdImageStore ? ContainerdDriverStatus : null
                 }), string.Empty));
             }
             if (arguments is ["compose", "version", ..]) return Task.FromResult(new ProcessResult(0, "v2", string.Empty));
-            if (arguments is ["image", "pull", ..]) return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            if (arguments is ["image", "pull", var pulled])
+            {
+                PullCount++;
+                if (candidateImageId is not null) CandidateHeld?.UnionWith([pulled, candidateImageId]);
+                OnPull?.Invoke();
+                if (CancelDuringPull is { } cancellation)
+                {
+                    cancellation.Cancel();
+                    cancellation.Token.ThrowIfCancellationRequested();
+                }
+                return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            }
             if (arguments is ["image", "load", ..] && candidateImageId is not null)
+            {
+                LoadCount++;
+                CandidateHeld?.Add(candidateImageId);
                 return Task.FromResult(new ProcessResult(0, $"Loaded image ID: {candidateImageId}\n", string.Empty));
+            }
+            if (arguments is ["image", "ls", ..])
+            {
+                if (FailImageListing || FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
+                var lines = new List<string>();
+                if (initialImageId is not null && initialReference is not null) lines.Add(ListingLine(initialImageId, initialReference));
+                if (candidateImageId is not null && candidateReference is not null && CandidateHeld is not { Count: 0 })
+                {
+                    lines.AddRange((CandidateHeld ?? [candidateReference, candidateImageId]).Order(StringComparer.Ordinal)
+                        .Select(name => ListingLine(candidateImageId, name)));
+                }
+                if (MalformedImageListing) lines.Add("{\"ID\": 42, \"Repository\": \"cameraagent\"}");
+                return Task.FromResult(new ProcessResult(0, string.Join('\n', lines) + "\n", string.Empty));
+            }
+            if (arguments is ["image", "inspect", _] && (FailImageInspectAfterRemoval || FailDaemonReadAfterRemoval) && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, "[]", "Error response from daemon: failed to list images"));
+            if (arguments is ["image", "rm", var removed])
+            {
+                RemovedImages.Add(removed);
+                if (FailImageRemoval)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, $"Error response from daemon: conflict: unable to remove {removed}"));
+                if (CandidateHeld is null || !CandidateHeld.Remove(removed))
+                    return Task.FromResult(new ProcessResult(1, string.Empty, $"Error: No such image: {removed}"));
+                CandidateHeld.Clear();
+                return Task.FromResult(new ProcessResult(0, $"Deleted: {candidateImageId}\n", string.Empty));
+            }
+            if (arguments is ["image", "inspect", var absentReference] && CandidateHeld is not null &&
+                absentReference != initialReference && absentReference != initialImageId && !CandidateHeld.Contains(absentReference))
+            {
+                return Task.FromResult(new ProcessResult(1, "[]", $"Error: No such image: {absentReference}"));
+            }
             if (arguments is ["image", "inspect", var inspectedReference] && candidateImageId is not null)
             {
                 var isCandidate = inspectedReference == candidateReference;
                 if (isCandidate) OnCandidateInspect?.Invoke();
                 var inspectedImageId = isCandidate ? candidateImageId : initialImageId;
                 var inspectedDigest = isCandidate ? candidateReference : initialReference;
-                var labels = new Dictionary<string, string>
-                {
-                    ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
-                    ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
-                    ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-                    ["io.hvo.skymonitor.raw-ingress-schema"] = isCandidate ? CandidateRawIngressSchema : "12",
-                    ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
-                    ["org.opencontainers.image.revision"] = isCandidate ? new string('9', 40) : new string('8', 40),
-                    ["io.hvo.skymonitor.component"] = "CameraAgent",
-                    ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-                    ["io.hvo.skymonitor.catalog-contract"] = CatalogContract
-                };
-                if (localRunner)
-                {
-                    labels["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1";
-                }
+                var labels = ImageLabels(isCandidate);
                 return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
                 {
                     new
@@ -2891,14 +3502,31 @@ public sealed class LifecycleContractTests
                 }
                 if (arguments.Contains("up", StringComparer.Ordinal))
                 {
+                    // Docker refuses to create a container with a CPU limit on a host without CPU quota support, rather
+                    // than discarding it as it does a memory or PIDs limit (#1357); nothing is created or started.
+                    var model = File.ReadAllText(arguments[arguments.ToList().IndexOf("--file") + 1]);
+                    if (CpuCfsQuota != true && System.Text.RegularExpressions.Regex.IsMatch(
+                            model, "^ *cpus:", System.Text.RegularExpressions.RegexOptions.Multiline))
+                    {
+                        return Task.FromResult(new ProcessResult(1, string.Empty,
+                            "Error response from daemon: NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"));
+                    }
+                    StartedModels.Add(model);
                     ComposeUpCount++;
                     Events.Add("compose-up");
                     var environmentPath = arguments[arguments.ToList().IndexOf("--env-file") + 1];
                     activeImageId = File.ReadLines(environmentPath)
                         .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
                     running = true;
+                    OnComposeUp?.Invoke(activeImageId);
                 }
-                if (arguments.Contains("restart", StringComparer.Ordinal)) running = true;
+                if (arguments.Contains("restart", StringComparer.Ordinal))
+                {
+                    // A restart keeps each container's configuration, so Docker applies nothing from the model; it is
+                    // recorded so a test can see which model every start was given (#1357 R2 F3).
+                    RestartedModels.Add(File.ReadAllText(arguments[arguments.ToList().IndexOf("--file") + 1]));
+                    running = true;
+                }
                 if (arguments.Contains("down", StringComparer.Ordinal))
                 {
                     ComposeDownCount++;
@@ -2910,7 +3538,7 @@ public sealed class LifecycleContractTests
             }
             if (arguments is ["container", "ls", ..])
             {
-                var listed = RetainOwnedOrphanAfterDown && ComposeDownCount > 0 ? "owned-orphan\n" : string.Empty;
+                var listed = RetainOwnedOrphanAfterDown && ComposeDownCount > 0 || ListOwnedOrphan ? "owned-orphan\n" : string.Empty;
                 return Task.FromResult(new ProcessResult(0, listed, string.Empty));
             }
             if (arguments is ["container", "inspect", "owned-orphan", ..] && paths is not null)
@@ -3047,6 +3675,8 @@ public sealed class LifecycleContractTests
     {
         public bool RejectNextResume { get; set; }
         public long DrainedProcessingPending { get; set; }
+        public long DrainedReplayPending { get; set; }
+        public long DrainedReplayLeased { get; set; }
         public int ResumeCount { get; private set; }
         public int PauseCount { get; private set; }
         public int ConfirmCount { get; private set; }
@@ -3055,7 +3685,8 @@ public sealed class LifecycleContractTests
         public bool RejectRecoveryRead { get; set; }
         public TimeSpan RecoveryReceiptClockOffset { get; set; }
         public HashSet<Guid> RecoveryCommands { get; } = [];
-        public LifecycleContinuity RecoveryContinuity { get; set; } = new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0);
+        public LifecycleContinuity RecoveryContinuity { get; set; } =
+            new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
         {
@@ -3091,14 +3722,16 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             ConfirmCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)

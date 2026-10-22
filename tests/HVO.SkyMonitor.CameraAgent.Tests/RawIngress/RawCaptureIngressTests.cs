@@ -62,7 +62,7 @@ public sealed partial class RawCaptureIngressTests
             await new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(14L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual("installed-revision", await ScalarStringAsync(verify, "SELECT active_revision_id FROM capture_schedule_state;").ConfigureAwait(false));
             CollectionAssert.AreEqual(new byte[] { 0, 1, 255, 32 }, await ScalarBytesAsync(verify, "SELECT profile_json FROM capture_schedule_revisions;").ConfigureAwait(false));
             Assert.AreEqual(new string('A', 64), await ScalarStringAsync(verify, "SELECT profile_sha256 FROM capture_schedule_revisions;").ConfigureAwait(false));
@@ -129,7 +129,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV14AndAcceptsEquivalentLegacyFormatting()
+    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV15AndAcceptsEquivalentLegacyFormatting()
     {
         var root = CreateRoot();
         try
@@ -155,7 +155,7 @@ public sealed partial class RawCaptureIngressTests
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
-                Assert.AreEqual(14L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
                 Assert.AreEqual(75L, await ScalarLongAsync(connection, """
                 SELECT COUNT(*) FROM sqlite_master
                 WHERE name IN (
@@ -252,7 +252,7 @@ public sealed partial class RawCaptureIngressTests
             await new SqliteRawCaptureJournal(databasePath, 1)
                 .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var retried = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(14L, await ScalarLongAsync(retried, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(retried, "PRAGMA user_version;").ConfigureAwait(false));
         }
         finally
         {
@@ -303,7 +303,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_FreshV14StageEventsEnforceUniqueStageKey()
+    public async Task InitializeAsync_FreshV15StageEventsEnforceUniqueStageKey()
     {
         var root = CreateRoot();
         try
@@ -315,7 +315,7 @@ public sealed partial class RawCaptureIngressTests
                     CancellationToken.None).ConfigureAwait(false);
             }
             using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(14L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             using var insert = connection.CreateCommand();
             insert.CommandText = """
                 INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, candidate_id, state, source, event_unix_ms)
@@ -459,7 +459,7 @@ public sealed partial class RawCaptureIngressTests
             SqliteConnection.ClearAllPools();
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(
-                14L,
+                (long)SqliteRawCaptureJournal.CurrentSchemaVersion,
                 await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(
                 schemaObjectCount,
@@ -499,7 +499,7 @@ public sealed partial class RawCaptureIngressTests
                     // including the read-only inspection source, is refused with SQLITE_BUSY.
                     command.CommandText = "PRAGMA locking_mode = EXCLUSIVE;";
                     Assert.AreEqual("exclusive", await command.ExecuteScalarAsync().ConfigureAwait(false));
-                    command.CommandText = "PRAGMA user_version = 14;";
+                    command.CommandText = "PRAGMA user_version = 15;";
                     await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
 
@@ -543,7 +543,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("wal", await command.ExecuteScalarAsync().ConfigureAwait(false));
             // A committed write that leaves the canonical schema alone, so the write-ahead log holds real frames
             // the inspection must still see after this connection closes.
-            command.CommandText = "PRAGMA user_version = 14;";
+            command.CommandText = "PRAGMA user_version = 15;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         Assert.IsTrue(
@@ -834,7 +834,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
-            Assert.AreEqual(14L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             var contextJson = await ScalarBytesAsync(
                 connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
@@ -1496,6 +1496,9 @@ public sealed partial class RawCaptureIngressTests
                 connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
             await connection.CloseAsync().ConfigureAwait(false);
             await File.WriteAllBytesAsync(payloadPath, [6, 6, 6, 6]).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => restarted.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            var target = (await restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single().Target;
+            await restarted.ReleaseEvidenceAsync(target, RawEvidenceReleaseAction.Revalidate, "recovered-missing", "operator", "evidence-restored", CancellationToken.None).ConfigureAwait(false);
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
             using var repaired = await OpenJournalAsync(root).ConfigureAwait(false);
@@ -1518,7 +1521,7 @@ public sealed partial class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 15;";
+                command.CommandText = "PRAGMA user_version = 16;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -1541,7 +1544,7 @@ public sealed partial class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(15L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(16L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);
@@ -3398,7 +3401,9 @@ public sealed partial class RawCaptureIngressTests
         RawIngressState state,
         IRawIngressFaultInjector? faultInjector = null,
         TimeProvider? timeProvider = null,
-        ILogger<RawCaptureIngress>? logger = null)
+        ILogger<RawCaptureIngress>? logger = null,
+        CaptureMaintenanceGate? maintenanceGate = null,
+        HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.IProjectedSceneStagingReconciler? projectedSceneStaging = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -3412,7 +3417,9 @@ public sealed partial class RawCaptureIngressTests
             timeProvider ?? TimeProvider.System,
             new RawIngressTelemetry(state),
             logger ?? NullLogger<RawCaptureIngress>.Instance,
-            faultInjector ?? new NullRawIngressFaultInjector());
+            faultInjector ?? new NullRawIngressFaultInjector(),
+            projectedSceneStaging: projectedSceneStaging,
+            maintenanceGate: maintenanceGate);
     }
 
     private static CameraModuleConfig CreateConfiguration()

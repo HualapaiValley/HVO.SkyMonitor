@@ -3,6 +3,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.CameraAgent.Settings
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
@@ -143,6 +144,10 @@ else
                     <dl class="ops-facts">
                         <div><dt>Module</dt><dd>@Words(active.Module.Type)</dd></div>
                         <div><dt>Camera model</dt><dd>@CameraModel(_activeCamera)</dd></div>
+                        @if (active.Module.Type == "VirtualSky")
+                        {
+                            <div><dt>@CameraAgentSettingsCatalogue.SkyLighting.Title</dt><dd>@SkyLightingLabel(_activeCamera)</dd></div>
+                        }
                         <div><dt>Device identity</dt><dd>Held in module options; not shown</dd></div>
                         <div><dt>Connection</dt><dd>Not reported</dd></div>
                         <div><dt>Sensor geometry</dt><dd>@sensor.WidthPixels x @sensor.HeightPixels</dd></div>
@@ -409,7 +414,7 @@ else
                     }
                     break;
                 case RigDialog.Equipment:
-                    <p class="dialog-intro">Saving appends an immutable version. Rigs and captures that already use an earlier version keep it. Camera module options, device identity, and SDK paths never appear in this form.</p>
+                    <p class="dialog-intro">Saving appends an immutable version. Rigs and captures that already use an earlier version keep it. Camera module options, device identity, and SDK paths never appear in this form; a virtual sky camera offers only its sky lighting choice.</p>
                     <fieldset disabled="@_busy" @onchange="InvalidatePreview">
                         <legend class="visually-hidden">Equipment settings</legend>
                         <div class="rig-dialog-grid">
@@ -433,6 +438,22 @@ else
                                     <label class="ops-field">Color mode<select @bind="_form.ColorMode">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.SensorColorMode>()) { <option value="@choice">@choice</option> }</select></label>
                                     <label class="ops-field">Sensor pixel format<select @bind="_form.SensorPixelFormat">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.CameraPixelFormat>()) { <option value="@choice">@choice</option> }</select></label>
                                 </div>
+                                @if (_form.ModuleType == "VirtualSky")
+                                {
+                                    @if (_form.SkyLighting.Length == 0)
+                                    {
+                                        <p class="rig-note">The sky lighting of this revision cannot be read, so saving keeps it unchanged.</p>
+                                    }
+                                    else
+                                    {
+                                        <label class="ops-field">@CameraAgentSettingsCatalogue.SkyLighting.Title<select id="rig-sky-lighting" aria-describedby="rig-sky-lighting-help" @bind="_form.SkyLighting">@foreach (var choice in EquipmentFormModel.SkyLightingChoices) { <option value="@choice.Value">@choice.Label</option> }</select></label>
+                                        <p id="rig-sky-lighting-help" class="rig-note">@SkyLightingHelp(_form.SkyLighting) Auto exposure still meters within the configured limits. Capture windows, sunrise, sunset and the observing day still follow the real Sun.</p>
+                                    }
+                                    @if (FixedSkyBackground(_basis))
+                                    {
+                                        <p class="rig-note">This camera sets a fixed sky background (<code>backgroundElectronsPerSecond</code>), which overrides the sky lighting choice in the rendered image.</p>
+                                    }
+                                }
                                 <p class="rig-note">Basis expected model: @CameraModel(_basis)</p>
                                 @if (_form.ModuleType == "ZwoAsi")
                                 {

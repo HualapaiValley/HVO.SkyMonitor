@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Check repository Dockerfile base images offline; no Docker or registry calls."""
+import argparse
+import json
+import pathlib
+import re
+import shlex
+import subprocess
+import sys
+
+
+VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))")
+PIN = re.compile(r"([^@\s]+)@sha256:([0-9a-f]{64})")
+SDK = "mcr.microsoft.com/dotnet/sdk"
+INSTRUCTIONS = set("ADD ARG CMD COPY ENTRYPOINT ENV EXPOSE FROM HEALTHCHECK LABEL MAINTAINER ONBUILD RUN SHELL STOPSIGNAL USER VOLUME WORKDIR".split())
+
+
+def discover_dockerfiles(root):
+    """One inventory for the guard and its Dependabot coverage contract."""
+    paths = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ).decode().split("\0")
+    def matches(path):
+        name = pathlib.PurePosixPath(path).name.lower()
+        return not name.endswith(".dockerignore") and any(
+            name == kind or name.startswith(kind + ".") or name.endswith("." + kind)
+            for kind in ("dockerfile", "containerfile"))
+    return sorted({p for p in paths if p and matches(p)})
+
+
+def logical_lines(path):
+    pending = ""
+    start = 0
+    for number, line in enumerate(path.read_bytes().decode("utf-8-sig").split("\n"), 1):
+        line = line.removesuffix("\r")
+        if not line.strip(" \t") or line.lstrip(" \t").startswith("#"):
+            if re.match(r"\s*#\s*escape\s*=\s*`", line, re.I):
+                raise ValueError("unsupported Dockerfile escape directive")
+            continue
+        if not pending:
+            start = number
+        pending += line.strip(" \t")
+        if re.search(r"(?:^|[^\\])\\[ \t]*$", line):
+            pending = pending[:-1] + " "
+            continue
+        yield start, pending
+        pending = ""
+    if pending:
+        raise ValueError(f"line {start}: unfinished continuation")
+
+
+def expand(value, arguments):
+    def replace(match):
+        name = match[1] or match[2]
+        if name not in arguments or arguments[name] is None:
+            raise ValueError(f"unresolved FROM argument: {name}")
+        return arguments[name]
+    value = VARIABLE.sub(replace, value)
+    if "$" in value:
+        raise ValueError("unresolved FROM argument or unsupported expansion")
+    return value
+
+
+def normalized_name(name):
+    # Compare Docker Hub's short forms and the default HTTPS registry port equally.
+    host, slash, rest = name.partition("/")
+    if slash and ("." in host or ":" in host or host.lower() == "localhost"):
+        host = host.lower().removesuffix(":443")
+        if host in ("docker.io", "index.docker.io"):
+            return rest.removeprefix("library/")
+        return host + "/" + rest
+    return name.removeprefix("library/")
+
+
+def check(root):
+    sdk = json.loads((root / "global.json").read_text())["sdk"]["version"]
+    if not isinstance(sdk, str) or not re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", sdk):
+        raise ValueError("invalid stable SDK version in global.json")
+    dockerfiles = discover_dockerfiles(root)
+    if not dockerfiles:
+        raise ValueError("no Dockerfiles found")
+    digests = {}
+    errors = []
+    external_count = 0
+    for name in dockerfiles:
+        arguments, stages = {}, set()
+        found_from = False
+        location = name
+        try:
+            for number, line in logical_lines(root / name):
+                location = f"{name}:{number}"
+                # Split on all whitespace, including a tab after the instruction.
+                words = line.split(None, 1)
+                instruction = words[0].upper()
+                value = words[1] if len(words) > 1 else ""
+                if instruction not in INSTRUCTIONS:
+                    raise ValueError(f"unknown Dockerfile instruction: {instruction}")
+                if instruction == "ARG" and not found_from:
+                    key, separator, default = value.partition("=")
+                    arguments[key] = expand(default, arguments) if separator else None
+                if instruction != "FROM":
+                    continue
+                found_from = True
+                tokens = shlex.split(value)
+                if tokens and tokens[0].startswith("--platform="):
+                    tokens.pop(0)
+                if not (len(tokens) == 1 or (len(tokens) == 3 and tokens[1].upper() == "AS")):
+                    raise ValueError("unsupported FROM syntax")
+                image = expand(tokens[0], arguments)
+                # Stage references inherit the checked, pinned base. Only earlier
+                # aliases are allowed; a forward reference remains an external image.
+                if image.lower() not in stages and image != "scratch":
+                    match = PIN.fullmatch(image)
+                    if not match:
+                        raise ValueError(f"FROM must be pinned by sha256 digest: {image}")
+                    tag, digest = match.groups()
+                    tag = normalized_name(tag)
+                    if tag == SDK or tag.startswith(SDK + ":"):
+                        if tag != f"{SDK}:{sdk}":
+                            raise ValueError(f"SDK tag must equal global.json ({sdk}): {tag}")
+                    # Digest-only references pin different content without asserting a shared tag.
+                    tagged = ":" in tag.rsplit("/", 1)[-1]
+                    if tagged and tag in digests and digests[tag][0] != digest:
+                        raise ValueError(f"conflicting digests for {tag}; first seen at {digests[tag][1]}")
+                    if tagged:
+                        digests.setdefault(tag, (digest, location))
+                    external_count += 1
+                if len(tokens) == 3:
+                    alias = tokens[2].lower()
+                    if alias in stages:
+                        raise ValueError(f"duplicate stage alias: {alias}")
+                    stages.add(alias)
+            if not found_from:
+                raise ValueError("no FROM instructions")
+        except ValueError as error:
+            errors.append(f"{location}: {error}")
+    if errors:
+        raise ValueError("\n".join(errors))
+    print(f"Base-image check passed: {len(dockerfiles)} Dockerfiles, {external_count} external FROMs, SDK {sdk}.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", nargs="?", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent)
+    args = parser.parse_args()
+    try:
+        check(args.root.resolve())
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f"Base-image check failed: {ascii(str(error))}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

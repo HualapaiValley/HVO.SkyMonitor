@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="__REPOSITORY_ROOT__/src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj" />
+    <Compile Include="__REPOSITORY_ROOT__/tests/HVO.SkyMonitor.CameraAgent.Tests/OrbitalPlanning/PlanningTestInputs.cs" Link="PlanningTestInputs.cs" />
+    <None Include="__REPOSITORY_ROOT__/tests/fixtures/orbital-prediction-v1/time/*" Link="Fixtures/orbital-prediction-v1/time/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="__REPOSITORY_ROOT__/tests/fixtures/orbital-prediction-v1/virtual-camera/snapshots/**/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

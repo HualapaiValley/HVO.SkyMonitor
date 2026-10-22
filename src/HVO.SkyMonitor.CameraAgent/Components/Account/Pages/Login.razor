@@ -13,7 +13,7 @@
             <div>
                 <p class="eyebrow">Local observatory access</p>
                 <h1 id="login-heading">Log in</h1>
-                <p>Use the configured site owner account. CameraAgent authentication remains local when the internet is unavailable.</p>
+                <p>Sign in with the site owner's user name or email. CameraAgent authentication remains local when the internet is unavailable.</p>
             </div>
         </header>
         <StatusMessage Message="@errorMessage" />
@@ -22,9 +22,9 @@
                 <DataAnnotationsValidator />
                 <ValidationSummary role="alert" />
                 <div class="ops-field">
-                    <label for="Input.Email">Email</label>
+                    <label for="Input.Email">Username or email</label>
                     <InputText @bind-Value="Input.Email" id="Input.Email"
-                        autocomplete="username webauthn" aria-required="true" placeholder="name@example.com" />
+                        autocomplete="username webauthn" aria-required="true" autocapitalize="none" spellcheck="false" />
                     <ValidationMessage For="() => Input.Email" />
                 </div>
                 <div class="ops-field">

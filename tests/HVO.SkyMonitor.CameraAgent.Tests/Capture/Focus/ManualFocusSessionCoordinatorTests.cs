@@ -37,12 +37,18 @@ public sealed class ManualFocusSessionCoordinatorTests
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
-        var module = await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        var module = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var stopReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The loop is unpaced and the history keeps only the newest samples, so a starved poll could otherwise observe it
+        // after the first samples were evicted. Hold every exposure after the third until Stop returns, so that a loop
+        // outliving Stop would still expose again and fail the check below.
+        module.BeforePreview = (number, token) => number > 3 ? stopReturned.Task.WaitAsync(token) : Task.CompletedTask;
         using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System, Limits());
 
         var started = await coordinator.StartAsync(new(Gain20, 400), "alice", CancellationToken.None).ConfigureAwait(false);
         var running = await FocusWait.UntilAsync(coordinator, static s => s.TotalSamples >= 3, "three samples").ConfigureAwait(false);
         var stopped = await coordinator.StopAsync(started.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        stopReturned.TrySetResult();
         var samplesAtStop = stopped.TotalSamples;
         await Task.Delay(200).ConfigureAwait(false);
 
@@ -50,9 +56,8 @@ public sealed class ManualFocusSessionCoordinatorTests
         Assert.AreEqual(400d, started.SimulatedFocusPosition);
         Assert.AreEqual(ManualFocusRetentionState.InMemoryOnly, started.Retention);
         Assert.AreEqual(ManualFocusSessionState.Running, running.State);
-        CollectionAssert.AreEqual(
-            Enumerable.Range(1, running.History.Count).Select(static value => (long)value).ToArray(),
-            running.History.Select(static sample => sample.Sequence).ToArray(), "Every exposure is one consecutive sample.");
+        CollectionAssert.AreEqual(new long[] { 1, 2, 3 }, running.History.Select(static sample => sample.Sequence).ToArray(),
+            "Every exposure is one consecutive sample.");
         var latest = running.Latest!;
         Assert.AreEqual(FocusStarStatus.Valid, latest.Measurement.Status, latest.Measurement.ReasonCode);
         Assert.AreEqual(FocusTestModules.ZenithStar.X, latest.Measurement.Centroid!.Value.X, 0.15);
@@ -96,21 +101,32 @@ public sealed class ManualFocusSessionCoordinatorTests
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
-        await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        var module = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        using var exposures = new SemaphoreSlim(1);
+        // The loop is unpaced and the history keeps only the newest samples, so a starved poll could otherwise observe it
+        // after the samples at 200 and 560 were evicted. Each exposure waits for a permit: one at the start, then two per
+        // adjustment, since one may already be in flight with the old position. An exposure whose sample deadline passes
+        // while it waits takes no permit, so its retry still gets one.
+        module.BeforePreview = (_, token) => exposures.WaitAsync(token);
         using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System, Limits());
         var session = await coordinator.StartAsync(new(Gain20, 200), "alice", CancellationToken.None).ConfigureAwait(false);
 
         await FocusWait.UntilAsync(coordinator, static s => s.History.Any(static x => x.SimulatedFocusPosition == 200),
             "a sample at 200").ConfigureAwait(false);
         coordinator.Adjust(session.SessionId, "alice", new(SimulatedFocusPosition: 560));
+        exposures.Release(2);
         await FocusWait.UntilAsync(coordinator, static s => s.History.Any(static x => x.SimulatedFocusPosition == 560),
             "a sample at 560").ConfigureAwait(false);
         var brighter = new ManualFocusPreviewSettings(TimeSpan.FromSeconds(2), 10);
         coordinator.Adjust(session.SessionId, "alice", new(Settings: brighter, SimulatedFocusPosition: 1000));
+        exposures.Release(2);
         var final = await FocusWait.UntilAsync(coordinator,
             static s => s.History.Any(static x => x.SimulatedFocusPosition == 1000), "a sample at 1000").ConfigureAwait(false);
         await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
 
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, final.History.Count).Select(static value => (long)value).ToArray(),
+            final.History.Select(static sample => sample.Sequence).ToArray(), "Every exposure is still in the history.");
         double Diameter(double position) => final.History.First(sample => sample.SimulatedFocusPosition == position)
             .Measurement.HalfFluxDiameterPixels!.Value;
         Assert.IsTrue(Diameter(200) > 2 * Diameter(560), $"HFD at 200 {Diameter(200)} vs 560 {Diameter(560)}");
@@ -544,6 +560,12 @@ public sealed class ManualFocusSessionCoordinatorTests
                 secondStarted.TrySetResult();
                 await release.Task.WaitAsync(token).ConfigureAwait(false);
             }
+            else if (number > 3)
+            {
+                // The loop is unpaced and the history keeps only the newest samples, so a starved poll could otherwise
+                // observe it after samples 1 and 2 were evicted. Hold every later exposure until Stop cancels it.
+                await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+            }
         };
         using var store = new ManualFocusSessionStore(fixture.Root);
         using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System, Limits(), store);
@@ -555,6 +577,8 @@ public sealed class ManualFocusSessionCoordinatorTests
         var third = await FocusWait.UntilAsync(coordinator, static s => s.TotalSamples >= 3, "new comparison group")
             .ConfigureAwait(false);
         var ended = await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new long[] { 1, 2, 3 }, third.History.Select(static sample => sample.Sequence).ToArray(),
+            "The before, in-flight, and after exposures are the whole history.");
         Assert.AreEqual(third.History[0].ComparisonGroupId, third.History[1].ComparisonGroupId);
         Assert.AreEqual(Gain20, third.History[1].Settings);
         Assert.AreEqual(changed, third.History[2].Settings);

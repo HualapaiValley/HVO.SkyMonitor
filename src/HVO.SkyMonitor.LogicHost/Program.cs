@@ -287,6 +287,7 @@ public sealed partial class Program
                 metrics.AddMeter(OperatorUiTelemetry.MeterName);
                 metrics.AddMeter(ObjectStoreTelemetry.MeterName);
                 metrics.AddMeter(ProcessingGraphCatalogTelemetry.MeterName);
+                metrics.AddMeter(ExecutionEvidenceTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
@@ -295,7 +296,8 @@ public sealed partial class Program
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
                 .AddSource(OperatorUiTelemetry.ActivitySourceName)
                 .AddSource(ObjectStoreTelemetry.ActivitySourceName)
-                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName));
+                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName)
+                .AddSource(ExecutionEvidenceTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -452,6 +454,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IPublicRecordPublicationService, PublicRecordPublicationService>();
         builder.Services.AddScoped<IPublicNetworkReadService, PublicNetworkReadService>();
         builder.Services.AddScoped<INetworkOperationsReadService, NetworkOperationsReadService>();
+        builder.Services.AddScoped<ILogicalCameraArchiveReadService, LogicalCameraArchiveReadService>();
         builder.Services.AddScoped<ICuratedPublicPlacementService, CuratedPublicPlacementService>();
         builder.Services.AddScoped<IRegisteredUserPersonalizationService, RegisteredUserPersonalizationService>();
         builder.Services.AddScoped<INetworkOperationsMutationService, NetworkOperationsMutationService>();
@@ -464,6 +467,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IProcessingGraphCatalogService>(provider =>
             provider.GetRequiredService<ProcessingGraphCatalogService>());
         builder.Services.AddScoped<IProcessingGraphDeliveryService, ProcessingGraphDeliveryService>();
+        builder.Services.AddScoped<IProcessingGraphProposalReadService, ProcessingGraphProposalReadService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
         builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()
@@ -827,6 +831,14 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
+        builder.Services.AddOptions<ExecutionEvidenceOptions>()
+            .Bind(builder.Configuration.GetSection(ExecutionEvidenceOptions.SectionName)).ValidateDataAnnotations().ValidateOnStart();
+        builder.Services.AddScoped<ExecutionEvidenceDatabase>();
+        builder.Services.AddScoped<ExecutionEvidenceService>();
+        builder.Services.AddScoped<ExecutionEvidenceReconciler>();
+        builder.Services.AddHostedService<ExecutionEvidenceReconciliationWorker>();
+        builder.Services.AddSingleton<ExecutionEvidenceCapacity>();
+        builder.Services.AddSingleton<ExecutionEvidenceTelemetry>();
         builder.Services.AddSingleton<FleetStatusClassifier>();
         builder.Services.AddSingleton<FleetStatusTelemetry>();
         builder.Services.AddSingleton<FleetRetentionState>();

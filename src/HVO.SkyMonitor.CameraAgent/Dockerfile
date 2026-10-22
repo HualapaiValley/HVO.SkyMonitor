@@ -1,71 +1,128 @@
 # Dockerfile for HVO.SkyMonitor.CameraAgent
 # Deployment platforms: linux/amd64 and linux/arm64
-# Build from repo root with a source-revision tag; deployment rejects mutable tags.
+# Build with scripts/build:cameraagent-image (commit time and BuildKit timestamp rewriting).
+# A raw docker build must supply the same SOURCE_DATE_EPOCH and exporter options for repeatability.
+
+# Base images. The digests are pinned on the dotnet-sdk and dotnet-aspnet FROM lines because Dependabot updates
+# only FROM lines (#1321). The stages below select those aliases by default; the ARM64 advisory build passes its
+# resolved native image references through these arguments instead.
+ARG DOTNET_SDK_IMAGE=dotnet-sdk
+ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
+# Build identity. The release script passes the release's version, which Directory.Build.targets requires to be the
+# product version or a pre-release of it (#1310); a build given none is the product's development build, X.Y.Z-dev, and
+# carries an empty version label. A build without a source revision stays marked "unknown", which the installer rejects.
+ARG HVO_VERSION=""
+ARG HVO_SOURCE_REVISION=unknown
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS dotnet-sdk
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS dotnet-aspnet
 
 # Stage 1: Build
-ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d
-ARG DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c
 FROM ${DOTNET_SDK_IMAGE} AS build
-WORKDIR /src
+# BuildKit stamps WORKDIR mkdir operations with SOURCE_DATE_EPOCH even before its ARG declaration.
+# Keep restore at / with absolute COPY destinations so epoch-only changes preserve the restore cache.
+WORKDIR /
+# Explicit release-image opt-in; Compose, advisory and developer builds publish IL by default.
+ARG HVO_READY_TO_RUN=false
+ARG HVO_CREATED
+ARG TARGETARCH
+COPY scripts/release:cameraagent-publish /src/scripts/release:cameraagent-publish
+COPY scripts/cameraagent-release.targets /src/scripts/cameraagent-release.targets
 
 # Copy solution and project files needed for restore
-COPY Directory.Build.props ./
-COPY Directory.Packages.props ./
-COPY .editorconfig ./
-COPY global.json ./
-COPY HVO.SkyMonitor.v9.slnx ./
-COPY THIRD-PARTY-NOTICES.md ./
-COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj src/HVO.SkyMonitor.AgentCore/
-COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj src/HVO.SkyMonitor.Astronomy/
-COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj src/HVO.SkyMonitor.Catalog.Sqlite/
-COPY src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj src/HVO.SkyMonitor.Fleet.Contracts/
-COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj src/HVO.SkyMonitor.Imaging/
-COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj src/HVO.SkyMonitor.Processing/
-COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
-COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj src/HVO.SkyMonitor.CameraAgent.Common/
-COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj src/HVO.SkyMonitor.CameraAgent.Replay/
-COPY src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj src/HVO.SkyMonitor.CameraAgent.ReplayRunner/
-COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
-COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
+COPY Directory.Build.props /src/
+COPY Directory.Build.targets /src/
+COPY Directory.Packages.props /src/
+COPY .editorconfig /src/
+COPY global.json /src/
+COPY HVO.SkyMonitor.v9.slnx /src/
+COPY THIRD-PARTY-NOTICES.md /src/
+COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj /src/src/HVO.SkyMonitor.AgentCore/
+COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj /src/src/HVO.SkyMonitor.Astronomy/
+COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj /src/src/HVO.SkyMonitor.Catalog.Sqlite/
+COPY src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj /src/src/HVO.SkyMonitor.Fleet.Contracts/
+COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj /src/src/HVO.SkyMonitor.Imaging/
+COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj /src/src/HVO.SkyMonitor.Processing/
+COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj /src/src/HVO.SkyMonitor.Common/
+COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj /src/src/HVO.SkyMonitor.CameraAgent.Common/
+COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj /src/src/HVO.SkyMonitor.CameraAgent.Replay/
+COPY src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj /src/src/HVO.SkyMonitor.CameraAgent.ReplayRunner/
+COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj /src/src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
+COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj /src/src/HVO.SkyMonitor.CameraAgent/
 
 # Restore project dependencies into a source-independent cache layer.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && ./scripts/release:cameraagent-publish restore
 
 # Copy source code
-COPY src/ src/
+COPY src/ /src/src/
 
 # Restore again after Razor sources are present so implicit framework assets are discovered.
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
-RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
+RUN cd /src && ./scripts/release:cameraagent-publish restore
 
-# Build and publish
+
+# Build and publish. Every published assembly carries the informational version <version>+<revision>; .dockerignore
+# excludes .git, so the SDK cannot derive the revision itself. The identity is declared after restore and the source
+# copy, so a change of revision alone reuses those layers but republishes, because the stamped assemblies are the
+# payload.
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
-RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
+ARG HVO_VERSION
+ARG HVO_SOURCE_REVISION
+ARG SOURCE_DATE_EPOCH
+RUN case "${HVO_SOURCE_REVISION}" in \
+        unknown) ;; \
+        *[!0-9a-f]*) false ;; \
+        *) [ "${#HVO_SOURCE_REVISION}" -eq 40 ] ;; \
+    esac \
+    || { echo "HVO_SOURCE_REVISION must be a 40-character lowercase object ID or unknown." >&2; exit 64; } \
+    && case "${HVO_VERSION}" in \
+        "") ;; \
+        [!0-9A-Za-z]*|*[!0-9A-Za-z]|*..*|*[!0-9A-Za-z.-]*) false ;; \
+        *) [ "${#HVO_VERSION}" -le 128 ] ;; \
+    esac \
+    || { echo "HVO_VERSION must be empty or 1-128 ASCII letters, digits, periods, and hyphens." >&2; exit 64; } \
+    && /src/scripts/release:cameraagent-publish publish -c Release -o /app/publish \
+        ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}" \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
-ARG TARGETARCH
 RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *) exit 64 ;; esac \
     && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
-        --no-restore -c Release -r "${rid}" -o /app/replay-runner
+        --no-restore -c Release -r "${rid}" -o /app/replay-runner \
+        ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}"
 
-# Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
-# an overlay copy-up of the entire payload, which rewrites every published file a second time.
-RUN chmod -R a+rX /app/publish /app/replay-runner
+# Apply permissions and exact source mtimes before copying the payload. Exporter rewriting only clamps NEWER times;
+# a file retained in an existing checkout can predate the commit, unlike the same file in a fresh checkout.
+# Doing this in the build stage also avoids a runtime overlay copy-up of the entire payload.
+RUN chmod -R a+rX /app/publish /app/replay-runner \
+    && if [ -n "${SOURCE_DATE_EPOCH}" ]; then \
+        find /app/publish /app/replay-runner -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +; \
+    fi
+
+# Export exactly the image's CameraAgent payload for clean native repeatability checks.
+FROM scratch AS cameraagent-publish
+COPY --from=build /app/publish /
 
 # Stage 2: Runtime
 FROM ${DOTNET_ASPNET_IMAGE}
 WORKDIR /app
 
 # Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
-RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+# Freeze package bytes for both native architectures. Advance this snapshot with dependency updates;
+# never replace it with a moving mirror, even when the base-image digest remains pinned.
+RUN sed -i -E 's@https?://[^ ]*(archive.ubuntu.com/ubuntu/?|security.ubuntu.com/ubuntu/?|ports.ubuntu.com/ubuntu-ports/?)@https://snapshot.ubuntu.com/ubuntu/20261021T000000Z@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && awk '/^URIs:/ { count++; if (NF < 2) bad=1; for (i=2; i<=NF; i++) if ($i !~ /^https:\/\/snapshot\.ubuntu\.com\/ubuntu\/[0-9]+T[0-9]+Z\/?$/) bad=1 } END { exit (count == 0 || bad) }' /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends curl libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/cache/ldconfig/aux-cache \
+    && rm -f /var/lib/dpkg/status-old /var/lib/apt/extended_states \
+    && find /var/log -type f -delete
 
 # Copy published application. The build stage already applied the runtime permissions.
 COPY --from=build /app/publish .
 COPY --from=build /app/replay-runner /app/replay-runner
 
-# Declared after the payload so that changing only the source revision rebuilds one metadata layer instead of
-# invalidating the package install and the whole payload copy.
+# Declared after the payload so that the package install stays cached across revisions. The version label is set
+# explicitly so it never inherits the base image's operating-system version.
 #
 # The state-compatibility label names the durable CameraAgent state contract this image
 # reads and writes. It is not a generic backward-compatibility promise: revisions before
@@ -73,21 +130,33 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
 # adopt in place. Deployment preflight compares the three declared boundaries below against
 # the persisted state before the container starts.
-ARG HVO_SOURCE_REVISION=unknown
+#
+# The state-contracts label is the image's state contract (install contract section 6), which
+# release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
+# the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
+# keeps it equal to the schema each store records when this image creates it. The created
+# label is the release's created time, which only a release build passes (scripts/release:assets).
+ARG HVO_VERSION
+ARG HVO_SOURCE_REVISION
+ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
-      io.hvo.skymonitor.raw-ingress-schema="14" \
-      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-to-v14" \
+      io.hvo.skymonitor.raw-ingress-schema="15" \
+      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \
       io.hvo.skymonitor.catalog-manifest-version="2" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v1" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
-      org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
+      org.opencontainers.image.version="${HVO_VERSION}" \
+      org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
+      org.opencontainers.image.created="${HVO_CREATED}"
 
-# Set environment
+# URLS owns the HTTP binding; clear the runtime image's inherited port default.
 ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_HTTP_PORTS= \
     ASPNETCORE_URLS=http://+:8080
 
 # Expose port

@@ -2,6 +2,9 @@ name: CI
 
 on:
   workflow_dispatch:
+  # The release workflow calls this workflow as the qualification of the commit a release tag names, before it builds
+  # anything from it (release.yml, #1310). A called run sees the caller's push of the tag, so it runs in full.
+  workflow_call:
   push:
     branches: [main, 'release/**']
   pull_request:
@@ -70,7 +73,7 @@ jobs:
           tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
           ./scripts/ci:artifact-provenance hyg-v42-contracts catalog-contracts "$RUNNER_TEMP/hyg-v42-contract-provenance"
       - name: Upload exact production catalog contracts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: hyg-v42-contracts
           path: |
@@ -88,7 +91,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The secret scan reads the complete history (#1321).
+          fetch-depth: 0
           persist-credentials: false
+      - name: Scan history for secrets
+        env:
+          HVO_GITLEAKS_CACHE_DIR: ${{ runner.temp }}/gitleaks
+        run: |
+          ./scripts/ci:secret-scan
+          ./scripts/test:ci-secret-scan
       - name: Setup .NET from global.json
         if: needs.changes.outputs.mode == 'full'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -120,6 +131,8 @@ jobs:
           export HVO_SHELLCHECK_BIN="$RUNNER_TEMP/shellcheck-v0.9.0/shellcheck"
           ./scripts/ci:shellcheck
           ./scripts/docs:audit-operations
+          ./scripts/ci:unit-selection
+          ./scripts/test:ci-unit-selection
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:trx-evidence-contract
@@ -136,6 +149,8 @@ jobs:
           ./scripts/test:smoke-env
           ./scripts/test:devcontainer
           bash ./scripts/test:ci-classification
+          ./scripts/test:ci-runner-capacity
+          ./scripts/test:release-scripts
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
           REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_RUNTIME_UID=1000 HVO_RUNTIME_GID=1000 HVO_SQL_MEMORY=4G MSSQL_MEMORY_LIMIT_MB=3072 SQLSERVER_PORT=1433 REDIS_PORT=6379 SMTP_PORT=1025 MAILPIT_HTTP_PORT=8025 SQLSERVER_IMAGE=example/sql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REDIS_IMAGE=example/redis@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb MAILPIT_IMAGE=example/mailpit@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee SQL_DATABASE=hvo-test SQL_ADMIN_USER=sa SQL_INITIALIZER_USER=hvo-init SQL_RUNTIME_USER=hvo-runtime REDIS_RUNTIME_USER=hvo-runtime REDIS_PREFIX=hvo-test: docker compose -f deploy/split-host/compose.shared-services.yml --profile provision --profile test-smtp config --quiet
@@ -154,7 +169,7 @@ jobs:
           ./scripts/ci:artifact-provenance package-audit quality TestResults/package-audit
       - name: Upload package audit
         if: always() && needs.changes.outputs.mode == 'full'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: package-audit
           path: TestResults/package-audit/*.json
@@ -162,12 +177,15 @@ jobs:
           retention-days: 30
       - name: Run historical Phase 14 acceptance inventory contract
         if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'
-        run: ./scripts/test:phase14-acceptance
+        run: |
+          dotnet build scripts/enum-metadata/HVO.SkyMonitor.EnumMetadata.csproj --no-restore --configuration Release -warnaserror
+          dotnet build src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj --no-restore --configuration Release -warnaserror
+          ./scripts/test:phase14-acceptance
   deployment-contracts:
     name: Deployment Contracts
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.deployment == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -175,7 +193,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -234,7 +252,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance deployment-contract-logs deployment-contracts TestResults/deployment-contracts
       - name: Upload deployment contract logs
         if: always() && needs.changes.outputs.deployment_shards == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: deployment-contract-logs
           path: TestResults/deployment-contracts/
@@ -245,7 +263,7 @@ jobs:
     name: Build
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -269,7 +287,7 @@ jobs:
     name: Unit Tests
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
@@ -280,7 +298,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -325,12 +343,25 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
           dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
+      - name: Run Docker-disabled supplemental Unit suites
+        # tests/Directory.Build.props compile-links the ConnectionPoolClearContract Unit cases into
+        # these assemblies, whose remaining cases are Integration or Manual. They run TRX-only: their
+        # coverage is not a canonical Coverage slot, and scripts/ci:unit-selection enforces that.
+        # The LogicHost.IntegrationTests assembly hook skips its Testcontainers fixture only for
+        # this endpoint, so the step overrides the job-level one that those hooks do not recognize.
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
+          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/logichost-integration --logger "trx;LogFileName=unit-logichost-integration.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-logichost-integration --logger "trx;LogFileName=unit-cameraagent-logichost-integration.trx"
+          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/catalog-sqlite-performance --logger "trx;LogFileName=unit-catalog-sqlite-performance.trx"
       - name: Bind Unit evidence
         if: always()
         run: ./scripts/ci:artifact-provenance unit-test-evidence unit TestResults/unit
       - name: Upload Unit evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unit-test-evidence
           path: TestResults/unit/
@@ -341,7 +372,7 @@ jobs:
     name: Integration Tests
     needs: changes
     if: needs.changes.outputs.complete == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 35
     env:
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
@@ -398,7 +429,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance integration-test-evidence integration TestResults/integration
       - name: Upload Integration evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: integration-test-evidence
           path: TestResults/integration/
@@ -409,7 +440,7 @@ jobs:
     name: Architecture & Publish
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -440,11 +471,16 @@ jobs:
           dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/replay-runner/linux-arm64
           dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/processing-runner/linux-x64
           dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/processing-runner/linux-arm64
-          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-skymonitor
-          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
-          test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
-          test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
-          file TestResults/publish/installer/linux-arm64/hvo-skymonitor | grep -q 'ARM aarch64'
+          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-sky-install
+          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-sky-install
+          test -x TestResults/publish/installer/linux-x64/hvo-sky-install
+          test -x TestResults/publish/installer/linux-arm64/hvo-sky-install
+          file TestResults/publish/installer/linux-arm64/hvo-sky-install | grep -q 'ARM aarch64'
+          # Both installers name the version and commit they were built from (install contract section 1, #1312): a
+          # publish given no version is the product version's development build (#1310).
+          installer_version="$(./scripts/release:version --dev)+$(git rev-parse HEAD)"
+          test "$(TestResults/publish/installer/linux-x64/hvo-sky-install --version)" = "$installer_version"
+          grep -aqF "$installer_version" TestResults/publish/installer/linux-arm64/hvo-sky-install
           test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           test -x TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities > TestResults/publish/replay-runner-linux-x64-capabilities.json
@@ -473,8 +509,8 @@ jobs:
           logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
           logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
-          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-skymonitor)
-          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-skymonitor)
+          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-sky-install)
+          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-sky-install)
           replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
@@ -494,7 +530,7 @@ jobs:
           ./scripts/ci:artifact-provenance publish-evidence architecture TestResults/publish
       - name: Upload architecture unit evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: architecture-unit-evidence
           path: TestResults/architecture-unit/
@@ -502,7 +538,7 @@ jobs:
           retention-days: 30
       - name: Upload architecture coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: architecture-test-evidence
           path: TestResults/architecture/
@@ -510,7 +546,7 @@ jobs:
           retention-days: 30
       - name: Upload publish evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: publish-evidence
           path: |
@@ -525,7 +561,7 @@ jobs:
     name: CameraAgent Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -550,7 +586,7 @@ jobs:
     name: LogicHost Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -595,7 +631,7 @@ jobs:
     name: Shared Libraries
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.shared == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -625,6 +661,11 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/common --logger "trx;LogFileName=unit-common.trx"
           dotnet test tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/fleet-contracts --logger "trx;LogFileName=unit-fleet-contracts.trx"
           dotnet test tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/test-support --logger "trx;LogFileName=unit-test-support.trx"
+      - name: Run shared supplemental Unit contracts
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/catalog-sqlite-performance --logger "trx;LogFileName=unit-catalog-sqlite-performance.trx"
       - name: Run shared Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx"
@@ -636,7 +677,7 @@ jobs:
         run: ./scripts/coverage:component shared
       - name: Upload shared component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shared-component-evidence
           path: |
@@ -651,7 +692,7 @@ jobs:
     name: CameraAgent Component
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.cameraagent == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -673,6 +714,11 @@ jobs:
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
+      - name: Run CameraAgent supplemental Unit contracts
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
       - name: Run CameraAgent Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
@@ -686,7 +732,7 @@ jobs:
         run: ./scripts/coverage:component cameraagent
       - name: Upload CameraAgent component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cameraagent-component-evidence
           path: |
@@ -701,7 +747,7 @@ jobs:
     name: LogicHost Component
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.logichost == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -722,6 +768,11 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
         run: |
           dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
+      - name: Run LogicHost supplemental Unit contracts
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/logichost-integration --logger "trx;LogFileName=unit-logichost-integration.trx"
       - name: Run LogicHost Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
@@ -733,7 +784,7 @@ jobs:
         run: ./scripts/coverage:component logichost
       - name: Upload LogicHost component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: logichost-component-evidence
           path: |
@@ -748,7 +799,7 @@ jobs:
     name: Combined Protocol & Integration
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.combined == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -769,6 +820,11 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
+      - name: Run combined supplemental Unit contracts
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-logichost-integration --logger "trx;LogFileName=unit-cameraagent-logichost-integration.trx"
       - name: Run combined Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx"
@@ -778,7 +834,7 @@ jobs:
         run: ./scripts/coverage:component combined
       - name: Upload combined component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: combined-component-evidence
           path: |
@@ -792,7 +848,7 @@ jobs:
     name: Delivery Component
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.delivery == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 30
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -802,7 +858,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -840,7 +896,7 @@ jobs:
         run: ./scripts/coverage:component delivery
       - name: Upload delivery component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: delivery-component-evidence
           path: |
@@ -852,7 +908,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 10
     needs: [changes, unit, integration, architecture]
     if: needs.changes.outputs.complete == 'true'
@@ -872,17 +928,17 @@ jobs:
       - name: Restore coverage tool
         run: dotnet tool restore
       - name: Download Unit evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: unit-test-evidence
           path: TestResults/unit
       - name: Download Integration evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: integration-test-evidence
           path: TestResults/integration
       - name: Download architecture evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: architecture-test-evidence
           path: TestResults/architecture
@@ -937,7 +993,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance coverage-report coverage coverage-report
       - name: Upload merged coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-report
           path: coverage-report/
@@ -947,7 +1003,7 @@ jobs:
   badges:
     name: Coverage Badges
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 5
     needs: coverage
     permissions: {}

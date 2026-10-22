@@ -14,7 +14,7 @@ using StarTrailComposer = HVO.SkyMonitor.VirtualSkyPoc.Pinned.StarTrailComposer;
 
 namespace HVO.SkyMonitor.VirtualSkyPoc;
 
-internal static class Program
+internal static partial class Program
 {
     private const int Size = 640;
     private const int PathRows = 361;
@@ -35,8 +35,43 @@ internal static class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "satellite-overlay")
+        {
+            SatelliteOverlayPoc(args);
+            return;
+        }
+        if (args.Length > 0 && args[0] is "nominal-evaluate" or "nominal-compare")
+        {
+            if (args.Length == 3 && args[0] == "nominal-evaluate")
+                NominalCausalEvaluation.Publish(args[2], NominalCausalEvaluation.Evaluate(args[1]));
+            else if (args.Length == 4 && args[0] == "nominal-compare")
+                NominalCausalEvaluation.Publish(args[3], NominalPredictionComparison.Compare(args[1], args[2]));
+            else throw new ArgumentException("Usage: nominal-evaluate PUBLIC_RAW_ROOT NEW_REPORT.json; nominal-compare EVALUATION.json PUBLIC_PREDICTION_ROOT NEW_REPORT.json; see NOMINAL-EVALUATION.md.");
+            return;
+        }
+        if (args.Length > 0 && args[0] == "satellite-resources")
+        {
+            OrbitalPopulationPoc(args);
+            return;
+        }
+        if (args.Length == 10 && args[0] == "satellite-predict")
+        {
+            await OrbitalPredictPoc(args).ConfigureAwait(false);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "satellite-config")
+        {
+            if (File.Exists(args[1])) throw new ArgumentException("Use a new settings path.");
+            WriteJson(args[1], Config("SolarDriven"));
+            return;
+        }
+        if ((args.Length == 7 && args[0] == "satellite-reference") || ((args.Length is 11 or 16 or 21 or 26) && args[0] == "satellite-tracks"))
+        {
+            await SatellitePoc(args).ConfigureAwait(false);
+            return;
+        }
         if (args.Length != 3 || args[0] is not ("samples" or "day" or "measure" or "details"))
-            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure|details OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT");
+            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure|details OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT; or satellite-config SETTINGS_PATH; see SATELLITE-POC.md for satellite-tracks and satellite-reference inputs.");
         var output = Path.GetFullPath(args[1]);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
             throw new ArgumentException("Use a new empty output directory; retained evidence is immutable.");

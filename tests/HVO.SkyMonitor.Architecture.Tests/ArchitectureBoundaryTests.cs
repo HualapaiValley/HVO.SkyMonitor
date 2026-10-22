@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.Tests;
 [TestClass]
 public sealed class ArchitectureBoundaryTests
 {
+    public TestContext TestContext { get; set; } = null!;
     private const string AgentCore = "HVO.SkyMonitor.AgentCore";
     private const string Astronomy = "HVO.SkyMonitor.Astronomy";
     private const string Imaging = "HVO.SkyMonitor.Imaging";
@@ -21,13 +22,20 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
     private const string CameraAgentReplay = "HVO.SkyMonitor.CameraAgent.Replay";
     private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
+
+    // hvo-sky (#1317), CameraAgent's runtime client: a separate executable that reaches CameraAgent only over its HTTP
+    // operations API, so it references no host project; its terminal interface, 'hvo-sky ui', draws with TerminalUi.
+    private const string CameraAgentCli = "HVO.SkyMonitor.CameraAgent.Cli";
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
-    private const string DeploymentDistribution = "HVO.SkyMonitor.Deployment.Distribution";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
+
+    // What the terminal programs share (#1317): HVO Dark for Terminal.Gui, used by the installer's wizard and hvo-sky.
+    // Its dependency rule is asserted by TerminalUiBoundaryIsNarrow.
+    private const string TerminalUi = "HVO.SkyMonitor.TerminalUi";
 
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
     // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
@@ -71,13 +79,16 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
+            [CameraAgentCli] = Set(TerminalUi),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
             [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
-            [DeploymentDistribution] = Set(DeploymentContracts),
-            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
+            [TerminalUi] = Set(),
+            // The installer verifies releases by release.json and SHA256SUMS (#1309); no project holds a signing trust
+            // root since the signed manifests were retired (#1310). Its wizard draws with TerminalUi (#1317).
+            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, TerminalUi)
         };
 
     private static readonly IReadOnlySet<string> SharedTestProjects = Set(
@@ -109,12 +120,244 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
         "HVO.SkyMonitor.CameraAgent.LogicHost.Tests");
 
+    private static readonly string[] ShippedSourceRoots = ["src", "tools"];
+
     private static readonly IReadOnlySet<string> CameraAgentImplementations = Set(
         CameraAgent,
+        CameraAgentCli,
         CameraAgentCommon,
         CameraAgentZwo,
         CameraAgentReplay,
         CameraAgentReplayRunner);
+
+    /// <summary>
+    /// The key-signed manifests and indexes are retired (owner decision 2026-10-16, #1310): no project embeds a signing
+    /// trust root, and none references the signed distribution layer that held one. A release is trusted by SHA256SUMS
+    /// and its build provenance attestations.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void Repository_EmbedsNoReleaseSigningTrustRoot()
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var keys = ShippedSourceRoots
+            .SelectMany(directory => Directory.EnumerateFiles(Path.Combine(root, directory), "*.pem", SearchOption.AllDirectories))
+            .Select(path => Path.GetRelativePath(root, path))
+            .ToArray();
+        Assert.IsEmpty(keys, string.Join(", ", keys));
+        Assert.DoesNotContain(
+            "HVO.SkyMonitor.Deployment.Distribution/",
+            File.ReadAllText(Path.Combine(root, "HVO.SkyMonitor.v9.slnx")),
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherFactsReferenceNoHostHttpOrPersistenceNamespace()
+    {
+        var repository = Repository.Value;
+        var project = repository.Projects[Processing];
+        Assert.IsTrue(project.References.All(reference => reference is AgentCore or Astronomy or Imaging));
+        Assert.IsEmpty(project.FrameworkReferences);
+        Assert.IsEmpty(project.PackageReferences);
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(project), type => CompiledDependencyChecker.SpaceWeather(type.Type), CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherHostWorkflowReferencesNoDeliveryOrEnvironmentalSource()
+    {
+        var project = Repository.Value.Projects[CameraAgentCommon];
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
+            type => type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal),
+            type => new[] { "Outbox", "Delivery", "Notification", "IEnvironmentalSource" }.Any(word =>
+                type.Namespace.Contains(word, StringComparison.Ordinal) || type.Name.Contains(word, StringComparison.Ordinal)));
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherEndpointsReferenceOnlyTheOperationsContract()
+    {
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgent]),
+            type => type.Type.Name.StartsWith("CameraAgentSpaceWeatherOperationsEndpoints", StringComparison.Ordinal),
+            type => type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal)
+                && !type.Name.StartsWith("SpaceWeatherOperations", StringComparison.Ordinal));
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
+    {
+        var checkedCount = 0;
+        var violations = new List<string>();
+        var sourceOwners = ReviewedCaptureOrRecipeFiles();
+        foreach (var project in Repository.Value.Projects.Values.Where(p => p.Kind == ProjectKind.Production))
+        {
+            var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
+                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
+            checkedCount += result.TypesChecked;
+            violations.AddRange(result.Violations);
+        }
+        Assert.IsGreaterThan(0, checkedCount);
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherMetadataRuleRejectsInternalFileCall()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "FileDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("System.IO.File", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsGlobalImportAndSameAssemblyTypeDefinition()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.CaptureOrRecipe(type.Type) && type.Type.Name == "GlobalImportDependencyControl", CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherMetadataRuleCoversBaseSignaturesAndAttributeArguments()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "SignatureDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.AreEqual(1, result.TypesChecked);
+        foreach (var name in new[] { "System.IO.MemoryStream", "System.IO.FileInfo", "System.IO.DirectoryInfo", "System.IO.BinaryReader", "System.Net.Http.HttpClient" })
+            Assert.IsTrue(result.Violations.Any(v => v.Contains(name, StringComparison.Ordinal)), name);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureOrRecipeSelectionCoversReviewedSourceFiles()
+    {
+        var files = ReviewedCaptureOrRecipeFiles();
+        var selected = SelectedCaptureOrRecipeTypes(files);
+        var covered = files.Where(file => selected.Any(type => type.Documents.Contains(file))).ToArray();
+        // Conservative declaration detection: an ambiguous keyword stays required,
+        // so a source file cannot silently disappear from the parity assertion.
+        var excluded = files.Except(covered).Where(file => !System.Text.RegularExpressions.Regex.IsMatch(
+            MaskCSharpCommentsAndLiterals(File.ReadAllText(file)), @"\b(?:class|struct|interface|enum|record|delegate)\b")).ToArray();
+        TestContext.WriteLine($"Reviewed source set={files.Count}; covered={covered.Length}; excluded without types={excluded.Length}");
+        foreach (var file in excluded) TestContext.WriteLine($"Excluded without types: {Path.GetRelativePath(Repository.Value.Root, file)}");
+        Assert.IsGreaterThan(0, files.Count);
+        var missing = files.Except(covered).Except(excluded).Select(file => Path.GetRelativePath(Repository.Value.Root, file)).ToArray();
+        Assert.IsEmpty(missing, "Reviewed source owners absent from compiled selection: " + string.Join(", ", missing));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureOrRecipeSelectionIncludesReviewedNamedOwners()
+    {
+        var selected = SelectedCaptureOrRecipeTypes(ReviewedCaptureOrRecipeFiles());
+        foreach (var name in new[] { "LogicHostRecipeExecutionAdapter", "CentralDerivativeRecipeCatalog" })
+        {
+            Assert.IsTrue(selected.Any(type => type.Type.Name == name), name);
+            TestContext.WriteLine($"Selected named owner: {name}");
+        }
+        var schedulePath = Path.Combine(Repository.Value.Root, "src", CameraAgentCommon, "Scheduling", "CaptureScheduleEngine.cs");
+        var scheduleTypes = selected.Where(type => type.Documents.Contains(schedulePath)).ToArray();
+        Assert.IsNotEmpty(scheduleTypes);
+        foreach (var type in scheduleTypes) TestContext.WriteLine($"Selected schedule owner: {type.Type.Namespace}.{type.Type.Name}");
+        var agentTypes = selected.Where(type => type.Type.Assembly == AgentCore && type.Type.Name.StartsWith("Capture", StringComparison.Ordinal)).ToArray();
+        Assert.IsNotEmpty(agentTypes);
+        foreach (var type in agentTypes) TestContext.WriteLine($"Selected AgentCore owner: {type.Type.Name}");
+        Assert.IsTrue(CompiledDependencyChecker.CaptureOrRecipe(new(AgentCore, "Flat", "recipeOwner+Nested")));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsSourcePathOnlyOwnersIncludingBodylessAndNestedTypes()
+    {
+        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "RecipeOwnershipControls.cs");
+        var sourceOwners = new HashSet<string>(StringComparer.Ordinal) { file };
+        Assert.IsTrue(ReviewedCaptureOrRecipeFile(file));
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => type.Type.Namespace == "HVO.SkyMonitor.Tests.Flat" && type.Documents.Contains(file)
+                && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(3, result.TypesChecked);
+        foreach (var type in result.SelectedTypes)
+        {
+            Assert.IsFalse(CompiledDependencyChecker.CaptureOrRecipe(type.Type), type.Type.Name);
+            Assert.IsTrue(result.Violations.Any(v => v.Contains(type.Type.Name + " ->", StringComparison.Ordinal)
+                && v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)), type.Type.Name);
+            TestContext.WriteLine($"Source-only control rejected: {type.Type.Name}");
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsTypeNameOnlyOwner()
+    {
+        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "BoundaryNameControl.cs");
+        Assert.IsFalse(ReviewedCaptureOrRecipeFile(file));
+        var sourceOwners = ReviewedCaptureOrRecipeFiles();
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => type.Type.Name == "RecipeNameDependencyControl" && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners),
+            CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsFalse(result.SelectedTypes.Single().Documents.Overlaps(sourceOwners));
+        Assert.AreEqual("HVO.SkyMonitor.Tests.Flat", result.SelectedTypes.Single().Type.Namespace);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CompiledOwnershipFailsWhenPortablePdbIsMissing()
+    {
+        var directory = Directory.CreateTempSubdirectory("hvo-ownership-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "control.dll");
+            File.Copy(typeof(ArchitectureBoundaryTests).Assembly.Location, path);
+            var error = Assert.Throws<FileNotFoundException>(() => CompiledDependencyChecker.Check(path, _ => true, _ => false));
+            StringAssert.Contains(error.Message, "Portable PDB required for complete source ownership selection");
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    private static CompiledDependencyChecker.OwnedType[] SelectedCaptureOrRecipeTypes(IReadOnlySet<string> sourceOwners) =>
+        [.. Repository.Value.Projects.Values.Where(project => project.Kind == ProjectKind.Production)
+            .SelectMany(project => CompiledDependencyChecker.Check(ProductionAssembly(project),
+                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather).SelectedTypes)];
+
+    private static HashSet<string> ReviewedCaptureOrRecipeFiles() => Directory.EnumerateFiles(Path.Combine(Repository.Value.Root, "src"), "*.cs", SearchOption.AllDirectories)
+        .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
+        .Where(ReviewedCaptureOrRecipeFile).ToHashSet(StringComparer.Ordinal);
+
+    private static bool ReviewedCaptureOrRecipeFile(string file)
+    {
+        var relative = Path.GetRelativePath(Repository.Value.Root, file);
+        var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+        // Exact fc52a26f reviewed selector; paths are repository-relative.
+        return relative.Contains("Capture", StringComparison.OrdinalIgnoreCase)
+            || relative.Contains("RawIngress", StringComparison.OrdinalIgnoreCase)
+            || relative.Contains("Recipe", StringComparison.OrdinalIgnoreCase)
+            || relative.StartsWith(Path.Combine("src", Processing), StringComparison.Ordinal)
+                && !relative.StartsWith(Path.Combine("src", Processing, "SpaceWeather") + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || System.Text.RegularExpressions.Regex.IsMatch(source, @"namespace\s+[^;{]*(?:Capture|RawIngress|Recipes)");
+    }
+
+    // Use the existing graph's MSBuild evaluation to locate Release outputs,
+    // including RID-specific runners; no new project reference or lane is needed.
+    private static string ProductionAssembly(ProjectInfo project)
+    {
+        var path = project.ReleaseAssemblyPath;
+        Assert.IsTrue(File.Exists(path), $"Build the Release solution before architecture checks: {path}");
+        return path;
+    }
 
     [TestMethod]
     [TestCategory("Integration")]
@@ -181,6 +424,31 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public void TerminalUiBoundaryIsNarrow()
+    {
+        // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
+        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
+        // Terminal.Gui with it. hvo-sky is CameraAgent's terminal client, not a host: it counts with CameraAgent for test
+        // ownership, and its 'ui' draws with TerminalUi.
+        var repository = Repository.Value;
+        Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
+        Assert.AreEqual(ProjectKind.Production, project.Kind);
+        Assert.IsTrue(AllowedProductionReferences.TryGetValue(TerminalUi, out var allowed) && allowed.Count == 0,
+            $"{TerminalUi} must be documented with an empty reference set.");
+        Assert.IsEmpty(project.References, $"{TerminalUi} must reference no project: {string.Join(", ", project.References)}");
+        CollectionAssert.AreEqual(new[] { "Terminal.Gui" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui only.");
+
+        var hosts = repository.Projects.Values
+            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.Name != CameraAgentCli
+                && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+            .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
+            .Select(candidate => candidate.Name)
+            .ToArray();
+        Assert.IsEmpty(hosts, $"No host draws a terminal: {string.Join(", ", hosts)}");
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public void ProductionTransitiveGraphDoesNotReachHostsOrTestProjects()
     {
@@ -198,14 +466,12 @@ public sealed class ArchitectureBoundaryTests
         // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
         // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
-        // delegating to LinuxOpenFlags, and no importer outside the four declared tables may spell the values on a
+        // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
-        // Storage.FileSystem (#592) carries the table the shared primitives use; #587 retires the CameraAgent copy
-        // in favour of it, at which point the CameraAgent entry below and one caller leave this guard.
+        // CameraAgent (#587) delegates to Storage.FileSystem; its public compatibility facade owns no table.
         var root = RepositoryGraph.FindRepositoryRoot();
         string[] tableFiles =
         [
-            Path.Combine("src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Storage.FileSystem", "LinuxOpenFlags.cs"),
@@ -223,6 +489,11 @@ public sealed class ArchitectureBoundaryTests
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var violations = new List<string>();
         var callers = 0;
+
+        var cameraAgentFacade = File.ReadAllText(Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"));
+        Assert.IsTrue(cameraAgentFacade.Contains("HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags", StringComparison.Ordinal));
+        Assert.IsFalse(cameraAgentFacade.Contains("Architecture.Arm64", StringComparison.Ordinal),
+            "CameraAgent's public compatibility facade must not regain a private ABI table.");
 
         foreach (var table in tableFiles.Where(table => !File.Exists(Path.Combine(root, table))))
         {
@@ -261,10 +532,9 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        // Seven importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
-        // SQLite catalog resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher, which delegate to
-        // the shared per-architecture flag table.
-        Assert.AreEqual(7, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Six importers: the remaining authenticated CameraAgent callers, deployment CLI, SQLite catalog
+        // resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher.
+        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
@@ -1178,7 +1448,10 @@ public sealed class ArchitectureBoundaryTests
         ProjectKind Kind,
         IReadOnlyList<string> References,
         IReadOnlyList<string> PackageReferences,
-        IReadOnlyList<string> FrameworkReferences);
+        IReadOnlyList<string> FrameworkReferences)
+    {
+        internal string ReleaseAssemblyPath { get; init; } = "";
+    }
 
     private sealed class RepositoryGraph
     {
@@ -1234,7 +1507,8 @@ public sealed class ArchitectureBoundaryTests
                     kind,
                     references,
                     evaluations.SelectMany(item => item.PackageReferences).Distinct(StringComparer.Ordinal).ToArray(),
-                    evaluations.SelectMany(item => item.FrameworkReferences).Distinct(StringComparer.Ordinal).ToArray()));
+                    evaluations.SelectMany(item => item.FrameworkReferences).Distinct(StringComparer.Ordinal).ToArray())
+                { ReleaseAssemblyPath = evaluation.TargetPath });
             }
 
             return new RepositoryGraph(root, projects);
@@ -1416,7 +1690,7 @@ public sealed class ArchitectureBoundaryTests
             process.StartInfo.ArgumentList.Add(projectPath);
             process.StartInfo.ArgumentList.Add("-nologo");
             process.StartInfo.ArgumentList.Add($"-property:Configuration={configuration}");
-            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName");
+            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
             process.StartInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
 
             process.Start();
@@ -1443,7 +1717,8 @@ public sealed class ArchitectureBoundaryTests
                 .Select(item => item.GetProperty("Identity").GetString()!)
                 .ToArray();
 
-            return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences);
+            return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences)
+            { TargetPath = root.GetProperty("Properties").GetProperty("TargetPath").GetString()! };
         }
 
         private static string[] GetItemValues(JsonElement items, string itemName, string propertyName) =>
@@ -1480,6 +1755,9 @@ public sealed class ArchitectureBoundaryTests
             string AssemblyName,
             string[] ProjectReferencePaths,
             string[] PackageReferences,
-            string[] FrameworkReferences);
+            string[] FrameworkReferences)
+        {
+            internal string TargetPath { get; init; } = "";
+        }
     }
 }

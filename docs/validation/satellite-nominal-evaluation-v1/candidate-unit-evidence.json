@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "utc": "2026-10-20T08:19:00.442085+00:00",
+  "sourceCommit": "583cc485d70007e2ca97672b0165bcb30af03cdb",
+  "releaseBuildExitCode": 0,
+  "originalUnitExitCode": 1,
+  "originalUnitOutcomes": {
+    "Passed": 9004,
+    "Failed": 1,
+    "NotExecuted": 119
+  },
+  "originalFailure": {
+    "test": "Prepare_WritesSixteenColoursOnlyForAnAnsi16Terminal",
+    "trx": "_hvo-dev-03_2026-10-20_07_28_03_net10.0.trx",
+    "sha256": "F385968CF059E9F09563B63A9E736AFF13EAE1C37119C74B826B52DF54EF2B03",
+    "projectCases": 1751
+  },
+  "environmentCounterfactual": {
+    "unchangedSingleTestOriginalEnvironment": "Failed",
+    "unchangedSingleTestColourCapableEnvironment": "Passed",
+    "changedValues": {
+      "TERM": "dumb -> xterm-256color",
+      "COLORTERM": "empty -> truecolor",
+      "NO_COLOR": "1 -> absent"
+    },
+    "causalClaim": "The combined terminal-environment change changes this one test outcome on unchanged source/binary. No claim isolates one variable or fixes production code."
+  },
+  "affectedReplay": {
+    "path": "terminal-colour-project.trx",
+    "sha256": "D32BAFBFA2C2BD63252213857E385C2BF533DAA641C9F5D5AF20BF9DCABE6AB1",
+    "cases": 1751,
+    "outcomes": {
+      "Passed": 1635,
+      "NotExecuted": 116
+    },
+    "identicalCompleteTestIdSet": true,
+    "sourceUnchanged": true,
+    "environmentExplicitlyChanged": true,
+    "result": "PASS"
+  },
+  "composite": {
+    "assemblies": 21,
+    "total": 9124,
+    "outcomes": {
+      "Passed": 9005,
+      "NotExecuted": 119
+    },
+    "otherOriginalAssembliesRetained": 20,
+    "qualification": "Composite local Unit evidence with one environment-corrected affected-project replay. Original full command remains exit1; this is not a new all-green native full-suite run."
+  },
+  "trxFiles": [
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_55_net10.0[2].trx",
+      "sha256": "B1F1EBACFC2FFFC2E722F785133806A8DE27FB7E5FD0F51D35B17D7354AC2FEC"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_08_net10.0.trx",
+      "sha256": "5B952763BAB9FC2A626DCC3F2108E53FE5315F6416304D577351D0C8C7EC483C"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_10_net10.0.trx",
+      "sha256": "CDF1EEC9655D047983D244FF241C75E13BDB6DAE04B514ED47DD6195A2223E6B"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_58_net10.0.trx",
+      "sha256": "94553374645BC88385D976B09218A37584C13D18CCBE5B4380053349F3053987"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_05_net10.0[2].trx",
+      "sha256": "8E27DB5F76AFE07CCBD5469109AC7BF41654A7FCB789516314D224BC7FEAB46D"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_55_net10.0[1].trx",
+      "sha256": "ADE5A4215BDE85E13A627224B4FF52D09CCD39A1CCCB04FE9157DB53E907B049"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_05_net10.0.trx",
+      "sha256": "1C4D5A63036BC36510BB1AACE26E275F50E432F4482BB15617A003C9808023F2"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_54_net10.0[2].trx",
+      "sha256": "CC8397D3042B3AF98C50959062A157B04F285FF3A1D3BB448E27B2B992A56020"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_12_net10.0.trx",
+      "sha256": "B51F07A897F1D0639BF0777EB3A395C222D893529A8EF9D4B3610B32D68567E8"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_54_net10.0[1].trx",
+      "sha256": "7252AF24F6F86C077D83EF5C977F546DE7885CA5175488A5BF676BD514792FDD"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_59_net10.0[1].trx",
+      "sha256": "4428D5149FBF23D7BA2E6225655B907A7AF283F1139D2C65F52B150369277A8C"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_59_net10.0.trx",
+      "sha256": "5ED1D7AC82A9FE495274192D571737B2F2360008827651623A1DEEC0D5BA6DCF"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_24_net10.0.trx",
+      "sha256": "9DDB3F86FD5512152A9644B90A9513F2B1E36BF8E523A556DF7565201E98A8BF"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_17_net10.0.trx",
+      "sha256": "7B5E9069E686DB5E9453B89099344A685AE41D5773794DDFDE3AE34868A37499"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_55_net10.0.trx",
+      "sha256": "AE40AFC009BF4E913A1A0A1AEF95B5EBE54CB86E5C96401BC2C12B8A175C8A59"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_54_net10.0[3].trx",
+      "sha256": "55AC8E59D2367E77D8D99EC99F6B04DB2B30271AD23D3F87F39E8C29FA50D873"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_05_net10.0[1].trx",
+      "sha256": "0AEB75C4F839377CEA5A284B11D7C47D054892054DBC7A1AECEBA909D3B4F95F"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_26_net10.0.trx",
+      "sha256": "53D4C259BD9C9761A910CED61B38CC4BBE0BDB90F95FE6C480585FEB0D6A47B2"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_07_net10.0.trx",
+      "sha256": "30EA15A8BC83A98B2DD2494B76CDCAD3C49E0EB113324949A85B9A2782CAB5CC"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_28_03_net10.0.trx",
+      "sha256": "F385968CF059E9F09563B63A9E736AFF13EAE1C37119C74B826B52DF54EF2B03"
+    },
+    {
+      "path": "_hvo-dev-03_2026-10-20_07_27_54_net10.0.trx",
+      "sha256": "1E98D5CC3A4EC16AE96F47B83F41D010C25486DFA43C2F05130AF717978A020D"
+    }
+  ]
+}

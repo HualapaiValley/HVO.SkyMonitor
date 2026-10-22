@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class UpgradePreflightTests
+public sealed partial class UpgradePreflightTests
 {
     private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
     private const string LegacyIdentityMigration = "20251125021552_CreateLocalIdentity";
@@ -92,6 +92,63 @@ public sealed class UpgradePreflightTests
         Assert.AreEqual(0, report.Findings.Count);
         Assert.AreEqual("compatible", report.Outcome);
         Assert.AreEqual(CameraAgentStateContract.Current, report.CandidateStateContract);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("NULL", "null")]
+    [DataRow("42", "integer")]
+    public void Evaluate_MigrationHistoryRowThatIsNotText_IsReportedUnreadableRatherThanThrown(string migrationId, string type)
+    {
+        // #1314 R15: a recovery without a snapshot can read a history a candidate rewrote, so a row in another shape is
+        // a lineage the preflight could not read, in the same consolidated report, never an exception.
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+        var path = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // The test composes a fixed history row for a private disposable database.
+            command.CommandText =
+                "CREATE TABLE __EFMigrationsHistory (MigrationId, ProductVersion TEXT);" +
+                $"INSERT INTO __EFMigrationsHistory VALUES ({migrationId}, '10.0.0');";
+#pragma warning restore CA2100
+            command.ExecuteNonQuery();
+        }
+
+        var report = Evaluate(fixture);
+
+        var unreadable = report.Findings.Single(finding => finding.Code == "identity-lineage-unreadable");
+        Assert.IsTrue(unreadable.Blocking);
+        StringAssert.Contains(unreadable.Observed, $"stored as {type}, not text", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(2, true)]
+    [DataRow(3, false)]
+    public void Evaluate_UndeclaredImageManifestVersionKeepsTheStarsOnlyBoundary(int manifestVersion, bool compatible)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture, CurrentRequirements with { CatalogManifestVersion = null });
+
+        Assert.AreEqual(compatible, report.Compatible, CameraAgentStatePreflight.Render(report));
+        if (!compatible)
+        {
+            var finding = report.Findings.Single(static item => item.Code == "catalog-manifest-version");
+            Assert.AreEqual("3", finding.Observed);
+            Assert.AreEqual("2", finding.Expected);
+            Assert.IsTrue(finding.Blocking);
+        }
     }
 
     [TestMethod]
@@ -1060,7 +1117,11 @@ public sealed class UpgradePreflightTests
                     ID = "daemon",
                     Name = "host",
                     Architecture = "amd64",
-                    ServerVersion = "29.7.2"
+                    ServerVersion = "29.7.2",
+                    MemoryLimit = true,
+                    CpuCfsQuota = true,
+                    PidsLimit = true,
+                    NCPU = 64
                 }), string.Empty));
             }
             if (arguments is ["compose", "version", ..])

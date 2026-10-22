@@ -156,16 +156,25 @@ deploy_images_validate_inspect() {
 deploy_images_build_archive() {
     local component="$1" dockerfile="$2" architecture="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" artifact_root="${10}" builder="${11}"
     local temporary="$artifact_root/.${component}-${architecture}.${run_id}.tmp.tar" config config_name config_digest archive_digest final
+    local source_date_epoch output_options=""
+    local -a build_args=()
+    # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
+    if [[ "$component" == cameraAgent ]]; then
+        source_date_epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$revision")" || return 1
+        build_args=(--build-arg "HVO_SOURCE_REVISION=$revision" --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+            --provenance=false --sbom=false)
+        output_options=",rewrite-timestamp=true"
+    fi
     if [[ -e "$temporary" || -L "$temporary" ]]; then
         [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%u:%h' "$temporary" 2>/dev/null)" == "$(id -u):1" ]] ||
           { deploy_fail images "$component-$architecture" unsafe-temporary; return 1; }
         rm -f -- "$temporary" || { deploy_fail images "$component-$architecture" temporary-remove-failed; return 1; }
     fi
-    docker buildx build --builder "$builder" --platform "linux/$architecture" --file "$REPO_ROOT/$dockerfile" \
+    docker buildx build --builder "$builder" --platform "linux/$architecture" --file "$REPO_ROOT/$dockerfile" "${build_args[@]}" \
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \
-      --tag "$repository:$tag" --output "type=docker,dest=$temporary" "$REPO_ROOT" >/dev/null 2>&1 ||
+      --tag "$repository:$tag" --output "type=docker,dest=$temporary$output_options" "$REPO_ROOT" >/dev/null 2>&1 ||
       { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" build-failed; return 1; }
     chmod 600 "$temporary" || return 1
     config_name="$(tar -xOf "$temporary" manifest.json 2>/dev/null | jq -er 'if type == "array" and length == 1 then .[0].Config else empty end')" ||
@@ -206,33 +215,49 @@ deploy_images_observe_registry() {
         rm -f "$raw"
         return 2
     fi
-    jq -e 'type == "object" and .schemaVersion == 2 and (.manifests | type == "array" and length > 0)' "$raw" >/dev/null 2>&1 ||
+    jq -e 'type == "object" and .schemaVersion == 2 and
+      ((.manifests | type == "array" and length > 0) or
+       ((.mediaType == "application/vnd.oci.image.manifest.v1+json" or .mediaType == "application/vnd.docker.distribution.manifest.v2+json") and
+        (.config.digest | strings | test("^sha256:[0-9a-f]{64}$")) and (.layers | type == "array")))' "$raw" >/dev/null 2>&1 ||
       { rm -f "$raw"; deploy_fail images "$component" invalid-registry-manifest; return 1; }
     manifest_json="$(docker buildx imagetools inspect --builder "$builder" --format '{{json .Manifest}}' "$repository:$tag" 2>/dev/null)" ||
       { rm -f "$raw"; deploy_fail images "$component" parent-digest-inspect-failed; return 1; }
     manifest_digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$manifest_json" 2>/dev/null)" ||
       { rm -f "$raw"; deploy_fail images "$component" parent-digest-invalid; return 1; }
-    jq -e --argjson formatted "$manifest_json" '.manifests == $formatted.manifests' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
-    jq -e '
-      all(.manifests[];
-        ((.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64") and
-          (.digest | test("^sha256:[0-9a-f]{64}$"))) or
-         (.platform.os == "unknown" and .platform.architecture == "unknown" and
-          .annotations["vnd.docker.reference.type"] == "attestation-manifest" and
-          (.annotations["vnd.docker.reference.digest"] | test("^sha256:[0-9a-f]{64}$")))))' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" unexpected-registry-descriptor; return 1; }
-    selected="$(jq -c '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) |
-      {architecture:.platform.architecture,digest:.digest}] | sort_by(.architecture)' "$raw")" || { rm -f "$raw"; return 1; }
-    jq -ne --argjson expected "$platforms_json" --argjson selected "$selected" '
-      ($selected | length) == ($expected | length) and
-      ([$selected[].architecture] | unique | sort) == $expected and
-      ([$selected[].digest] | unique | length) == ($selected | length)' >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
-    jq -e --argjson selected "$selected" '
-      all(.manifests[] | select(.platform.os == "unknown");
-        .annotations["vnd.docker.reference.digest"] as $parent | any($selected[]; .digest == $parent))' "$raw" >/dev/null 2>&1 ||
-      { rm -f "$raw"; deploy_fail images "$component" attestation-parent-mismatch; return 1; }
+    if jq -e 'has("manifests")' "$raw" >/dev/null; then
+        jq -e --argjson formatted "$manifest_json" '.manifests == $formatted.manifests' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
+        jq -e '
+          all(.manifests[];
+            ((.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64") and
+              (.digest | test("^sha256:[0-9a-f]{64}$"))) or
+             (.platform.os == "unknown" and .platform.architecture == "unknown" and
+              .annotations["vnd.docker.reference.type"] == "attestation-manifest" and
+              (.annotations["vnd.docker.reference.digest"] | test("^sha256:[0-9a-f]{64}$")))))' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" unexpected-registry-descriptor; return 1; }
+        selected="$(jq -c '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) |
+          {architecture:.platform.architecture,digest:.digest}] | sort_by(.architecture)' "$raw")" || { rm -f "$raw"; return 1; }
+        jq -ne --argjson expected "$platforms_json" --argjson selected "$selected" '
+          ($selected | length) == ($expected | length) and
+          ([$selected[].architecture] | unique | sort) == $expected and
+          ([$selected[].digest] | unique | length) == ($selected | length)' >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
+        jq -e --argjson selected "$selected" '
+          all(.manifests[] | select(.platform.os == "unknown");
+            .annotations["vnd.docker.reference.digest"] as $parent | any($selected[]; .digest == $parent))' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" attestation-parent-mismatch; return 1; }
+    else
+        # A one-platform build without attestations is a manifest. Its platform lives in the config, not a descriptor.
+        # buildx's .Manifest is only a descriptor here; bind its digest/media type to the raw bytes we just read.
+        local raw_digest
+        raw_digest="$(sha256sum "$raw")"; raw_digest="sha256:${raw_digest%% *}"
+        jq -e --arg digest "$raw_digest" --argjson formatted "$manifest_json" '
+          $formatted.digest == $digest and $formatted.mediaType == .mediaType' "$raw" >/dev/null 2>&1 ||
+          { rm -f "$raw"; deploy_fail images "$component" parent-descriptor-mismatch; return 1; }
+        architecture="$(jq -er 'if length == 1 then .[0] else empty end' <<< "$platforms_json")" ||
+          { rm -f "$raw"; deploy_fail images "$component" platform-manifest-mismatch; return 1; }
+        selected="$(jq -cn --arg architecture "$architecture" --arg digest "$manifest_digest" '[{architecture:$architecture,digest:$digest}]')"
+    fi
     rm -f "$raw"
     source_reference="$repository:$tag"
     while IFS= read -r descriptor; do
@@ -253,6 +278,15 @@ deploy_images_observe_registry() {
 deploy_images_resolve_registry() {
     local component="$1" dockerfile="$2" platforms_json="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" builder="${10}"
     local platforms status
+    local source_date_epoch output_options=""
+    local -a build_args=()
+    # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
+    if [[ "$component" == cameraAgent ]]; then
+        source_date_epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$revision")" || return 1
+        build_args=(--build-arg "HVO_SOURCE_REVISION=$revision" --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+            --provenance=false --sbom=false)
+        output_options=",rewrite-timestamp=true"
+    fi
     if deploy_images_observe_registry "$component" "$platforms_json" "$repository" "$tag" "$revision" "$tree" "$created" "$sdk" "$builder"; then
         return 0
     else
@@ -260,11 +294,16 @@ deploy_images_resolve_registry() {
     fi
     [[ "$status" == 2 ]] || return "$status"
     platforms="$(jq -r 'map("linux/" + .) | join(",")' <<< "$platforms_json")"
-    if ! docker buildx build --builder "$builder" --platform "$platforms" --file "$REPO_ROOT/$dockerfile" \
+    if [[ "$component" == cameraAgent ]]; then
+        build_args+=(--output "type=image,push=true$output_options")
+    else
+        build_args+=(--push)
+    fi
+    if ! docker buildx build --builder "$builder" --platform "$platforms" --file "$REPO_ROOT/$dockerfile" "${build_args[@]}" \
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \
-      --tag "$repository:$tag" --push "$REPO_ROOT" >/dev/null 2>&1; then
+      --tag "$repository:$tag" "$REPO_ROOT" >/dev/null 2>&1; then
         if deploy_images_observe_registry "$component" "$platforms_json" "$repository" "$tag" "$revision" "$tree" "$created" "$sdk" "$builder"; then
             return 0
         fi

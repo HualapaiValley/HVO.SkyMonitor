@@ -94,7 +94,7 @@ public sealed class CalibrationLibraryStoreConflictException : InvalidOperationE
 
 [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
     Justification = "Injected telemetry is owned by the dependency injection container.")]
-public sealed class SqliteCalibrationLibraryStore(
+public sealed partial class SqliteCalibrationLibraryStore(
     IRawCaptureIngress rawCaptureIngress,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
@@ -118,6 +118,8 @@ public sealed class SqliteCalibrationLibraryStore(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, PublishedBundleEvidence> _validatedEvidence =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _validatedEvidenceGate = new();
+    private readonly Dictionary<string, long> _evidenceFailureGenerations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _selectionRecordGate = new();
     private readonly object _activeValidationGate = new();
     private string? _lastRecordedSelectionReason;
@@ -126,12 +128,18 @@ public sealed class SqliteCalibrationLibraryStore(
     private string _activeValidationReason = CalibrationLibraryReasonCodes.Inactive;
     private int _telemetryInventoryInitialized;
 
+    /// <summary>
+    /// Runs after a cached validation has verified a bundle's evidence and before it publishes it to the cache, with the
+    /// bundle identity, so a test can interleave a later validation deterministically.
+    /// </summary>
+    internal Func<string, Task>? BeforeValidatedEvidenceCachedForTest { get; set; }
+
     public async Task<CalibrationLibraryStateSnapshot> InitializeAsync(CancellationToken cancellationToken)
     {
         using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.library.initialize");
         try
         {
-            await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -600,7 +608,7 @@ public sealed class SqliteCalibrationLibraryStore(
     internal async Task<IReadOnlyList<CalibrationReconciliationOperation>> ReadPlannedReconciliationsAsync(
         CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -635,7 +643,7 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             throw new ArgumentException("The calibration reconciliation operation is invalid.", nameof(operation));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -676,7 +684,7 @@ public sealed class SqliteCalibrationLibraryStore(
         string reason,
         CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -716,7 +724,7 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             throw new ArgumentException("The calibration reconciliation result is invalid.", nameof(reason));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -750,7 +758,7 @@ public sealed class SqliteCalibrationLibraryStore(
             activity?.SetStatus(ActivityStatusCode.Error);
             throw new ArgumentException($"The calibration bundle is invalid ({validation.FieldPath}).", nameof(bundle));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         var bundleJson = CalibrationLibraryContractJson.Serialize(bundle);
         bundle = CalibrationLibraryContractJson.Parse(bundleJson).Value
             ?? throw new InvalidDataException("The canonical calibration bundle could not be parsed.");
@@ -786,6 +794,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 }
                 await precheckTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
+            var generation = EvidenceFailureGeneration(bundleIdentity);
             var evidence = await ValidatePublishedEvidenceAsync(bundle, cancellationToken).ConfigureAwait(false);
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
@@ -802,7 +811,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 await ValidatePersistedArtifactsAsync(
                     connection, transaction, bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                _validatedEvidence[bundleIdentity] = evidence;
+                CacheValidatedEvidence(bundleIdentity, generation, evidence);
                 activity?.SetStatus(ActivityStatusCode.Ok);
                 return existing.Snapshot;
             }
@@ -824,7 +833,7 @@ public sealed class SqliteCalibrationLibraryStore(
                     cancellationToken).ConfigureAwait(false);
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            _validatedEvidence[bundleIdentity] = evidence;
+            CacheValidatedEvidence(bundleIdentity, generation, evidence);
             var snapshot = new CalibrationLibraryBundleSnapshot(
                 bundle, bundleIdentity, "published", null, bundle.CreatedUtc, now);
             var telemetryArtifacts = bundle.Artifacts.Select((artifact, index) =>
@@ -875,7 +884,7 @@ public sealed class SqliteCalibrationLibraryStore(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileRelativePath);
         _ = ResolveSafePath(profileRelativePath);
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1372,6 +1381,56 @@ public sealed class SqliteCalibrationLibraryStore(
                             bundlePath));
                     }
                 }
+            }
+            return holds;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Whether <paramref name="storageRoot"/> is the root this library keeps its evidence under.</summary>
+    internal bool OwnsStorageRoot(string storageRoot) => PathsEqual(_storageRoot, storageRoot);
+
+    /// <summary>
+    /// Holds the payload and manifest of each library master in <paramref name="artifactIds"/>, whatever its bundle's
+    /// own <c>retention_hold</c>: the masters of every active calibration family (#1475). An ID the library does not
+    /// hold as a master has nothing to protect. Like the bundle holds, this is one short read under the library gate.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetMasterRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        IReadOnlyCollection<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+        if (!PathsEqual(_storageRoot, storageRoot) || artifactIds.Count == 0)
+        {
+            return [];
+        }
+        var ids = JsonSerializer.Serialize(artifactIds.Select(static id => id.ToString("N")).ToArray());
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT artifact_id, payload_relative_path, manifest_relative_path
+                FROM calibration_library_artifacts
+                WHERE role = 'master' AND artifact_id IN (SELECT value FROM json_each($ids))
+                ORDER BY artifact_id;
+                """;
+            command.Parameters.AddWithValue("$ids", ids);
+            var holds = new List<ProcessingRetentionHold>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                _ = ResolveSafePath(reader.GetString(1));
+                _ = ResolveSafePath(reader.GetString(2));
+                holds.Add(new ProcessingRetentionHold(
+                    Guid.ParseExact(reader.GetString(0), "N"),
+                    reader.GetString(1),
+                    reader.GetString(2)));
             }
             return holds;
         }
@@ -1952,21 +2011,72 @@ public sealed class SqliteCalibrationLibraryStore(
 
     private async Task ValidateEvidenceCachedAsync(
         CalibrationLibraryBundleSnapshot bundle,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceValidation = false)
     {
-        if (_validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
+        if (!forceValidation && _validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
             Now().ToUnixTimeMilliseconds() - cached.ValidatedUnixMs < TimeSpan.FromMinutes(10).TotalMilliseconds &&
             cached.Files.All(FingerprintMatches))
         {
             return;
         }
-        var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginRead(connection);
-        await ValidatePersistedArtifactsAsync(
-            connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        _validatedEvidence[bundle.BundleIdentitySha256] = evidence;
+        var generation = EvidenceFailureGeneration(bundle.BundleIdentitySha256);
+        try
+        {
+            var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            await ValidatePersistedArtifactsAsync(
+                connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (BeforeValidatedEvidenceCachedForTest is { } beforeCached)
+            {
+                await beforeCached(bundle.BundleIdentitySha256).ConfigureAwait(false);
+            }
+            CacheValidatedEvidence(bundle.BundleIdentitySha256, generation, evidence);
+        }
+        catch
+        {
+            ForgetValidatedEvidence(bundle.BundleIdentitySha256);
+            throw;
+        }
+    }
+
+    /// <summary>The count of failed validations of a bundle, read before a validation starts.</summary>
+    private long EvidenceFailureGeneration(string bundleIdentity)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            return _evidenceFailureGenerations.GetValueOrDefault(bundleIdentity);
+        }
+    }
+
+    /// <summary>
+    /// Caches evidence only when no validation of the bundle has failed since this one started. A validation that
+    /// verified the files before a later one found them corrupt must not republish what that failure evicted.
+    /// </summary>
+    private void CacheValidatedEvidence(string bundleIdentity, long generation, PublishedBundleEvidence evidence)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            if (_evidenceFailureGenerations.GetValueOrDefault(bundleIdentity) == generation)
+            {
+                _validatedEvidence[bundleIdentity] = evidence;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A failed validation outranks every earlier or still-running pass. The cache compares only file length and write
+    /// time, so a stale entry would otherwise let later unforced callers trust bytes this validation just rejected.
+    /// </summary>
+    private void ForgetValidatedEvidence(string bundleIdentity)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            _evidenceFailureGenerations[bundleIdentity] = _evidenceFailureGenerations.GetValueOrDefault(bundleIdentity) + 1;
+            _validatedEvidence.TryRemove(bundleIdentity, out _);
+        }
     }
 
     private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)
@@ -3114,6 +3224,26 @@ public sealed class SqliteCalibrationLibraryStore(
 
     private DateTimeOffset Now()
         => DateTimeOffset.FromUnixTimeMilliseconds(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+
+    /// <summary>
+    /// Whether the journal records a capture admission state other than running: a durable pause, or one being
+    /// acquired. Calibration reconciliation runs at host start, before any pause command can be acknowledged, so this
+    /// decides whether it may move evidence. A journal with no recorded state has never been paused.
+    /// </summary>
+    internal async Task<bool> HasDurablePauseAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using (var exists = connection.CreateCommand())
+        {
+            exists.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'capture_control_state';";
+            if (Convert.ToInt64(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
+                return false;
+        }
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state FROM capture_control_state WHERE state_key = 1;";
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string state &&
+               !string.Equals(state, "running", StringComparison.Ordinal);
+    }
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {

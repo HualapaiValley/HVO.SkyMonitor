@@ -41,6 +41,103 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
     }
 
     [TestMethod]
+    public async Task ReconcileOnceAsync_DurablyPausedAdmission_DeletesNoStageUntilCaptureResumes()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var owners = new RecordingOwnerProvider();
+        var reconciler = new RecordingReconciler([new ProjectedSceneStageReconciliationResult(1, 1, 0)]);
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), owners, reconciler, state, telemetry, TimeProvider.System,
+            new ProjectedSceneStageLifecycleCoordinator(),
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+
+        var held = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(new ProjectedSceneStageReconciliationResult(0, 0, 0), held);
+        Assert.AreEqual(0, owners.CallCount);
+        await admission.ResumeAsync("stage-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        var resumed = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, resumed.Deleted);
+        Assert.AreEqual(1, owners.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ReconcileOnceAsync_PauseIsNotAcknowledgedUntilAnAdmittedPassFinishesDeleting()
+    {
+        // A pass that entered while capture was running is inside its deletions when the installer pauses. The pause
+        // must not be acknowledged until the pass has finished, and no pass may delete after it is.
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var reconciler = new BarrierReconciler();
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), new RecordingOwnerProvider(), reconciler, state, telemetry, TimeProvider.System,
+            new ProjectedSceneStageLifecycleCoordinator(),
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+        var pass = service.ReconcileOnceAsync(CancellationToken.None).AsTask();
+        await reconciler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        var pause = admission.PauseAsync("stage-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+        Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted stage pass was still deleting.");
+
+        reconciler.Release.SetResult();
+        await pass.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
+        reconciler.Reset();
+        var afterPause = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(new ProjectedSceneStageReconciliationResult(0, 0, 0), afterPause);
+        Assert.IsFalse(reconciler.Entered.Task.IsCompleted);
+    }
+
+    [TestMethod]
+    public async Task ReconcileOnceAsync_PendingPauseFinishesStageSyncAndResumesItsCursor()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("The directory-sync fault hook uses Linux handles.");
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var stageRoot = Path.Combine(hold.Path, "staging", "projected-scenes");
+        Directory.CreateDirectory(stageRoot);
+        foreach (var index in Enumerable.Range(0, 3))
+            await File.WriteAllTextAsync(Path.Combine(stageRoot, $".{index}.tmp"), "temporary").ConfigureAwait(false);
+        using var store = new ProjectedSceneStagingStore(Microsoft.Extensions.Options.Options.Create(
+            new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions { RawIngressRoot = hold.Path }));
+        Task<CaptureControlCommandResult>? pause = null;
+        var syncs = 0;
+        store.BeforeDirectorySyncForTest = _ =>
+        {
+            syncs++;
+            if (syncs != 1) return;
+            pause = admission.PauseAsync("stage-interrupt", null, "test", null, CancellationToken.None);
+            Assert.IsFalse(pause.IsCompleted, "Acknowledgement cannot precede the active deletion's directory sync.");
+        };
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
+        using var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), new RecordingOwnerProvider(), store, state, telemetry, TimeProvider.System, lifecycle,
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+        var interrupted = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, interrupted.Deleted);
+        Assert.AreEqual(2, interrupted.BacklogCount);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(2, Directory.EnumerateFiles(stageRoot).Count());
+        Assert.AreEqual(0, (await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false)).Deleted);
+        await admission.ResumeAsync("stage-interrupt-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        var resumed = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, resumed.Deleted);
+        Assert.AreEqual(0, resumed.BacklogCount);
+        Assert.AreEqual(0, (await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false)).Deleted);
+        Assert.AreEqual(3, syncs, "Each stage must be deleted and synced once.");
+        Assert.IsFalse(Directory.EnumerateFiles(stageRoot).Any());
+    }
+
+    [TestMethod]
     public async Task ReconcileLease_BlocksConcurrentStageRegistrationUntilSnapshotAndScanComplete()
     {
         using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
@@ -117,7 +214,8 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
 
         public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
             IReadOnlySet<string> ownedStageKeys,
-            CancellationToken cancellationToken) => ValueTask.FromResult(_results.Dequeue());
+            CancellationToken cancellationToken,
+            CancellationToken interruptionToken = default) => ValueTask.FromResult(_results.Dequeue());
     }
 
     private sealed class MutableOwnerProvider : IProjectedSceneStageOwnerProvider
@@ -136,7 +234,8 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
 
         public async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
             IReadOnlySet<string> ownedStageKeys,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            CancellationToken interruptionToken = default)
         {
             LastProtectedKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
             Entered.SetResult();

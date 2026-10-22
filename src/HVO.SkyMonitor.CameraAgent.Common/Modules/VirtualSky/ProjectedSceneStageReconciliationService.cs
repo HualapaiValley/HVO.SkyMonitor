@@ -13,14 +13,16 @@ internal sealed class ProjectedSceneStageReconciliationService(
     RawIngressTelemetry telemetry,
     TimeProvider timeProvider,
     ProjectedSceneStageLifecycleCoordinator lifecycle,
-    ILogger<ProjectedSceneStageReconciliationService> logger) : BackgroundService
+    ILogger<ProjectedSceneStageReconciliationService> logger,
+    Capture.CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private static readonly TimeSpan BacklogDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PeriodicDelay = TimeSpan.FromMinutes(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await rawIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
+        while (!await rawIngress.InitializeForOperationsAsync(stoppingToken).ConfigureAwait(false))
+            await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, stoppingToken).ConfigureAwait(false);
         while (!stoppingToken.IsCancellationRequested)
         {
             ProjectedSceneStageReconciliationResult result;
@@ -46,13 +48,31 @@ internal sealed class ProjectedSceneStageReconciliationService(
     internal async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileOnceAsync(
         CancellationToken cancellationToken)
     {
-        using var lease = await lifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
-        var owned = await ownerProvider.GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
-        var protectedKeys = new HashSet<string>(owned, StringComparer.Ordinal);
-        protectedKeys.UnionWith(lease.PendingStageKeys);
-        var result = await reconciler.ReconcileAsync(protectedKeys, cancellationToken).ConfigureAwait(false);
-        telemetry.RecordProjectedSceneReconciliation(result);
-        state.SetProjectedSceneBacklog(result.BacklogCount);
-        return result;
+        // Stage reconciliation deletes unowned stages, so it is held with retention. An admitted pass keeps its
+        // maintenance lease until reconciliation returns.
+        using var maintenance = await Capture.CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
+        if (maintenance.HeldBy is { } heldBy)
+        {
+            logger.MaintenanceHeld("Projected-scene stage reconciliation", heldBy);
+            return new(0, 0, 0);
+        }
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, maintenance.InterruptionToken);
+        var passToken = interruption.Token;
+        try
+        {
+            using var lease = await lifecycle.AcquireReconciliationLeaseAsync(passToken).ConfigureAwait(false);
+            var owned = await ownerProvider.GetOwnedStageKeysAsync(passToken).ConfigureAwait(false);
+            var protectedKeys = new HashSet<string>(owned, StringComparer.Ordinal);
+            protectedKeys.UnionWith(lease.PendingStageKeys);
+            var result = await reconciler.ReconcileAsync(protectedKeys, cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
+            telemetry.RecordProjectedSceneReconciliation(result);
+            state.SetProjectedSceneBacklog(result.BacklogCount);
+            return result;
+        }
+        catch (OperationCanceledException) when (maintenance.InterruptionToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Keep the existing backlog and cursor; the next pass rediscovers uninspected stages.
+            return new(0, 0, 1);
+        }
     }
 }

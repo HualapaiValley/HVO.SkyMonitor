@@ -63,6 +63,28 @@ expect_suites() {
   done
 }
 
+secret_scan_contract_cases=0
+expect_secret_scan_contract() {
+  local expected="$1" event_name="$2" base_sha="$3" head_sha="$4" output
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  grep -Fxq "secret_scan_contract=$expected" <<< "$output" || {
+    printf 'Expected secret_scan_contract=%s, received %s\n' "$expected" "$output" >&2
+    exit 1
+  }
+  ((secret_scan_contract_cases += 1))
+}
+
+release_scripts_cases=0
+expect_release_scripts() {
+  local expected="$1" event_name="$2" base_sha="$3" head_sha="$4" output
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  grep -Fxq "release_scripts=$expected" <<< "$output" || {
+    printf 'Expected release_scripts=%s, received %s\n' "$expected" "$output" >&2
+    exit 1
+  }
+  ((release_scripts_cases += 1))
+}
+
 expect_components() {
   local expected_complete="$1" expected_shared="$2" expected_cameraagent="$3"
   local expected_logichost="$4" expected_combined="$5" expected_delivery="$6"
@@ -123,6 +145,7 @@ allowlisted_paths=(
   "README.md"
   "AGENTS.md"
   "CLAUDE.md"
+  "CHANGELOG.md"
   "THIRD-PARTY-NOTICES.md"
   ".agents/skills/pr-lifecycle/SKILL.md"
   ".devcontainer/devcontainer.json"
@@ -158,7 +181,116 @@ summary_file="$work_root/.git/classification-summary.md"
 grep -Fq 'Mode: **reduced**' "$summary_file"
 grep -Fq 'Deployment contracts: **false**' "$summary_file"
 grep -Fq 'Complete matrix: **false**' "$summary_file"
+grep -Fq 'Secret scan contract: **false**' "$summary_file"
+grep -Fq 'Release scripts: **false**' "$summary_file"
 grep -Fq 'Deployment reason: pull request does not change deployment-contract inputs' "$summary_file"
+
+# The version pin lives in ci:secret-scan. Both workflows wire in the scanner;
+# a full-mode PR on an unrelated source path must still skip the contract cases.
+expect_secret_scan_contract false pull_request "$base_sha" "$head_sha"
+expect_secret_scan_contract true push "$base_sha" "$head_sha"
+expect_secret_scan_contract true workflow_dispatch "$base_sha" "$head_sha"
+secret_scan_contract_paths=(
+  "scripts/ci:secret-scan"
+  "scripts/test:ci-secret-scan"
+  ".gitleaks.toml"
+  ".gitleaksignore"
+  "docs/.gitleaksignore"
+  "docs/nested/fixture.gitleaksignore"
+  ".gitattributes"
+  "scripts/.gitattributes"
+  "tests/fixtures/x/.gitattributes"
+  ".github/workflows/development-v1.yml"
+  ".github/workflows/ci.yml"
+  "scripts/ci:classify"
+)
+for path in "${secret_scan_contract_paths[@]}"; do
+  for change in add modify; do
+    contract_base="$(git -C "$work_root" rev-parse HEAD)"
+    if [[ "$change" == add ]]; then commit_file "$path"; else update_file "$path"; fi
+    contract_head="$(git -C "$work_root" rev-parse HEAD)"
+    expect_secret_scan_contract true pull_request "$contract_base" "$contract_head"
+  done
+done
+contract_base="$(git -C "$work_root" rev-parse HEAD)"
+commit_file "src/HVO.SkyMonitor.CameraAgent/Components/Unrelated.razor"
+contract_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_secret_scan_contract false pull_request "$contract_base" "$contract_head"
+# Deleting a gated path must retain the contract, even though its tree entry is gone.
+contract_base="$contract_head"
+git -C "$work_root" rm --quiet .gitleaks.toml
+git -C "$work_root" commit --quiet -m "Delete scanner configuration"
+contract_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_secret_scan_contract true pull_request "$contract_base" "$contract_head"
+
+# The pre-release scripts' tests run for their scripts, the pre-release workflow, the release tool, install.sh and its
+# tests (#1311) and the Preflight wiring that runs them (#1309). Any other PR path, including other release scripts, the
+# installer's other sources and the scanner's own inputs, skips them; non-PR events keep the full-mode convention.
+expect_release_scripts false pull_request "$base_sha" "$head_sha"
+expect_release_scripts true push "$base_sha" "$head_sha"
+expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
+release_scripts_paths=(
+  "scripts/release:cameraagent-publish"
+  "scripts/release:check-cameraagent-publish"
+  "scripts/cameraagent-release.targets"
+  "scripts/test:cameraagent-r2r"
+  "scripts/time-data:update"
+  "scripts/release:assets"
+  "scripts/release:combine-images"
+  "scripts/test:release-images"
+  "scripts/release:check-image-labels"
+  "scripts/release:push-image"
+  "scripts/release:prerelease-gate"
+  "scripts/release:prerelease-check"
+  "scripts/release:publish-prerelease"
+  "scripts/release:version"
+  "scripts/release:notes"
+  "scripts/release:gate"
+  "scripts/release:check-environment"
+  "scripts/release:publish"
+  "scripts/release:tag-latest"
+  "scripts/test:release-install"
+  "scripts/test:release-scripts"
+  "scripts/lib/deployment-installer-qualification.sh"
+  "scripts/lib/github-api.sh"
+  "scripts/lib/releases.sh"
+  "src/HVO.SkyMonitor.Deployment.Cli/install.sh"
+  "scripts/test:install-sh"
+  "tests/fixtures/install-sh/fake-command"
+  "tests/fixtures/install-sh/hvo-sky-install"
+  ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
+  ".github/workflows/release.yml"
+  "Directory.Build.props"
+  "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+  "tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj"
+  ".github/workflows/development-v1.yml"
+  "scripts/ci:classify"
+)
+for path in "${release_scripts_paths[@]}"; do
+  for change in add modify; do
+    release_base="$(git -C "$work_root" rev-parse HEAD)"
+    if [[ "$change" == add ]]; then commit_file "$path"; else update_file "$path"; fi
+    release_head="$(git -C "$work_root" rev-parse HEAD)"
+    expect_release_scripts true pull_request "$release_base" "$release_head"
+  done
+done
+for path in "scripts/release:other" "scripts/test:release-installer" ".github/workflows/release-other.yml" \
+  "tools/HVO.SkyMonitor.Deployment.ReleaseToolkit/Program.cs" "src/HVO.SkyMonitor.Deployment.Cli/ReleaseManifest.cs" \
+  ".gitleaks.toml" ".github/workflows/ci.yml" "Directory.Build.targets"; do
+  # A modification is what is checked, so a later case that adds one of these paths still commits a change.
+  [[ -f "$work_root/$path" ]] || commit_file "$path"
+  release_base="$(git -C "$work_root" rev-parse HEAD)"
+  update_file "$path"
+  release_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_release_scripts false pull_request "$release_base" "$release_head"
+done
+# Deleting a gated path must retain the tests, even though its tree entry is gone.
+release_base="$(git -C "$work_root" rev-parse HEAD)"
+git -C "$work_root" rm --quiet scripts/release:push-image
+git -C "$work_root" commit --quiet -m "Delete a release script"
+release_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_release_scripts true pull_request "$release_base" "$release_head"
 
 # Only the top-level skill manifest is reduced. Supporting files, including a
 # nested file also named SKILL.md, fail closed to the complete matrix.
@@ -190,10 +322,13 @@ verify_component_plan "src/HVO.SkyMonitor.LogicHost/Components/Account/Login.raz
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/site.css"                full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Imaging/Filter.cs"        full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/StoragePressureState.cs" full false false false true false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Gallery/Thumbnail.cs"      full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/Program.cs"         full false false false true  false false false
+# hvo-sky (#1317) is a separate executable that talks to CameraAgent only over HTTP; no combined suite compiles against it.
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Cli/SkyCli.cs"                    full false false false true  false false false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/CaptureTests.cs"         full false false false true  false false false
 # A project's own category inventory is owned by that project (#853): a count
 # change selects the owning lane, not the complete matrix that editing the audit
@@ -231,6 +366,7 @@ verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTes
 verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs"        full true  false false false false false true
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true  false false false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true  false false false false false true
+verify_component_plan "src/HVO.SkyMonitor.TerminalUi/HvoTheme.cs"                       full true  false false false false false true
 
 verify_deployment_installer_path() {
   local path="$1" deployment_base deployment_head
@@ -242,9 +378,21 @@ verify_deployment_installer_path() {
 }
 
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
-verify_deployment_installer_path "scripts/release:cameraagent-image"
-verify_deployment_installer_path "scripts/lib/component-inventory.jq"
-verify_deployment_installer_path "scripts/lib/component-inventory-count.jq"
+verify_deployment_installer_path "scripts/release:cameraagent-publish"
+verify_deployment_installer_path "scripts/release:check-cameraagent-publish"
+verify_deployment_installer_path "scripts/cameraagent-release.targets"
+verify_deployment_installer_path "scripts/test:cameraagent-r2r"
+verify_deployment_installer_path "scripts/release:gate"
+verify_deployment_installer_path "scripts/release:publish"
+verify_deployment_installer_path "scripts/release:assets"
+verify_deployment_installer_path "scripts/release:push-image"
+verify_deployment_installer_path "scripts/release:prerelease-gate"
+verify_deployment_installer_path "scripts/release:publish-prerelease"
+verify_deployment_installer_path "scripts/test:release-install"
+verify_deployment_installer_path "scripts/test:release-scripts"
+verify_deployment_installer_path "scripts/lib/releases.sh"
+# The shared terminal project is compiled into the installer, whose published file the installer suite runs (#1317).
+verify_deployment_installer_path "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs"
 
 # Deployment inputs that are not project directories keep their independent
 # deployment-contract selection and otherwise stay on the complete matrix,
@@ -418,7 +566,7 @@ mapfile -t link_including_projects < <(printf '%s\n' "${link_records[@]}" | cut 
 mapfile -t src_project_names < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' \
   | while IFS= read -r candidate; do basename "$(dirname "$candidate")"; done | sort -u)
 comm -12 <(printf '%s\n' "${link_including_projects[@]}") <(printf '%s\n' "${src_project_names[@]}") \
-  | grep -q . || {
+  | grep . >/dev/null || {
   printf 'No src/ project file contributed a link record; the enumerator narrowed to tests/.\n' >&2
   exit 1
 }
@@ -442,7 +590,7 @@ complete_matrix_projects=(
 project_directory_count=0
 while IFS= read -r project_directory; do
   ((project_directory_count += 1))
-  if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fxq -- "$project_directory"; then
+  if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fx -- "$project_directory" >/dev/null; then
     continue
   fi
   probe_base="$(git -C "$work_root" rev-parse HEAD)"
@@ -472,6 +620,8 @@ verify_component_plan "THIRD-PARTY-NOTICES.md" full false true true true true tr
 complete_matrix_paths=(
   ".github/workflows/ci.yml"
   ".github/workflows/release.yml"
+  ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
   "scripts/ci:classify"
   "scripts/ci:require"
   "scripts/ci:component-build"
@@ -535,7 +685,6 @@ deployment_paths=(
   ".env.template"
   "docker-compose.apps.yml"
   "scripts/deploy:environment"
-  "scripts/install-hvo-skymonitor.sh"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
   "scripts/deploy-contracts/smoke.sh"
@@ -556,8 +705,7 @@ deployment_paths=(
   "deploy/sql/logichost-runtime-role.sql"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   "src/HVO.SkyMonitor.Deployment.Cli/Program.cs"
-  "src/HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
-  "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/DistributionVerifierTests.cs"
+  "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs"
   "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"
   "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"
 )
@@ -582,6 +730,8 @@ verify_targeted_suites() {
 
 verify_targeted_suites ".github/workflows/ci.yml" true true true
 verify_targeted_suites ".github/workflows/release.yml" true false true
+verify_targeted_suites ".github/workflows/prerelease.yml" true false true
+verify_targeted_suites ".github/workflows/release-image.yml" true false true
 verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
 verify_targeted_suites "scripts/ci:component-build" true true true
 verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false
@@ -601,8 +751,14 @@ verify_targeted_suites "scripts/test:filesystem-object-store-qualification" fals
 # The complete fallback matrix.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_secret_scan_contract true pull_request "$head_sha" "$head_sha"
+expect_release_scripts true pull_request "$head_sha" "$head_sha"
 expect_plan full true pull_request "$head_sha" "$head_sha"
 expect_components true true true true true true pull_request "$head_sha" "$head_sha"
+expect_secret_scan_contract true pull_request "$head_sha" missing-commit
+expect_secret_scan_contract true pull_request missing-commit "$head_sha"
+expect_release_scripts true pull_request "$head_sha" missing-commit
+expect_release_scripts true pull_request missing-commit "$head_sha"
 expect_plan full true pull_request "$head_sha" missing-commit
 expect_components true true true true true true pull_request "$head_sha" missing-commit
 
@@ -638,6 +794,8 @@ ln -s ../README.md "$work_root/docs/added-link.md"
 git -C "$work_root" add --all
 git -C "$work_root" commit --quiet -m "Add documentation symlink"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_secret_scan_contract true pull_request "$base_sha" "$head_sha"
+expect_release_scripts true pull_request "$base_sha" "$head_sha"
 expect_plan full true pull_request "$base_sha" "$head_sha"
 expect_components true true true true true true pull_request "$base_sha" "$head_sha"
 
@@ -657,7 +815,11 @@ case "$1" in
   cat-file) exit 0 ;;
   diff)
     [[ "${FAKE_GIT_DIFF_FAILURE:-false}" != true ]] || exit 91
-    printf 'M\0'
+    case "${FAKE_GIT_DIFF_SHAPE:-malformed}" in
+      malformed) printf 'M\0' ;;
+      unterminated) printf 'M' ;;
+      empty-path) printf 'M\0\0' ;;
+    esac
     exit 0
     ;;
   *) exec "${REAL_GIT:?}" "$@" ;;
@@ -665,16 +827,47 @@ esac
 EOF
 chmod +x "$work_root/fake-bin/git"
 
-expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true'
-for fake_case in malformed failure; do
+expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true'
+for fake_case in malformed unterminated empty-path failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
-  output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" \
+  PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
+    expect_secret_scan_contract true pull_request fake-base fake-head
+  PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
+    expect_release_scripts true pull_request fake-base fake-head
+  output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     "$classifier" pull_request fake-base fake-head)"
   if [[ "$output" != "$expected_fail_closed" ]]; then
     printf 'Expected fail-closed malformed/diff-failure plan, received %s\n' "$output" >&2
     exit 1
   fi
 done
+
+# A valid unrelated regular entry must precede the malformed tail, otherwise
+# the empty-range or missing-tree fallback can hide loss of the malformed flag.
+trailing_base="$(git -C "$work_root" rev-parse HEAD^)"
+trailing_head="$(git -C "$work_root" rev-parse HEAD)"
+"$real_git" -C "$work_root" cat-file -e "${trailing_base}^{commit}"
+"$real_git" -C "$work_root" cat-file -e "${trailing_head}^{commit}"
+trailing_entry="$("$real_git" -C "$work_root" ls-tree "$trailing_head" -- docs/runbooks/example.md)"
+[[ "$trailing_entry" == '100644 '* ]] || {
+  printf 'Malformed-tail fixture requires an unrelated regular tree entry.\n' >&2
+  exit 1
+}
+mkdir -p "$work_root/trailing-bin"
+cat > "$work_root/trailing-bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == diff ]]; then
+  printf 'M\0docs/runbooks/example.md\0M\0'
+  exit 0
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF
+chmod +x "$work_root/trailing-bin/git"
+PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
+  expect_secret_scan_contract true pull_request "$trailing_base" "$trailing_head"
+PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
+  expect_release_scripts true pull_request "$trailing_base" "$trailing_head"
 
 # Required CI aggregation.
 plan() {
@@ -840,6 +1033,66 @@ expect_required_reject "unusable job result" pull_request "$cameraagent_plan" \
   "${cameraagent_success/cameraagent-component=success/cameraagent-component=neutral}"
 expect_required_reject "empty plan" pull_request "" "$cameraagent_success"
 expect_required_reject "empty results" pull_request "$cameraagent_plan" ""
+
+# Force the membership producer past pipe capacity. A quiet reader that exits on
+# its first match must SIGPIPE this writer; duplicating valid records preserves
+# the membership answer and makes the old race deterministic without host load.
+expect_required_no_sigpipe() (
+  local first="$1" iteration
+  "$required" pull_request "$reduced_plan" "$reduced_success" > "$work_root/sigpipe.expected"
+  # shellcheck disable=SC2317 # Child Bash invokes this exported printf shim.
+  printf() {
+    if [[ "${1-}" == '%s\n' && " ${*:2} " == *" $HVO_SIGPIPE_LIST_FIRST "* ]]; then
+      if [[ ! -s "$HVO_SIGPIPE_RECORDS" ]]; then
+        local -a records=("${@:2}")
+        local bytes=0 record
+        for record in "${records[@]}"; do
+          ((bytes += ${#record} + 1))
+        done
+        # Just exceed twice a 64 KiB pipe; build once and reuse across checks.
+        while (( bytes <= 2 * 65536 )); do
+          records+=("${records[@]}")
+          ((bytes *= 2))
+        done
+        builtin printf '%s\n' "${records[@]}" > "$HVO_SIGPIPE_RECORDS"
+      fi
+      builtin printf x >> "$HVO_SIGPIPE_FIRED"
+      cat "$HVO_SIGPIPE_RECORDS"
+    else
+      # shellcheck disable=SC2059 # Forward the caller's format and arguments unchanged.
+      builtin printf "$@"
+    fi
+  }
+  export -f printf
+  export HVO_SIGPIPE_LIST_FIRST="$first"
+  export HVO_SIGPIPE_RECORDS="$work_root/sigpipe.$first.records"
+  export HVO_SIGPIPE_FIRED="$work_root/sigpipe.$first.fired"
+  for ((iteration = 1; iteration <= 3; iteration++)); do
+    : > "$HVO_SIGPIPE_FIRED"
+    if ! "$required" pull_request "$reduced_plan" "$reduced_success" \
+      > "$work_root/sigpipe.out" 2> "$work_root/sigpipe.err"; then
+      cat "$work_root/sigpipe.err" >&2
+      printf 'Required CI SIGPIPE regression failed: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+    if [[ ! -s "$HVO_SIGPIPE_FIRED" ]]; then
+      printf 'Required CI SIGPIPE shim did not fire: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+    if ! cmp -s "$work_root/sigpipe.expected" "$work_root/sigpipe.out" || [[ -s "$work_root/sigpipe.err" ]]; then
+      printf 'Required CI SIGPIPE regression changed output: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+  done
+)
+sigpipe_failed=false
+for first in mode changes; do
+  if ! expect_required_no_sigpipe "$first"; then
+    sigpipe_failed=true
+  fi
+done
+[[ "$sigpipe_failed" == false ]] || exit 1
+printf 'Required CI SIGPIPE regression passed: 6 iterations (3 plan, 3 result); shim fired for each.\n'
 
 # Workflow shape.
 grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {
@@ -1149,18 +1402,21 @@ if (( slot_count != 21 )); then
   exit 1
 fi
 
+# A release is qualified by the CI workflow itself, called for the tagged commit before anything is built (#1310).
 release_workflow="$repo_root/.github/workflows/release.yml"
-grep -Fq -- '-f branch=main -f event=push -f status=completed -f head_sha=' "$release_workflow" || {
-  printf 'Release qualification must select completed exact-SHA main-push CI runs.\n' >&2
+grep -Fxq '    uses: ./.github/workflows/ci.yml' "$release_workflow" || {
+  printf 'Release qualification must call the CI workflow (workflow_call).\n' >&2
   exit 1
 }
-grep -Fq 'select(.name == "Required CI")' "$release_workflow" || {
-  printf 'Release qualification must inspect the Required CI job.\n' >&2
+grep -Fxq '    needs: [gate, ci]' "$release_workflow" || {
+  printf 'The release must build only after the CI qualification.\n' >&2
   exit 1
 }
-if grep -Fq 'select(.conclusion == "success")' "$release_workflow"; then
-  printf 'Release qualification must not require unrelated workflow jobs to succeed.\n' >&2
+grep -Fxq '  workflow_call:' "$repo_root/.github/workflows/ci.yml" || {
+  printf 'The CI workflow must be callable by the release workflow.\n' >&2
   exit 1
-fi
+}
 
+printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
+printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"
 printf 'CI classification and Required CI contract tests passed.\n'

@@ -77,9 +77,14 @@ weekly `schedule`, and explicit `rig.controlPolicy.exposureControl` and
 errors; the host does not infer processing dependencies, control ownership, or
 an always-open schedule.
 
-On first login, replace that temporary password. Then remove the user-secret
-value and configure `LocalIdentity:AllowMissingAdminPassword=true` for later
-starts. Existing passwords are never reconciled from configuration.
+Sign in as `admin`, or with `LocalIdentity:AdminEmail`, using that password;
+setting it to `skymonitor` reproduces the installer's documented default. On
+first login, replace that temporary password with one of at least 8 characters
+that is not `skymonitor`, the user name, or the current password. Five failed
+sign-ins lock the account for five minutes. Then remove the user-secret value
+and configure `LocalIdentity:AllowMissingAdminPassword=true` for later starts.
+Existing passwords are never reconciled from configuration, and an existing
+development owner keeps its email as its user name.
 
 The launch profiles include HTTPS endpoints for direct development. Repository
 Compose does not provide HTTPS termination and must not be described as a
@@ -141,7 +146,8 @@ developer state.
 | Object-store access fails | Verify `HVO_OBJECT_STORE_ROOT` exists with both `skymonitor-artifacts` and `skymonitor-diagnostics` directories, is writable by the running user, and is not held by another LogicHost process. |
 | Redis connection times out | Verify `REDIS_*`, the selected endpoint, and the `skymonitor:` instance prefix. |
 | SMTP email is missing | Verify `SMTP_*`, then inspect the configured Mailpit instance without retaining confirmation links. |
-| CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets. |
+| CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets; it needs at least 8 characters. |
+| CameraAgent sign-in says the account is locked | Wait five minutes after five failed attempts, or recover the owner. |
 | CameraAgent owner cannot access operations after login | Complete `/Account/ReplaceTemporaryPassword`; pending setup intentionally denies ordinary owner UI and APIs without stopping capture. |
 | Cookies fail after reset | Reset removes the selected host's Data Protection keys. Restore the approved key-ring backup or sign in/bootstrap again. |
 | Device secrets cannot decrypt | Restore CameraAgent provisioning and Data Protection state from the same backup set. |

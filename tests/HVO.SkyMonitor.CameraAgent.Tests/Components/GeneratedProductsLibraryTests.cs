@@ -3,6 +3,7 @@ using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
@@ -175,11 +176,12 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual("partial", cut.Find("#library-status").GetAttribute("value"));
         Assert.AreEqual("2026-10-01", cut.Find("#library-day").GetAttribute("value"));
         // Choices CameraAgent cannot answer truthfully stay visible but disabled, with the reason beside them.
-        foreach (var unrecorded in new[] { "#library-type option[value='time-lapse']", "#library-type option[value='daily-summary']", "#library-status option[value='running']" })
+        foreach (var unrecorded in new[] { "#library-type option[value='daily-summary']", "#library-status option[value='running']" })
         {
             Assert.IsTrue(cut.Find(unrecorded).HasAttribute("disabled"), unrecorded);
         }
         Assert.IsFalse(cut.Find("#library-status option[value='partial']").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#library-type option[value='time-lapse']").HasAttribute("disabled"));
         Assert.AreEqual("library-filter-note", cut.Find("#library-type").GetAttribute("aria-describedby"));
         StringAssert.Contains(cut.Find("#library-filter-note").TextContent, "not yet generated", StringComparison.Ordinal);
 
@@ -197,7 +199,6 @@ public sealed class GeneratedProductsLibraryTests
     }
 
     [TestMethod]
-    [DataRow("type=time-lapse", "Timelapses are not yet generated")]
     [DataRow("type=daily-summary", "Daily summaries are not yet generated")]
     [DataRow("type=fireball", "not a product type CameraAgent generates")]
     [DataRow("status=running", "Generation progress is not recorded")]
@@ -224,16 +225,16 @@ public sealed class GeneratedProductsLibraryTests
         Configure(context);
 
         var none = Render(context, "/archive/products");
-        none.WaitForAssertion(() => StringAssert.Contains(none.Find(".page-state").TextContent, "No generated products yet", StringComparison.Ordinal));
+        none.WaitForAssertion(() => StringAssert.Contains(none.Find(".page-state").TextContent, "No still products yet", StringComparison.Ordinal));
         Assert.AreEqual("/operations/automations", none.Find(".page-state a").GetAttribute("href"));
 
         var noMatch = Render(context, "/archive/products?status=produced&day=2026-10-01");
-        noMatch.WaitForAssertion(() => StringAssert.Contains(noMatch.Find(".page-state").TextContent, "No generated products match these filters", StringComparison.Ordinal));
+        noMatch.WaitForAssertion(() => StringAssert.Contains(noMatch.Find(".page-state").TextContent, "No still products match these filters", StringComparison.Ordinal));
         CollectionAssert.AreEqual(NoMatchActions, noMatch.FindAll(".page-state a").Select(static link => link.GetAttribute("href")).ToArray());
 
         // An empty older page cannot speak for newer pages, so it returns to them with the filters kept.
         var noOlder = Render(context, "/archive/products?type=keogram&before=2026-09-01");
-        noOlder.WaitForAssertion(() => StringAssert.Contains(noOlder.Find(".page-state").TextContent, "No older generated products", StringComparison.Ordinal));
+        noOlder.WaitForAssertion(() => StringAssert.Contains(noOlder.Find(".page-state").TextContent, "No older still products", StringComparison.Ordinal));
         Assert.AreEqual("/archive/products?type=keogram", noOlder.Find(".page-state a").GetAttribute("href"));
         Assert.IsEmpty(noOlder.FindAll(".library-pages"));
     }
@@ -337,6 +338,80 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual(0, retainedReads);
         Assert.IsEmpty(cut.FindAll("form.product-filters, .product-table"));
         Assert.AreEqual("/operations/automations", cut.Find(".page-header a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    [DataRow("type=keogram", 0)]
+    [DataRow("type=time-lapse", 2)]
+    [DataRow("type=time-lapse&status=produced&day=2026-10-01", 1)]
+    [DataRow("status=partial", 0)]
+    [DataRow("day=2026-09-30", 1)]
+    [DataRow("status=not-produced", 0)]
+    [DataRow("type=fireball", 0)]
+    public void Products_UrlFiltersAlsoApplyToPublishedTimeLapses(string query, int expectedVideos)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        nightly.VideoSummaries = [new(Guid.NewGuid(), Newest, 1920, 1080, true), new(Guid.NewGuid(), Older, 1920, 1080, false)];
+
+        var cut = Render(context, "/archive/products?" + query);
+
+        cut.WaitForAssertion(() => Assert.HasCount(expectedVideos, cut.FindAll(".video-library li")));
+        if (query.StartsWith("type=time-lapse", StringComparison.Ordinal))
+        {
+            Assert.IsFalse(cut.Find("#library-type option[value='time-lapse']").HasAttribute("disabled"));
+            Assert.IsEmpty(nightly.LibraryQueries);
+            Assert.IsEmpty(cut.FindAll(".page-state--info"));
+            StringAssert.Contains(cut.Find(".video-library li").TextContent, "2026-10-01", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    public void Products_PaginationRetainsBothServiceCursors()
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var videoBefore = new DateOnly(2026, 9, 5);
+        nightly.VideoSummaries = Enumerable.Range(0, 31).Select(index => new CameraAgentTimeLapseSummary(Guid.NewGuid(),
+            new DateOnly(2026, 8, 20).AddDays(-index), 1920, 1080, false)).ToArray();
+        nightly.LibraryHandler = query => OperatorUiResult<NightlyProductLibraryPage>.Success(
+            new([Entry(query.Before!.Value.AddDays(-1), NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced)], query.Before.Value.AddDays(-1), null));
+        var cut = Render(context, "/archive/products?status=produced&before=2026-09-01&videoBefore=2026-09-05");
+
+        cut.WaitForAssertion(() => Assert.HasCount(31, cut.FindAll(".video-library li")));
+        var stillOlder = cut.Find(".library-pages .btn-primary").GetAttribute("href")!;
+        StringAssert.Contains(stillOlder, "videoBefore=2026-09-05", StringComparison.Ordinal);
+        cut = Render(context, stillOlder);
+        cut.WaitForAssertion(() => Assert.AreEqual(videoBefore, nightly.VideoQueries.Last()));
+        Assert.AreEqual(new DateOnly(2026, 8, 31), nightly.LibraryQueries.Last().Before);
+        var videoOlder = cut.Find(".video-library a[href*='videoBefore']").GetAttribute("href")!;
+        StringAssert.Contains(videoOlder, "before=2026-08-31", StringComparison.Ordinal);
+        cut = Render(context, videoOlder);
+        cut.WaitForAssertion(() => Assert.AreEqual(new DateOnly(2026, 7, 21), nightly.VideoQueries.Last()));
+        Assert.AreEqual(new DateOnly(2026, 8, 31), nightly.LibraryQueries.Last().Before);
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([], null, null));
+        cut = Render(context, videoOlder);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".page-state").TextContent, "No older still products", StringComparison.Ordinal));
+        var stillNewest = cut.Find(".page-state a").GetAttribute("href")!;
+        StringAssert.Contains(stillNewest, "videoBefore=2026-07-21", StringComparison.Ordinal);
+        Assert.IsFalse(stillNewest.Contains("&before=", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("status=produced")]
+    public void Products_VideoOnlyResultsHaveTruthfulStillProductEmptyMessages(string query)
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        nightly.VideoSummaries = [new(Guid.NewGuid(), Newest, 1920, 1080, false)];
+
+        var cut = Render(context, "/archive/products?" + query);
+
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll(".video-library li")));
+        StringAssert.Contains(cut.Find(".page-state").TextContent, "No still products", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".page-state").TextContent.Contains("No generated products", StringComparison.Ordinal));
     }
 
     private static (TestOperatorUiService Operations, TestNightlyProductUiService Nightly) Configure(BunitContext context, bool previewFailed = false)
