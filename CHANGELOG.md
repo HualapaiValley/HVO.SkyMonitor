@@ -155,6 +155,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
+- Deployment CLI errors and warnings hide additional credential key forms and nested values, redact space-separated compound keys, and escape controls across raw, helper and report output boundaries. (#1499)
+
 - Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
 
 - Deployment CLI diagnostics remove ANSI colour and link codes before redacting, and any other escape or C1 control character after it, so colour or link codes around a key no longer expose its value; keys ending in a credential word, such as `db_password`, `client_secret`, `accessToken` and `x-api-key`, have their whole quoted value redacted; restore messages redact a counter key that reads as a credential; already formatted errors keep their fixed wording; and backup folder refusals redact and escape the archive name and folder they echo. (#1491)
