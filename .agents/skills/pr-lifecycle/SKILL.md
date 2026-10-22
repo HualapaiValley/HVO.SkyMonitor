@@ -428,10 +428,49 @@ head/range unavailability waiver, every finding is dispositioned, required
 correction rereviews are complete, no actionable thread remains, and the
 current head equals the latest reviewed or waived head.
 
+## Auto-Merge Finalization
+
+This is the default route while the repository allows auto-merge
+(`allow_auto_merge` is true). It replaces the finalization lock below, because
+GitHub serializes merges itself: branch protection requires an up-to-date head,
+green required checks, and resolved conversations.
+
+1. When review has converged and no ordinary product correction is expected,
+   fetch the target and confirm the PR is mergeable (`mergeable: true`; stop on
+   conflicts).
+2. Mark the PR ready. That transition starts the protected CI profile.
+3. Enable auto-merge with a merge commit, pinned to the reviewed head, in the
+   same step: `gh pr merge <n> --auto --merge --match-head-commit <sha>`.
+4. Append a ledger entry naming the head and the route.
+5. Stay on the PR until it merges.
+
+When the target advances while the PR waits, the operator's merge-train
+automation brings it current. It acts on one queued PR at a time and
+synchronizes by merge, never by rebase or force-push:
+
+- **It pushes the merge** only when two conditions hold. First, the only
+  conflicts are in `tests/*/test-categories.json`, the
+  `docs/runbooks/ci-pipeline.md` totals and `CHANGELOG.md`. It resolves those by
+  re-applying the PR's own deltas. Second, the non-count diff of the result is
+  byte-identical to the reviewed range. The merge is then the recorded
+  unchanged-base proof, so it needs no base-sync review. It records the base and
+  head SHAs in the ledger and re-arms auto-merge on the new head.
+- **It hands the PR back** in every other case: a conflict elsewhere, a changed
+  non-count diff, a failed required check, or required checks cancelled twice.
+  It disables auto-merge, returns the PR to draft and comments the reason. The
+  owner then follows steps 2–4 of the lock procedure below (merge, local gates,
+  base-sync review) without taking the lock, and re-enters this route on the
+  new reviewed head.
+
+A product correction, or any push by the owner, disables auto-merge for the
+changed head. Correct the PR, take it through correction review, and re-enter
+at step 1.
+
 ## Finalization Lock and Target-Branch Synchronization
 
-Use the `workflow:finalizing` label on an open PR as the repository-wide
-finalization lock. Draft PRs may continue implementation and review while
+Use this route when the repository does not allow auto-merge, or when the
+operator reserves the merge decision. Use the `workflow:finalizing` label on an
+open PR as the repository-wide finalization lock. Draft PRs may continue implementation and review while
 another PR holds it, but no other PR may perform final synchronization, run
 protected CI, or merge.
 
@@ -579,9 +618,10 @@ retain it for one bounded rerun. Releasing the lock means removing the
   green for that exact head, and actionable conversations are resolved.
 - After merge, confirm issue closure, update the owning roadmap epic when
   applicable, synchronize local `main`, remove merged branches/worktrees when
-  safe, release the finalization lock, and report completion. Start or select
-  another issue only with explicit operator authorization, including an existing
-  explicit multi-issue assignment; completing this PR is not that authorization.
+  safe, release the finalization lock if this PR held it, and report completion.
+  Start or select another issue only with explicit operator authorization,
+  including an existing explicit multi-issue assignment or an `agent:ready`
+  queue label; completing this PR is not that authorization.
 
 ## Required Ledger Entries
 
