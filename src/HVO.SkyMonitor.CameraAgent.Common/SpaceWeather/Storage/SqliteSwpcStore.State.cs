@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
 
@@ -19,17 +22,7 @@ public sealed partial class SqliteSwpcStore
             var threshold = _settings.Freshness[product];
             var age = success is { } stamp ? atUtc - stamp : TimeSpan.MaxValue;
             var freshness = success is null ? SwpcFreshness.None : age < threshold.BaseInterval * 3 ? SwpcFreshness.Fresh : age < threshold.OutdatedAfter ? SwpcFreshness.Stale : SwpcFreshness.Outdated;
-            SwpcSnapshot? snapshot = null;
-            if (!reader.IsDBNull(1))
-            {
-                using var stored = Command(db, tx, "SELECT s.envelope,r.body,r.sha FROM swpc_snapshots s JOIN swpc_raw r ON r.sha=s.raw_sha WHERE s.id=$id;", ("$id", reader.GetInt64(1)));
-                using var body = stored.ExecuteReader();
-                if (!body.Read()) throw new InvalidDataException("A last-known-good snapshot is missing.");
-                var raw = (byte[])body[1];
-                if (SwpcHash.Sha256UpperHex(raw) != body.GetString(2))
-                    throw new InvalidDataException("A stored space-weather raw body failed its integrity check.");
-                snapshot = Parse<SwpcSnapshot>(body.GetString(0)) with { DecodedBody = [.. raw] };
-            }
+            var snapshot = reader.IsDBNull(1) ? null : ReadLastKnownGood(db, tx, product, reader.GetInt64(1));
             products.Add(product, new(snapshot, new(reader.IsDBNull(2) ? null : reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3)),
                 success, reader.IsDBNull(5) ? null : Time(reader.GetInt64(5)), reader.IsDBNull(6) ? null : (SwpcFetchOutcome)reader.GetInt32(6),
                 Parse<SwpcFetchCheckpoint>(reader.GetString(7)), reader.IsDBNull(8) ? null : Parse<SwpcHalt>(reader.GetString(8)), freshness));
@@ -38,16 +31,87 @@ public sealed partial class SqliteSwpcStore
         return new(Revision(db, tx), products.ToImmutable(), halt is null ? null : Parse<SwpcHalt>(halt), ReadNotices(db, tx));
     }
 
-    private static SwpcNoticeData ReadNotices(SqliteConnection db, SqliteTransaction tx)
+    /// <summary>
+    /// Every read re-hashes the stored body, so corruption still fails closed. The hash streams from
+    /// SQLite, and the parsed snapshot and its decoded bytes are reused only when the row, the stored
+    /// envelope bytes and the verified body hash all equal the last ones this store decoded. Both
+    /// columns are read as blobs, so a reused snapshot costs no text decoding.
+    /// </summary>
+    private SwpcSnapshot ReadLastKnownGood(SqliteConnection db, SqliteTransaction tx, SwpcProduct product, long id)
     {
-        var versions = ImmutableArray.CreateBuilder<SwpcStoredMessage>();
-        using (var command = Command(db, tx, "SELECT record,original,sequence,snapshot_sha,retrieved FROM swpc_messages ORDER BY sequence;"))
+        using var stored = Command(db, tx, "SELECT r.sha,r.rowid FROM swpc_snapshots s JOIN swpc_raw r ON r.sha=s.raw_sha WHERE s.id=$id;", ("$id", id));
+        using var row = stored.ExecuteReader();
+        if (!row.Read()) throw new InvalidDataException("A last-known-good snapshot is missing.");
+        var sha = row.GetString(0);
+        using var envelope = new SqliteBlob(db, "swpc_snapshots", "envelope", id, readOnly: true);
+        using var body = new SqliteBlob(db, "swpc_raw", "body", row.GetInt64(1), readOnly: true);
+        if (_decoded.TryGetValue(product, out var known) && known.Id == id && known.RawSha == sha && Matches(envelope, known.Envelope))
+        {
+            if (Convert.ToHexString(SHA256.HashData(body)) != sha) throw CorruptRawBody();
+            return known.Snapshot;
+        }
+        var text = new byte[checked((int)envelope.Length)];
+        envelope.Position = 0;
+        envelope.ReadExactly(text);
+        var raw = new byte[checked((int)body.Length)];
+        body.ReadExactly(raw);
+        if (SwpcHash.Sha256UpperHex(raw) != sha) throw CorruptRawBody();
+        var snapshot = Parse<SwpcSnapshot>(text) with { DecodedBody = ImmutableCollectionsMarshal.AsImmutableArray(raw) };
+        _decoded[product] = new(id, text, sha, snapshot);
+        return snapshot;
+    }
+    private static bool Matches(Stream stored, byte[] expected)
+    {
+        if (stored.Length != expected.Length) return false;
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            for (var offset = 0; offset < expected.Length;)
+            {
+                var read = stored.Read(buffer.AsSpan(0, Math.Min(buffer.Length, expected.Length - offset)));
+                if (read == 0 || !buffer.AsSpan(0, read).SequenceEqual(expected.AsSpan(offset, read))) return false;
+                offset += read;
+            }
+            return true;
+        }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
+    }
+    private static InvalidDataException CorruptRawBody() => new("A stored space-weather raw body failed its integrity check.");
+    private sealed record DecodedSnapshot(long Id, byte[] Envelope, string RawSha, SwpcSnapshot Snapshot);
+
+    /// <summary>
+    /// Message rows are inserted once and never updated, and each sequence is unique. A sequence is
+    /// reused only after its insert rolled back, and any transaction that does not commit drops this
+    /// cache. A row is decoded again unless its sequence, identity, hash, snapshot and retrieval time
+    /// all equal the cached row's, and groups are rebuilt only when the ordered row set changes.
+    /// Ranks, acknowledgements and orphan markers are read on every call.
+    /// </summary>
+    private SwpcNoticeData ReadNotices(SqliteConnection db, SqliteTransaction tx)
+    {
+        var keys = new List<MessageKey>(_notices?.Keys.Length ?? 0);
+        var stored = new List<SwpcStoredMessage>(keys.Capacity);
+        using (var command = Command(db, tx, "SELECT sequence,identity,hash,snapshot_sha,retrieved,record,original FROM swpc_messages ORDER BY sequence;"))
         using (var reader = command.ExecuteReader())
             while (reader.Read())
             {
-                var message = Parse<SwpcMessageRecord>(reader.GetString(0)) with { OriginalRecordJson = Utf8.GetString((byte[])reader[1]) };
-                versions.Add(new(new(message, reader.GetInt64(2)), reader.GetString(3), Time(reader.GetInt64(4))));
+                var key = new MessageKey(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4));
+                if (!_messages.TryGetValue(key.Sequence, out var known) || known.Key != key)
+                {
+                    var message = Parse<SwpcMessageRecord>(reader.GetString(5)) with { OriginalRecordJson = Utf8.GetString((byte[])reader[6]) };
+                    _messages[key.Sequence] = known = new(key, new(new(message, key.Sequence), key.SnapshotSha, Time(key.Retrieved)));
+                }
+                keys.Add(key); stored.Add(known.Stored);
             }
+        if (_notices is not { } notices || !notices.Keys.AsSpan().SequenceEqual(CollectionsMarshal.AsSpan(keys)))
+        {
+            ImmutableArray<SwpcStoredMessage> versions = [.. stored];
+            _notices = notices = new([.. keys], versions, SwpcGroupBuilder.Build(versions.Select(v => v.Version).ToArray()));
+            if (_messages.Count > keys.Count)
+            {
+                var live = keys.Select(k => k.Sequence).ToHashSet();
+                foreach (var sequence in _messages.Keys.Where(s => !live.Contains(s)).ToArray()) _messages.Remove(sequence);
+            }
+        }
         var ranks = ImmutableDictionary.CreateBuilder<SwpcMessageNode, int>();
         using (var command = Command(db, tx, "SELECT code,serial,rank FROM swpc_ranks;"))
         using (var reader = command.ExecuteReader())
@@ -60,8 +124,11 @@ public sealed partial class SqliteSwpcStore
         using (var command = Command(db, tx, "SELECT identity FROM swpc_orphans;"))
         using (var reader = command.ExecuteReader())
             while (reader.Read()) orphans.Add(reader.GetString(0));
-        return new(versions.ToImmutable(), SwpcGroupBuilder.Build(versions.Select(v => v.Version).ToArray()), orphans.ToImmutable(), ranks.ToImmutable(), acks.ToImmutable());
+        return new(notices.Versions, notices.Groups, orphans.ToImmutable(), ranks.ToImmutable(), acks.ToImmutable());
     }
+    private readonly record struct MessageKey(long Sequence, string Identity, string Hash, string SnapshotSha, long Retrieved);
+    private sealed record DecodedMessage(MessageKey Key, SwpcStoredMessage Stored);
+    private sealed record DecodedNotices(ImmutableArray<MessageKey> Keys, ImmutableArray<SwpcStoredMessage> Versions, ImmutableArray<SwpcNoticeGroup> Groups);
 
     public ValueTask<SwpcStoreHealth> ReadHealthAsync(DateTimeOffset atUtc, CancellationToken ct) => ExecuteAsync(atUtc, (db, tx) =>
     {

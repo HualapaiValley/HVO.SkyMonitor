@@ -301,6 +301,118 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~OrbitalElementsRefreshPerformanceTests"
 ```
 
+### Orbital snapshot canonical serialization (Refs #1422)
+
+`OrbitalSnapshotAllocationEvidenceTests` (Manual, Astronomy test project) retains
+`synthetic-gp-contract-1422-v1`: 16,754 deterministic synthetic records for
+16,690 objects, 826 six-digit catalog numbers and 64 objects with two element
+sets. It measures the shared contract directly, with no provider bytes,
+network, filesystem or database operations in the measured stages. It isolates
+`Create`, `SerializePayload` and cold `Parse` (labelled `Load` in the report).
+This is a contract workload at #528's population size, rather than a rerun of
+its acquisition pipeline or a production qualification.
+
+Baseline: `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`. Candidate: the #1422
+implementation accompanying this evidence. The same standalone harness source
+and workload were run against both assemblies; the committed Manual test
+retains that generator and measurement loop. Each stage/implementation ran in
+a fresh process after input/reference-snapshot setup, one explicit warm-up and
+ten measured repeats with forced GC before each repeat. Allocation uses
+`GC.GetAllocatedBytesForCurrentThread` for the synchronous operation, wall time
+uses `Stopwatch`, and CPU uses `Process.TotalProcessorTime`. Peak working set
+is the process high-water mark across setup, warm-up and measurement, not a
+stage-local delta. Medians are shown except for that high-water mark. The host
+was native Ubuntu 24.04.5 x64, .NET SDK 10.0.402/runtime 10.0.13, workstation
+GC, 12 visible Intel i9-14900K CPUs and 16.15 GB RAM; Release configuration.
+
+| Stage | Allocated MB before / after | Wall ms before / after | CPU ms before / after | Peak working set MB before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Create | 4,561.32 / 29.98 | 1,876.55 / 121.22 | 1,905.15 / 177.86 | 760.25 / 180.81 |
+| SerializePayload | 471.84 / 22.70 | 199.76 / 91.65 | 207.74 / 115.81 | 632.01 / 186.44 |
+| Load (Parse) | 2,072.57 / 77.68 | 895.89 / 190.32 | 939.52 / 223.95 | 632.91 / 209.88 |
+
+MB is decimal. Candidate allocation falls by 99.34%, 95.19% and 96.25%,
+respectively. Wall and CPU costs also decrease in every measured stage.
+The table's two arms ran one after the other, not interleaved, so its wall
+and CPU columns are diagnostic only. Allocation and byte identities are the
+primary regression evidence. There is no storage I/O or backlog to qualify in
+these contract-only stages, and the result makes no frame-cadence claim.
+
+An interleaved confirmation then ran the committed Manual test against both
+arms on the same host. Each stage ran four fresh processes in counterbalanced
+order: baseline, candidate, candidate, baseline. All twelve ran within one
+heavy-lock hold, 2026-10-22T13:08:21Z to 13:10:17Z. The probable co-resident
+neighbour VM was not locked. Every process reproduced the table's allocation
+medians and both identities exactly. Per-process wall medians, followed by the
+range over all 20 trials in each arm, in milliseconds:
+
+| Stage | Baseline wall ms (B1, B4; range) | Candidate wall ms (C2, C3; range) |
+| --- | ---: | ---: |
+| Create | 1,822.20, 1,856.18; 1,745.10–1,909.83 | 110.29, 111.46; 103.27–546.61 |
+| SerializePayload | 195.05, 192.07; 185.80–199.35 | 96.00, 105.13; 71.48–119.48 |
+| Load (Parse) | 929.42, 896.27; 831.35–1,181.66 | 192.50, 194.97; 167.50–323.59 |
+
+In every stage the candidate's slowest trial beats the baseline's fastest, so
+the timing improvement is resolvable despite cross-session drift.
+
+Both runs produced exactly 21,228,568 payload bytes and identical identities:
+
+- Payload: `DFC48C3F199AFC74FC74C0D4ADDF26A8F728B5FD2AD0E0B530004F5D0FEA5CB3`.
+- Manifest: `473AF8AD671B56D3B231CAB0246AFA6696B0A9965B71A2E760FD0D3F38C471EB`.
+
+Snapshot graphs now write in ordinal property order directly through the JSON
+serializer, with v1 numeric-zero and timestamp escaping preserved. Hashing
+uses the serializer's bounded Stream path into incremental SHA-256. `Create`
+validates/normalizes each record identity once and reuses its payload digest;
+`Parse` compares the original input hash/length with one streamed canonical
+digest. Public generic canonicalization retains a sorted DOM fallback for
+other input shapes. The unchanged contract-v1 fixtures and an independent copy
+of the former canonical writer verify byte identity, including multi-buffer
+payloads, Unicode, offsets and floating-point edge cases. Rehashed
+noncanonical payloads are still rejected with the original reason code.
+
+After a Release solution build, reproduce each stage in a fresh test process:
+
+```bash
+for stage in Create SerializePayload Load; do
+  MSBUILDDISABLENODEREUSE=1 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+    HVO_ISSUE1422_PHASE="$stage" HVO_ISSUE1422_EVIDENCE_ROOT="$PWD/TestResults/issue-1422" \
+    env -u HVO_PRODUCTION_CATALOG_BUNDLE \
+    flock -o /tmp/hvo-heavy-gate.lock timeout 1500 \
+    dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+      --no-build --configuration Release \
+      --filter "FullyQualifiedName~OrbitalSnapshotAllocationEvidenceTests"
+done
+```
+
+Each invocation writes ten observations to `TestResults/issue-1422/<stage>.json`.
+The original standalone before/after reports are local ignored evidence under
+`TestResults/issue-1422/{before,after}-<stage>.json`; no generated population
+or payload is committed.
+
+To reproduce the baseline arm:
+
+1. Make a detached checkout of
+   `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`.
+2. Copy the committed
+   `tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs`
+   into it. The test uses only public APIs that already exist at the baseline.
+3. Build its Astronomy test project in Release.
+4. Run the same loop from that checkout with a separate evidence root.
+
+Alternating the two checkouts within each stage, as the confirmation above
+did, keeps the timing comparison inside one session:
+
+```bash
+git worktree add --detach ../hvo-1422-baseline e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa
+cp tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs \
+  ../hvo-1422-baseline/tests/HVO.SkyMonitor.Astronomy.Tests/
+(cd ../hvo-1422-baseline && dotnet build tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  --configuration Release -nodeReuse:false -p:UseSharedCompilation=false)
+# then run the loop above with `cd ../hvo-1422-baseline` and
+# HVO_ISSUE1422_EVIDENCE_ROOT="$PWD/TestResults/issue-1422/before"
+```
+
 ### Orbital consumer and sweep interference (Refs #1425)
 
 `OrbitalConsumerAndSweepInterferencePerformanceTests` extends the same in-process synthetic workload above. It
@@ -665,7 +777,7 @@ accepted source audit bounds the literal-derived cache to at most 38 patterns.
 | Throughput | 1098 provider attempts in 720 ticks, 14.768 ticks/s in compressed time; provider cadence and permission are unchanged. |
 | Backlog | Each benchmark awaits one serialized job; no queued-backlog or full 50,000-attempt/10,000-receipt cap qualification. Production retains the bounded automation worker and acquires no capture/processing slot. |
 | Correctness | All 125 core-product capture/scenario facts remain byte-identical (2,227,451 B; SHA-256 `131EC92D13A881293ED1DB7E9939783208D77D2FEAC917B49C0972CADBE53E7B`). All 128 ordered frame checksums match between capture series. Product admission bounds and restart hash assertions remain unchanged. |
-| Result | tick p95: Over; tick allocation / decoded bytes: Over; tick working-set delta p95: Over; database growth / simulated day: Within. Capture p95 change -16.51%; sequential A/B, without a hardware or statistical qualification claim. No further parser/store/capture optimization or threshold change. Owner disposition of the provisional ceilings: not met and not relaxed. The three exceedances are accepted for v1 as an explained, bounded background cost: the remaining tick cost is in the unchanged S3b store completion/merge/purge (attribution below); the 1 MiB alerts body is a stress admission input, and the largest committed scenario bodies take 1.046 ms; p95 process CPU of 454.584 ms per tick is at most 0.76% of one core at the 60 s minimum tick and 0.38% at the 120 s default; the five working-set deltas are non-monotonic and the 720-tick simulated day ends at -108.675 MiB, so no retention is shown; database growth is within its ceiling; and capture is unaffected under sustained overlap. Store optimization and ceiling re-evaluation: #1489. |
+| Result | tick p95: Over; tick allocation / decoded bytes: Over; tick working-set delta p95: Over; database growth / simulated day: Within. Capture p95 change -16.51%; sequential A/B, without a hardware or statistical qualification claim. No further parser/store/capture optimization or threshold change. Owner disposition of the provisional ceilings: not met and not relaxed. The three exceedances are accepted for v1 as an explained, bounded background cost: the remaining tick cost is in the unchanged S3b store completion/merge/purge (attribution below); the 1 MiB alerts body is a stress admission input, and the largest committed scenario bodies take 1.046 ms; p95 process CPU of 454.584 ms per tick is at most 0.76% of one core at the 60 s minimum tick and 0.38% at the 120 s default; the five working-set deltas are non-monotonic and the 720-tick simulated day ends at -108.675 MiB, so no retention is shown; database growth is within its ceiling; and capture is unaffected under sustained overlap. Store optimization and ceiling re-evaluation: see "Store tick-cost reduction and ceiling re-evaluation (#1489)" below. |
 
 | Stage | Round-2 samples | Round-2 wall p95 ms | Round-4 samples | Round-4 wall p95 ms | Round-2 → round-4 allocated MiB p95 | CPU ms p95 before → after | WS MiB p95 before → after | GC 0/1/2 before → after |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
@@ -774,3 +886,206 @@ and `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock`:
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build -c Release -m:4 --filter "TestCategory=Manual&FullyQualifiedName~SpaceWeatherRefreshPerformanceTests.FullTickRetentionRestartSimulatedDayAndRunnerSweepsAreMeasured"
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build -c Release -m:4 --filter "TestCategory=Manual&FullyQualifiedName~SpaceWeatherRefreshPerformanceTests.CapturePathWithAndWithoutConcurrentMaximumRateRefreshIsMeasured"
 ```
+
+### Store tick-cost reduction and ceiling re-evaluation (#1489)
+
+#1489 reduces the store completion, merge and purge cost that round 4 attributed
+the remaining tick cost to, then re-runs both Manual methods and re-evaluates the
+provisional ceilings. Schema `user_version` 1, every write statement, the
+per-operation connection with `BEGIN IMMEDIATE` and WAL `synchronous=FULL`, the
+stored envelope and fingerprint bytes, the parsers, Fetch and Policy are
+unchanged. The changes are:
+
+- Durable fingerprints serialize a decoded body as an indexed placeholder and
+  expand it once, in the canonical writer, into the same compact decimal number
+  array, using pooled buffers. A golden test pins the stored fingerprints and a
+  second test proves the deferred and full canonicalization hash the same bytes.
+- Candidate validation compares the serializer's UTF-8 output in pooled buffers
+  instead of two strings.
+- A last-known-good read streams the raw body through `SqliteBlob` and re-hashes
+  every body against its stored SHA-256 on every read. It reuses the decoded
+  snapshot from the previous read only when the snapshot id, raw SHA-256 and
+  stored envelope bytes all match.
+- A notice read caches parsed message rows by sequence, identity, content hash,
+  snapshot SHA-256 and retrieval time, rebuilds groups only when the ordered key
+  set changes, and still reads ranks, acknowledgements and orphans on every call.
+  Every cache is cleared whenever a transaction does not commit. The message
+  cache trusts the content hash in its key, so a `record` column changed in place
+  by an external writer while the store owns its root is served from the cache
+  until restart; earlier binaries never verified that column against its hash
+  either.
+- Purge evaluates every lifecycle window once through
+  `SwpcNoticeLifecycle.EvaluateAll`, the preparation path attention already
+  uses, instead of collecting the watch context again for every group.
+- The raw-body insert binds the immutable body's array instead of a copy.
+
+| Field | Recorded evidence |
+| --- | --- |
+| Revision | Before: merge base `0e829d33cc83ca06998bc853e563cfa1e966faa1`, built from `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`; the only change between them is agent-policy documentation. After: production and test code of `920f74733c33b2615fb9c6e8fd8f9efb57c474c9`, measured from the working tree before that commit; the harness then differed only in the reported ceiling values. |
+| Environment | 8-vCPU x64 KVM VM, Intel Core Ultra 9 285H reported, 31 GiB memory, ext4, Ubuntu 24.04.4, native Release, SDK 10.0.402 and .NET 10.0.13. This is not the round-4 host, so compare before and after only within this subsection. Each run held the host's exclusive heavy-work lock, with TMPDIR unset and no network or Docker. |
+| Workload | The unchanged round-4 harness and inputs, including the 1 MiB alerts body above. Before: three FullTick and two CapturePath runs. After: five FullTick and two CapturePath runs. Every run is a separate process; before and after runs were partly interleaved. |
+| I/O | Zero network requests. Database plus sidecar growth is 1,740,800–1,748,992 B/day before and after; the writes are unchanged. |
+| CPU | Tick p95 process CPU 396.567–542.102 ms → 105.413–331.473 ms (113.304 ms in the median run). Simulated-day CPU 35,678–37,006 ms → 14,476–14,965 ms. |
+| Memory | Tick p95 allocation 114.804–114.812 MiB (113.73× decoded bytes) → 13.816–13.838 MiB (13.69–13.71×). Tick working-set delta p95 30.980–66.598 → 7.070–9.031 MiB. Simulated-day allocation 29,594–29,597 → 4,637–4,644 MiB and GC pause 5,148–5,247 → 427–452 ms. Restart rebuild allocation 5.087 → 2.858–2.874 MiB. The live heap after full blocking collections, over three simulated days (2,160 ticks) in one process, grows 31.320 → 32.634 MiB before and 31.544 → 32.856 MiB after, so the read caches retain no growth of their own. |
+| Latency | Tick p95 per run 392.271–415.886 ms before; 139.558–167.098 ms in four after runs and 433.532 ms in one, set by a single sample. Median run 404.175 → 150.674 ms. All 25 after samples pooled: 24 lie in 127.1–167.1 ms, one is 433.5 ms, and the nearest-rank p95 is 167.098 ms. |
+| Throughput | 1,098 provider attempts per 720-tick day in every run. Refresh throughput during capture overlap 2.924–3.019 → 7.859–8.742 ticks/s. |
+| Backlog | Unchanged from round 4. |
+| Correctness | `SwpcFingerprintStabilityTests` pins the stored fingerprints and the deferred-body equivalence. `SwpcCorrectionTests` compares `EvaluateAll` with the original per-group evaluation at every fixture instant. `SwpcStoreTests.ReusedLastKnownGoodFollowsItsStoredEnvelope` and `SwpcAttemptTests.RolledBackRowsAreNotServedWhenTheNextCommitReusesTheirSequenceAndSnapshotId` cover cache reuse and rollback. All 128 ordered frame checksums match in every capture run. |
+| Result | tick working-set delta p95 and database growth: Within their provisional ceilings, which are confirmed. tick p95 and tick allocation / decoded bytes: Over the provisional 50 ms and 8×, which are revised to 200 ms and 16× on the evidence below. Against the revised ceilings every after run is Within, except after run 1's tick p95, set by one 433.5 ms sample. |
+
+| FullTick run | Tick wall ms med / p95 | Tick CPU ms p95 | Tick alloc MiB p95 | Tick WS delta MiB p95 | Tick GC 0/1/2 | Day wall ms | Day CPU ms | Day alloc MiB | Day GC pause ms |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| before 1 | 391.901 / 415.886 | 542.102 | 114.804 | 66.598 | 31/15/3 | 47,528.2 | 37,005.5 | 29,594.0 | 5,247.3 |
+| before 2 | 345.093 / 392.271 | 396.567 | 114.805 | 30.980 | 31/11/3 | 46,809.9 | 36,697.4 | 29,597.2 | 5,148.3 |
+| before 3 | 380.092 / 404.175 | 418.593 | 114.812 | 33.855 | 33/14/5 | 46,449.2 | 35,678.1 | 29,594.6 | 5,150.1 |
+| after 1 | 151.086 / 433.532 | 331.473 | 13.816 | 7.215 | 7/2/0 | 25,703.5 | 14,774.9 | 4,637.4 | 452.1 |
+| after 2 | 132.429 / 139.558 | 105.413 | 13.838 | 9.031 | 7/2/0 | 24,741.2 | 14,475.7 | 4,641.3 | 432.6 |
+| after 3 | 144.715 / 150.674 | 113.304 | 13.831 | 8.875 | 7/2/0 | 24,655.2 | 14,965.1 | 4,643.8 | 441.3 |
+| after 4 | 136.393 / 167.098 | 123.676 | 13.816 | 7.070 | 7/2/0 | 24,271.4 | 14,851.8 | 4,641.6 | 439.3 |
+| after 5 | 135.001 / 146.727 | 173.719 | 13.816 | 9.004 | 7/2/0 | 23,479.3 | 14,572.5 | 4,641.5 | 426.7 |
+
+After-run tick samples, wall ms: run 1 141.7, 151.1, 154.7, 433.5, 141.2; run 2
+136.3, 130.1, 131.1, 139.6, 132.4; run 3 144.7, 147.9, 143.7, 137.5, 150.7; run 4
+135.1, 136.4, 133.4, 136.6, 167.1; run 5 135.0, 127.1, 136.6, 132.0, 146.7. The
+433.5 ms sample used 331 ms of CPU and the same allocation as its neighbours; it
+is reported, not excluded.
+
+| Stage, median runs (before 3 → after 3) | Wall ms p95 | CPU ms p95 | Alloc MiB p95 | WS delta MiB p95 | GC 0/1/2 |
+| --- | --- | --- | --- | --- | --- |
+| fullTick1MiB | 404.175 → 150.674 | 418.593 → 113.304 | 114.812 → 13.831 | 33.855 → 8.875 | 33/14/5 → 7/2/0 |
+| sweepWithoutDefinition | 0.355 → 0.353 | 0.915 → 1.373 | 0.012 → 0.012 | 0.016 → 0.035 | 0/0/0 → 0/0/0 |
+| sweepWithNotDueDefinition | 1.152 → 0.878 | 2.176 → 1.892 | 0.027 → 0.026 | 0.020 → 0.082 | 0/0/0 → 0/0/0 |
+| restartRebuild | 13.973 → 11.476 | 27.989 → 21.228 | 5.087 → 2.858 | 2.426 → 2.887 | 1/0/0 → 1/0/0 |
+| simulatedDay120SecondTicks | 46,449.223 → 24,655.204 | 35,678.144 → 14,965.110 | 29,594.644 → 4,643.811 | -61.410 → 20.297 | 3312/1203/219 → 583/216/1 |
+| retention35DayHistory | 8.503 → 10.085 | 2.699 → 2.902 | 0.044 → 0.032 | 0.008 → 0.000 | 0/0/0 → 0/0/0 |
+| alerts2000Records | 16.055 → 22.927 | 16.080 → 23.033 | 18.724 → 18.725 | 0.004 → 0.945 | 2/0/0 → 2/1/0 |
+| alerts2001RecordsRejected | 0.432 → 0.550 | 0.436 → 0.553 | 0.000 → 0.000 | 0.000 → 0.000 | 0/0/0 → 0/0/0 |
+| largestCommittedScenarioBodies | 1.099 → 1.300 | 1.108 → 1.313 | 0.273 → 0.273 | 0.070 → 0.059 | 0/0/0 → 0/0/0 |
+
+| After 3 stage (samples) | Wall ms med/p95/max | CPU ms med/p95/max | Alloc MiB med/p95/max | WS delta MiB med/p95/max | GC 0/1/2 | GC pause ms |
+| --- | --- | --- | --- | --- | --- | ---: |
+| fullTick1MiB (5) | 144.715 / 150.674 / 150.674 | 91.190 / 113.304 / 113.304 | 13.794 / 13.831 / 13.831 | 4.090 / 8.875 / 8.875 | 7/2/0 | 18.781 |
+| sweepWithoutDefinition (5) | 0.306 / 0.353 / 0.353 | 0.311 / 1.373 / 1.373 | 0.012 / 0.012 / 0.012 | 0.000 / 0.035 / 0.035 | 0/0/0 | 0.000 |
+| sweepWithNotDueDefinition (5) | 0.626 / 0.878 / 0.878 | 0.648 / 1.892 / 1.892 | 0.026 / 0.026 / 0.026 | 0.008 / 0.082 / 0.082 | 0/0/0 | 0.000 |
+| restartRebuild (5) | 8.886 / 11.476 / 11.476 | 9.478 / 21.228 / 21.228 | 2.858 / 2.858 / 2.858 | 1.184 / 2.887 / 2.887 | 1/0/0 | 1.723 |
+| simulatedDay120SecondTicks (1) | 24655.204 / 24655.204 / 24655.204 | 14965.110 / 14965.110 / 14965.110 | 4643.811 / 4643.811 / 4643.811 | 20.297 / 20.297 / 20.297 | 583/216/1 | 441.325 |
+| retention35DayHistory (1) | 10.085 / 10.085 / 10.085 | 2.902 / 2.902 / 2.902 | 0.032 / 0.032 / 0.032 | 0.000 / 0.000 / 0.000 | 0/0/0 | 0.000 |
+| alerts2000Records (1) | 22.927 / 22.927 / 22.927 | 23.033 / 23.033 / 23.033 | 18.725 / 18.725 / 18.725 | 0.945 / 0.945 / 0.945 | 2/1/0 | 5.065 |
+| alerts2001RecordsRejected (1) | 0.550 / 0.550 / 0.550 | 0.553 / 0.553 / 0.553 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0/0/0 | 0.000 |
+| largestCommittedScenarioBodies (1) | 1.300 / 1.300 / 1.300 | 1.313 / 1.313 / 1.313 | 0.273 / 0.273 / 0.273 | 0.059 / 0.059 / 0.059 | 0/0/0 | 0.000 |
+
+The parser stages call unchanged parser code with identical allocation. Their
+in-harness after values (alerts2000Records 17.0–22.9 ms across the five after
+runs, against 16.1–16.5 ms in the three before runs) follow the simulated day,
+which leaves a different heap behind: about 4,640 MiB allocated after, against
+29,600 MiB before. The
+after runs show 2–3/0–1/0 collections and 3.4–5.1 ms of pause in that stage,
+against 2/0–2/0 and 2.7–2.9 ms before, which is consistent with that. A
+separate fresh-process check of the same parse, ten repeats per run, gives
+medians of 77.7 and 82.8 ms before and 84.6 and 84.5 ms after, with ranges of
+62.9–104.7 and 42.7–96.9 ms. The distributions overlap, so no parser change is
+indicated. Fresh-process values include JIT and regex construction.
+
+| Sized stage (after) | Decoded bytes | Allocation / decoded, before → after | Ceiling 16× |
+| --- | ---: | ---: | --- |
+| fullTick1MiB | 1,058,557 | 113.73× → 13.70× | Within |
+| restartRebuild | 1,058,557 | 5.04× → 2.83× | Within |
+| alerts2000Records | 398,001 | 49.33× → 49.33× | Over; parser stress, unchanged |
+| alerts2001RecordsRejected | 398,200 | 0.001× → 0.001× | Within |
+| largestCommittedScenarioBodies | 40,021 | 7.15× → 7.15× | Within |
+
+A scratch warm-store profile (external, not committed) ran ten repeats of four
+tick shapes on one store per process, two processes per build. Times are the two
+per-process medians; allocations are per tick.
+
+| Warm-store tick (provider calls) | Before ms | Before MiB | After ms | After MiB |
+| --- | --- | ---: | --- | ---: |
+| First tick on a new store (4) | 200.4, 219.6 | 114.4–114.5 | 128.6, 133.0 | 13.79 |
+| Alerts unchanged (1) | 113.3, 120.6 | 75.7–75.8 | 55.5, 58.7 | 8.24 |
+| Alerts changed (1) | 124.4, 119.7 | 79.0 | 67.2, 68.5 | 10.52 |
+| All four products refreshed (4) | 201.3, 216.1 | 131.1 | 111.6, 120.5 | 12.5 |
+
+After ticks keep improving through about the seventh to ninth repeat as JIT
+tiering completes: about 105 ms for the first-tick shape, 37 ms for an unchanged
+alerts tick and 94 ms for a four-product refresh. The five-sample harness tick
+runs on a new store in a new host, so it measures the colder end of this range.
+
+| Capture run (128 frames per arm) | Ticks overlapped | Attempts | Ticks/s | Capture p95 ms, baseline → concurrent | Median ms | Concurrent alloc MiB p95 | Concurrent GC pause ms |
+| --- | ---: | ---: | ---: | --- | --- | ---: | ---: |
+| before 1 | 10 | 43 | 2.924 | 32.347 → 33.892 (+4.77%) | 23.894 → 25.641 | 33.018 | 295.2 |
+| before 2 | 10 | 46 | 3.019 | 29.622 → 32.088 (+8.32%) | 23.111 → 24.635 | 31.996 | 240.4 |
+| after 1 | 28 | 116 | 8.742 | 29.613 → 32.594 (+10.07%) | 23.269 → 22.738 | 18.624 | 118.0 |
+| after 2 | 25 | 106 | 7.859 | 29.218 → 31.566 (+8.04%) | 23.270 → 22.818 | 18.274 | 140.2 |
+
+The after build overlaps about 2.6 times as many refresh ticks with the same
+capture window, with lower concurrent allocation and GC pause and a flat or lower
+capture median. Its p95 change is +10.07% and +8.04%, against +4.77% and +8.32%
+before while overlapping fewer than half as many ticks, so interference per
+refresh tick is lower. All checksums match.
+
+An EventPipe trace (`Microsoft-Windows-DotNETRuntime:0x19:5` with
+`Microsoft-DotNETCore-SampleProfiler`, allocation ticks sampled about every
+100 KB) of the warm-store profile on the after code, restricted to stacks under
+`SpaceWeatherRefreshJob`, attributes the remaining tick cost. The profiler
+inflates time, so only the shares are used. The external TraceEvent analyzer is
+not committed.
+
+| Area | Allocation MiB (of 329.1) | CPU samples (of 2,406) |
+| --- | ---: | ---: |
+| SQLite commit (WAL `synchronous=FULL`) | — | 676 |
+| Other SQLite work | 7.3 | 406 |
+| Parser called from Policy | 81.0 | 266 |
+| Other Policy | 26.4 | 26 |
+| Test fetch client | 26.2 | 11 |
+| Candidate validation, including the contract re-parse | 51.7 | 195 |
+| Last-known-good read, mostly the integrity SHA-256 | 23.0 | 214 |
+| Durable fingerprint | 25.7 | 196 |
+| Notice read | 36.0 | 128 |
+| Other snapshot save | 20.0 | 84 |
+| Other purge | 19.3 | 81 |
+| Connection open | 2.6 | 81 |
+| Other | 9.7 | 38 |
+
+`SwpcAlertsParser.Parse` is 116.6 MiB (35%) inclusive, because Policy and
+candidate validation each parse the body.
+
+| Ceiling | Provisional | Before (this host) | After | Decision |
+| --- | ---: | ---: | ---: | --- |
+| tick p95 | 50 ms | 392.271–415.886 ms | 139.558–167.098 ms in four runs, 433.532 ms in one; pooled 167.098 ms | Revised to 200 ms |
+| tick allocation / decoded bytes | 8× | 113.73× | 13.69–13.71× | Revised to 16× |
+| tick working-set delta p95 | 32 MiB | 30.980–66.598 MiB | 7.070–9.031 MiB | Confirmed |
+| database growth / simulated day | 5 MiB/day | 1.66 MiB/day | 1.66 MiB/day | Confirmed |
+
+The 50 ms tick p95 cannot be met without changing durability or out-of-scope
+work. SQLite accounts for 45% of tick CPU, most of it the commit's `fsync` under
+`synchronous=FULL`, with a connection opened per operation; both are the
+store's durability contract. The parser, Policy and fetch account for 13% and are
+outside #1489. The integrity re-hash of every last-known-good body and the
+durable fingerprint account for another 17% and are contract work. A warm
+four-product refresh still has per-process medians of 112–121 ms and reaches
+about 94 ms only once JIT tiering completes. The revised 200 ms ceiling
+covers the pooled p95 of 167.1 ms with about 20% headroom for host variance;
+the 433.5 ms sample is reported as Over for its run, not excluded.
+
+The 8× allocation ceiling is below the out-of-scope share and the contract work
+together. Applying the trace's allocation shares to the measured 13.70×:
+the parser called from Policy, the rest of Policy and the fetch client are
+133.6 of 329.1 MiB (41%, about 5.6×), and candidate validation, the
+last-known-good integrity read and the durable fingerprint are 100.4 MiB (31%,
+about 4.2×), together about 9.7×. Counting only candidate validation's contract
+re-parse (35.6 MiB, the parser's 116.6 MiB inclusive allocation less the
+81.0 MiB called from Policy) instead of all of candidate validation, they are still about 9.1×.
+The rest of the store, about 3.9×, comes on top. The revised 16× ceiling covers
+the measured 13.70× with about 17% headroom. The parser stress stage remains outside this full-tick ceiling, as
+in round 4. The ceilings stay reported comparisons, not assertions; the harness
+writes them as `ceilings` in `space-weather-refresh-performance.json`.
+
+At the median run's 113.3 ms tick p95 CPU, the refresh uses 0.19% of one core at
+the 60 s minimum tick and 0.09% at the 120 s default; at the worst after run's
+331.5 ms, 0.55% at 60 s.
+
+Run the two Manual methods with the commands above, one process at a time, on an
+otherwise idle host with TMPDIR unset and
+`DOCKER_HOST=unix:///tmp/hvo-no-docker.sock`, setting
+`HVO_ISSUE1398_EVIDENCE_ROOT` to a fresh directory per run. Build the before
+tree from the merge base in a separate checkout.

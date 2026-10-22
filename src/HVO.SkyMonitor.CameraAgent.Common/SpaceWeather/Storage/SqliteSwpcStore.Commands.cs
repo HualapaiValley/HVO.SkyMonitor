@@ -1,6 +1,12 @@
+using System.Buffers;
+using System.Buffers.Text;
 using System.Collections.Immutable;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
 
@@ -96,24 +102,105 @@ public sealed partial class SqliteSwpcStore
         if (!value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' or ':'))
             throw new ArgumentException("A reason code contains unsupported characters.");
     }
-    private static string Fingerprint<T>(T value)
+    /// <summary>
+    /// SHA-256 of the serializer's UTF-8 JSON with object members ordered ordinally. Stored fingerprints
+    /// are a durable replay format: the bytes hashed must stay identical to every earlier binary's.
+    /// A byte array is serialized as a placeholder and expanded only in the canonical output, as the
+    /// same number array, so a decoded body is neither parsed back nor rewritten value by value.
+    /// </summary>
+    internal static string Fingerprint<T>(T value)
     {
-        using var document = JsonDocument.Parse(Json(value));
-        using var bytes = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(bytes)) Canonical(document.RootElement, writer);
-        return Convert.ToHexString(SHA256.HashData(bytes.ToArray()));
+        var bodies = DeferredBodies ??= [];
+        try
+        {
+            using var serialized = new PooledBuffer();
+            using (var writer = new Utf8JsonWriter(serialized)) JsonSerializer.Serialize(writer, value, FingerprintSerializer);
+            using var document = JsonDocument.Parse(serialized.Written);
+            using var canonical = new PooledBuffer();
+            using (var writer = new Utf8JsonWriter(canonical)) Canonical(document.RootElement, writer, bodies);
+            return Convert.ToHexString(SHA256.HashData(canonical.Written.Span));
+        }
+        finally { bodies.Clear(); }
     }
-    private static void Canonical(JsonElement element, Utf8JsonWriter writer)
+    private static void Canonical(JsonElement element, Utf8JsonWriter writer, List<ImmutableArray<byte>> bodies)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
             writer.WriteStartObject();
             foreach (var property in element.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal))
-            { writer.WritePropertyName(property.Name); Canonical(property.Value, writer); }
+            { writer.WritePropertyName(property.Name); Canonical(property.Value, writer, bodies); }
             writer.WriteEndObject();
         }
         else if (element.ValueKind == JsonValueKind.Array)
-        { writer.WriteStartArray(); foreach (var item in element.EnumerateArray()) Canonical(item, writer); writer.WriteEndArray(); }
+        { writer.WriteStartArray(); foreach (var item in element.EnumerateArray()) Canonical(item, writer, bodies); writer.WriteEndArray(); }
+        else if (element.ValueKind == JsonValueKind.String && Deferred(JsonMarshal.GetRawUtf8Value(element), bodies) is { IsDefault: false } body)
+            WriteBytes(writer, body.AsSpan());
         else element.WriteTo(writer);
+    }
+
+    // The placeholder carries a per-process random marker, so no serialized text can collide with it.
+    private static readonly string DeferredMarker = "hvo-deferred-bytes-" + Guid.NewGuid().ToString("N") + "-";
+    private static readonly byte[] DeferredQuoted = Encoding.UTF8.GetBytes("\"" + DeferredMarker);
+    private static readonly JsonSerializerOptions FingerprintSerializer = new() { Converters = { new DeferredBytes() } };
+    [ThreadStatic] private static List<ImmutableArray<byte>>? DeferredBodies;
+
+    private static ImmutableArray<byte> Deferred(ReadOnlySpan<byte> raw, List<ImmutableArray<byte>> bodies)
+    {
+        if (!raw.StartsWith(DeferredQuoted) || raw[^1] != (byte)'"') return default;
+        var digits = raw[DeferredQuoted.Length..^1];
+        return Utf8Parser.TryParse(digits, out int index, out var consumed) && consumed == digits.Length && index >= 0 && index < bodies.Count
+            ? bodies[index] : default;
+    }
+    /// <summary>Writes the default serializer's compact decimal number array for <paramref name="body"/>.</summary>
+    private static void WriteBytes(Utf8JsonWriter writer, ReadOnlySpan<byte> body)
+    {
+        var text = ArrayPool<byte>.Shared.Rent(checked(2 + 4 * body.Length));
+        try
+        {
+            var length = 0;
+            text[length++] = (byte)'[';
+            for (var i = 0; i < body.Length; i++)
+            {
+                if (i > 0) text[length++] = (byte)',';
+                var value = body[i];
+                if (value >= 100) text[length++] = (byte)('0' + value / 100);
+                if (value >= 10) text[length++] = (byte)('0' + value / 10 % 10);
+                text[length++] = (byte)('0' + value % 10);
+            }
+            text[length++] = (byte)']';
+            writer.WriteRawValue(text.AsSpan(0, length), skipInputValidation: true);
+        }
+        finally { ArrayPool<byte>.Shared.Return(text); }
+    }
+    private sealed class DeferredBytes : JsonConverter<ImmutableArray<byte>>
+    {
+        public override ImmutableArray<byte> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => throw new NotSupportedException();
+        public override void Write(Utf8JsonWriter writer, ImmutableArray<byte> value, JsonSerializerOptions options)
+        {
+            if (value.IsDefault || DeferredBodies is not { } bodies) { JsonSerializer.Serialize(writer, value, JsonSerializerOptions.Default); return; }
+            writer.WriteStringValue(DeferredMarker + bodies.Count.ToString(CultureInfo.InvariantCulture));
+            bodies.Add(value);
+        }
+    }
+
+    /// <summary>Growable pooled scratch for one fingerprint; the rented array returns on dispose.</summary>
+    private sealed class PooledBuffer : IBufferWriter<byte>, IDisposable
+    {
+        private byte[] _buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        private int _written;
+        public ReadOnlyMemory<byte> Written => _buffer.AsMemory(0, _written);
+        public void Advance(int count) => _written += count;
+        public Memory<byte> GetMemory(int sizeHint = 0) => Reserve(sizeHint).AsMemory(_written);
+        public Span<byte> GetSpan(int sizeHint = 0) => Reserve(sizeHint).AsSpan(_written);
+        private byte[] Reserve(int sizeHint)
+        {
+            var required = checked(_written + Math.Max(sizeHint, 1));
+            if (required <= _buffer.Length) return _buffer;
+            var grown = ArrayPool<byte>.Shared.Rent(Math.Max(required, checked(_buffer.Length * 2)));
+            _buffer.AsSpan(0, _written).CopyTo(grown);
+            ArrayPool<byte>.Shared.Return(_buffer);
+            return _buffer = grown;
+        }
+        public void Dispose() { ArrayPool<byte>.Shared.Return(_buffer); _buffer = []; }
     }
 }

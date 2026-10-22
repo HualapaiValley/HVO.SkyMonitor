@@ -51,7 +51,7 @@ public sealed class SwpcStoreTests
     private static ValueTask<(SwpcStoreView View, ImmutableArray<string> Diagnostics)> Save(SqliteSwpcStore store, SwpcSnapshot snapshot,
         SwpcFetchOutcome outcome = SwpcFetchOutcome.Updated, DateTimeOffset? at = null) => store.ExecuteAsync(at ?? Now, (db, tx) =>
         {
-            var merged = SqliteSwpcStore.SaveSnapshot(db, tx, snapshot, outcome, at ?? Now);
+            var merged = store.SaveSnapshot(db, tx, snapshot, outcome, at ?? Now);
             return (store.ReadView(db, tx, at ?? Now), merged.Diagnostics);
         }, CancellationToken.None);
 
@@ -155,6 +155,15 @@ public sealed class SwpcStoreTests
         using var db = Database(); using var command = db.CreateCommand();
         command.CommandText = "SELECT hex(body) FROM swpc_raw;";
         Assert.AreEqual("00", await command.ExecuteScalarAsync().ConfigureAwait(false), "A corrupt accepted body is preserved for explicit recovery.");
+    }
+    [TestMethod]
+    public async Task ReusedLastKnownGoodFollowsItsStoredEnvelope()
+    {
+        using var store = Open(); await Save(store, Alerts(Message())).ConfigureAwait(false);
+        // The replacement keeps the envelope's length, so only its stored bytes differ from the decoded copy.
+        Sql("UPDATE swpc_snapshots SET envelope=replace(envelope,'\"HttpStatus\":200','\"HttpStatus\":201');");
+        var view = await store.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(201, view.Products[SwpcProduct.Alerts].LastKnownGood!.HttpStatus);
     }
     private static async Task<SwpcWriteResult> CompleteAlerts(SqliteSwpcStore store, params string[] records)
     {

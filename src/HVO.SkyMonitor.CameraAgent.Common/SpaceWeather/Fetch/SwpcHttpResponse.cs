@@ -41,7 +41,7 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// unexpected and propagates from FetchAsync as the same object. The existing transport boundary alone maps
 /// I/O, HTTP, authentication and socket failures to NetworkError, the deadline to Timeout, and throws caller
 /// cancellation. On every path the aggregate wire bytes read after rejection are bounded by maximum+1.
-/// Owner decision T4: Content-Type is reduced to its media token. Absent or repeated fields give null.
+/// Owner decision T4: SwpcClient reduces Content-Type to its media token. Absent or repeated fields give null.
 /// Cut the single raw field before the first semicolon and trim both ends with char.IsWhiteSpace plus
 /// U+001C through U+001F. Empty tokens, tokens longer than 256 characters and tokens outside U+0020 through
 /// U+007E give null; otherwise preserve the token's case. This is exactly the information the contract's
@@ -49,12 +49,16 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// The returned value stays bounded printable ASCII, so persistence and replay are unchanged in kind.
 /// The 256 bound applies to the token, not the raw field; parameters may be long because the handler's
 /// MaxResponseHeadersLength already bounds the raw field. Processing is linear in the field length.
+/// T4 is the client's reduction, not a construction invariant: the constructor keeps a caller-supplied media type
+/// unchanged, so scenario replay may carry a raw field. S1's content-type check makes the same cut and trim, so it
+/// gives the same verdict on a raw field as on its T4 token.
 /// The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
 {
     /// <summary>
     /// Creates transport facts and copies caller body bytes into independently owned exact-length storage.
+    /// Header values are kept as supplied; T4 and the header sanitizing and bounds are applied by SwpcClient, not here.
     /// A failure has no status and a completed HTTP response has a status. Record copies share owned body storage.
     /// </summary>
     public SwpcHttpResponse(SwpcProduct product, DateTimeOffset startedUtc, DateTimeOffset completedUtc,
@@ -97,7 +101,12 @@ public sealed record SwpcHttpResponse
     public int? StatusCode { get; }
     /// <summary>Whether at least one conditional validator was sent.</summary>
     public bool ValidatorsSent { get; }
-    /// <summary>The single Content-Type media token, contract-trimmed and bounded to 256 printable-ASCII characters (T4), or null.</summary>
+    /// <summary>
+    /// For a response produced by <see cref="SwpcClient"/>, the single Content-Type media token, contract-trimmed and
+    /// bounded to 256 printable-ASCII characters (T4), or null. The public constructor keeps the caller-supplied value
+    /// unchanged, such as a raw scenario <c>contentType</c> like <c>text/html; charset=UTF-8</c>; S1 gives the same
+    /// content-type verdict on either form.
+    /// </summary>
     public string? MediaType { get; }
     /// <summary>One sanitized response ETag.</summary>
     public string? EntityTag { get; }

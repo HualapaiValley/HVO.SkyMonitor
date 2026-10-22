@@ -618,11 +618,16 @@ digest_for() {
 }
 registry_manifest() {
   local component=$1 platform_file="${FAKE_IMAGE_STATE:?}/$1.platforms" first=true architecture digest descriptors=''
+  if [[ "$(wc -l < "$platform_file")" == 1 && "$(cat "$FAKE_IMAGE_STATE/$component.attestations" 2>/dev/null || echo true)" == false ]]; then
+    printf '{"schemaVersion":2,"mediaType":"%s","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%064d","size":1},"layers":[]}\n' \
+      "${FAKE_REGISTRY_MANIFEST_TYPE:-application/vnd.oci.image.manifest.v1+json}" 0
+    return
+  fi
   while IFS= read -r architecture; do
     digest="$(digest_for "$component" "$architecture")"
     [[ "$first" == true ]] || descriptors+=','; first=false
     descriptors+="{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$digest\",\"size\":1,\"platform\":{\"architecture\":\"$architecture\",\"os\":\"linux\"}}"
-    if [[ "${FAKE_REGISTRY_ATTESTATION:-true}" == true ]]; then
+    if [[ "$(cat "$FAKE_IMAGE_STATE/$component.attestations" 2>/dev/null || echo true)" == true && "${FAKE_REGISTRY_ATTESTATION:-true}" == true ]]; then
       attest="$(printf 'd%.0s' {1..64})"
       descriptors+=",{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$attest\",\"size\":1,\"annotations\":{\"vnd.docker.reference.digest\":\"sha256:$digest\",\"vnd.docker.reference.type\":\"attestation-manifest\"},\"platform\":{\"architecture\":\"unknown\",\"os\":\"unknown\"}}"
     fi
@@ -636,7 +641,7 @@ if [[ "$1" == buildx && "$2" == ls ]]; then
   if [[ "${FAKE_BUILDER_MULTI_NODE:-false}" == true ]]; then
     printf '{"Current":false,"Driver":"docker-container","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"unix:///var/run/docker.sock","Name":"control-builder-amd64","Platforms":["linux/amd64"],"Status":"running","Version":"v0.31.0"},{"Endpoint":"arm64-context","Name":"control-builder-arm64","Platforms":["linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n'
   else
-    printf '{"Current":false,"Driver":"docker","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"%s","Name":"control-builder0","Platforms":["linux/amd64","linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n' "$endpoint"
+    printf '{"Current":false,"Driver":"%s","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"%s","Name":"control-builder0","Platforms":["linux/amd64","linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n' "${FAKE_BUILDER_DRIVER:-docker-container}" "$endpoint"
   fi
   exit 0
 fi
@@ -645,11 +650,15 @@ if [[ "$1" == info ]]; then
   exit 0
 fi
 if [[ "$1" == buildx && "$2" == build ]]; then
-  destination= component= repository= platforms= created= sdk= source_reference= tree= builder=
+  destination= component= repository= platforms= created= sdk= source_reference= tree= builder= output= attestations=true
   while (( $# > 0 )); do
     case "$1" in
       --builder) builder=$2; shift 2 ;;
-      --output) destination="${2#type=docker,dest=}"; shift 2 ;;
+      --output)
+        output=$2
+        if [[ "$2" == type=docker,dest=* ]]; then destination="${2#type=docker,dest=}"; destination="${destination%%,*}"; fi
+        shift 2 ;;
+      --provenance=false) attestations=false; shift ;;
       --platform) platforms="$2"; shift 2 ;;
       --tag) repository="$2"; shift 2 ;;
       --label)
@@ -663,11 +672,17 @@ if [[ "$1" == buildx && "$2" == build ]]; then
     esac
   done
   [[ "$builder" == control-builder ]] || exit 1
+  if [[ "${FAKE_BUILDER_DRIVER:-docker-container}" == docker && "$output" == *rewrite-timestamp=true* &&
+        "$output" != *dest=* && "$output" != *unpack=false* ]]; then
+    printf 'exporter option "rewrite-timestamp" conflicts with "unpack"\n' >&2
+    exit 1
+  fi
   architecture="${platforms#linux/}"
   [[ "${FAKE_IMAGE_BUILD_FAIL:-}" != "$component-$architecture" ]] || exit 1
   jq -cn --arg created "$created" --arg sdk "$sdk" --arg source "$source_reference" --arg tree "$tree" \
     '{created:$created,sdk:$sdk,source:$source,tree:$tree}' > "${FAKE_IMAGE_STATE:?}/$component.labels"
   if [[ -z "$destination" ]]; then
+    printf '%s\n' "$attestations" > "${FAKE_IMAGE_STATE:?}/$component.attestations"
     : > "${FAKE_IMAGE_STATE:?}/$component.platforms"
     IFS=, read -r -a selected <<< "$platforms"
     for platform in "${selected[@]}"; do printf '%s\n' "${platform#linux/}" >> "${FAKE_IMAGE_STATE:?}/$component.platforms"; done
@@ -700,16 +715,18 @@ if [[ "$1" == buildx && "$2" == imagetools && "$3" == inspect ]]; then
   if [[ "$raw" == true ]]; then registry_manifest "$component"; exit 0; fi
   if [[ "$format" == '{{json .Manifest}}' ]]; then
     raw_manifest="$(registry_manifest "$component")"; parent="$(registry_manifest "$component" | sha256sum | cut -d' ' -f1)"
-    jq -c --arg digest "sha256:$parent" '. + {digest:$digest}' <<< "$raw_manifest"
+    jq -c --arg digest "sha256:$parent" 'if has("manifests") then . + {digest:$digest} else {mediaType,digest:$digest,size:1} end' <<< "$raw_manifest"
     exit 0
   fi
   [[ "$format" == '{{json .Image}}' ]] || exit 1
   digest="${reference##*@sha256:}"; architecture=arm64
+  if [[ "$(wc -l < "$FAKE_IMAGE_STATE/$component.platforms")" == 1 ]]; then architecture="$(cat "$FAKE_IMAGE_STATE/$component.platforms")"; fi
   [[ "$digest" == "$(digest_for "$component" amd64)" ]] && architecture=amd64
+  architecture="${FAKE_REGISTRY_CONFIG_ARCH:-$architecture}"
   labels="$(<"${FAKE_IMAGE_STATE:?}/$component.labels")"
   tree="$(jq -r .tree <<< "$labels")"; [[ "${FAKE_REGISTRY_MISMATCH_COMPONENT:-}" != "$component" ]] || tree="$(printf 'f%.0s' {1..40})"
-  printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}\n' \
-    "$architecture" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$tree"
+  printf '{"architecture":"%s","os":"%s","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}\n' \
+    "$architecture" "${FAKE_REGISTRY_CONFIG_OS:-linux}" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$tree"
   exit 0
 fi
 if [[ "$1" == context && "$2" == inspect ]]; then
@@ -1737,7 +1754,7 @@ write_inventory() {
       serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
       catalogs:[{catalogId:"test-production",displayName:"Test production catalog",kind:"production",version:"catalog-v1",schemaVersion:"2",preprocessingVersion:"3",sha256:("0"*64),length:1,rowCount:1,bundlePath:($root+"/catalog-bundle"),installRoot:($root+"/skymonitor/catalogs/test-production"),allowFixture:false}],
       images:{distributionMode:"registry",artifactRoot:null,tag:("rev-"+$revision),registryImmutableTags:true,
-        builder:{name:"control-builder",driver:"docker",endpoint:"default",expectedDaemonIdentity:"control-daemon",expectedDaemonName:"control-node",expectedArchitecture:"amd64"},
+        builder:{name:"control-builder",driver:"docker-container",endpoint:"default",expectedDaemonIdentity:"control-daemon",expectedDaemonName:"control-node",expectedArchitecture:"amd64"},
         logicHost:{repository:"registry.example/logichost"},cameraAgent:{repository:"registry.example/cameraagent"}},
       deployment:{
         services:{mode:"existing",
