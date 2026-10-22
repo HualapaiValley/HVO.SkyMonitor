@@ -70,7 +70,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                             family.SensorProfileSha256, family.AcquisitionModel),
                         stored.IdentitySha256, "owner-test", null), CancellationToken.None).ConfigureAwait(false)).IsAccepted);
                 var changed = CreateConfiguration(run.Root, [MixedGainStep()]);
-                run.Provider.Dispose();
+                await run.Provider.DisposeAsync().ConfigureAwait(false);
                 using var restarted = CreateProvider(run.Root);
                 ((CameraAgentConfigurationAccessor)restarted.GetRequiredService<ICameraAgentConfigurationAccessor>())
                     .SetConfiguration(changed with
