@@ -69,18 +69,20 @@
             </div>
         </section>
     }
-    @if (CurrentSelection is not null && Presentation is null)
+    @if ((CurrentSelection is not null || AllowExactPreviewFallback) && Presentation is null)
     {
-        <section class="card mb-4" aria-label="Selected Preview">
+        <section class="card mb-4" aria-label="@(CurrentSelection is null ? "Capture Preview" : "Selected Preview")">
             <div class="card-body">
                 @if (SelectedPreviewPath is { } preview && !IsBaseImageUnavailable)
                 {
                     var imageKey = BaseImageKey;
-                    <img class="selected-preview" @key="imageKey" src="@preview" alt="Selected Preview for capture @detail.Capture.CapturedAtUtc.ToString("u")" @onerror="() => OnBaseImageError(imageKey)" />
+                    <img class="selected-preview" @key="imageKey" src="@preview" alt="Preview for capture @detail.Capture.CapturedAtUtc.ToString("u")" @onerror="() => OnBaseImageError(imageKey)" />
                 }
                 else
                 {
-                    <p role="status">The selected Preview is unavailable. Capture metadata is retained; no other image is substituted.</p>
+                    <p role="status">@(CurrentSelection is null
+                        ? "The Preview for this capture is unavailable. Capture metadata is retained; no other image is substituted."
+                        : "The selected Preview is unavailable. Capture metadata is retained; no other image is substituted.")</p>
                     @if (SelectedPreviewPath is not null)
                     {
                         <button type="button" class="btn btn-outline-info" @onclick="RetryBaseImage">Retry image</button>

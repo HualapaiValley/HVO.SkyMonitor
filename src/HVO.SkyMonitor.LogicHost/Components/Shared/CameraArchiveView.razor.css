@@ -1,0 +1,15 @@
+.camera-archive { min-width: 0; overflow-wrap: anywhere; }
+.archive-toolbar, .archive-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+.archive-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: .75rem; margin: 1rem 0; }
+.archive-filters label { display: flex; flex-direction: column; min-width: 0; }
+.archive-filters :is(input, select) { width: 100%; min-width: 0; min-height: 44px; background: var(--hvo-surface, #17212d); color: inherit; border: 1px solid #718096; border-radius: .25rem; padding: .35rem; }
+.camera-archive :is(button, a, summary) { min-height: 44px; }
+.camera-archive button { white-space: normal; }
+.archive-items { list-style: none; padding: 0; }
+.archive-items a { display: block; padding: .75rem; border-bottom: 1px solid #718096; }
+.archive-items span { display: block; font-size: .875rem; }
+.archive-artifacts { margin: 1rem 0; }
+.archive-artifacts summary { cursor: pointer; }
+.archive-artifacts article { padding: .75rem 0; border-bottom: 1px solid #718096; }
+.camera-archive :is(a, button, input, select, summary):focus-visible { outline: 3px solid var(--hvo-info, #70d7ef); outline-offset: 3px; }
+.archive-back, .archive-pagination a { display: inline-flex; align-items: center; }
