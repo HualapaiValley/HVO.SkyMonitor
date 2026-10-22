@@ -118,6 +118,8 @@ public sealed partial class SqliteCalibrationLibraryStore(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, PublishedBundleEvidence> _validatedEvidence =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _validatedEvidenceGate = new();
+    private readonly Dictionary<string, long> _evidenceFailureGenerations = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _selectionRecordGate = new();
     private readonly object _activeValidationGate = new();
     private string? _lastRecordedSelectionReason;
@@ -125,6 +127,12 @@ public sealed partial class SqliteCalibrationLibraryStore(
     private string? _activeValidationBundleIdentity;
     private string _activeValidationReason = CalibrationLibraryReasonCodes.Inactive;
     private int _telemetryInventoryInitialized;
+
+    /// <summary>
+    /// Runs after a cached validation has verified a bundle's evidence and before it publishes it to the cache, with the
+    /// bundle identity, so a test can interleave a later validation deterministically.
+    /// </summary>
+    internal Func<string, Task>? BeforeValidatedEvidenceCachedForTest { get; set; }
 
     public async Task<CalibrationLibraryStateSnapshot> InitializeAsync(CancellationToken cancellationToken)
     {
@@ -786,6 +794,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 }
                 await precheckTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
+            var generation = EvidenceFailureGeneration(bundleIdentity);
             var evidence = await ValidatePublishedEvidenceAsync(bundle, cancellationToken).ConfigureAwait(false);
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
@@ -802,7 +811,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 await ValidatePersistedArtifactsAsync(
                     connection, transaction, bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                _validatedEvidence[bundleIdentity] = evidence;
+                CacheValidatedEvidence(bundleIdentity, generation, evidence);
                 activity?.SetStatus(ActivityStatusCode.Ok);
                 return existing.Snapshot;
             }
@@ -824,7 +833,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
                     cancellationToken).ConfigureAwait(false);
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            _validatedEvidence[bundleIdentity] = evidence;
+            CacheValidatedEvidence(bundleIdentity, generation, evidence);
             var snapshot = new CalibrationLibraryBundleSnapshot(
                 bundle, bundleIdentity, "published", null, bundle.CreatedUtc, now);
             var telemetryArtifacts = bundle.Artifacts.Select((artifact, index) =>
@@ -2011,13 +2020,63 @@ public sealed partial class SqliteCalibrationLibraryStore(
         {
             return;
         }
-        var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginRead(connection);
-        await ValidatePersistedArtifactsAsync(
-            connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        _validatedEvidence[bundle.BundleIdentitySha256] = evidence;
+        var generation = EvidenceFailureGeneration(bundle.BundleIdentitySha256);
+        try
+        {
+            var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            await ValidatePersistedArtifactsAsync(
+                connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (BeforeValidatedEvidenceCachedForTest is { } beforeCached)
+            {
+                await beforeCached(bundle.BundleIdentitySha256).ConfigureAwait(false);
+            }
+            CacheValidatedEvidence(bundle.BundleIdentitySha256, generation, evidence);
+        }
+        catch
+        {
+            ForgetValidatedEvidence(bundle.BundleIdentitySha256);
+            throw;
+        }
+    }
+
+    /// <summary>The count of failed validations of a bundle, read before a validation starts.</summary>
+    private long EvidenceFailureGeneration(string bundleIdentity)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            return _evidenceFailureGenerations.GetValueOrDefault(bundleIdentity);
+        }
+    }
+
+    /// <summary>
+    /// Caches evidence only when no validation of the bundle has failed since this one started. A validation that
+    /// verified the files before a later one found them corrupt must not republish what that failure evicted.
+    /// </summary>
+    private void CacheValidatedEvidence(string bundleIdentity, long generation, PublishedBundleEvidence evidence)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            if (_evidenceFailureGenerations.GetValueOrDefault(bundleIdentity) == generation)
+            {
+                _validatedEvidence[bundleIdentity] = evidence;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A failed validation outranks every earlier or still-running pass. The cache compares only file length and write
+    /// time, so a stale entry would otherwise let later unforced callers trust bytes this validation just rejected.
+    /// </summary>
+    private void ForgetValidatedEvidence(string bundleIdentity)
+    {
+        lock (_validatedEvidenceGate)
+        {
+            _evidenceFailureGenerations[bundleIdentity] = _evidenceFailureGenerations.GetValueOrDefault(bundleIdentity) + 1;
+            _validatedEvidence.TryRemove(bundleIdentity, out _);
+        }
     }
 
     private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)

@@ -112,7 +112,7 @@ public sealed partial class ProcessingGraphOperationsTests
                         .ConfigureAwait(false)).ConfigureAwait(false);
             }
 
-            (string Reason, CalibrationFamilyMasterV1 Master)[] changedMasters =
+            (string Reason, NormalizationPlanMasterV1 Master)[] changedMasters =
             [
                 (CalibrationFamilyReasonCodes.MasterMissing, masters[1] with { ArtifactId = Guid.NewGuid() }),
                 (CalibrationFamilyReasonCodes.MasterMismatch, masters[1] with { PayloadSha256 = new string('A', 64) })
@@ -439,7 +439,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 null,
                 FormattableString.Invariant($"gain-{gain}"),
                 [.. CalibrationReferenceKinds.All.Select(kind => bundle.Artifacts.Single(artifact => artifact.Kind == kind))
-                    .Select(static artifact => new CalibrationFamilyMasterV1(artifact.Kind, artifact.ArtifactId, artifact.PayloadSha256))],
+                    .Select(static artifact => new NormalizationPlanMasterV1(
+                        artifact.Kind, artifact.ArtifactId, artifact.PayloadSha256, artifact.Exposure))],
                 response.ResolveCoefficient(gain).Coefficient))]);
     }
 

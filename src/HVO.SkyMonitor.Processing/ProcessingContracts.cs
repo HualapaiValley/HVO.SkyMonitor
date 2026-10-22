@@ -265,6 +265,13 @@ public static class ProcessingReasonCodes
     public const string CalibrationReferenceConditionsMismatch = "calibration.reference-conditions-mismatch";
     public const string InvalidCalibrationFlat = "calibration.invalid-flat";
     public const string UnrepairableCalibrationDefect = "calibration.unrepairable-defect";
+    public const string InvalidCalibrationBias = "calibration.invalid-bias";
+    public const string InvalidCalibrationDark = "calibration.invalid-dark";
+    public const string MissingNormalizationPlan = "normalization.missing-plan";
+    public const string InvalidNormalizationPlan = "normalization.invalid-plan";
+    public const string NormalizationPlanInputMismatch = "normalization.plan-input-mismatch";
+    public const string NormalizationPrimaryExcluded = "normalization.primary-excluded";
+    public const string OutputBackedWindow = "normalization.output-backed-window";
 }
 
 public sealed record ProcessingRecipeDefinition(

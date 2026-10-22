@@ -321,8 +321,8 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         var lights = new Dictionary<double, ReconstructionDescriptor>();
         foreach (var gain in new[] { LowGain, HighGain })
         {
-            // Plan the test acquisition with the response's canonical sensor identity. The coordinator's live
-            // configuration serializer uses a different identity convention; these are pinned normalization fixtures.
+            // Plan the test acquisition with the response's sensor identity, the SensorProfileIdentity convention the
+            // live coordinator and raw capture descriptors share.
             var inputLayout = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
             var rigHash = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
             var model = new VirtualCalibrationSourceModelV1 { Seed = 208 };

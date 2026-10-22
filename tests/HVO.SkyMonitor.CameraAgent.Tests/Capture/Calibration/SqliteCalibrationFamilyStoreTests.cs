@@ -277,6 +277,12 @@ public sealed class SqliteCalibrationFamilyStoreTests
             CalibrationFamilyActivationResult activated;
             using (var store = CreateStore(root))
             {
+                await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                // SQLite checkpoints the WAL into the database when its last connection closes, which the store's
+                // unpooled connections otherwise do after every call. Another reader open through the commits and the
+                // copy keeps them in the WAL, so the copy is what a power loss right after the commit leaves behind.
+                using var reader = Open(root);
+                Assert.AreEqual(0, Scalar(reader, "SELECT count(*) FROM calibration_family_activations;"));
                 var service = new CalibrationFamilyActivationService(store, NullLogger<CalibrationFamilyActivationService>.Instance);
                 family = await store.StoreAsync(Family("family-a", Member(10)), CancellationToken.None).ConfigureAwait(false);
                 activated = await service.ActivateAsync(Activation("activate-1", family.IdentitySha256), CancellationToken.None).ConfigureAwait(false);
@@ -286,7 +292,8 @@ public sealed class SqliteCalibrationFamilyStoreTests
                         async () => await second.InitializeAsync(CancellationToken.None).ConfigureAwait(false),
                         "a second store never shares the root").ConfigureAwait(false);
                 }
-                // A power loss right after the commit: the files as they are, with the WAL never checkpointed.
+                // A power loss right after the commit: the database and its uncheckpointed WAL, without the shared-memory
+                // index, which is rebuilt from the WAL on reopen.
                 var source = Path.Combine(root, SqliteCalibrationFamilyStore.DirectoryName);
                 var target = Path.Combine(crashed, SqliteCalibrationFamilyStore.DirectoryName);
                 Directory.CreateDirectory(target);
@@ -294,6 +301,19 @@ public sealed class SqliteCalibrationFamilyStoreTests
                              .Where(static file => !file.EndsWith("-shm", StringComparison.Ordinal)))
                 {
                     File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+                }
+                var database = Path.Combine(target, SqliteCalibrationFamilyStore.DatabaseFileName);
+                var wal = new FileInfo(database + "-wal");
+                Assert.IsTrue(wal.Exists && wal.Length > 0, "the commits must still be in the WAL when the files are copied");
+                Assert.IsFalse(File.Exists(database + "-shm"));
+
+                // The database file alone does not have the activation yet, so recovering it below needs the WAL.
+                var withoutWal = Path.Combine(crashed, "database-only.db");
+                File.Copy(database, withoutWal);
+                using (var databaseOnly = new SqliteConnection($"Data Source={withoutWal};Pooling=False"))
+                {
+                    await databaseOnly.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(0, Scalar(databaseOnly, "SELECT count(*) FROM calibration_family_activations;"));
                 }
             }
 

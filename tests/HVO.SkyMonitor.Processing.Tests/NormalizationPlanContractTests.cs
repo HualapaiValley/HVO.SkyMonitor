@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -50,7 +51,8 @@ public sealed class NormalizationPlanContractTests
             Asi174Coefficient(40).ElectronsPerAduE12,
             parsed.Value.Inputs[1].Coefficient!.ElectronsPerAduE12);
         StringAssert.Contains(
-            Encoding.UTF8.GetString(bytes), "\"algorithmVersion\":\"linear16-gain-normalized-mean-v1\"", StringComparison.Ordinal);
+            Encoding.UTF8.GetString(bytes), "\"algorithmVersion\":\"linear16-gain-normalized-mean-v2\"", StringComparison.Ordinal);
+        StringAssert.Contains(Encoding.UTF8.GetString(bytes), "\"outputScale\":16", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -64,6 +66,14 @@ public sealed class NormalizationPlanContractTests
             text.Replace(NormalizationPlanV1.CurrentSchemaVersion, "hvo-normalization-plan-v2", StringComparison.Ordinal),
             NormalizationPlanReasonCodes.UnsupportedSchema);
         AssertParseFails(text[..^1], NormalizationPlanReasonCodes.InvalidContract);
+        // A plan frozen before the output scale was a kernel field cannot be read as a scaled plan.
+        AssertParseFails(
+            text.Replace("\"outputScale\":16,", string.Empty, StringComparison.Ordinal),
+            NormalizationPlanReasonCodes.InvalidContract);
+        // A plan frozen before master exposures were plan fields cannot be read with the exposures it never froze.
+        var withoutMasterExposures = Regex.Replace(text, ",\"exposure\":\"[^\"]*\"(?=,\"kind\")", string.Empty);
+        Assert.AreEqual(8, (text.Length - withoutMasterExposures.Length) / ",\"exposure\":\"00:00:01\"".Length);
+        AssertParseFails(withoutMasterExposures, NormalizationPlanReasonCodes.InvalidContract);
         AssertParseFails("[]", NormalizationPlanReasonCodes.InvalidContract);
         AssertParseFails(
             text.Replace("\"disposition\":\"excluded\"", "\"disposition\":\"skipped\"", StringComparison.Ordinal),
@@ -77,6 +87,7 @@ public sealed class NormalizationPlanContractTests
     {
         var plan = Plan();
         var selected = plan.Inputs[0];
+        var other = plan.Inputs[1];
         var excluded = plan.Inputs[2];
         (string Path, NormalizationPlanV1 Plan)[] cases =
         [
@@ -90,6 +101,8 @@ public sealed class NormalizationPlanContractTests
             ("inputLayout", plan with { InputLayout = plan.InputLayout with { Readout = null } }),
             ("kernel", plan with { Kernel = plan.Kernel with { SaturationCode = ushort.MaxValue } }),
             ("kernel", plan with { Kernel = plan.Kernel with { Rounding = "away-from-zero" } }),
+            ("kernel", plan with { Kernel = plan.Kernel with { OutputScale = 1 } }),
+            ("kernel", plan with { Kernel = plan.Kernel with { AlgorithmVersion = "linear16-gain-normalized-mean-v1" } }),
             ("inputs", plan with { Inputs = [] }),
             ("inputs", plan with { Inputs = [.. Enumerable.Range(0, 129).Select(ordinal => Selected(ordinal, 0))] }),
             ("inputs.ordinal", plan with { Inputs = [selected with { Ordinal = 1 }] }),
@@ -99,6 +112,10 @@ public sealed class NormalizationPlanContractTests
             ("inputs.conditions", plan with { Inputs = [selected with { Exposure = TimeSpan.Zero }] }),
             ("inputs.selection", plan with { Inputs = [selected with { Masters = null }] }),
             ("inputs.selection", plan with { Inputs = [selected with { Masters = [.. selected.Masters!.Reverse()] }] }),
+            ("inputs.selection", plan with { Inputs = [selected with { Masters = WithDark(selected, dark => dark with { Exposure = TimeSpan.Zero }) }] }),
+            ("inputs.masters", plan with { Inputs = [selected, other with { Masters = WithDark(other, _ => selected.Masters![1] with { Exposure = TimeSpan.FromSeconds(9) }) }] }),
+            ("inputs.masters", plan with { Inputs = [selected, other with { Masters = WithDark(other, _ => selected.Masters![1] with { PayloadSha256 = FamilySha256 }) }] }),
+            ("inputs.masters", plan with { Inputs = [selected, other with { Masters = WithDark(other, _ => selected.Masters![2] with { Kind = CalibrationReferenceKinds.Dark }) }] }),
             ("inputs.selection", plan with { Inputs = [selected with { ExclusionReason = "calibration.family.selected" }] }),
             ("inputs.coefficient", plan with { Inputs = [selected with { Coefficient = Asi174Coefficient(40) }] }),
             ("inputs.exclusionReason", plan with { Inputs = [selected, excluded with { Ordinal = 1, MemberId = "gain-90" }] }),
@@ -133,7 +150,9 @@ public sealed class NormalizationPlanContractTests
                     WindowPosition = int.MinValue + ordinal,
                     Offset = -1.2345678901234567e-300,
                     TemperatureC = -1.2345678901234567e-300,
-                    Exposure = TimeSpan.MaxValue
+                    Exposure = TimeSpan.MaxValue,
+                    Masters = [.. Selected(ordinal, ordinal % 2 == 0 ? 0 : 120).Masters!.Select(static master =>
+                        master with { Exposure = TimeSpan.MaxValue })]
                 })]
         };
 
@@ -165,7 +184,7 @@ public sealed class NormalizationPlanContractTests
             }).SaturationCode);
     }
 
-    private const string PinnedIdentitySha256 = "4C2390D97BBB3E7D1025D56CE9E868E74959F5198F3092B280835A3FF5118B4E";
+    private const string PinnedIdentitySha256 = "B8CF113997302F85871662224DF337D3106E6D4D39B8C7256538D0F3918998F6";
 
     private static NormalizationPlanV1 Plan()
     {
@@ -205,8 +224,14 @@ public sealed class NormalizationPlanContractTests
             null,
             FormattableString.Invariant($"gain-{gain}"),
             [.. CalibrationReferenceKinds.All.Select((kind, index) =>
-                new CalibrationFamilyMasterV1(kind, Id(1000 + index, (int)gain), PayloadSha256))],
+                new NormalizationPlanMasterV1(kind, Id(1000 + index, (int)gain), PayloadSha256, TimeSpan.FromSeconds(1)))],
             Asi174Coefficient(gain));
+
+    /// <summary>The input's masters with the dark replaced.</summary>
+    private static NormalizationPlanMasterV1[] WithDark(
+        NormalizationPlanInputV1 input,
+        Func<NormalizationPlanMasterV1, NormalizationPlanMasterV1> replace)
+        => [.. input.Masters!.Select(master => master.Kind == CalibrationReferenceKinds.Dark ? replace(master) : master)];
 
     private static Guid Id(int first, int second)
         => new(first, (short)second, 0, [0, 0, 0, 0, 0, 0, 0, 1]);
