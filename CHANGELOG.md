@@ -44,6 +44,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Operators can filter and page a logical camera’s retained archive, open an exact capture across installation replacements, and return to the same page and item with explicit unavailable-content and bounded-trace states. #1536
 
+- CameraAgent’s graph editor offers constellation colour and line thickness controls linked from Current Sky, with immutable draft revisions, validation, activation and rollback. (#1533)
+
 - LogicHost Current Sky shows the latest eligible retained capture for an authorized observatory and logical camera, with bounded search, independent capture/receipt times, and content/access revalidation. (#1535)
 
 - LogicHost camera-scoped operations history under `/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`: graph assignments (`processing-graph-assignments?targetHost=`), central executions with a node-paged inspector, jobs by capture with an inspector whose attempts, inputs and outputs page separately, delivery proposals with their stored terminal and latest facts and a fact page, and transient-event associations. Every collection is keyset paged (`take` 1–50, opaque `cursor`), covers retired and replaced installations, requires current membership of the camera's observatory, and rejects a continuation reused for another camera, list or filter. "Staged" appears only as a labelled, timestamp-free derivation: an Accepted proposal that was never activated or whose latest lifecycle fact is a rollback. `GET /api/internal/processing-graphs/revision-summaries` pages the global graph catalog beyond its latest 100 revisions without definition documents. (#1237)

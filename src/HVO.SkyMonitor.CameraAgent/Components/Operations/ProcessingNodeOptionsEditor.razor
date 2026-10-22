@@ -1,0 +1,46 @@
+@using HVO.SkyMonitor.Processing
+
+<div class="node-options">
+    @foreach (var option in Form.Descriptor.Options)
+    {
+        var inputId = $"{IdPrefix}-{option.Key}";
+        <div class="option-field">
+            <label for="@inputId">@option.Label @option.Unit</label>
+            @switch (option.Kind)
+            {
+                case ProcessingOptionKind.Color:
+                    <div class="colour-inputs">
+                        <input type="color" aria-label="@($"{option.Label} picker")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                        <input id="@inputId" class="form-control" type="text" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    </div>
+                    break;
+                case ProcessingOptionKind.Toggle:
+                    <input id="@inputId" type="checkbox" aria-describedby="@(inputId + "-help")" checked="@(Form.Get(option.Key) == bool.TrueString)" @onchange="args => ChangedAsync(option.Key, (args.Value is true).ToString())" />
+                    break;
+                case ProcessingOptionKind.Choice:
+                    <select id="@inputId" class="form-select" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)">
+                        @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
+                    </select>
+                    break;
+                case ProcessingOptionKind.WholeNumber:
+                case ProcessingOptionKind.RealNumber:
+                case ProcessingOptionKind.Text:
+                    <input id="@inputId" class="form-control" type="text" inputmode="@(option.Kind == ProcessingOptionKind.WholeNumber ? "numeric" : option.Kind == ProcessingOptionKind.RealNumber ? "decimal" : null)" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    break;
+                default:
+                    <p>This option needs a dedicated editor.</p>
+                    break;
+            }
+            <p id="@(inputId + "-help")">@option.Help @Bounds(option)</p>
+        </div>
+    }
+    @if (Form.Diagnostics.Count > 0)
+    {
+        <ul class="option-errors" role="alert">
+            @foreach (var diagnostic in Form.Diagnostics)
+            {
+                <li data-reason-code="@diagnostic.Code"><code>@diagnostic.Code</code> @diagnostic.Path: @diagnostic.Message</li>
+            }
+        </ul>
+    }
+</div>

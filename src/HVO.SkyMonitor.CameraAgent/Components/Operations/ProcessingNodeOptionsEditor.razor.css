@@ -1,0 +1,7 @@
+.node-options { display: grid; gap: 1rem; }
+.option-field > label { display: block; margin-bottom: .35rem; }
+.option-field > p { color: var(--hvo-muted-strong); margin: .35rem 0 0; font-size: .8rem; }
+.colour-inputs { display: flex; gap: .6rem; align-items: center; }
+.colour-inputs input[type=color] { width: 3rem; height: 2.5rem; }
+.colour-inputs .form-control { max-width: 12rem; }
+.option-errors { color: var(--hvo-danger-fg, #ffb4b4); overflow-wrap: anywhere; }
