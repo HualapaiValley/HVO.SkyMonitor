@@ -905,7 +905,7 @@ internal sealed partial class CameraAgentInstaller
         }
         catch (System.Text.DecoderFallbackException exception)
         {
-            throw new InstallerException("The owner temporary password file is not valid UTF-8.", exception);
+            throw new InstallerException("The owner temporary password-file is not valid UTF-8.", exception);
         }
         finally
         {

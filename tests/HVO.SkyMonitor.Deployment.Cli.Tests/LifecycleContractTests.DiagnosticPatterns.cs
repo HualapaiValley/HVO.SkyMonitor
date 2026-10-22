@@ -30,7 +30,11 @@ public sealed partial class LifecycleContractTests
             .Where(pattern => pattern.Options.HasFlag(RegexOptions.NonBacktracking)).ToList();
         CollectionAssert.AreEquivalent(declared, Redaction.LinearPatterns.ToList(), "Every nonbacktracking pattern is compared.");
         var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).Concat(Diagnostic1499Cases().Select(row => (string)row[2]).Distinct())
-            .Concat(Diagnostic1509Cases().Select(row => (string)row[1]).Distinct()).ToList();
+            .Concat(Diagnostic1509Cases().Select(row => (string)row[1]).Distinct())
+            .Concat(Diagnostic1523Cases().Select(row => (string)row[1]).Distinct())
+            .Concat(["<redacted>… tail", @"\u003Credacted\u003E\u2026 tail", @"\\u003credacted\\u003e\\u2026 tail",
+                @"<redacted>\u2026 tail", @"\u003Credacted>… tail", "<redacted> tail", @"\u003Credacted\u003E\u202"])
+            .ToList();
         var differences = new List<string>();
         foreach (var pattern in Redaction.LinearPatterns)
         {
