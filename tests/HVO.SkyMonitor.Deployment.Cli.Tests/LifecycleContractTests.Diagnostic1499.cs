@@ -82,9 +82,11 @@ public sealed partial class LifecycleContractTests
     [DataRow(true, false, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
     [DataRow(true, true, "see\u001b[1mBearer password='a " + Diagnostic1499Secret + " b'", "seeBearer <redacted>")]
     [DataRow(false, false, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
-    [DataRow(false, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    // In the SQLite rows the message is quoted, and the #1523 passes hide the quote after the value, so the line ends at the
+    // first character the merge base's text, JSON-encoded as the restore warning writes it, would hide (PR-1528-R2 F5).
+    [DataRow(false, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>…")]
     [DataRow(true, false, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
-    [DataRow(true, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>\"<redacted>\"")]
+    [DataRow(true, true, "x\u001b[1mauthorization: token=\"a " + Diagnostic1499Secret + " b\"", "xauthorization: <redacted>…")]
     [DataRow(false, false, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
     [DataRow(false, true, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
     [DataRow(true, false, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
