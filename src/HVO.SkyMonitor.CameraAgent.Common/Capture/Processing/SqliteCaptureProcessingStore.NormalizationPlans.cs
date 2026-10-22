@@ -75,17 +75,20 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// retry never replaces the plan its first attempt froze. After the transaction has been disposed, every master
     /// and its bundle evidence are verified again, including on an idempotent return. Verification failure leaves
     /// the frozen plan unchanged and fails the window. Serialization and all hashing stay outside the transaction.
+    /// <paramref name="forceEvidenceValidation"/> is passed to <see cref="NormalizationPlanFreezer.ConfirmAsync"/>.
     /// </summary>
     internal async ValueTask<FrozenNormalizationPlan> FreezeNormalizationPlanAsync(
         SqliteCalibrationLibraryStore calibration,
         ProcessingExecutionContext execution,
         string nodeId,
         NormalizationPlanV1 plan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceEvidenceValidation = true)
     {
         ArgumentNullException.ThrowIfNull(calibration);
         var frozen = await FreezeNormalizationPlanCoreAsync(execution, nodeId, plan, cancellationToken).ConfigureAwait(false);
-        await NormalizationPlanFreezer.ConfirmAsync(calibration, frozen.Plan, cancellationToken).ConfigureAwait(false);
+        await NormalizationPlanFreezer.ConfirmAsync(calibration, frozen.Plan, cancellationToken, forceEvidenceValidation)
+            .ConfigureAwait(false);
         return frozen;
     }
 
@@ -246,11 +249,51 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     /// <summary>
+    /// The library master artifact IDs named by every normalization plan frozen for a pending or running execution
+    /// (#1475). Retention holds these masters whatever their bundle or family state, so a superseded family's masters
+    /// stay while work that froze them can still run; a terminal execution no longer holds them. A plan that is
+    /// corrupt fails the read, so retention fails closed rather than releasing masters it cannot account for.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<Guid>> ReadNormalizationPlanMasterArtifactIdsAsync(
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT frozen_plan_json FROM processing_executions
+            WHERE status IN ('Pending', 'Running') AND instr(frozen_plan_json, $member) > 0
+            ORDER BY execution_id;
+            """;
+        command.Parameters.AddWithValue("$member", Encoding.UTF8.GetBytes($"\"{NormalizationPlansMember}\""));
+        var ids = new HashSet<Guid>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            foreach (var frozen in ReadNormalizationPlans((byte[])reader.GetValue(0), nodeId: null))
+            {
+                ids.UnionWith(frozen.Plan.Inputs
+                    .Where(static input => input.Masters is not null)
+                    .SelectMany(static input => input.Masters!)
+                    .Select(static master => master.ArtifactId));
+            }
+        }
+        return [.. ids.Order()];
+    }
+
+    /// <summary>
     /// Finds one node's plan in the frozen execution JSON. The JSON is the frozen graph plan object, optionally
     /// followed by a <c>normalizationPlans</c> array of <c>{nodeId, planIdentitySha256, plan}</c> entries that embed
     /// each plan's canonical bytes unchanged.
     /// </summary>
     private static FrozenNormalizationPlan? FindNormalizationPlan(byte[] frozenJson, string nodeId)
+        => ReadNormalizationPlans(frozenJson, nodeId).SingleOrDefault();
+
+    /// <summary>
+    /// Reads the frozen plans of one node, or of every node when <paramref name="nodeId"/> is null. Every entry's shape
+    /// is checked; each plan returned must be canonical and hash to its recorded identity.
+    /// </summary>
+    private static List<FrozenNormalizationPlan> ReadNormalizationPlans(byte[] frozenJson, string? nodeId)
     {
         try
         {
@@ -259,15 +302,15 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 throw new InvalidDataException("The frozen execution plan is not a JSON object.");
             }
+            var found = new List<FrozenNormalizationPlan>();
             if (!document.RootElement.TryGetProperty(NormalizationPlansMember, out var plans))
             {
-                return null;
+                return found;
             }
             if (plans.ValueKind != JsonValueKind.Array)
             {
                 throw new InvalidDataException("The frozen normalization plans are corrupt.");
             }
-            FrozenNormalizationPlan? found = null;
             var nodes = new HashSet<string>(StringComparer.Ordinal);
             foreach (var entry in plans.EnumerateArray())
             {
@@ -280,7 +323,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 {
                     throw new InvalidDataException("The frozen normalization plans are corrupt.");
                 }
-                if (!string.Equals(node.GetString(), nodeId, StringComparison.Ordinal))
+                if (nodeId is not null && !string.Equals(node.GetString(), nodeId, StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -293,7 +336,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 {
                     throw new InvalidDataException("A frozen normalization plan is corrupt.");
                 }
-                found = new FrozenNormalizationPlan(nodeId, identity.GetString()!, parsed.Value!, canonical);
+                found.Add(new FrozenNormalizationPlan(node.GetString()!, identity.GetString()!, parsed.Value!, canonical));
             }
             return found;
         }

@@ -17,6 +17,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
     private readonly IProcessingRecipeExecutor _executor;
     private readonly ReplayExecutionProfile _replayProfile;
     private readonly LocalReplayRunnerClient? _localRunner;
+    private readonly Func<GainNormalizationPreparer>? _normalization;
 
     public CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
         : this(executor, ReplayExecutionProfile.InProcess, null)
@@ -34,12 +35,25 @@ public sealed class CameraAgentRecipeExecutionAdapter
     internal CameraAgentRecipeExecutionAdapter(
         IProcessingRecipeExecutor executor,
         ReplayExecutionProfile replayProfile,
-        LocalReplayRunnerClient? localRunner)
+        LocalReplayRunnerClient? localRunner,
+        Func<GainNormalizationPreparer>? normalization = null)
     {
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _replayProfile = replayProfile;
         _localRunner = localRunner;
+        _normalization = normalization;
     }
+
+    /// <summary>
+    /// The frozen normalization plan and masters the mixed-gain recipe executes with for the current node (#1475), or
+    /// none when this host supplies no plans, so the recipe skips the window.
+    /// </summary>
+    internal ValueTask<GainNormalizationPreparation> PrepareNormalizationAsync(
+        CaptureProcessingContext context,
+        CancellationToken cancellationToken)
+        => _normalization is null
+            ? ValueTask.FromResult(GainNormalizationPreparation.None)
+            : _normalization().PrepareAsync(context, cancellationToken);
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(
         ProcessingExecutionRequest request,

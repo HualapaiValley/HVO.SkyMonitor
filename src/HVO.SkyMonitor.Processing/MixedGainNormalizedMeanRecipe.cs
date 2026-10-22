@@ -26,6 +26,9 @@ public static class GainNormalizationCompatibility
     /// <summary>The only recipe version that may admit a gain difference.</summary>
     public const string RecipeSemanticVersion = "1.0.0";
 
+    /// <summary>The auxiliary input that carries the frozen normalization plan's canonical bytes to the recipe.</summary>
+    public const string PlanInputName = "normalization-plan";
+
     private const string GainSegment = "gain=";
     private const string NormalizedGainPrefix = "normalized:";
 
@@ -150,7 +153,7 @@ public static class GainNormalizationCompatibility
 /// </remarks>
 internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
 {
-    internal const string PlanInput = "normalization-plan";
+    internal const string PlanInput = GainNormalizationCompatibility.PlanInputName;
     internal const string MasterPlanesAlgorithmVersion = "mixed-gain-master-planes-v1";
     internal const int BandPhotosites = 16_384;
 

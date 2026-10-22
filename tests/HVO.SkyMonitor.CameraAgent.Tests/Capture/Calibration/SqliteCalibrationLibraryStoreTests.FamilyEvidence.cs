@@ -191,8 +191,13 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
             File.Delete(payload);
             Assert.AreEqual(
+                CalibrationFamilyReasonCodes.MasterMissing,
+                await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
+            Directory.CreateDirectory(payload);
+            Assert.AreEqual(
                 CalibrationFamilyReasonCodes.MasterUnreadable,
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
+            Directory.Delete(payload);
             await File.WriteAllBytesAsync(payload, original).ConfigureAwait(false);
             Assert.IsNull(await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
         }

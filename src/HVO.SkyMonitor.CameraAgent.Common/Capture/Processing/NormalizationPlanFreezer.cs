@@ -27,6 +27,7 @@ internal sealed class NormalizationPlanFreezer(
     /// <summary>
     /// Returns the node's frozen plan, freezing one first when there is none. <paramref name="familyJson"/> is the
     /// active family's canonical bytes; a family that does not parse fails explicitly.
+    /// <paramref name="forceEvidenceValidation"/> is passed to <see cref="ConfirmAsync"/>.
     /// </summary>
     internal async ValueTask<FrozenNormalizationPlan> FreezeAsync(
         ProcessingExecutionContext execution,
@@ -34,15 +35,12 @@ internal sealed class NormalizationPlanFreezer(
         ReadOnlyMemory<byte> familyJson,
         GainNormalizationPolicyV1 policy,
         GainResponse response,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceEvidenceValidation = true)
     {
-        ArgumentNullException.ThrowIfNull(execution);
-        ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
-        if (await processing.ReadNormalizationPlanAsync(execution.ExecutionId, nodeId, cancellationToken)
+        if (await ReadConfirmedAsync(execution, nodeId, cancellationToken, forceEvidenceValidation)
                 .ConfigureAwait(false) is { } frozen)
         {
-            await processing.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
-            await ConfirmAsync(calibration, frozen.Plan, cancellationToken).ConfigureAwait(false);
             return frozen;
         }
         var family = CalibrationFamilyContractJson.Parse(familyJson).Value
@@ -51,8 +49,31 @@ internal sealed class NormalizationPlanFreezer(
             .ConfigureAwait(false);
         var plan = await PrepareAsync(calibration, family, policy, response, inputs, cancellationToken)
             .ConfigureAwait(false);
-        return await processing.FreezeNormalizationPlanAsync(calibration, execution, nodeId, plan, cancellationToken)
-            .ConfigureAwait(false);
+        return await processing.FreezeNormalizationPlanAsync(
+            calibration, execution, nodeId, plan, cancellationToken, forceEvidenceValidation).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the node's frozen plan after checking the execution lease and confirming its masters, or null when no
+    /// plan is frozen yet. A retry reaches its plan here before anything live is read, so it never consults the
+    /// active family.
+    /// </summary>
+    internal async ValueTask<FrozenNormalizationPlan?> ReadConfirmedAsync(
+        ProcessingExecutionContext execution,
+        string nodeId,
+        CancellationToken cancellationToken,
+        bool forceEvidenceValidation = true)
+    {
+        ArgumentNullException.ThrowIfNull(execution);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
+        if (await processing.ReadNormalizationPlanAsync(execution.ExecutionId, nodeId, cancellationToken)
+                .ConfigureAwait(false) is not { } frozen)
+        {
+            return null;
+        }
+        await processing.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
+        await ConfirmAsync(calibration, frozen.Plan, cancellationToken, forceEvidenceValidation).ConfigureAwait(false);
+        return frozen;
     }
 
     /// <summary>
@@ -181,12 +202,15 @@ internal sealed class NormalizationPlanFreezer(
 
     /// <summary>
     /// Confirms, at claim time, that every master a frozen plan selects is still intact. A frozen plan is never
-    /// changed, so a failure here fails the claim explicitly with the master's stable reason.
+    /// changed, so a failure here fails the claim explicitly with the master's stable reason. Every payload is hashed
+    /// again; <paramref name="forceEvidenceValidation"/> false lets the bundle evidence check reuse the
+    /// file-metadata cache, as selection does.
     /// </summary>
     internal static async ValueTask ConfirmAsync(
         SqliteCalibrationLibraryStore calibration,
         NormalizationPlanV1 plan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceEvidenceValidation = true)
     {
         ArgumentNullException.ThrowIfNull(calibration);
         ArgumentNullException.ThrowIfNull(plan);
@@ -196,7 +220,8 @@ internal sealed class NormalizationPlanFreezer(
             .DistinctBy(static master => master.ArtifactId)
             .Select(static master => new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))
             .ToArray();
-        if (await calibration.ConfirmFamilyMastersAsync(masters, cancellationToken).ConfigureAwait(false) is { } reason)
+        if (await calibration.ConfirmFamilyMastersAsync(masters, cancellationToken, forceEvidenceValidation)
+                .ConfigureAwait(false) is { } reason)
         {
             throw new NormalizationPlanException(reason);
         }

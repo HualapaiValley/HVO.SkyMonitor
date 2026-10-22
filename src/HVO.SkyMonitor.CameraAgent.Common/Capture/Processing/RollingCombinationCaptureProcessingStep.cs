@@ -80,6 +80,16 @@ internal sealed class RollingCombinationCaptureProcessingStep(
                     context.ReconstructionDescriptor, sourceProduct).RecipeIdentitySha256,
             Payload = sourceArtifact.Frame.PixelData.ToArray()
         };
+        // The mixed-gain recipe executes under the node's frozen normalization plan, frozen here on first execution
+        // and reused on every retry, with the masters it selects (#1475).
+        var normalization = MixedGain
+            ? await adapter.PrepareNormalizationAsync(context, cancellationToken).ConfigureAwait(false)
+            : GainNormalizationPreparation.None;
+        if (normalization.Outcome is { } preparationOutcome)
+        {
+            context.AddProcessingOutcome(preparationOutcome);
+            return;
+        }
         var durableHistory = context.GetHistoricalInputs();
         IEnumerable<ProcessingArtifact> priorInputs = context.ProcessingExecution is not null
             ? durableHistory
@@ -87,7 +97,7 @@ internal sealed class RollingCombinationCaptureProcessingStep(
         var compatibleHistory = priorInputs
             .Where(source => source.ArtifactId != current.ArtifactId)
             .Reverse()
-            .TakeWhile(source => IsCompatible(source, current, plan: null))
+            .TakeWhile(source => IsCompatible(source, current, normalization.Plan))
             .Reverse();
         var candidateWindow = context.ProcessingExecution is null
             ? compatibleHistory.Append(current).TakeLast(Options.WindowSize).ToList()
@@ -135,8 +145,9 @@ internal sealed class RollingCombinationCaptureProcessingStep(
                 BuiltInProcessingRecipes.MixedGainNormalizedMean,
                 JsonSerializer.SerializeToElement(new MixedGainNormalizedMeanOptions()),
                 ProcessingInputSelector.Raw(current.Variant),
-                inputs,
-                Options.OutputVariant)
+                [.. inputs, .. normalization.Masters],
+                Options.OutputVariant,
+                AuxiliaryInputs: normalization.PlanInput is null ? null : [normalization.PlanInput])
             : new(
             BuiltInProcessingRecipes.RollingMean,
             JsonSerializer.SerializeToElement(new RollingMeanOptions(

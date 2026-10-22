@@ -340,6 +340,14 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadRetentionHoldsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
 
+    /// <summary>The library masters named by the normalization plans of pending and running executions (#1475).</summary>
+    internal ValueTask<IReadOnlyList<Guid>> GetNormalizationPlanMasterArtifactIdsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+        => PathsEqual(storageRoot, _storageRoot)
+            ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
+            : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
+
     public async ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
