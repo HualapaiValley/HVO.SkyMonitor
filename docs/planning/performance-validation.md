@@ -333,9 +333,27 @@ GC, 12 visible Intel i9-14900K CPUs and 16.15 GB RAM; Release configuration.
 
 MB is decimal. Candidate allocation falls by 99.34%, 95.19% and 96.25%,
 respectively. Wall and CPU costs also decrease in every measured stage.
-Shared-host timing is diagnostic; allocation and byte identities are the
+The table's two arms ran one after the other, not interleaved, so its wall
+and CPU columns are diagnostic only. Allocation and byte identities are the
 primary regression evidence. There is no storage I/O or backlog to qualify in
 these contract-only stages, and the result makes no frame-cadence claim.
+
+An interleaved confirmation then ran the committed Manual test against both
+arms on the same host. Each stage ran four fresh processes in counterbalanced
+order: baseline, candidate, candidate, baseline. All twelve ran within one
+heavy-lock hold, 2026-10-22T13:08:21Z to 13:10:17Z. The probable co-resident
+neighbour VM was not locked. Every process reproduced the table's allocation
+medians and both identities exactly. Per-process wall medians, followed by the
+range over all 20 trials in each arm, in milliseconds:
+
+| Stage | Baseline wall ms (B1, B4; range) | Candidate wall ms (C2, C3; range) |
+| --- | ---: | ---: |
+| Create | 1,822.20, 1,856.18; 1,745.10–1,909.83 | 110.29, 111.46; 103.27–546.61 |
+| SerializePayload | 195.05, 192.07; 185.80–199.35 | 96.00, 105.13; 71.48–119.48 |
+| Load (Parse) | 929.42, 896.27; 831.35–1,181.66 | 192.50, 194.97; 167.50–323.59 |
+
+In every stage the candidate's slowest trial beats the baseline's fastest, so
+the timing improvement is resolvable despite cross-session drift.
 
 Both runs produced exactly 21,228,568 payload bytes and identical identities:
 
@@ -371,6 +389,29 @@ Each invocation writes ten observations to `TestResults/issue-1422/<stage>.json`
 The original standalone before/after reports are local ignored evidence under
 `TestResults/issue-1422/{before,after}-<stage>.json`; no generated population
 or payload is committed.
+
+To reproduce the baseline arm:
+
+1. Make a detached checkout of
+   `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`.
+2. Copy the committed
+   `tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs`
+   into it. The test uses only public APIs that already exist at the baseline.
+3. Build its Astronomy test project in Release.
+4. Run the same loop from that checkout with a separate evidence root.
+
+Alternating the two checkouts within each stage, as the confirmation above
+did, keeps the timing comparison inside one session:
+
+```bash
+git worktree add --detach ../hvo-1422-baseline e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa
+cp tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs \
+  ../hvo-1422-baseline/tests/HVO.SkyMonitor.Astronomy.Tests/
+(cd ../hvo-1422-baseline && dotnet build tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  --configuration Release -nodeReuse:false -p:UseSharedCompilation=false)
+# then run the loop above with `cd ../hvo-1422-baseline` and
+# HVO_ISSUE1422_EVIDENCE_ROOT="$PWD/TestResults/issue-1422/before"
+```
 
 ### Orbital consumer and sweep interference (Refs #1425)
 
