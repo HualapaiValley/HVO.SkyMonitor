@@ -437,7 +437,7 @@ public static class ProcessingNodeOptionsDescriptors
     /// The scene presentation layer's constellation line colour and thickness. The defaults are CameraAgent's
     /// <c>ScenePresentationLayerProcessingStepOptions</c> defaults, the overlay defaults #1383 restored.
     /// </summary>
-    public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
+    public static ProcessingNodeOptionsDescriptor ScenePresentationLayerV12 { get; } = new(
         "scene-presentation-layer-options-v1",
         ScenePresentationLayerStepAlias,
         "projected-scene-presentation-v12-plain-circle-markers",
@@ -463,5 +463,15 @@ public static class ProcessingNodeOptionsDescriptors
                 "px")
         ]);
 
-    public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } = [ScenePresentationLayer];
+    /// <summary>The measured-label producer keeps the same colour/thickness fields at its own exact version.</summary>
+    public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
+        "scene-presentation-layer-options-v2",
+        ScenePresentationLayerStepAlias,
+        "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
+        ScenePresentationLayerV12.Title,
+        ScenePresentationLayerV12.Help,
+        ScenePresentationLayerV12.Options);
+
+    public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
+        [ScenePresentationLayerV12, ScenePresentationLayer];
 }

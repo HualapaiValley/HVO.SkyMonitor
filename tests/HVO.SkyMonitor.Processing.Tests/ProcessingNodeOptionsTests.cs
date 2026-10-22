@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Single-use expected test values are clearer inline.")]
 public sealed class ProcessingNodeOptionsTests
 {
-    private const string SceneVersion = "projected-scene-presentation-v12-plain-circle-markers";
+    private const string SceneVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
     private const string Color = "constellationLineColor";
     private const string Thickness = "constellationLineThickness";
     private static readonly ProcessingNodeOptionsDescriptor Scene = ProcessingNodeOptionsDescriptors.ScenePresentationLayer;
@@ -44,7 +44,7 @@ public sealed class ProcessingNodeOptionsTests
     [TestMethod]
     public void SceneDescriptorBindsTheShippedSceneVersionWithTodaysConstellationDefaults()
     {
-        Assert.AreEqual("scene-presentation-layer-options-v1", Scene.DescriptorId);
+        Assert.AreEqual("scene-presentation-layer-options-v2", Scene.DescriptorId);
         Assert.AreEqual("ScenePresentationLayer", Scene.StepAlias);
         // Pinned literally: a scene producer version change must decide its descriptor and upgrade explicitly.
         Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, Scene.StepVersion);
@@ -59,8 +59,40 @@ public sealed class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(1, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades, "No upgrade ships, so no saved pipeline changes.");
+    }
+
+    [TestMethod]
+    public void BothSceneVersionsRoundTripWithoutChangingSavedDrafts()
+    {
+        const string previousVersion = "projected-scene-presentation-v12-plain-circle-markers";
+        var catalog = ProcessingNodeOptionsCatalog.BuiltIn;
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described,
+            catalog.Resolve("ScenePresentationLayer", previousVersion).Status);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described,
+            catalog.Resolve("ScenePresentationLayer", SceneVersion).Status);
+        Assert.AreEqual("scene-presentation-layer-options-v1",
+            catalog.Resolve("ScenePresentationLayer", previousVersion).Descriptor!.DescriptorId);
+        var saved = Graph(
+            Node("previous", "ScenePresentationLayer", previousVersion,
+                """{"constellationLineThickness":2,"future":{"value":1e+02}}"""),
+            Node("current", "ScenePresentationLayer", SceneVersion,
+                """{"constellationLineThickness":3,"expectedPositionDiagnostics":true}"""));
+
+        Assert.IsEmpty(catalog.Validate(saved));
+        var roundTripped = RoundTrip(catalog, saved);
+
+        CollectionAssert.AreEqual(ProcessingGraphJson.SerializeCanonical(saved),
+            ProcessingGraphJson.SerializeCanonical(roundTripped));
+        Assert.AreEqual(saved.Revision, roundTripped.Revision);
+        for (var index = 0; index < saved.Nodes.Count; index++)
+        {
+            Assert.AreEqual(saved.Nodes[index].StepVersion, roundTripped.Nodes[index].StepVersion);
+            Assert.AreEqual(saved.Nodes[index].EffectiveOptions.GetRawText(),
+                roundTripped.Nodes[index].EffectiveOptions.GetRawText());
+        }
+        Assert.IsEmpty(catalog.Upgrades, "Describing both versions never upgrades a saved draft.");
     }
 
     [TestMethod]
