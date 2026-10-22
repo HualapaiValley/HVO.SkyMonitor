@@ -18,6 +18,42 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
 {
     [TestMethod]
     [TestCategory("Integration")]
+    public Task ArchivedReplayUsesTheCompletedArchivedProducerWhenLiveProcessingSkippedTheNode()
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
+        {
+            var live = await LiveExecutionAsync(run).ConfigureAwait(false);
+            var original = await SubmitOriginalReplayAsync(run, live).ConfigureAwait(false);
+            var detail = await RunReplayAsync(run, original.Execution.ExecutionId).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status);
+            var plan = await run.Store.ReadNormalizationPlanAsync(original.Execution.ExecutionId, NodeId, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(plan);
+
+            // Recreate a capture whose live node skipped before a later archived job first produced this stack.
+            // The completed archived job has the original plan; a non-producing live node must not mask it.
+            using var connection = await OpenReplayEvidenceAsync(run).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.Parameters.AddWithValue("$execution", live.ExecutionId.ToString("N"));
+            command.CommandText = "SELECT frozen_plan_json FROM processing_executions WHERE execution_id = $execution;";
+            var json = JsonNode.Parse((byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!)!;
+            json.AsObject().Remove("normalizationPlans");
+            command.CommandText = """
+                UPDATE processing_executions SET frozen_plan_json = $json WHERE execution_id = $execution;
+                UPDATE processing_execution_nodes SET status = 'Skipped'
+                WHERE execution_id = $execution AND node_id = 'mixed-gain';
+                """;
+            command.Parameters.AddWithValue("$json", JsonSerializer.SerializeToUtf8Bytes(json));
+            Assert.AreEqual(2, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+
+            var replay = await SubmitOriginalReplayAsync(run, live, "reproduce-archived-original").ConfigureAwait(false);
+            var copied = await run.Store.ReadNormalizationPlanAsync(replay.Execution.ExecutionId, NodeId, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(copied);
+            CollectionAssert.AreEqual(plan.CanonicalJson, copied.CanonicalJson);
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
     [DataRow("Trailing", false)]
     [DataRow("Centered", false)]
     [DataRow("Trailing", true)]
@@ -253,10 +289,11 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
         return replay;
     }
 
-    private static ValueTask<ProcessingReplaySubmissionResult> SubmitOriginalReplayAsync(Run run, ProcessingGraphExecutionState live)
+    private static ValueTask<ProcessingReplaySubmissionResult> SubmitOriginalReplayAsync(
+        Run run, ProcessingGraphExecutionState live, string idempotencyKey = "archived-replay")
         => run.Provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().SubmitReplayAsync(
             new ProcessingReplaySubmission(run.CaptureId(1), live.GraphRevisionId,
-                run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId), "archived-replay", "owner-test", CancellationToken.None);
+                run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId), idempotencyKey, "owner-test", CancellationToken.None);
 
     private static async Task<SqliteConnection> OpenReplayEvidenceAsync(Run run)
     {

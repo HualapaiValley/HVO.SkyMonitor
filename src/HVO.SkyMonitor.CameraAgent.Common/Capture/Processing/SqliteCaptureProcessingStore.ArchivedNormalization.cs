@@ -39,6 +39,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 JOIN processing_execution_nodes node ON node.execution_id = execution.execution_id
                 WHERE execution.capture_id = $capture
                   AND execution.primary_artifact_id = $artifact AND node.node_id = $node
+                  AND node.status = 'Completed'
                 ORDER BY CASE execution.execution_class WHEN 'Live' THEN 0 ELSE 1 END,
                          execution.accepted_unix_ms, execution.execution_id;
                 """;
