@@ -224,18 +224,18 @@ internal static class CameraAgentStatePreflight
     internal static CameraAgentStatePreflightReport ForOutput(CameraAgentStatePreflightReport report)
         => report with
         {
-            InstanceRoot = CameraAgentStateDiagnostics.Message(report.InstanceRoot),
-            CandidateImageId = report.CandidateImageId is null ? null : CameraAgentStateDiagnostics.Message(report.CandidateImageId),
-            CandidateRelease = report.CandidateRelease is null ? null : CameraAgentStateDiagnostics.Message(report.CandidateRelease),
-            CandidateStateContract = CameraAgentStateDiagnostics.Message(report.CandidateStateContract),
-            MinimumCompatibleRevision = report.MinimumCompatibleRevision is null ? null : CameraAgentStateDiagnostics.Message(report.MinimumCompatibleRevision),
-            InstalledStateContract = CameraAgentStateDiagnostics.Message(report.InstalledStateContract),
+            InstanceRoot = CameraAgentStateDiagnostics.Text(report.InstanceRoot),
+            CandidateImageId = report.CandidateImageId is null ? null : CameraAgentStateDiagnostics.Text(report.CandidateImageId),
+            CandidateRelease = report.CandidateRelease is null ? null : CameraAgentStateDiagnostics.Text(report.CandidateRelease),
+            CandidateStateContract = CameraAgentStateDiagnostics.Text(report.CandidateStateContract),
+            MinimumCompatibleRevision = report.MinimumCompatibleRevision is null ? null : CameraAgentStateDiagnostics.Text(report.MinimumCompatibleRevision),
+            InstalledStateContract = CameraAgentStateDiagnostics.Text(report.InstalledStateContract),
             Findings = report.Findings.Select(static finding => finding with
             {
-                Path = CameraAgentStateDiagnostics.Message(finding.Path),
-                Observed = finding.Observed is null ? null : CameraAgentStateDiagnostics.Message(finding.Observed),
-                Expected = finding.Expected is null ? null : CameraAgentStateDiagnostics.Message(finding.Expected),
-                Remediation = CameraAgentStateDiagnostics.Message(finding.Remediation)
+                Path = CameraAgentStateDiagnostics.Text(finding.Path),
+                Observed = finding.Observed is null ? null : CameraAgentStateDiagnostics.Text(finding.Observed),
+                Expected = finding.Expected is null ? null : CameraAgentStateDiagnostics.Text(finding.Expected),
+                Remediation = CameraAgentStateDiagnostics.Text(finding.Remediation)
             }).ToArray()
         };
 

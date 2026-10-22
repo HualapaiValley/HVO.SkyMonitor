@@ -14,15 +14,17 @@ public sealed partial class LifecycleContractTests
     public void Diagnostic1499_DirectReportRenderersFormatUntrustedFields(string kind, bool json)
     {
         var hostile = "source\tname\0 token=\"a " + Diagnostic1499Secret + " b\"";
+        var remedy = hostile + new string('r', 320) + " complete-remedy";
         var host = new HostPrerequisiteReport(1, "refused", false, hostile,
-            [new("finding", "boundary", true, hostile, hostile, hostile, hostile)], DateTimeOffset.UtcNow);
+            [new("finding", "boundary", true, hostile, hostile, hostile, remedy)], DateTimeOffset.UtcNow);
         var state = new CameraAgentStatePreflightReport(1, "refused", Guid.NewGuid(), hostile, hostile, hostile, hostile, hostile,
-            hostile, false, [new("finding", "boundary", true, hostile, hostile, hostile, hostile)], DateTimeOffset.UtcNow);
+            hostile, false, [new("finding", "boundary", true, hostile, hostile, hostile, remedy)], DateTimeOffset.UtcNow);
         var report = json
             ? kind == "host" ? JsonSerializer.Serialize(HostPrerequisites.ForOutput(host)) : JsonSerializer.Serialize(CameraAgentStatePreflight.ForOutput(state))
             : kind == "host"
             ? HostPrerequisites.Render(host)
             : CameraAgentStatePreflight.Render(state);
+        StringAssert.Contains(report, "complete-remedy", StringComparison.Ordinal);
         Assert.IsFalse(report.Contains(Diagnostic1499Secret, StringComparison.Ordinal), report);
         Assert.IsFalse(report.Any(c => char.IsControl(c) && c is not ('\r' or '\n')), report);
         StringAssert.Contains(report, json ? "source\\\\tname\\\\u0000" : "source\\tname\\u0000", StringComparison.Ordinal);

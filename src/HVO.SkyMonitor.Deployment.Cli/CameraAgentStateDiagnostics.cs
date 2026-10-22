@@ -13,9 +13,13 @@ internal static class CameraAgentStateDiagnostics
     /// A raw diagnostic from any CLI source is redacted before its remaining controls are escaped. Keep printable punctuation
     /// as the existing top-level writer does; source-composed messages use Reason on their fields and carry the formatted marker.
     /// </summary>
-    public static string Message(string value)
+    public static string Message(string value) => EscapeControls(Redaction.SafeDiagnostic(value));
+
+    /// <summary>A complete report field: redact and escape without shortening the operator's remedy.</summary>
+    public static string Text(string value) => EscapeControls(Redaction.Redact(value));
+
+    private static string EscapeControls(string redacted)
     {
-        var redacted = Redaction.SafeDiagnostic(value);
         if (!redacted.Any(char.IsControl)) return redacted;
         var result = new System.Text.StringBuilder(redacted.Length);
         foreach (var character in redacted)
