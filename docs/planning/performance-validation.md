@@ -955,11 +955,16 @@ about 94 ms only once JIT tiering completes. The revised 200 ms ceiling
 covers the pooled p95 of 167.1 ms with about 20% headroom for host variance;
 the 433.5 ms sample is reported as Over for its run, not excluded.
 
-The 8× allocation ceiling is below the out-of-scope share alone: the parser,
-Policy and fetch are about 41% of tick allocation, and candidate validation's
-contract re-parse, the integrity read and the durable fingerprint account for
-about half of the rest. The revised 16× ceiling covers the measured 13.70× with about
-17% headroom. The parser stress stage remains outside this full-tick ceiling, as
+The 8× allocation ceiling is below the out-of-scope share and the contract work
+together. Applying the trace's allocation shares to the measured 13.70×:
+the parser called from Policy, the rest of Policy and the fetch client are
+133.6 of 329.1 MiB (41%, about 5.6×), and candidate validation, the
+last-known-good integrity read and the durable fingerprint are 100.4 MiB (31%,
+about 4.2×), together about 9.7×. Counting only candidate validation's contract
+re-parse (35.6 MiB, the parser's 116.6 MiB inclusive allocation less the
+81.0 MiB called from Policy) instead of all of candidate validation, they are still about 9.1×.
+The rest of the store, about 3.9×, comes on top. The revised 16× ceiling covers
+the measured 13.70× with about 17% headroom. The parser stress stage remains outside this full-tick ceiling, as
 in round 4. The ceilings stay reported comparisons, not assertions; the harness
 writes them as `ceilings` in `space-weather-refresh-performance.json`.
 
