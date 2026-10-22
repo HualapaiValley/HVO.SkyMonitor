@@ -47,9 +47,10 @@
                     }
                 </header>
                 <nav aria-label="Workspace sections" class="scope-tabs">
-                    <a href="@CurrentScopeUrl" aria-current="page">Scope overview</a>
+                    <a href="@CurrentScopeUrl" aria-current="@(ActiveSection is null ? "page" : null)">Scope overview</a>
                     @if (camera is not null)
                     {
+                        <a href="@($"/app/network/observatories/{observatory!.ObservatoryId:D}/cameras/{camera.LogicalCameraId:D}/current")" aria-current="@(ActiveSection == "current" ? "page" : null)">Current Sky</a>
                         <a href="@($"/app/cameras/{camera.LogicalCameraId:D}")">Installation and capture history</a>
                     }
                     else if (observatory is not null)

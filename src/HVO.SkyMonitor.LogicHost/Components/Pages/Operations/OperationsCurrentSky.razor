@@ -1,0 +1,7 @@
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}/current"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Current Sky | HVO SkyMonitor</PageTitle>
+<OperationsScopeShell ObservatoryId="ObservatoryId" CameraId="CameraId" ActiveSection="current">
+    <CurrentSkyView ObservatoryId="ObservatoryId" CameraId="CameraId" />
+</OperationsScopeShell>

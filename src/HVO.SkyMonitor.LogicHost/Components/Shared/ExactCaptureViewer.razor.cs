@@ -23,10 +23,12 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     private bool bindPresentation;
     private Guid? captureId;
     private Task<AuthenticationState>? authenticationState;
+    private CameraCurrentSelection? currentSelection;
     private long presentationGeneration;
     private long baseImageAttempt;
     private CancellationTokenSource? presentationSaveCancellation;
     [Parameter, EditorRequired] public Guid CaptureId { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
     [Parameter] public string? StatusMessage { get; set; }
     [Parameter] public EventCallback<Guid> StackSaved { get; set; }
     [Inject] internal ICentralLayeredPresentationService Presentations { get; set; } = default!;
@@ -35,6 +37,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     [CascadingParameter] internal Task<AuthenticationState> AuthenticationStateTask { get; set; } = default!;
 
     // Blazor parameters must be public and the detail's types are internal, so the host cascades it.
+    [CascadingParameter] internal CameraCurrentSelection? CurrentSelection { get; set; }
     [CascadingParameter] internal OperationsCaptureDetail? CascadedDetail { get; set; }
 
     // The host's detail, only when it describes the exact capture this viewer was asked to show.
@@ -47,6 +50,26 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     internal CentralLayeredPresentation? Presentation { get; private set; }
     internal MarkupString PresentationSvg => new(Encoding.UTF8.GetString(Presentation?.Svg ?? []));
     internal string? MaterializationMessage { get; private set; }
+    internal string? SelectedPreviewPath
+    {
+        get
+        {
+            if (principal is null || !CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
+                Detail is not { } authorized || !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) ||
+                CurrentSelection is not { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection ||
+                selected.CaptureId != CaptureId)
+                return null;
+            var artifact = authorized.Artifacts.FirstOrDefault(item => item.ArtifactId == artifactId);
+            // The selector verified this exact Preview independently of the bounded metadata page.
+            // Do not drain artifact history just to rediscover a selected Preview beyond that page.
+            if (artifact is null) return authorized.ArtifactsNextCursor is not null ? selection.ContentPath : null;
+            return artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
+                artifact.ObjectState == Data.CentralArtifactObjectState.Available &&
+                artifact.ReconstructionState == Data.CentralReconstructionState.Complete &&
+                artifact.ChecksumSha256 == selection.ChecksumSha256 && artifact.ContentPath == selection.ContentPath
+                ? selection.ContentPath : null;
+        }
+    }
     internal bool IsBaseImageUnavailable { get; private set; }
 
     // Each rendered base image is keyed to the presentation generation, identity and explicit retry
@@ -61,7 +84,8 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         // A refreshed detail for the same exact capture and the same authentication state keeps its presentation,
         // layer and image state. Sign-out or another actor starts over, so nothing read or saved for the previous
         // actor survives.
-        if (captureId == requestedCaptureId && ReferenceEquals(authenticationState, requestedAuthenticationState))
+        if (captureId == requestedCaptureId && ReferenceEquals(authenticationState, requestedAuthenticationState) &&
+            ReferenceEquals(currentSelection, CurrentSelection))
         {
             return;
         }
@@ -69,6 +93,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         // that is superseded while it waits can never restore its own actor or presentation over a newer one.
         captureId = requestedCaptureId;
         authenticationState = requestedAuthenticationState;
+        currentSelection = CurrentSelection;
         principal = null;
         var generation = ++presentationGeneration;
         IsSavingPresentation = false;
@@ -99,7 +124,8 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
             var presentation = await Presentations.GetAsync(exactCaptureId, user);
             if (generation == presentationGeneration &&
                 presentation is { Status: CentralLayeredPresentationStatus.Found, Presentation: { } found } &&
-                found.CaptureId == exactCaptureId)
+                found.CaptureId == exactCaptureId &&
+                (CurrentSelection is null || SelectedPreviewPath is not null && found.BaseArtifactId == CurrentSelection.ArtifactId))
             {
                 Presentation = found;
                 bindPresentation = true;
@@ -116,7 +142,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
 
     internal async Task SaveSelectedStackAsync()
     {
-        if (Presentation is null || principal is not { } actor || captureId is not { } requestedCaptureId ||
+        if (ReadOnly || Presentation is null || principal is not { } actor || captureId is not { } requestedCaptureId ||
             IsSavingPresentation || IsBaseImageUnavailable)
         {
             return;
@@ -184,7 +210,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     // the exact base image could not be shown; it never infers a reason or substitutes another image.
     internal void OnBaseImageError(string baseImageKey)
     {
-        if (Presentation is not null && string.Equals(baseImageKey, BaseImageKey, StringComparison.Ordinal))
+        if ((Presentation is not null || SelectedPreviewPath is not null) && string.Equals(baseImageKey, BaseImageKey, StringComparison.Ordinal))
         {
             IsBaseImageUnavailable = true;
         }
@@ -192,7 +218,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
 
     internal void RetryBaseImage()
     {
-        if (!IsBaseImageUnavailable || Presentation is null)
+        if (!IsBaseImageUnavailable || Presentation is null && SelectedPreviewPath is null)
         {
             return;
         }
