@@ -432,17 +432,43 @@ current head equals the latest reviewed or waived head.
 
 This is the default route while the repository allows auto-merge
 (`allow_auto_merge` is true). It replaces the finalization lock below, because
-GitHub serializes merges itself: branch protection requires an up-to-date head,
-green required checks, and resolved conversations.
+GitHub serializes merges itself. On `development/v1`, branch protection
+requires:
+- an up-to-date head;
+- green required checks;
+- resolved conversations;
+- the `hvo/reviewed-head` commit status on the exact head being merged.
+
+That status is the merge gate. It is published only on a head whose review
+converged, so on `development/v1` no other commit can merge, whoever pushes it.
+
+Other targets don't require the status today. `main` requires only
+`Required CI`, so the status adds no server-side guarantee there. PRs into
+`main` and `release/**` stay owner-approved: promotion and release PRs merge
+only on the owner's decision, after their classifier-selected CI.
+
+The operator's tooling (`hvo finalize`) performs steps 2–5 in one command. By
+hand:
 
 1. When review has converged and no ordinary product correction is expected,
    fetch the target and confirm the PR is mergeable (`mergeable: true`; stop on
    conflicts).
 2. Mark the PR ready. That transition starts the protected CI profile.
-3. Enable auto-merge with a merge commit, pinned to the reviewed head, in the
-   same step: `gh pr merge <n> --auto --merge --match-head-commit <sha>`.
-4. Append a ledger entry naming the head and the route.
-5. Stay on the PR until it merges.
+3. Wait until the required checks pass on the reviewed head **in runs started
+   after the ready transition**. The draft's skipped Build and Unit result does
+   not count.
+4. Publish the gate on exactly that head:
+   `gh api repos/HualapaiValley/HVO.SkyMonitor/statuses/<sha> -f state=success
+   -f context=hvo/reviewed-head -f description="Review converged on this head"`.
+5. Merge with a merge commit pinned to the head
+   (`gh pr merge <n> --merge --match-head-commit <sha>`). If the head is behind
+   the target, enable auto-merge pinned to it instead
+   (`gh pr merge <n> --auto --merge --match-head-commit <sha>`).
+6. Append a ledger entry naming the head and the route.
+7. Stay on the PR until it merges.
+
+If a required check fails, return the PR to draft before correcting it, so the
+correction doesn't run protected CI before review.
 
 When the target advances while the PR waits, the operator's merge-train
 automation brings it current. It acts on one queued PR at a time and
@@ -453,8 +479,10 @@ synchronizes by merge, never by rebase or force-push:
   `docs/runbooks/ci-pipeline.md` totals and `CHANGELOG.md`. It resolves those by
   re-applying the PR's own deltas. Second, the non-count diff of the result is
   byte-identical to the reviewed range. The merge is then the recorded
-  unchanged-base proof, so it needs no base-sync review. It records the base and
-  head SHAs in the ledger and re-arms auto-merge on the new head.
+  unchanged-base proof, so it needs no base-sync review. It acts only on a head
+  that itself carries `hvo/reviewed-head`. It publishes the status on the
+  merge commit, records the base and head SHAs in the ledger, and re-arms
+  auto-merge on the new head.
 - **It hands the PR back** in every other case: a conflict elsewhere, a changed
   non-count diff, a failed required check, or required checks cancelled twice.
   It disables auto-merge, returns the PR to draft and comments the reason. The
@@ -463,11 +491,13 @@ synchronizes by merge, never by rebase or force-push:
   new reviewed head.
 
 Auto-merge does **not** switch itself off when someone with write access
-pushes; pinning it to the reviewed head is checked only when it is enabled. So
-before any further push, turn it off with `gh pr merge <n> --disable-auto`. Then
-correct the PR, take it through correction review, and re-enter at step 1. As a
-backstop, the merge-train automation withdraws auto-merge from any head other
-than the one it was enabled for, and returns the PR to draft.
+pushes; pinning it to the reviewed head is checked only when it is enabled. A
+pushed commit lacks `hvo/reviewed-head`, so branch protection won't merge it.
+Still, before any further push, turn auto-merge off
+(`gh pr merge <n> --disable-auto`) and return the PR to draft. Then correct it,
+take it through correction review, and re-enter at step 1. The merge-train
+automation also withdraws auto-merge from any armed head without the status,
+and returns the PR to draft.
 
 ## Finalization Lock and Target-Branch Synchronization
 
@@ -600,7 +630,11 @@ protected CI, or merge.
 5. Mark the PR ready only now. This transition starts the target branch's
    authoritative protected CI profile: Development v1 checks for v1 PRs,
    classifier-selected full CI for main/release PRs.
-6. Hold the lock through CI and merge.
+6. Hold the lock through CI and merge. Before merging into a target that
+   requires `hvo/reviewed-head` (`development/v1`), publish it on the exact
+   reviewed head once fresh required checks pass, as in the auto-merge route's
+   step 4. The operator's merge decision is unchanged: publishing the gate
+   doesn't merge anything.
 
 If the target branch advances during CI, cancel the stale run when possible,
 return the PR to draft, release the lock, synchronize and review again, then
@@ -616,6 +650,10 @@ retain it for one bounded rerun. Releasing the lock means removing the
 - A product correction returns the PR to draft, runs affected local gates, and
   receives correction review before another ready transition. Do not repeat
   unchanged successful local gates.
+- On a target that requires it (`development/v1`), publish `hvo/reviewed-head`
+  on exactly that head before merging, whichever route is used. Never publish
+  it on a head that review didn't converge on, or before fresh required checks
+  have passed.
 - Merge only when the current head equals the reviewed or precisely waived head,
   the target branch is still current, the PR is mergeable, required checks are
   green for that exact head, and actionable conversations are resolved.

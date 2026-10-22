@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace HVO.SkyMonitor.Processing.SpaceWeather;
 
 /// <summary>Derives half-open windows, ordered adjustments and lifecycle states.</summary>
@@ -9,6 +11,13 @@ public static class SwpcNoticeLifecycle
         ArgumentNullException.ThrowIfNull(group);
         ArgumentNullException.ThrowIfNull(groups);
         return Compute(group, NextWatch(group, Watches(groups))).At(nowUtc);
+    }
+
+    /// <summary>Evaluates every group, in order, exactly as <see cref="Evaluate"/> does, collecting the watch context once.</summary>
+    public static ImmutableArray<SwpcNoticeWindow> EvaluateAll(IReadOnlyList<SwpcNoticeGroup> groups, DateTimeOffset nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(groups);
+        return [.. Prepare(groups).Select(facts => facts.At(nowUtc))];
     }
 
     // Window bounds and adjustments do not depend on the read instant. Attention

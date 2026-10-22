@@ -15,7 +15,7 @@ using HVO.SkyMonitor.Processing.SpaceWeather;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 
-/// <summary>Offline Tier C evidence; reports provisional ceilings without tuning or treating them as assertions.</summary>
+/// <summary>Offline Tier C evidence; reports the #1489 evidence-based ceilings without tuning or treating them as assertions.</summary>
 [TestClass]
 [TestCategory("Manual")]
 [DoNotParallelize]
@@ -117,8 +117,8 @@ public sealed class SpaceWeatherRefreshPerformanceTests
             workload = new { tickDecodedAlertsBytes = input.Length, tickSha256 = SwpcHash.Sha256UpperHex(input), maximumRecordsBytes = maximumRecords.Length, rejectedRecordsBytes = rejectedRecords.Length, largestCommittedScenarioBodies = scenarios.Select(static inputBody => new { product = inputBody.Product.Token(), inputBody.Name, bytes = inputBody.Bytes.Length, sha256 = SwpcHash.Sha256UpperHex(inputBody.Bytes) }), warmups = 1, tickRepeats = 5, dayTicks = 720, day.Client.Calls, historyDays = 35 },
             measurements = Summarize(stages),
             databaseGrowthBytesPerSimulatedDay = growth,
-            provisionalCeilings = new { tickP95Ms = 50, allocationMultiplier = 8, workingSetDeltaBytes = 32 * 1024 * 1024, databaseGrowthBytesPerDay = 5 * 1024 * 1024 },
-            result = "Offline composition measurement. Provisional ceilings are reported, never used to tune frozen storage or policy. Restart rebuild is a new store in the same process; OS page cache is retained. store_bytes telemetry is raw-body bytes; these evidence database sizes include SQLite and sidecars."
+            ceilings = new { tickP95Ms = 200, allocationMultiplier = 16, workingSetDeltaBytes = 32 * 1024 * 1024, databaseGrowthBytesPerDay = 5 * 1024 * 1024 },
+            result = "Offline composition measurement. Ceilings were re-evaluated against measured evidence under #1489; they are reported, not asserted, and never used to tune frozen storage or policy. Restart rebuild is a new store in the same process; OS page cache is retained. store_bytes telemetry is raw-body bytes; these evidence database sizes include SQLite and sidecars."
         }).ConfigureAwait(false);
     }
 

@@ -116,6 +116,8 @@ public sealed class SwpcCorrectionTests
             foreach (var now in new[] { Epoch.AddHours(-1), Epoch.AddMinutes(5), Epoch.AddHours(2), Epoch.AddDays(5) })
             {
                 foreach (var group in groups) Assert.AreEqual(OriginalNoticeLifecycle.Evaluate(group, groups, now), SwpcNoticeLifecycle.Evaluate(group, groups, now));
+                CollectionAssert.AreEqual(groups.Select(group => OriginalNoticeLifecycle.Evaluate(group, groups, now)).ToArray(),
+                    SwpcNoticeLifecycle.EvaluateAll(groups, now).ToArray());
                 var input = new SwpcAttentionInput(groups, touched, raised, now);
                 var expected = OriginalAttentionEvaluator.Evaluate(input);
                 var actual = SwpcAttentionEvaluator.Evaluate(input);

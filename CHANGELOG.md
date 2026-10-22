@@ -95,6 +95,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- A space-weather refresh uses less CPU and memory. Measured on a stress tick with a 1 MiB alerts body, it allocates
+  about 14 MiB instead of 115 MiB and takes about a third of the time. A simulated day of refreshes uses about 40% of
+  the CPU and a sixth of the allocation. The store keeps its schema, stored formats and fingerprints, and still
+  verifies every stored body's checksum on each read. (#1489)
 - Release CameraAgent images trial per-architecture, framework-dependent non-composite ReadyToRun; native release jobs verify application headers, layout and identical hashes from two clean publishes. Developer and advisory image builds retain IL defaults. (#1473)
 
 - Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
