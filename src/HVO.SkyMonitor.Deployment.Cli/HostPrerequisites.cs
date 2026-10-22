@@ -295,15 +295,29 @@ internal static class HostPrerequisites
         => report.Findings.Where(static finding => !finding.Blocking && finding.Boundary == ResourceLimitsBoundary).ToList();
 
     private static string DescribeUnenforced(HostPrerequisiteFinding finding)
-        => $"{finding.Code} at {finding.Path}: observed {finding.Observed ?? "none"}. " +
+        => $"{finding.Code} at {CameraAgentStateDiagnostics.Text(finding.Path)}: observed {CameraAgentStateDiagnostics.Text(finding.Observed ?? "none")}. " +
            ResourceLimits.Single(limit => limit.Code == finding.Code).Consequence;
+
+    /// <summary>A diagnostic-only view; the measured report retained on disk is unchanged.</summary>
+    internal static HostPrerequisiteReport ForOutput(HostPrerequisiteReport report)
+        => report with
+        {
+            ProductRoot = CameraAgentStateDiagnostics.Text(report.ProductRoot),
+            Findings = report.Findings.Select(static finding => finding with
+            {
+                Path = CameraAgentStateDiagnostics.Text(finding.Path),
+                Observed = finding.Observed is null ? null : CameraAgentStateDiagnostics.Text(finding.Observed),
+                Expected = finding.Expected is null ? null : CameraAgentStateDiagnostics.Text(finding.Expected),
+                Remediation = CameraAgentStateDiagnostics.Text(finding.Remediation)
+            }).ToArray()
+        };
 
     /// <summary>Renders every finding at once so an operator resolves the complete prerequisite set in one pass.</summary>
     public static string Render(HostPrerequisiteReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
         var builder = new StringBuilder();
-        builder.Append(CultureInfo.InvariantCulture, $"CameraAgent host prerequisites for product root {report.ProductRoot}: ");
+        builder.Append(CultureInfo.InvariantCulture, $"CameraAgent host prerequisites for product root {CameraAgentStateDiagnostics.Text(report.ProductRoot)}: ");
         builder.AppendLine(report.Satisfied ? "satisfied." : "not met.");
         foreach (var finding in report.Findings)
         {
@@ -332,7 +346,7 @@ internal static class HostPrerequisites
 
     /// <summary>Where a finding was measured, what was observed and expected there, and its remedy.</summary>
     private static string Describe(HostPrerequisiteFinding finding)
-        => $"{finding.Path}: observed {finding.Observed ?? "none"}; expected {finding.Expected ?? "unspecified"}. {finding.Remediation}";
+        => $"{CameraAgentStateDiagnostics.Text(finding.Path)}: observed {CameraAgentStateDiagnostics.Text(finding.Observed ?? "none")}; expected {CameraAgentStateDiagnostics.Text(finding.Expected ?? "unspecified")}. {CameraAgentStateDiagnostics.Text(finding.Remediation)}";
 
     private static void EvaluateResourceLimits(
         List<HostPrerequisiteFinding> findings,

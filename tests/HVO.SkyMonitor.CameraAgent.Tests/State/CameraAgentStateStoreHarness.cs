@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -103,6 +104,8 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         // provider disposes the singleton store and releases its exclusive lock.
         await provider.GetRequiredService<SqliteOrbitalElementsStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteSwpcStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        // The host creates the calibration-family store on its first use; disposing the provider releases its root lock.
+        await provider.GetRequiredService<SqliteCalibrationFamilyStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var identity = Path.Combine(StateRoot, "identity", "cameraagent_identity.db");
         var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlite($"Data Source={identity};Pooling=False").Options);
