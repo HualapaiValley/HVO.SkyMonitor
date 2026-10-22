@@ -11,7 +11,7 @@ internal static class Redaction
     private const string KeyWords = CredentialWord + "|authorization|bearer";
 
     // Space-only assignments accept explicit snake/kebab compounds, but not arbitrary words ending in a credential word.
-    private const string SpacedKey = "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]" + CredentialWord + "|\\b" + CredentialWord + ")";
+    private const string SpacedKey = "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]\\x9C?" + CredentialWord + "|\\b" + CredentialWord + ")";
 
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
@@ -56,9 +56,10 @@ internal static class Redaction
         "(?i)(" + SpacedKey + "\\s+)[^ ,;]+");
 
     // An outer assignment can consume an inner key before its value is seen. Match the complete chain first, leaving its
-    // final value hidden before the ordinary passes replace any keys. The repeated prefix and value match are nonbacktracking.
+    // final value hidden before the ordinary passes replace any keys. A removed-decoration boundary can sit inside a key.
+    // The repeated prefix and value match are nonbacktracking.
     private static readonly System.Text.RegularExpressions.Regex NestedValue = LinearPattern(
-        $"""(?i)((?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w-]*{CredentialWord}["']?\s*[=:]\s*|{SpacedKey}\s+)+)[^"',;\s\x7D]+""");
+        $"""(?i)((?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{CredentialWord}["']?\s*[=:]\s*|\x9C*{SpacedKey}\s+)+)[^"',;\s\x7D]+""");
 
     // ESC and the C1 controls, each of which may start a control sequence.
     private static readonly System.Buffers.SearchValues<char> Introducers = System.Buffers.SearchValues.Create(

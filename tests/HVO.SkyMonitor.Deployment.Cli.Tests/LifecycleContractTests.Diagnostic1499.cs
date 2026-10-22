@@ -121,6 +121,23 @@ public sealed partial class LifecycleContractTests
     [DataRow(false, true, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
     [DataRow(true, false, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
     [DataRow(true, true, "see\u001b[1mtoken " + Diagnostic1499Secret, "seetoken <redacted>")]
+    // A removed colour/link boundary must not interrupt an inner credential key.
+    [DataRow(false, false, "api-key=\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, true, "api-key=\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, false, "api-key=\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, true, "api-key=\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, false, "api_key=client_\u001b[1msecret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(false, true, "api_key=client_\u001b[1msecret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(true, false, "api_key=client_\u001b[1msecret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(true, true, "api_key=client_\u001b[1msecret: " + Diagnostic1499Secret, "api_key=<redacted> <redacted>")]
+    [DataRow(false, false, "api-key=db_\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, true, "api-key=db_\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, false, "api-key=db_\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(true, true, "api-key=db_\u001b[1mpassword " + Diagnostic1499Secret, "api-key=<redacted> <redacted>")]
+    [DataRow(false, false, "x-api-key: \u001b]8;;\u001b\\token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(false, true, "x-api-key: \u001b]8;;\u001b\\token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(true, false, "x-api-key: \u001b]8;;\u001b\\token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
+    [DataRow(true, true, "x-api-key: \u001b]8;;\u001b\\token " + Diagnostic1499Secret, "x-api-key: <redacted> <redacted>")]
     public async Task Diagnostic1499_KeysAreRedactedThroughBothOutputPaths(bool json, bool sqlite, string diagnostic, string expected)
     {
         if (sqlite)

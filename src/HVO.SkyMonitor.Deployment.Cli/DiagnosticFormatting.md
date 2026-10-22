@@ -32,3 +32,6 @@ Space-only compound keys use identifier segments beginning with a letter,
 separated by `_` or `-` (for example `db_password` and `x-api-key`). This keeps
 credential values containing numeric prose segments from becoming nested keys.
 Explicit `=`/`:` keys retain the existing suffix-based matching.
+
+Nested matching accepts the temporary removed-decoration boundary before or inside
+an inner credential key. The boundary is removed only after the value is hidden.
