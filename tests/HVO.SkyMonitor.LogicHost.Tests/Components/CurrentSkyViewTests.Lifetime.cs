@@ -162,6 +162,39 @@ public sealed partial class CurrentSkyViewTests
     }
 
     [TestMethod]
+    [DataRow("user")]
+    [DataRow("next-actor")]
+    public async Task VisibleViewer_AuthenticationNotificationReadsBeforeHostRevalidation(string actorId)
+    {
+        using var context = CreateLifetimeContext(out var archive, out var auth, out var presentations, out var js);
+        var cut = Render(context);
+        var original = cut.FindComponent<ExactCaptureViewer>().Instance;
+        var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        archive.Select = _ => pending.Task;
+        var actor = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, actorId), new Claim("account_type", "User")], "Identity.Application"));
+
+        await cut.InvokeAsync(() => auth.Change(actor));
+
+        cut.WaitForAssertion(() => cut.FindComponents<ExactCaptureViewer>().Should().BeEmpty());
+        cut.FindAll("img, svg, .layer-controls, .current-freshness").Should().BeEmpty();
+        cut.Markup.Should().NotContain("Capture provenance");
+        presentations.Principals.Should().HaveCount(2, "the authentication cascade notifies the visible retiring viewer first");
+        presentations.Principals.Last().Should().BeSameAs(actor);
+        cut.WaitForAssertion(() => js.Disposals.Should().Be(1));
+        await cut.InvokeAsync(() => pending.SetResult(Selected()));
+        cut.WaitForAssertion(() => cut.FindComponents<ExactCaptureViewer>().Should().ContainSingle());
+
+        cut.FindComponent<ExactCaptureViewer>().Instance.Should().NotBeSameAs(original);
+        cut.Find("img").GetAttribute("src").Should().Be(presentations.Result.Presentation!.BaseContentPath);
+        archive.Cursors.Should().HaveCount(2);
+        archive.DetailCalls.Should().Be(2);
+        archive.ListCalls.Should().Be(0);
+        presentations.Principals.Should().HaveCount(3, "the service-level authentication cascade reads the retiring viewer before the host replaces it");
+        js.Imports.Should().Be(2);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task SupersededPresentation_CannotRestoreLayersAfterRefreshOrRevocation(bool revoke)

@@ -62,10 +62,23 @@ The other cases verify:
 - Pending membership revalidation removes image, layers, timestamps, provenance
   and the viewer before authority completes. Credential revocation removes them
   without another archive read. Neither path imports another viewer module.
-- A new authenticated actor gets a fresh viewer and presentation read. An old
+- After a pending host refresh has already removed the viewer, a new
+  authenticated actor gets a fresh viewer and presentation read. An old
   cancellation-ignoring selection cannot replace it. The deliberately
   cancellation-ignoring fixture records three selection/detail attempts, but
   only two presentation reads; production services receive the cancelled token.
+- If an authenticated notification arrives while the viewer is still on screen,
+  the independent service-level authentication cascade first notifies that
+  retiring viewer. It makes one additional presentation read before the host
+  clears the display. The new viewer reads again when host revalidation
+  completes: initial display plus this notification totals two selection/detail
+  reads but **three** presentation reads. The characterization covers both a
+  new principal for the same user (as on reconnect) and a different actor.
+  Image, layers, timestamps and provenance are absent while the host read is
+  pending. This pre-existing authentication path is not removed by moving the
+  detail/selection key; anonymous revocation makes no additional presentation
+  read. The initial evidence's two-read actor case applies only after the
+  viewer has already been removed, not to an on-screen authenticated viewer.
 - A late presentation result for a disposed viewer cannot restore layers or
   attach JavaScript after refresh or credential revocation.
 
@@ -84,3 +97,9 @@ selection, formatting and the four CI-control guards. The PR ledger records
 the exact commands, classifier output, immutable head and outcomes. Protected
 CI is Development v1 Preflight plus Build and Unit; this evidence does not
 claim full qualification or promotion to `main`.
+
+Independent review F1 on PR #1574 identified the on-screen authentication
+evidence gap. Its two characterization rows first failed the implied two-read
+expectation with three reads, then were retained with the measured three-read
+expectation and this corrected evidence. No product behavior was changed for
+that non-blocking finding.
