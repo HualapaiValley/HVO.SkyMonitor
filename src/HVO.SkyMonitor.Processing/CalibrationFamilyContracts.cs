@@ -28,6 +28,14 @@ public static class CalibrationFamilyReasonCodes
     public const string TemperatureOutOfRange = "calibration.family.temperature-out-of-range";
     public const string ExposureOutOfRange = "calibration.family.exposure-out-of-range";
     public const string Stale = "calibration.family.stale";
+
+    public const string Selected = "calibration.family.selected";
+    public const string MasterMissing = "calibration.family.master-missing";
+    public const string MasterUnpublished = "calibration.family.master-unpublished";
+    public const string MasterMismatch = "calibration.family.master-mismatch";
+    public const string MasterStale = "calibration.family.master-stale";
+    public const string MasterUnreadable = "calibration.family.master-unreadable";
+    public const string MasterCorrupt = "calibration.family.master-corrupt";
 }
 
 /// <summary>One approved master of a family member: its kind, immutable artifact identity and payload hash.</summary>
@@ -168,6 +176,11 @@ public static class CalibrationFamilyContract
         {
             return Failure("members");
         }
+        // Checked before any member field, so a duplicate is reported the same way in any member order.
+        if (members.Select(static member => member.MemberId).Distinct(StringComparer.Ordinal).Count() != members.Count)
+        {
+            return CaptureContractValidationResult.Failure(CalibrationFamilyReasonCodes.DuplicateMember, "members.memberId");
+        }
         foreach (var member in OrderMembers(members))
         {
             var validation = ValidateMember(member);
@@ -191,13 +204,14 @@ public static class CalibrationFamilyContract
         {
             return Failure("members.masters");
         }
-        // A defect master may serve every gain of its mask family; a bias, dark or flat applies to one gain and offset.
+        // A defect master may serve every gain of its mask family; a bias, dark or flat applies to one gain, offset and
+        // input layout.
         if (members
             .SelectMany(static member => member.Masters
                 .Where(static master => !string.Equals(master.Kind, CalibrationReferenceKinds.Defect, StringComparison.Ordinal))
-                .Select(master => (master.ArtifactId, Gain: member.Gain + 0.0, Offset: member.Offset + 0.0)))
+                .Select(master => (master.ArtifactId, Gain: member.Gain + 0.0, Offset: member.Offset + 0.0, member.InputLayout)))
             .GroupBy(static master => master.ArtifactId)
-            .Any(static uses => uses.Select(static use => (use.Gain, use.Offset)).Distinct().Skip(1).Any()))
+            .Any(static uses => uses.Select(static use => (use.Gain, use.Offset, use.InputLayout)).Distinct().Skip(1).Any()))
         {
             return Failure("members.masters");
         }
@@ -340,10 +354,6 @@ public static class CalibrationFamilyContract
     /// </summary>
     private static CaptureContractValidationResult ValidateMemberConditions(IReadOnlyList<CalibrationFamilyMemberV1> members)
     {
-        if (members.Select(static member => member.MemberId).Distinct(StringComparer.Ordinal).Count() != members.Count)
-        {
-            return CaptureContractValidationResult.Failure(CalibrationFamilyReasonCodes.DuplicateMember, "members.memberId");
-        }
         var overlapping = false;
         for (var first = 0; first < members.Count; first++)
         {
