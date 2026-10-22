@@ -462,9 +462,12 @@ synchronizes by merge, never by rebase or force-push:
   base-sync review) without taking the lock, and re-enters this route on the
   new reviewed head.
 
-A product correction, or any push by the owner, disables auto-merge for the
-changed head. Correct the PR, take it through correction review, and re-enter
-at step 1.
+Auto-merge does **not** switch itself off when someone with write access
+pushes; pinning it to the reviewed head is checked only when it is enabled. So
+before any further push, turn it off with `gh pr merge <n> --disable-auto`. Then
+correct the PR, take it through correction review, and re-enter at step 1. As a
+backstop, the merge-train automation withdraws auto-merge from any head other
+than the one it was enabled for, and returns the PR to draft.
 
 ## Finalization Lock and Target-Branch Synchronization
 
@@ -617,8 +620,15 @@ retain it for one bounded rerun. Releasing the lock means removing the
   the target branch is still current, the PR is mergeable, required checks are
   green for that exact head, and actionable conversations are resolved.
 - After merge, confirm issue closure, update the owning roadmap epic when
-  applicable, synchronize local `main`, remove merged branches/worktrees when
-  safe, release the finalization lock if this PR held it, and report completion.
+  applicable, and synchronize local `main`. Clean up everything the PR used:
+  - its worktrees and local branch, and the remote branch if it remains;
+  - scratch directories and review checkouts;
+  - Docker containers, images, volumes and networks it created;
+  - test databases and leftover processes.
+
+  Keep something only when a recorded follow-up needs it, and say what and why
+  on the issue. Then release the finalization lock if this PR held it, and
+  report completion.
   Start or select another issue only with explicit operator authorization,
   including an existing explicit multi-issue assignment or an `agent:ready`
   queue label; completing this PR is not that authorization.
