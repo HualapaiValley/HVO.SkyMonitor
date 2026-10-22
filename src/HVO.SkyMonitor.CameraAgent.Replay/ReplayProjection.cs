@@ -131,7 +131,8 @@ internal static class ReplayProjection
             SchemaVersion = input.SchemaVersion,
             ContentIdentitySha256 = input.ContentIdentitySha256,
             CaptureId = input.CaptureId,
-            DescriptorIdentitySha256 = input.DescriptorIdentitySha256
+            DescriptorIdentitySha256 = input.DescriptorIdentitySha256,
+            RecipeDescriptor = input.RecipeDescriptor
         }).ToArray();
         var auxiliaryInputs = metadata.AuxiliaryInputs?.Select(input => new ProcessingAuxiliaryInput(
             input.Name,
@@ -292,7 +293,8 @@ internal static class ReplayProjection
             artifact.SchemaVersion,
             artifact.ContentIdentitySha256,
             artifact.CaptureId,
-            artifact.DescriptorIdentitySha256);
+            artifact.DescriptorIdentitySha256,
+            artifact.RecipeDescriptor);
     }
 
     private static ReplayAuxiliaryInputMetadata ProjectAuxiliaryInput(
@@ -366,7 +368,8 @@ internal static class ReplayProjection
             artifact.CreatedUtc.Offset != TimeSpan.Zero || artifact.Integration < TimeSpan.Zero ||
             artifact.Compatibility is null || !OptionalIdentifier(artifact.SchemaVersion) ||
             !OptionalSemanticSha256(artifact.ContentIdentitySha256) || artifact.CaptureId == Guid.Empty ||
-            !OptionalSemanticSha256(artifact.DescriptorIdentitySha256))
+            !OptionalSemanticSha256(artifact.DescriptorIdentitySha256) ||
+            artifact.RecipeDescriptor is { } recipe && !RecipeDescriptorMatches(recipe, artifact.RecipeIdentitySha256))
         {
             throw new LocalReplayRunnerProtocolException("Replay artifact metadata is invalid.");
         }
@@ -695,4 +698,15 @@ internal static class ReplayProjection
     private static bool OptionalSha256(string? value) => value is null || ReplayProtocol.IsUppercaseSha256(value);
 
     private static bool OptionalSemanticSha256(string? value) => value is null || ReplayProtocol.IsSha256(value);
+
+    // A producer descriptor travels only with the recipe identity it hashes to, so the runner's recipes check the same
+    // provenance an in-process execution does (#1475).
+    private static bool RecipeDescriptorMatches(RecipeIdentityDescriptor recipe, string recipeIdentitySha256)
+        => ReplayProtocol.IsBoundedIdentifier(recipe.Name) &&
+           ReplayProtocol.IsBoundedIdentifier(recipe.SemanticVersion) &&
+           ReplayProtocol.IsBoundedIdentifier(recipe.ImplementationVersion) &&
+           string.Equals(
+               ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+               recipeIdentitySha256,
+               StringComparison.OrdinalIgnoreCase);
 }
