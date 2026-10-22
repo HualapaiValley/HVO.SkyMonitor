@@ -29,12 +29,13 @@ public sealed partial class ProcessingGraphOperationsTests
             using var provider = CreateProvider(root, PlanSettings, clock);
             var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
             var store = fixture.Store;
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
             Assert.IsNull(await store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None)
                 .ConfigureAwait(false));
             var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);
 
-            var frozen = await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, plan, CancellationToken.None)
+            var frozen = await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None)
                 .ConfigureAwait(false);
 
             Assert.AreEqual(NormalizationPlanContractJson.ComputeIdentitySha256(plan), frozen.IdentitySha256);
@@ -51,12 +52,12 @@ public sealed partial class ProcessingGraphOperationsTests
                 .ConfigureAwait(false));
 
             // Re-freezing the same window returns the same plan and writes nothing.
-            Assert.AreEqual(frozen.IdentitySha256, (await store.FreezeNormalizationPlanAsync(
+            Assert.AreEqual(frozen.IdentitySha256, (await store.FreezeNormalizationPlanAsync(calibration,
                 fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
                 .ConfigureAwait(false)).IdentitySha256);
             CollectionAssert.AreEqual(stored, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
             await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                await store.FreezeNormalizationPlanAsync(
+                await store.FreezeNormalizationPlanAsync(calibration,
                     fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 40), CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
             CollectionAssert.AreEqual(stored, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
@@ -67,9 +68,9 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.IsNotNull(retry);
             Assert.AreEqual(fixture.ExecutionId, retry.Execution.ExecutionId);
             await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>
-                await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, plan, CancellationToken.None)
+                await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
-            Assert.AreEqual(frozen.IdentitySha256, (await store.FreezeNormalizationPlanAsync(
+            Assert.AreEqual(frozen.IdentitySha256, (await store.FreezeNormalizationPlanAsync(calibration,
                 ContextFor(retry), PlanNode, plan, CancellationToken.None).ConfigureAwait(false)).IdentitySha256);
             CollectionAssert.AreEqual(stored, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
             Assert.IsNotNull(await fixture.Operations.ReadExecutionDetailAsync(fixture.ExecutionId, CancellationToken.None)
@@ -92,6 +93,7 @@ public sealed partial class ProcessingGraphOperationsTests
             using var provider = CreateProvider(root, PlanSettings, clock);
             var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
             var store = fixture.Store;
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
             var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);
             var input = plan.Inputs[0];
@@ -106,7 +108,7 @@ public sealed partial class ProcessingGraphOperationsTests
             foreach (var other in otherWindows)
             {
                 await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                    await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, other, CancellationToken.None)
+                    await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, other, CancellationToken.None)
                         .ConfigureAwait(false)).ConfigureAwait(false);
             }
 
@@ -122,13 +124,13 @@ public sealed partial class ProcessingGraphOperationsTests
                     Inputs = [input with { Masters = [.. masters.Select(existing => existing.Kind == master.Kind ? master : existing)] }]
                 };
                 var failure = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
-                    await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, changed, CancellationToken.None)
+                    await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, changed, CancellationToken.None)
                         .ConfigureAwait(false)).ConfigureAwait(false);
                 Assert.AreEqual(reason, failure.ReasonCode);
             }
             await SetBundleStateAsync(root, fixture.Bundle.BundleId, "quarantined").ConfigureAwait(false);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterUnpublished, (await Assert.ThrowsExactlyAsync<NormalizationPlanException>(
-                async () => await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, plan, CancellationToken.None)
+                async () => await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false)).ReasonCode);
             await SetBundleStateAsync(root, fixture.Bundle.BundleId, "published").ConfigureAwait(false);
 
@@ -136,7 +138,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await cancelled.CancelAsync().ConfigureAwait(false);
                 await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-                    await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, plan, cancelled.Token)
+                    await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, cancelled.Token)
                         .ConfigureAwait(false)).ConfigureAwait(false);
             }
             CollectionAssert.AreEqual(original, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
@@ -148,7 +150,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 fixture.ExecutionId, "plan-cancel", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ProcessingGraphExecutionStatus.Cancelled, cancelledReplay.Status);
             await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>
-                await store.FreezeNormalizationPlanAsync(fixture.Context, PlanNode, plan, CancellationToken.None)
+                await store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
             CollectionAssert.AreEqual(original, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
             Assert.IsNull(await store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None)
@@ -171,7 +173,8 @@ public sealed partial class ProcessingGraphOperationsTests
             using var provider = CreateProvider(root, PlanSettings, clock);
             var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
             var store = fixture.Store;
-            var freezer = new NormalizationPlanFreezer(store, provider.GetRequiredService<SqliteCalibrationLibraryStore>());
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            var freezer = new NormalizationPlanFreezer(store, calibration);
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
 
             // With no frozen plan, the freezer prepares one from the live family, which fails explicitly and writes nothing.
@@ -179,14 +182,14 @@ public sealed partial class ProcessingGraphOperationsTests
                 async () => await freezer.FreezeAsync(
                     fixture.Context, PlanNode, "{}"u8.ToArray(), GainNormalizationPolicyV1.Approved, Asi174PlanResponse(),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false)).ReasonCode);
-            Assert.AreEqual(NormalizationPlanFreezer.NoEligibleInput, (await Assert.ThrowsExactlyAsync<NormalizationPlanException>(
+            Assert.AreEqual(CalibrationFamilyReasonCodes.IdentityMismatch, (await Assert.ThrowsExactlyAsync<NormalizationPlanException>(
                 async () => await freezer.FreezeAsync(
                     fixture.Context, PlanNode, CalibrationFamilyContractJson.Serialize(UnrelatedFamily(fixture.Bundle)),
                     GainNormalizationPolicyV1.Approved, Asi174PlanResponse(), CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false)).ReasonCode);
             CollectionAssert.AreEqual(original, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
 
-            var frozen = await store.FreezeNormalizationPlanAsync(
+            var frozen = await store.FreezeNormalizationPlanAsync(calibration,
                 fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
                 .ConfigureAwait(false);
 
@@ -236,6 +239,77 @@ public sealed partial class ProcessingGraphOperationsTests
                         fixture.Context, PlanNode, "{}"u8.ToArray(), GainNormalizationPolicyV1.Approved,
                         Asi174PlanResponse(), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false, "payload")]
+    [DataRow(false, "manifest")]
+    [DataRow(false, "profile-marker")]
+    [DataRow(true, "payload")]
+    [DataRow(true, "manifest")]
+    [DataRow(true, "profile-marker")]
+    public async Task NormalizationPlanFreezeRejectsEvidenceCorruptedAfterPreparation(bool alreadyFrozen, string evidence)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-plan-evidence");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        try
+        {
+            using var provider = CreateProvider(root, PlanSettings, clock);
+            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);
+            // Establish the same verified master snapshot as preparation, then damage files without changing library rows.
+            await NormalizationPlanFreezer.ConfirmAsync(calibration, plan, CancellationToken.None).ConfigureAwait(false);
+            if (alreadyFrozen)
+            {
+                _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                    fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false);
+            }
+            var manifest = fixture.Bundle.Artifacts.Single(artifact => artifact.Kind == CalibrationReferenceKinds.Flat)
+                .ManifestRelativePath;
+            var relative = evidence switch
+            {
+                "payload" => string.Concat(manifest.AsSpan(0, manifest.Length - ".json".Length), ".bin"),
+                "manifest" => manifest,
+                _ => fixture.Bundle.ProfileRelativePath
+            };
+            var path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
+            var original = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
+            var corrupt = original.ToArray();
+            corrupt[0] ^= 0x01;
+            await File.WriteAllBytesAsync(path, corrupt).ConfigureAwait(false);
+            // A return must verify bytes even when an earlier evidence-cache fingerprint still matches.
+            File.SetLastWriteTimeUtc(path, lastWriteUtc);
+            Assert.AreEqual((long)original.Length, new FileInfo(path).Length);
+            Assert.AreEqual(lastWriteUtc, File.GetLastWriteTimeUtc(path));
+
+            var failure = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
+                await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                    fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, failure.ReasonCode);
+            // Post-freeze failure keeps the first plan immutable; restoring evidence makes the same plan usable again.
+            var frozen = await fixture.Store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(frozen);
+            CollectionAssert.AreEqual(NormalizationPlanContractJson.Serialize(plan), frozen.CanonicalJson);
+            var stored = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                    fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 40), CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
+            var retry = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(frozen.CanonicalJson, retry.CanonicalJson);
+            CollectionAssert.AreEqual(stored, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
         }
         finally
         {

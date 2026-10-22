@@ -129,6 +129,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteNamedRigProfileStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<SqliteCalibrationFamilyStore>();
+        services.AddSingleton<CalibrationFamilyActivationService>();
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
@@ -342,7 +344,8 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
                 provider.GetService<IAcceptanceRetentionControl>(),
-                provider.GetRequiredService<SqliteTimeLapseStore>()));
+                provider.GetRequiredService<SqliteTimeLapseStore>(),
+                provider.GetRequiredService<SqliteCalibrationFamilyStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         var replayProfile = configuration.GetValue(
             "CameraAgent:ProcessingGraphs:ReplayProfile",

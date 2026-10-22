@@ -29,7 +29,7 @@ public sealed partial class LifecycleContractTests
             .Select(field => field.GetValue(null)).OfType<Regex>()
             .Where(pattern => pattern.Options.HasFlag(RegexOptions.NonBacktracking)).ToList();
         CollectionAssert.AreEquivalent(declared, Redaction.LinearPatterns.ToList(), "Every nonbacktracking pattern is compared.");
-        var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).ToList();
+        var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).Concat(Diagnostic1499Cases().Select(row => (string)row[2]).Distinct()).ToList();
         var differences = new List<string>();
         foreach (var pattern in Redaction.LinearPatterns)
         {

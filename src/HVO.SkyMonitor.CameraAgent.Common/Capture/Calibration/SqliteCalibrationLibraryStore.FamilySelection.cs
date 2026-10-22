@@ -152,8 +152,9 @@ public sealed partial class SqliteCalibrationLibraryStore
     /// Re-confirms the masters of a frozen selection when work that uses them is claimed: each is still a master of a
     /// published bundle with the frozen kind and payload hash, its payload hashes to it, and its bundle's committed
     /// evidence passes the check <see cref="SelectFamilyMastersAsync"/> applies. Returns null, or the stable reason
-    /// the first master fails. Conditions and effective windows were settled when the selection was frozen and are
-    /// not evaluated again.
+    /// the first master fails. Confirmation bypasses the file-metadata cache so unchanged length and timestamp
+    /// cannot hide corrupt bytes. Conditions and effective windows were settled when the selection was frozen and
+    /// are not evaluated again.
     /// </summary>
     internal async Task<string?> ConfirmFamilyMastersAsync(
         IReadOnlyList<CalibrationFamilyMasterV1> masters,
@@ -202,23 +203,24 @@ public sealed partial class SqliteCalibrationLibraryStore
             }
         }
         return await VerifyFamilyBundleEvidenceAsync(
-            Array.ConvertAll(stored, static master => master!), cancellationToken).ConfigureAwait(false);
+            Array.ConvertAll(stored, static master => master!), cancellationToken, forceValidation: true).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Validates the committed evidence of each distinct bundle the masters come from, as <see cref="SelectAsync"/>
-    /// validates the active bundle, using the same cache while the bundle's files are unchanged. Any failure is
-    /// <c>master-corrupt</c>.
+    /// validates the active bundle. Selection may reuse the file-metadata cache; frozen-master confirmation always
+    /// verifies the bytes again. Any failure is <c>master-corrupt</c>.
     /// </summary>
     private async Task<string?> VerifyFamilyBundleEvidenceAsync(
         IReadOnlyList<StoredFamilyMaster> masters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceValidation = false)
     {
         foreach (var bundle in masters.Select(static master => master.Bundle).DistinctBy(static bundle => bundle.BundleIdentitySha256))
         {
             try
             {
-                await ValidateEvidenceCachedAsync(bundle, cancellationToken).ConfigureAwait(false);
+                await ValidateEvidenceCachedAsync(bundle, cancellationToken, forceValidation).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
             {
