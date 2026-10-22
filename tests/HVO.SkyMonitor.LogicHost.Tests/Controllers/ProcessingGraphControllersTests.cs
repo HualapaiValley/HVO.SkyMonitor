@@ -357,6 +357,12 @@ public sealed class ProcessingGraphControllersTests
             return Task.FromResult<CentralProcessingGraphRevisionView?>(revisionId == Revision.Id ? Revision : null);
         }
 
+        public Task<CentralProcessingGraphRevisionPage> ListRevisionSummariesAsync(
+            int take,
+            string? cursor,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(
             ProcessingGraphDefinition definition,
             string actorUserId,

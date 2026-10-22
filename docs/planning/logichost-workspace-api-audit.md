@@ -219,6 +219,26 @@ Measure query/row/response bounds on large histories. Any missing durable fact o
 arbitrary presentation-policy revision requires a separately owned contract story,
 not a schema or transport extension inside this read prerequisite.
 
+Delivered under #1237: `ICameraOperationsReadService` (usable directly by Blazor
+pages) and `CameraOperationsController` at
+`/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`. Assignment history
+(`processing-graph-assignments?targetHost=`), executions, the execution inspector's
+node page, proposals and proposal facts are keyset pages over existing indexes:
+one bounded `TOP` seek per retained installation merged by `UNION ALL`, because
+EF decorrelates a per-installation `Take` into `ROW_NUMBER` over the whole history.
+Jobs (`jobs`) and event associations (`transient-events`) have no camera index, so
+each request walks at most 50 of the camera's own captures and reports
+`ExaminedCaptures`; a short or empty page may still continue. The job inspector
+pages attempts, inputs and outputs independently and omits lease, trace and
+free-form error fields; artifact identities from another observatory are null.
+Continuations are protected and bound to caller, camera, collection, subject and
+filter. Lists return an empty page and exact reads 404 when the camera cannot be
+read; event associations still apply the all-contributor rule. A proposal's
+`DerivedStatus` labels "Staged" as derived from an Accepted fact without
+Activated or RolledBack facts, with no timestamp. The global catalog pages at
+`/api/internal/processing-graphs/revision-summaries` without definition documents.
+No schema, index, protocol, mutation or authority change.
+
 ### S1 — Protected scope shell and navigation
 
 Owning issue: [#1238](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1238). Prerequisites: existing authorized network/camera
