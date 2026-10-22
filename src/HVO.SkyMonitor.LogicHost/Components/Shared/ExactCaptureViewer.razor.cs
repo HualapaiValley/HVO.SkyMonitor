@@ -22,6 +22,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     private ElementReference presentationRoot;
     private bool bindPresentation;
     private Guid? captureId;
+    private Task<AuthenticationState>? authenticationState;
     private long presentationGeneration;
     private long baseImageAttempt;
     private CancellationTokenSource? presentationSaveCancellation;
@@ -56,12 +57,17 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     protected override async Task OnParametersSetAsync()
     {
         Guid? requestedCaptureId = Detail is null ? null : CaptureId;
-        // A refreshed detail for the same exact capture keeps its presentation, layer and image state.
-        if (captureId == requestedCaptureId)
+        var requestedAuthenticationState = AuthenticationStateTask;
+        // A refreshed detail for the same exact capture and the same authentication state keeps its presentation,
+        // layer and image state. Sign-out or another actor starts over, so nothing read or saved for the previous
+        // actor survives.
+        if (captureId == requestedCaptureId && ReferenceEquals(authenticationState, requestedAuthenticationState))
         {
             return;
         }
         captureId = requestedCaptureId;
+        authenticationState = requestedAuthenticationState;
+        principal = null;
         if (presentationSaveCancellation is { } activeSave)
         {
             await activeSave.CancelAsync();
@@ -79,14 +85,15 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        principal = (await AuthenticationStateTask).User;
-        if (generation != presentationGeneration || principal.Identity?.IsAuthenticated != true)
+        var user = (await requestedAuthenticationState).User;
+        if (generation != presentationGeneration || user.Identity?.IsAuthenticated != true)
         {
             return;
         }
+        principal = user;
         try
         {
-            var presentation = await Presentations.GetAsync(exactCaptureId, principal);
+            var presentation = await Presentations.GetAsync(exactCaptureId, user);
             if (generation == presentationGeneration &&
                 presentation is { Status: CentralLayeredPresentationStatus.Found, Presentation: { } found } &&
                 found.CaptureId == exactCaptureId)
@@ -106,7 +113,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
 
     internal async Task SaveSelectedStackAsync()
     {
-        if (Presentation is null || principal is null || captureId is not { } requestedCaptureId ||
+        if (Presentation is null || principal is not { } actor || captureId is not { } requestedCaptureId ||
             IsSavingPresentation || IsBaseImageUnavailable)
         {
             return;
@@ -126,7 +133,7 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
                 return;
             }
             var result = await PresentationMaterializer.SaveAsync(
-                requestedCaptureId, requestedManifestIdentity, selected, principal, saveCancellation.Token);
+                requestedCaptureId, requestedManifestIdentity, selected, actor, saveCancellation.Token);
             if (!MatchesPresentation(generation, requestedCaptureId, requestedPresentationIdentity))
             {
                 return;

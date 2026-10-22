@@ -254,21 +254,79 @@ public sealed class ExactCaptureViewerTests
     {
         var presentations = new RecordingPresentations(id => Found(Presentation(id)));
         using var context = CreateContext(presentations, out var materializer);
-        materializer.Result = new CentralPresentationMaterializationResult(CentralPresentationMaterializationStatus.Saved,
-            new CentralPresentationMaterializationReceipt(CaptureA, Guid.NewGuid(), new string('6', 64), new string('7', 64),
-                10, "/content", Replayed: false));
+        materializer.Result = SavedResult(CaptureA);
         context.JSInterop.SetupModule(ExactCaptureViewer.ModulePath)
             .Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([LayerIdentity(CaptureA, 1)]);
         var saved = new List<Guid>();
         var host = RenderViewer(context, CaptureA, Detail(CaptureA), stackSaved: saved.Add);
 
-        await host.FindAll("button").Single(button => button.TextContent.Contains("Save selected stack", StringComparison.Ordinal))
-            .ClickAsync(new());
+        await SaveButton(host).ClickAsync(new());
 
         saved.Should().Equal(CaptureA);
         materializer.Requests.Should().Equal((CaptureA, ManifestIdentity(CaptureA), LayerIdentity(CaptureA, 1)));
         host.Markup.Should().Contain("The selected stack was saved as an immutable central artifact.");
         presentations.Requests.Should().Equal(CaptureA);
+    }
+
+    [TestMethod]
+    public async Task SignOutOnTheSameCapture_ClearsTheRetainedPresentationAndRequestsNothing()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out _, out var authentication);
+        var host = RenderViewer(context, CaptureA, Detail(CaptureA));
+        host.Find(".layered-canvas img").GetAttribute("src").Should().Be(BasePath(CaptureA));
+
+        await host.InvokeAsync(() => authentication.Change(new ClaimsPrincipal(new ClaimsIdentity())));
+
+        host.WaitForAssertion(() => AssertMetadataOnly(host, CaptureA, "nothing read for the previous actor survives sign-out"));
+        host.FindComponent<ExactCaptureViewer>().Instance.Presentation.Should().BeNull();
+        presentations.Requests.Should().Equal(CaptureA);
+    }
+
+    [TestMethod]
+    public async Task ActorReplacementOnTheSameCapture_RereadsAndSavesOnlyAsTheCurrentActor()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        var owner = Owner();
+        var replacement = User("replacement");
+        using var context = CreateContext(presentations, out var materializer, out var authentication, owner);
+        context.JSInterop.SetupModule(ExactCaptureViewer.ModulePath)
+            .Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([LayerIdentity(CaptureA, 1)]);
+        var host = RenderViewer(context, CaptureA, Detail(CaptureA));
+
+        await host.InvokeAsync(() => authentication.Change(replacement));
+        host.WaitForAssertion(() => presentations.Principals.Should().HaveCount(2));
+        await SaveButton(host).ClickAsync(new());
+
+        presentations.Requests.Should().Equal(CaptureA, CaptureA);
+        presentations.Principals[0].Should().BeSameAs(owner);
+        presentations.Principals[1].Should().BeSameAs(replacement);
+        materializer.Principals.Should().ContainSingle().Which.Should().BeSameAs(replacement);
+    }
+
+    [TestMethod]
+    public async Task ActorChangeDuringASave_CancelsItAndReportsNothing()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out var materializer, out var authentication);
+        var pending = new TaskCompletionSource<CentralPresentationMaterializationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        materializer.Pending = pending.Task;
+        context.JSInterop.SetupModule(ExactCaptureViewer.ModulePath)
+            .Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([LayerIdentity(CaptureA, 1)]);
+        var saved = new List<Guid>();
+        var host = RenderViewer(context, CaptureA, Detail(CaptureA), stackSaved: saved.Add);
+        var viewer = host.FindComponent<ExactCaptureViewer>();
+        var save = SaveButton(host).ClickAsync(new());
+        host.WaitForAssertion(() => materializer.Tokens.Should().ContainSingle());
+
+        await host.InvokeAsync(() => authentication.Change(User("replacement")));
+        materializer.Tokens.Single().IsCancellationRequested.Should().BeTrue("the previous actor's save is invalidated");
+        pending.SetResult(SavedResult(CaptureA));
+        await save;
+
+        saved.Should().BeEmpty();
+        viewer.Instance.MaterializationMessage.Should().BeNull();
+        viewer.Instance.IsSavingPresentation.Should().BeFalse();
     }
 
     [TestMethod]
@@ -315,11 +373,19 @@ public sealed class ExactCaptureViewerTests
         RecordingPresentations presentations,
         out CountingMaterializer materializer,
         ClaimsPrincipal? principal = null)
+        => CreateContext(presentations, out materializer, out _, principal);
+
+    private static BunitContext CreateContext(
+        RecordingPresentations presentations,
+        out CountingMaterializer materializer,
+        out ChangingAuthentication authentication,
+        ClaimsPrincipal? principal = null)
     {
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         context.JSInterop.SetupModule(ExactCaptureViewer.ModulePath);
-        context.Services.AddSingleton<AuthenticationStateProvider>(new FixedAuthentication(principal ?? Owner()));
+        authentication = new ChangingAuthentication(principal ?? Owner());
+        context.Services.AddSingleton<AuthenticationStateProvider>(authentication);
         context.Services.AddCascadingAuthenticationState();
         context.Services.AddSingleton<ICentralLayeredPresentationService>(presentations);
         materializer = new CountingMaterializer();
@@ -327,8 +393,18 @@ public sealed class ExactCaptureViewerTests
         return context;
     }
 
-    private static ClaimsPrincipal Owner() => new(new ClaimsIdentity(
-        [new(ClaimTypes.NameIdentifier, "owner"), new("account_type", "User")], "Identity.Application"));
+    private static ClaimsPrincipal Owner() => User("owner");
+
+    private static ClaimsPrincipal User(string id) => new(new ClaimsIdentity(
+        [new(ClaimTypes.NameIdentifier, id), new("account_type", "User")], "Identity.Application"));
+
+    private static AngleSharp.Dom.IElement SaveButton(IRenderedComponent<CascadingValue<OperationsCaptureDetail>> host)
+        => host.FindAll("button").Single(button => button.TextContent.Contains("Save selected stack", StringComparison.Ordinal));
+
+    private static CentralPresentationMaterializationResult SavedResult(Guid captureId)
+        => new(CentralPresentationMaterializationStatus.Saved,
+            new CentralPresentationMaterializationReceipt(captureId, Guid.NewGuid(), new string('6', 64), new string('7', 64),
+                10, "/content", Replayed: false));
 
     private static CentralLayeredPresentationResult Found(CentralLayeredPresentation presentation)
         => new(CentralLayeredPresentationStatus.Found, presentation);
@@ -377,10 +453,17 @@ public sealed class ExactCaptureViewerTests
             Encoding.UTF8.GetBytes(Svg(captureId, layers)));
     }
 
-    private sealed class FixedAuthentication(ClaimsPrincipal principal) : AuthenticationStateProvider
+    private sealed class ChangingAuthentication(ClaimsPrincipal principal) : AuthenticationStateProvider
     {
-        public override Task<AuthenticationState> GetAuthenticationStateAsync()
-            => Task.FromResult(new AuthenticationState(principal));
+        private Task<AuthenticationState> current = Task.FromResult(new AuthenticationState(principal));
+
+        public override Task<AuthenticationState> GetAuthenticationStateAsync() => current;
+
+        internal void Change(ClaimsPrincipal next)
+        {
+            current = Task.FromResult(new AuthenticationState(next));
+            NotifyAuthenticationStateChanged(current);
+        }
     }
 
     private sealed class RecordingPresentations(
@@ -403,14 +486,19 @@ public sealed class ExactCaptureViewerTests
     {
         internal int Calls => Requests.Count;
         internal List<(Guid CaptureId, string Manifest, string Layers)> Requests { get; } = [];
+        internal List<ClaimsPrincipal> Principals { get; } = [];
+        internal List<CancellationToken> Tokens { get; } = [];
         internal CentralPresentationMaterializationResult Result { get; set; } =
             new(CentralPresentationMaterializationStatus.Invalid);
+        internal Task<CentralPresentationMaterializationResult>? Pending { get; set; }
 
         public Task<CentralPresentationMaterializationResult> SaveAsync(Guid captureId, string manifestIdentitySha256,
             IReadOnlyList<string> enabledLayerIdentitySha256, ClaimsPrincipal principal, CancellationToken cancellationToken = default)
         {
             Requests.Add((captureId, manifestIdentitySha256, string.Join(",", enabledLayerIdentitySha256)));
-            return Task.FromResult(Result);
+            Principals.Add(principal);
+            Tokens.Add(cancellationToken);
+            return Pending ?? Task.FromResult(Result);
         }
     }
 
