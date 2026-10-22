@@ -98,6 +98,24 @@ class MemoryGuardTests(unittest.TestCase):
         self.change("p1-candidate", lambda d: d.update(collectorAttached=True))
         self.assertNotEqual(0, self.run_guard().returncode)
 
+    def test_invalid_pack_mode_fails(self):
+        self.index["mode"] = "measure-typo"
+        self.assertNotEqual(0, self.run_guard().returncode)
+
+    def test_comparing_one_label_to_itself_fails(self):
+        (self.pack / "index.json").write_text(json.dumps(self.index))
+        result = subprocess.run([sys.executable, "-I", str(ANALYZER), "base", "base", str(self.pack)],
+                                capture_output=True, text=True, check=False)
+        self.assertNotEqual(0, result.returncode)
+
+    def test_comparing_one_binary_revision_to_itself_fails(self):
+        revision = "a" * 40
+        self.index["arms"][1]["revision"] = revision
+        for pair in range(1, 6):
+            self.index["runs"][2 * pair - 1]["revision"] = revision
+            self.change(f"p{pair}-candidate", lambda d: d.update(revision=revision, binaryRevision=f"0.9.0+{revision}"))
+        self.assertNotEqual(0, self.run_guard().returncode)
+
 
 if __name__ == "__main__":
     unittest.main()

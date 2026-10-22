@@ -19,11 +19,15 @@ def load(packs, labels):
     runs = []
     for pack in packs:
         index = json.loads((Path(pack) / "index.json").read_text())
+        if index["mode"] not in ("measure", "attribute"):
+            sys.exit(f"{pack}: unsupported pack mode")
         if index["schema"] != "issue1540-w2-memory-pack-v1" or set(index["order"]) != set(labels):
             sys.exit(f"{pack}: wrong pack schema or arms")
         if len(index["runs"]) != 2 * index["pairs"]:
             sys.exit(f"{pack}: missing or extra trials")
         revisions = {arm["label"]: arm["revision"] for arm in index["arms"]}
+        if set(revisions) != set(labels) or len(set(revisions.values())) != 2:
+            sys.exit(f"{pack}: comparison needs two distinct binary revisions")
         seen = set()
         for run in index["runs"]:
             key = (run["pair"], run["label"])
@@ -103,6 +107,8 @@ def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
     baseline, candidate, packs = sys.argv[1], sys.argv[2], sys.argv[3:]
+    if baseline == candidate:
+        sys.exit("comparison needs two distinct arm labels")
     runs = load(packs, (baseline, candidate))
     modes = {run["mode"] for run in runs}
     if len(modes) != 1:
