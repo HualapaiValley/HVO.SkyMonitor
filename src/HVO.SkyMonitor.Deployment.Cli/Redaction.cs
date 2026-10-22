@@ -4,6 +4,8 @@ internal static class Redaction
 {
     private const int MaximumDiagnosticLines = 200;
 
+    private const int MaximumDiagnosticLength = 256;
+
     // A credential key is any key that ends with one of these words, so the key patterns put no word boundary before it:
     // db_password, client_secret, accessToken and x-api-key all match (#1491). The boundary after it keeps tokenid ordinary.
     private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]key|_access_key)?|private[-_]?key|api[-_]?key)\\b";
@@ -29,6 +31,11 @@ internal static class Redaction
     private const string NestedKeys =
         $"""(?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{CredentialWord}["']?\s*[=:]\s*|\x9C*{SpacedKey}\s+)+""";
 
+    // The same chain with the #1509 spellings and a configuration key's double underscore, for the #1523 pass only, so
+    // api_key=SecretKey and api_key=db__password consume their inner key as api_key=db_password does (PR-1528-R0 F3).
+    private const string SecondNestedKeys =
+        $"""(?:{SecondCredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{SecondCredentialWord}["']?\s*[=:]\s*|\x9C*(?:{SecondSpacedKey}|{ConfigurationSpacedKey})\s+)+""";
+
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
     private const System.Text.RegularExpressions.RegexOptions Linear =
@@ -50,8 +57,6 @@ internal static class Redaction
 
     private static readonly System.Text.RegularExpressions.Regex KeyWord = LinearPattern($"(?i){KeyWords}");
 
-    private static readonly System.Text.RegularExpressions.Regex SecondKeyWord = LinearPattern($"(?i){SecondKeyWords}");
-
     // Anchored where decoration ends, so it reads only the few characters of a key there.
     private static readonly System.Text.RegularExpressions.Regex KeyStart = new(
         $"\\G(?i:{KeyWords})", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
@@ -59,6 +64,11 @@ internal static class Redaction
     // The #1523 passes also start a word at a key only the second passes find, so SecretKey after decoration is a key.
     private static readonly System.Text.RegularExpressions.Regex SecondKeyStart = new(
         $"\\G(?i:{SecondKeyWords})", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    // A key that a later pass reads as one, with what makes it an assignment: its separator, a quoted value after whitespace,
+    // a space-only key's value, or a bearer token. Each quoted pass's match is one too, at the same place (PR-1528-R0 F2).
+    private static readonly System.Text.RegularExpressions.Regex KeyAssignment = LinearPattern(
+        $"""(?i)(?:authorization|{SecondCredentialWord})["']?\s*[=:]|(?:{SecondSpacedKey}|{ConfigurationSpacedKey})\s+[^ ,;]|{SecondCredentialWord}["']?\s*[=:\s]\s*(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)*["']|\bbearer\s+[^,;\s"]""");
 
     // A quoted value that ends in a key and its separator, as "password=" does, leaves that key's value after it (#1523).
     private static readonly System.Text.RegularExpressions.Regex DanglingKey = LinearPattern(
@@ -93,7 +103,7 @@ internal static class Redaction
     // The same chain before a quoted value, which the first quoted pass does not find after a tab, a no-break space or a NEL
     // (#1523). Its value is hidden as a quoted value is, with the text joined to it.
     private static readonly System.Text.RegularExpressions.Regex NestedQuotedCredential = LinearPattern(
-        $"""(?i)({NestedKeys})["']""");
+        $"""(?i)({SecondNestedKeys})["']""");
 
     // The second passes read the first passes' output, so they can only hide more of it (#1509). A quoted value may also follow
     // its key after whitespace alone, which may be a tab, a no-break space or a NEL rather than a plain space.
@@ -118,7 +128,7 @@ internal static class Redaction
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [QuotedCredential, KeyWord, SecondKeyWord, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
+        [QuotedCredential, KeyWord, KeyAssignment, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
             UnquotedValue, SpacedValue, NestedValue, NestedQuotedCredential, SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue,
             ConfigurationSpacedValue];
 
@@ -129,15 +139,22 @@ internal static class Redaction
             return "no diagnostic output";
         }
 
-        var firstLine = Redact(value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty);
-        return firstLine.Length <= 256 ? firstLine : firstLine[..256];
+        var firstLine = value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+        return Redacted(firstLine, MaximumDiagnosticLength);
     }
 
     /// <summary>
     /// Redacts every credential in <paramref name="text"/>, at any length. Decoration is removed before anything is matched
     /// (#1491). Every other control character is matched where it stands, as it always was, and removed only afterwards.
     /// </summary>
-    internal static string Redact(string text)
+    internal static string Redact(string text) => Redacted(text, int.MaxValue);
+
+    /// <summary>
+    /// The redacted text, at most <paramref name="length"/> characters of it. The merge base cut its redacted text there, and
+    /// text the #1523 passes hide is often shorter once redacted, so the cut is made where the merge base made it: what follows
+    /// that is not shown, however much shorter the text before it is (PR-1528-R0 F1).
+    /// </summary>
+    private static string Redacted(string text, int length)
     {
         // A URL's user information is also found as the text stood, so punctuation inside removed decoration still counts.
         // Without a control character the two texts are the same, and without :// neither holds a URL.
@@ -146,7 +163,24 @@ internal static class Redaction
         // that now reaches a later key hides that key, and the key's own value is then shown. The #1523 passes therefore read
         // the text apart from the merge base's, and a character either hides is hidden, so no value the merge base hid is shown.
         var source = Tracked.Of(text);
-        return WithoutControls(WithHidden(Passes(source, extended: false), Passes(source, extended: true), text.Length));
+        var shown = Passes(source, extended: false);
+        var redacted = WithoutControls(WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length)));
+        return redacted.Length <= length ? redacted : redacted[..length];
+    }
+
+    /// <summary>
+    /// Where the merge base's cut falls in its passes' text: after the <paramref name="length"/>th character that removing the
+    /// controls leaves, or at the end.
+    /// </summary>
+    private static int ShownEnd(string text, int length)
+    {
+        if (text.Length <= length) return text.Length;
+        var position = 0;
+        for (var kept = 0; position < text.Length && kept < length; position++)
+        {
+            if (!IsControlIntroducer(text[position])) kept++;
+        }
+        return position;
     }
 
     /// <summary>
@@ -177,32 +211,33 @@ internal static class Redaction
     }
 
     /// <summary>
-    /// The merge base's text with each character the extended passes hid hidden too, so its output is unchanged where they hide
-    /// nothing more. A run of such characters, with the markers and boundaries next to it, reads as one marker.
+    /// The merge base's text before <paramref name="end"/>, with each character the extended passes hid hidden too, so its
+    /// output is unchanged where they hide nothing more. A run of such characters, with the markers and boundaries next to it,
+    /// reads as one marker.
     /// </summary>
-    private static string WithHidden(Tracked shown, Tracked extended, int length)
+    private static string WithHidden(Tracked shown, Tracked extended, int length, int end)
     {
-        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return shown.Text;
+        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return shown.Text[..end];
         var hidden = new bool[length];
         Array.Fill(hidden, true);
         foreach (var origin in extended.Origins)
         {
             if (origin != Written) hidden[origin] = false;
         }
-        var result = new System.Text.StringBuilder(shown.Text.Length);
+        var result = new System.Text.StringBuilder(end);
         var position = 0;
-        while (position < shown.Text.Length)
+        while (position < end)
         {
-            var end = position;
+            var run = position;
             var hides = false;
-            while (end < shown.Text.Length && (shown.Origins[end] == Written || hidden[shown.Origins[end]]))
+            while (run < end && (shown.Origins[run] == Written || hidden[shown.Origins[run]]))
             {
-                hides |= shown.Origins[end++] != Written;
+                hides |= shown.Origins[run++] != Written;
             }
-            if (end == position) result.Append(shown.Text[end++]);
+            if (run == position) result.Append(shown.Text[run++]);
             else if (hides) result.Append("<redacted>");
-            else result.Append(shown.Text, position, end - position);
-            position = end;
+            else result.Append(shown.Text, position, run - position);
+            position = run;
         }
         return result.ToString();
     }
@@ -360,9 +395,10 @@ internal static class Redaction
 
     /// <summary>
     /// Hides the value a key at the end of a quoted value leaves after its closing quote: the text joined to the quote, or else
-    /// the word after the whitespace (#1523). A word that holds a key is left, so its own value is still found, and the search
-    /// for one ends where the next match can start at the earliest, so no character is read twice. Returns where the consumed
-    /// text ends.
+    /// the word after the whitespace (#1523). A word that holds a key a later pass reads as an assignment is left, so its own
+    /// value is still found; a key word with no assignment of its own, as in mysecret, is hidden with the rest of the value
+    /// (PR-1528-R0 F2). The search for one ends where the next match can start at the earliest, so no character is read twice.
+    /// Returns where the consumed text ends.
     /// </summary>
     private static int WithoutDanglingValue(Tracked text, int after, int consumed, TrackedBuilder result)
     {
@@ -374,7 +410,7 @@ internal static class Redaction
         }
         // Joined text the caller hid with the value is that key's value already.
         if (start < consumed) return consumed;
-        var key = SecondKeyWord.Match(value, start);
+        var key = KeyAssignment.Match(value, start);
         var limit = key.Success ? key.Index : value.Length;
         var end = JoinedEnd(value.AsSpan(0, limit), start);
         if (end == start || key.Success && end == limit) return consumed;
