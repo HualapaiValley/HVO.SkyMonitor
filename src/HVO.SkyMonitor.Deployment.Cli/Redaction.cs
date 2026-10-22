@@ -152,7 +152,9 @@ internal static class Redaction
     /// <summary>
     /// The redacted text, at most <paramref name="length"/> characters of it. The merge base cut its redacted text there, and
     /// text the #1523 passes hide is often shorter once redacted, so the cut is made where the merge base made it: what follows
-    /// that is not shown, however much shorter the text before it is (PR-1528-R0 F1).
+    /// that is not shown, however much shorter the text before it is (PR-1528-R0 F1). A diagnostic is often embedded in a
+    /// message that is cut again, so a cut text also ends where it first becomes shorter than the merge base's: nothing it
+    /// shows comes earlier than the merge base showed it, and no later cut can reach further.
     /// </summary>
     private static string Redacted(string text, int length)
     {
@@ -164,7 +166,8 @@ internal static class Redaction
         // the text apart from the merge base's, and a character either hides is hidden, so no value the merge base hid is shown.
         var source = Tracked.Of(text);
         var shown = Passes(source, extended: false);
-        var redacted = WithoutControls(WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length)));
+        var redacted = WithoutControls(WithHidden(
+            shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length), cut: length != int.MaxValue));
         return redacted.Length <= length ? redacted : redacted[..length];
     }
 
@@ -213,9 +216,10 @@ internal static class Redaction
     /// <summary>
     /// The merge base's text before <paramref name="end"/>, with each character the extended passes hid hidden too, so its
     /// output is unchanged where they hide nothing more. A run of such characters, with the markers and boundaries next to it,
-    /// reads as one marker.
+    /// reads as one marker. With <paramref name="cut"/> set, the text ends at the first marker that leaves it shorter than the
+    /// merge base's, apart from the controls both remove, so each character after the marker stays out of a later cut.
     /// </summary>
-    private static string WithHidden(Tracked shown, Tracked extended, int length, int end)
+    private static string WithHidden(Tracked shown, Tracked extended, int length, int end, bool cut)
     {
         if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return shown.Text[..end];
         var hidden = new bool[length];
@@ -226,6 +230,8 @@ internal static class Redaction
         }
         var result = new System.Text.StringBuilder(end);
         var position = 0;
+        // How much longer the text is so far than the merge base's.
+        var longer = 0;
         while (position < end)
         {
             var run = position;
@@ -235,7 +241,12 @@ internal static class Redaction
                 hides |= shown.Origins[run++] != Written;
             }
             if (run == position) result.Append(shown.Text[run++]);
-            else if (hides) result.Append("<redacted>");
+            else if (hides)
+            {
+                result.Append("<redacted>");
+                longer += "<redacted>".Length - Width(shown.Text.AsSpan(position, run - position));
+                if (cut && longer < 0) break;
+            }
             else result.Append(shown.Text, position, run - position);
             position = run;
         }
@@ -358,6 +369,17 @@ internal static class Redaction
     }
 
     private static bool IsControlIntroducer(char character) => character is '\u001B' or (>= '\u0080' and <= '\u009F');
+
+    /// <summary>How many characters of <paramref name="text"/> removing the controls leaves.</summary>
+    private static int Width(ReadOnlySpan<char> text)
+    {
+        var width = 0;
+        foreach (var character in text)
+        {
+            if (!IsControlIntroducer(character)) width++;
+        }
+        return width;
+    }
 
     private static System.Text.RegularExpressions.Regex LinearPattern(string pattern) => new(pattern, Linear, TimeSpan.FromSeconds(1));
 

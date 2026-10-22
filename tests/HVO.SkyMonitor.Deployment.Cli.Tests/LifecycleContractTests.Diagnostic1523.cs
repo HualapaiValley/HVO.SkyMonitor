@@ -16,16 +16,17 @@ public sealed partial class LifecycleContractTests
             .GetCustomAttributes(typeof(DataRowAttribute), inherit: false).Cast<DataRowAttribute>()
             .Select(row => row.Data.Select(value => value!).ToArray());
 
-    // Each expected value is the redacted text before the writer escapes the controls redaction leaves, such as a tab.
+    // Each expected value is the redacted text before the writer escapes the controls redaction leaves, such as a tab. The writer
+    // cuts the line, so it ends at a value only the #1523 passes hide that is longer than its marker; uncut, the rest is kept.
     [TestMethod]
     [DoNotParallelize]
     // #1523 item 1: a quoted value that ends in a key leaves that key's value after the closing quote.
-    [DataRow(false, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(true, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(false, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted> tail")]
-    [DataRow(true, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted> tail")]
-    [DataRow(false, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted> tail")]
-    [DataRow(true, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted> tail")]
+    [DataRow(false, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted>")]
+    [DataRow(true, "token=\"password=\" " + Diagnostic1523Value + " tail", "token=\"<redacted>\" <redacted>")]
+    [DataRow(false, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted>")]
+    [DataRow(true, "SecretKey=\"SecretKey=\" " + Diagnostic1523Value + " tail", "SecretKey=\"<redacted>\" <redacted>")]
+    [DataRow(false, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted>")]
+    [DataRow(true, "token='api_key: ' \"a " + Diagnostic1523Value + "\" tail", "token='<redacted>' <redacted>")]
     // A word that is itself a key is not hidden as the value, so its own value is still found.
     [DataRow(false, "token=\"password=\" db_password " + Diagnostic1523Value, "token=\"<redacted>\" db_password <redacted>")]
     [DataRow(true, "token=\"password=\" db_password " + Diagnostic1523Value, "token=\"<redacted>\" db_password <redacted>")]
@@ -36,30 +37,30 @@ public sealed partial class LifecycleContractTests
     [DataRow(true, "token=\"password=\" mysecret tail", "token=\"<redacted>\" <redacted> tail")]
     [DataRow(false, "token=\"password=\" \"mysecret\" tail", "token=\"<redacted>\" <redacted> tail")]
     [DataRow(true, "token=\"password=\" \"mysecret\" tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(false, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted> tail")]
-    [DataRow(true, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted> tail")]
+    [DataRow(false, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted>")]
+    [DataRow(true, "token=\"password=\" '" + Diagnostic1523Value + "secret' tail", "token=\"<redacted>\" <redacted>")]
     // #1523 item 2: an inner key that an outer assignment consumes still hides a quoted value after a tab.
-    [DataRow(false, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(false, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
+    [DataRow(false, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=db_password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
     // PR-1528-R0 F3: the inner and outer keys may take the #1509 spellings and a configuration key's double underscore.
-    [DataRow(false, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(false, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(false, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>\" tail")]
-    [DataRow(false, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>' tail")]
-    [DataRow(true, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>' tail")]
-    [DataRow(false, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>\" tail")]
-    [DataRow(true, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>\" tail")]
-    [DataRow(false, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>\" tail")]
-    [DataRow(true, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>\" tail")]
-    [DataRow(false, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>' tail")]
-    [DataRow(true, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>' tail")]
-    [DataRow(false, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>\" tail")]
-    [DataRow(true, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>\" tail")]
+    [DataRow(false, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=SecretAccessKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=db__password\t\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>")]
+    [DataRow(true, "api_key=SecretKey\t'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\t'<redacted>")]
+    [DataRow(false, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key: SecretKey\t\"a " + Diagnostic1523Value + "\" tail", "api_key: <redacted>\t\"<redacted>")]
+    [DataRow(false, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>")]
+    [DataRow(true, "api_key=SecretKey\u0085\"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted>\"<redacted>")]
+    [DataRow(false, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>")]
+    [DataRow(true, "api_key=SecretKey\u00a0'a " + Diagnostic1523Value + "' tail", "api_key=<redacted>\u00a0'<redacted>")]
+    [DataRow(false, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>")]
+    [DataRow(true, "api_key=SecretKey \"a " + Diagnostic1523Value + "\" tail", "api_key=<redacted> \"<redacted>")]
     // An outer key only the second passes find consumes its inner key after the space-only pass has hidden the quoted value.
     [DataRow(false, "SecretKey=db_password\t\"a " + Diagnostic1523Value + "\" tail", "SecretKey=<redacted>\t<redacted> tail")]
     [DataRow(true, "SecretKey=db_password\t\"a " + Diagnostic1523Value + "\" tail", "SecretKey=<redacted>\t<redacted> tail")]
@@ -92,6 +93,9 @@ public sealed partial class LifecycleContractTests
         else error = error.TrimEnd('\r', '\n')["Installation failed: ".Length..];
         Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
         Assert.AreEqual(expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
+        var uncut = Redaction.Redact(diagnostic);
+        Assert.IsFalse(uncut.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + uncut);
+        StringAssert.StartsWith(uncut, expected, StringComparison.Ordinal);
     }
 
     // The merge base's passes and the #1523 passes each read the whole text, and a value a quoted key leaves is found once, so a
@@ -150,6 +154,53 @@ public sealed partial class LifecycleContractTests
             Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(shown)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
         }
         Assert.IsFalse(shown.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + shown);
+    }
+
+    // A diagnostic is often embedded in an installer error, which the top-level writer cuts at 256 characters again. Text the
+    // #1523 passes hide is shorter once redacted, so the second cut would reach text the merge base's second cut left out: the
+    // diagnostic ends at such a value's marker, and nothing after it moves forward.
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow(false, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>")]
+    [DataRow(true, "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey ", "ObjectStorage__SecretKey <redacted>")]
+    [DataRow(false, "token=\"password=\" ", "token=\"<redacted>\" ", "token=\"<redacted>\" <redacted>")]
+    [DataRow(true, "token=\"password=\" ", "token=\"<redacted>\" ", "token=\"<redacted>\" <redacted>")]
+    [DataRow(false, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(true, "api_key=db_password\t\"a ", "api_key=<redacted>\t\"a ", "api_key=<redacted>\t\"<redacted>")]
+    [DataRow(false, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>")]
+    [DataRow(true, "see\u001b[1mSecretKey ", "seeSecretKey ", "seeSecretKey <redacted>")]
+    public async Task Diagnostic1523_EmbeddedDiagnosticKeepsTheMergeBaseCut(bool json, string lead, string mergeBaseLead, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(lead);
+        ArgumentNullException.ThrowIfNull(mergeBaseLead);
+        ArgumentNullException.ThrowIfNull(expected);
+        // The merge base shows the whole value inside its own 256 characters, but the error's second cut, after the docker
+        // command's prefix, ends among the x characters before it.
+        const string prefix = "Docker command failed (docker run): ";
+        var diagnostic = lead + new string('x', 190) + " token db_password\t\"a " + Diagnostic1523Value + "\" tail";
+        // At least this much of what the merge base wrote comes before its second cut.
+        var mergeBase = prefix + mergeBaseLead + new string('x', 190);
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(prefix + Redaction.SafeDiagnostic(diagnostic)));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        else error = error.TrimEnd('\r', '\n')["Installation failed: ".Length..];
+        Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
+        Assert.AreEqual(prefix + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
+        // Differential: what is shown, apart from the markers, is a part of what the merge base showed, in order.
+        var shown = (prefix + expected).Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var position = 0;
+        foreach (var character in shown)
+        {
+            position = rest.IndexOf(character, position) + 1;
+            Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(error)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
+        }
     }
 
     // #1523 item 5: the word after a bare password is hidden as its value, so a fixed message is worded to put none there. No
