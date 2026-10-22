@@ -124,9 +124,10 @@ public sealed class CameraOperationsReadServiceTests
         var a = world.A;
         for (var index = 0; index < 7; index++)
         {
-            world.AddExecution(index % 2 == 0 ? a.RetiredInstallation : a.CurrentInstallation, a.Revision, a.Anchor, a.CameraEntity, Now);
+            if (index % 2 == 0) world.AddExecution(a.RetiredInstallation, a.Revision, a.Anchor, a.CameraEntity, Now);
+            else world.AddExecution(a.CurrentInstallation, a.Revision, a.CurrentAnchor, a.CameraEntity, Now);
         }
-        world.AddExecution(world.B.CurrentInstallation, world.B.Revision, world.B.Anchor, world.B.CameraEntity, Now);
+        world.AddExecution(world.B.CurrentInstallation, world.B.Revision, world.B.CurrentAnchor, world.B.CameraEntity, Now);
         await world.Db.SaveChangesAsync().ConfigureAwait(false);
         var service = world.Service();
         var seen = new List<Guid>();
@@ -141,7 +142,7 @@ public sealed class CameraOperationsReadServiceTests
             if (pages++ == 0)
             {
                 // A newer insert after the first page cannot reappear behind the cursor; an older one is still reached.
-                world.AddExecution(a.CurrentInstallation, a.Revision, a.Anchor, a.CameraEntity, Now.AddHours(1));
+                world.AddExecution(a.CurrentInstallation, a.Revision, a.CurrentAnchor, a.CameraEntity, Now.AddHours(1));
                 world.AddExecution(a.RetiredInstallation, a.Revision, a.Anchor, a.CameraEntity, Now.AddHours(-1));
                 await world.Db.SaveChangesAsync().ConfigureAwait(false);
             }
@@ -164,7 +165,7 @@ public sealed class CameraOperationsReadServiceTests
         var a = world.A;
         for (var index = 0; index < 3; index++)
         {
-            world.AddExecution(a.CurrentInstallation, a.Revision, a.Anchor, a.CameraEntity, Now.AddMinutes(index));
+            world.AddExecution(a.CurrentInstallation, a.Revision, a.CurrentAnchor, a.CameraEntity, Now.AddMinutes(index));
         }
         world.Db.Add(new ObservatoryMembership
         {
@@ -328,7 +329,7 @@ public sealed class CameraOperationsReadServiceTests
         var staged = page.Items.Single(item => item.Proposal.Id == a.Proposal);
         Assert.AreEqual("Accepted", staged.TerminalFact!.Kind);
         Assert.AreEqual("Retrieved", staged.LatestFact!.Kind);
-        Assert.IsFalse(staged.HasActivatedFact);
+        Assert.IsNull(staged.LatestLifecycleFact);
         Assert.AreEqual(CameraOperationsReadService.DerivedStagedStatus, staged.DerivedStatus!.Status);
         Assert.StartsWith("derived:", staged.DerivedStatus.Basis);
         Assert.DoesNotContain("At", JsonSerializer.Serialize(staged.DerivedStatus));
@@ -336,16 +337,23 @@ public sealed class CameraOperationsReadServiceTests
         Assert.AreEqual(a.CurrentInstallation.Id, superseded.Proposal.LogicalCameraInstallationId);
         Assert.AreEqual(a.RetiredInstallation.Id, staged.Proposal.LogicalCameraInstallationId);
         Assert.AreEqual("Superseded", superseded.TerminalFact!.Kind);
+        Assert.AreEqual("LogicHost", superseded.TerminalFact.Source);
         Assert.AreEqual("effective-delivery-tuple-changed", superseded.TerminalFact.ReasonCode);
         Assert.IsNull(superseded.DerivedStatus);
 
-        world.AddFact(a.ProposalEntity, "Activated", Now.AddMinutes(30));
-        await world.Db.SaveChangesAsync().ConfigureAwait(false);
-        var activated = (await service.ListProposalsAsync(Member(), a.Observatory, a.Camera, 50, null).ConfigureAwait(false))
-            .Items.Single(item => item.Proposal.Id == a.Proposal);
-        Assert.IsTrue(activated.HasActivatedFact);
-        Assert.IsNull(activated.DerivedStatus);
-        Assert.AreEqual("Activated", activated.LatestFact!.Kind);
+        // The derivation follows the latest stored lifecycle fact: activation clears it, a rollback leaves the accepted
+        // revision inactive (staged again), and a later re-activation clears it once more.
+        foreach (var (kind, minutes, expectStaged) in new[] { ("Activated", 30, false), ("RolledBack", 40, true), ("Activated", 50, false) })
+        {
+            world.AddFact(a.ProposalEntity, kind, Now.AddMinutes(minutes));
+            await world.Db.SaveChangesAsync().ConfigureAwait(false);
+            var current = (await world.Service().ListProposalsAsync(Member(), a.Observatory, a.Camera, 50, null).ConfigureAwait(false))
+                .Items.Single(item => item.Proposal.Id == a.Proposal);
+            Assert.AreEqual(kind, current.LatestLifecycleFact!.Kind);
+            Assert.AreEqual(kind, current.LatestFact!.Kind);
+            Assert.AreEqual("Accepted", current.TerminalFact!.Kind);
+            Assert.AreEqual(expectStaged, current.DerivedStatus is not null, kind);
+        }
     }
 
     [TestMethod]
@@ -453,6 +461,9 @@ public sealed class CameraOperationsReadServiceTests
         var assignments = CameraOperationsReadService.AssignmentHistory(
             db, observatory, camera, CentralProcessingGraphTargetHost.Central, Now, Guid.NewGuid()).Take(26).ToQueryString();
         StringAssert.Contains(assignments, "UNION ALL");
+        var facts = CameraOperationsReadService.PageFacts(db, [Guid.NewGuid(), Guid.NewGuid()]).ToQueryString();
+        Assert.DoesNotContain("ROW_NUMBER", facts);
+        Assert.DoesNotContain("TOP(", facts);
         var events = new CameraOperationsReadService(db, new EphemeralDataProtectionProvider())
             .EventAssociations("member", null, observatory, camera, [Guid.NewGuid()], Guid.NewGuid()).Take(3).ToQueryString();
         StringAssert.Contains(events, "UNION");
@@ -505,6 +516,7 @@ public sealed class CameraOperationsReadServiceTests
         LogicalCameraInstallation CurrentInstallation,
         CentralProcessingGraphRevision Revision,
         CentralArtifact Anchor,
+        CentralArtifact CurrentAnchor,
         Guid AnchorArtifactId,
         Guid ResultArtifactId,
         Guid Execution,
@@ -793,7 +805,9 @@ public sealed class CameraOperationsReadServiceTests
                 Variant = "default", ProductKind = ProcessingProductKind.PixelData, ContractJson = "{}",
                 ContractIdentitySha256 = Hash()
             });
-            var otherExecution = AddExecution(current, revision, anchor, camera, Now.AddHours(-3));
+            // An execution's anchor capture always belongs to the execution's own installation.
+            var currentAnchor = AddArtifact(AddCapture(current, camera, Now.AddHours(-3)), FrameArtifactRole.Raw);
+            var otherExecution = AddExecution(current, revision, currentAnchor, camera, Now.AddHours(-3));
             var otherCapture = AddCapture(otherInstallation, other, Now.AddHours(-1));
             AddExecution(otherInstallation, revision, AddArtifact(otherCapture, FrameArtifactRole.Raw), other, Now);
             _ = otherExecution;
@@ -811,7 +825,7 @@ public sealed class CameraOperationsReadServiceTests
 
             var eventCapture = AddCapture(current, camera, Now.AddHours(-2));
             var eventId = AddEvent(eventCapture, null, Now.AddHours(-2));
-            return new(observatory.Id, camera.Id, camera, other.Id, retired, current, revision, anchor, anchor.ArtifactId,
+            return new(observatory.Id, camera.Id, camera, other.Id, retired, current, revision, anchor, currentAnchor, anchor.ArtifactId,
                 result.ArtifactId, execution.Id, firstNode.Id, staged, staged.Id, eventCapture, eventId);
         }
 

@@ -234,8 +234,8 @@ free-form error fields; artifact identities from another observatory are null.
 Continuations are protected and bound to caller, camera, collection, subject and
 filter. Lists return an empty page and exact reads 404 when the camera cannot be
 read; event associations still apply the all-contributor rule. A proposal's
-`DerivedStatus` labels "Staged" as derived from an Accepted fact without
-Activated or RolledBack facts, with no timestamp. The global catalog pages at
+`DerivedStatus` labels "Staged" as derived (no timestamp): an Accepted fact with
+no lifecycle fact, or whose latest Activated/RolledBack fact is a rollback. The global catalog pages at
 `/api/internal/processing-graphs/revision-summaries` without definition documents.
 No schema, index, protocol, mutation or authority change.
 

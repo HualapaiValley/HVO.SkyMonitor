@@ -14,24 +14,28 @@ internal sealed record CameraProposalDerivedStatus(string Status, string Basis);
 /// <summary>
 /// One retained proposal with its persisted lifecycle summary. <see cref="TerminalFact"/> is the single stored
 /// Accepted, Rejected, Expired or Superseded fact; <see cref="LatestFact"/> is the most recently recorded fact of any
-/// kind. Every fact keeps its own source, occurrence and recorded UTC and reason; heartbeat is not consulted.
+/// kind; <see cref="LatestLifecycleFact"/> is the most recently recorded Activated or RolledBack fact, which the
+/// delivery service orders monotonically. Every fact keeps its own source, occurrence and recorded UTC and reason;
+/// heartbeat is not consulted.
 /// </summary>
 internal sealed record CameraProcessingGraphProposalSummary(
     ProcessingGraphDeliveryProposalView Proposal,
     ProcessingGraphDeliveryFactView? TerminalFact,
     ProcessingGraphDeliveryFactView? LatestFact,
-    bool HasActivatedFact,
-    bool HasRolledBackFact,
+    ProcessingGraphDeliveryFactView? LatestLifecycleFact,
     CameraProposalDerivedStatus? DerivedStatus);
 
 internal sealed partial class CameraOperationsReadService
 {
     internal const string DerivedStagedStatus = "Staged";
-    internal const string DerivedStagedBasis = "derived:accepted-fact-without-activated-or-rolled-back-fact";
+    internal const string DerivedStagedBasis =
+        "derived:accepted-fact-with-no-lifecycle-fact-or-latest-lifecycle-fact-rolled-back";
 
     /// <summary>
     /// Proposals issued to every retained installation of the camera, newest first, through one bounded seek of
-    /// (RegistrationId, LogicalCameraInstallationId, IssuedAtUtc, Id) per installation.
+    /// (RegistrationId, LogicalCameraInstallationId, IssuedAtUtc, Id) per installation. The page's facts are then
+    /// read in one query restricted to those proposals; a correlated per-proposal TOP is avoided deliberately,
+    /// because EF decorrelates it into ROW_NUMBER over every stored fact.
     /// </summary>
     public async Task<CameraOperationsPage<CameraProcessingGraphProposalSummary>> ListProposalsAsync(
         ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, int take, string? cursor,
@@ -42,65 +46,64 @@ internal sealed partial class CameraOperationsReadService
         if (owner is null || !await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
             return new([], null);
         var position = Decode(cursor, owner, observatoryId, cameraId, "proposals", Guid.Empty);
-        var facts = db.CentralProcessingGraphDeliveryFacts.AsNoTracking();
         var installations = await InstallationKeysAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false);
         var history = ProposalHistory(db, installations, position?.Time, position?.Id, take + 1);
         if (history is null) return new([], null);
-        var rows = await history
-            .Select(proposal => new
-            {
-                Proposal = new ProcessingGraphDeliveryProposalView(
-                    proposal.Id, proposal.AssignmentId, proposal.RevisionId, proposal.RegistrationId,
-                    proposal.LogicalCameraInstallationId, proposal.InstallationPublicId,
-                    proposal.ExpectedActiveLocalRevisionId, proposal.CapabilitySnapshotSha256,
-                    proposal.IssuedAtUtc, proposal.ExpiresAtUtc),
-                // The filtered unique index admits at most one terminal fact per proposal.
-                TerminalFact = facts
-                    .Where(fact => fact.ProposalId == proposal.Id &&
-                        (fact.Kind == nameof(ProcessingGraphDeliveryFactKind.Accepted) ||
-                         fact.Kind == nameof(ProcessingGraphDeliveryFactKind.Rejected) ||
-                         fact.Kind == nameof(ProcessingGraphDeliveryFactKind.Expired) ||
-                         fact.Kind == nameof(ProcessingGraphDeliveryFactKind.Superseded)))
-                    .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id)
-                    .Select(fact => new ProcessingGraphDeliveryFactView(
-                        fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
-                        fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
-                        fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256))
-                    .FirstOrDefault(),
-                LatestFact = facts
-                    .Where(fact => fact.ProposalId == proposal.Id)
-                    .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id)
-                    .Select(fact => new ProcessingGraphDeliveryFactView(
-                        fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
-                        fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
-                        fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256))
-                    .FirstOrDefault(),
-                HasActivatedFact = facts.Any(fact => fact.ProposalId == proposal.Id &&
-                    fact.Kind == nameof(ProcessingGraphDeliveryFactKind.Activated)),
-                HasRolledBackFact = facts.Any(fact => fact.ProposalId == proposal.Id &&
-                    fact.Kind == nameof(ProcessingGraphDeliveryFactKind.RolledBack))
-            })
+        var proposals = await history
+            .Select(proposal => new ProcessingGraphDeliveryProposalView(
+                proposal.Id, proposal.AssignmentId, proposal.RevisionId, proposal.RegistrationId,
+                proposal.LogicalCameraInstallationId, proposal.InstallationPublicId,
+                proposal.ExpectedActiveLocalRevisionId, proposal.CapabilitySnapshotSha256,
+                proposal.IssuedAtUtc, proposal.ExpiresAtUtc))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var more = Trim(proposals, take);
+        var facts = proposals.Count == 0
+            ? []
+            : await PageFacts(db, proposals.Select(proposal => proposal.Id).ToList())
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
         if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
             return new([], null);
-        var more = Trim(rows, take);
-        var items = rows.Select(row => new CameraProcessingGraphProposalSummary(
-            row.Proposal,
-            row.TerminalFact,
-            row.LatestFact,
-            row.HasActivatedFact,
-            row.HasRolledBackFact,
-            // Staged is a CameraAgent poll disposition, never a stored fact: accepted, then neither activated nor
-            // rolled back. Label the derivation rather than presenting it as delivery history.
-            row.TerminalFact?.Kind == nameof(ProcessingGraphDeliveryFactKind.Accepted) &&
-                !row.HasActivatedFact && !row.HasRolledBackFact
-                ? new CameraProposalDerivedStatus(DerivedStagedStatus, DerivedStagedBasis)
-                : null)).ToArray();
+        // Rows arrive newest first per proposal, so the first match of each kind is the latest stored one.
+        var byProposal = facts.ToLookup(fact => fact.ProposalId);
+        var items = proposals.Select(proposal =>
+        {
+            var proposalFacts = byProposal[proposal.Id].ToArray();
+            var terminal = proposalFacts.FirstOrDefault(fact => IsTerminal(fact.Kind));
+            var lifecycle = proposalFacts.FirstOrDefault(fact =>
+                fact.Kind is nameof(ProcessingGraphDeliveryFactKind.Activated) or
+                    nameof(ProcessingGraphDeliveryFactKind.RolledBack));
+            // Staged is a CameraAgent poll disposition, never a stored fact: an accepted revision that is not the
+            // device's active one, i.e. never activated or rolled back since. Label the derivation explicitly.
+            var staged = terminal?.Kind == nameof(ProcessingGraphDeliveryFactKind.Accepted) &&
+                lifecycle?.Kind is null or nameof(ProcessingGraphDeliveryFactKind.RolledBack);
+            return new CameraProcessingGraphProposalSummary(
+                proposal, terminal, proposalFacts.FirstOrDefault(), lifecycle,
+                staged ? new CameraProposalDerivedStatus(DerivedStagedStatus, DerivedStagedBasis) : null);
+        }).ToArray();
         return new(items, more
             ? Encode(new(owner, observatoryId, cameraId, "proposals", Guid.Empty, "",
-                rows[^1].Proposal.IssuedAtUtc, rows[^1].Proposal.Id))
+                proposals[^1].IssuedAtUtc, proposals[^1].Id))
             : null);
     }
+
+    /// <summary>
+    /// Every stored fact of the given proposals, newest recorded first within each proposal, through the existing
+    /// (ProposalId, RecordedAtUtc, Id) index. Rows read are the page's own facts, never the whole fact history.
+    /// </summary>
+    internal static IQueryable<ProcessingGraphDeliveryFactView> PageFacts(ApplicationDbContext db, List<Guid> proposalIds)
+        => db.CentralProcessingGraphDeliveryFacts.AsNoTracking()
+            .Where(fact => proposalIds.Contains(fact.ProposalId))
+            .OrderBy(fact => fact.ProposalId)
+            .ThenByDescending(fact => fact.RecordedAtUtc)
+            .ThenByDescending(fact => fact.Id)
+            .Select(fact => new ProcessingGraphDeliveryFactView(
+                fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
+                fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
+                fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256));
+
+    private static bool IsTerminal(string kind)
+        => kind is nameof(ProcessingGraphDeliveryFactKind.Accepted) or nameof(ProcessingGraphDeliveryFactKind.Rejected) or
+            nameof(ProcessingGraphDeliveryFactKind.Expired) or nameof(ProcessingGraphDeliveryFactKind.Superseded);
 
     /// <summary>
     /// Every persisted fact of one retained proposal of the camera, newest recorded first, continuing through the

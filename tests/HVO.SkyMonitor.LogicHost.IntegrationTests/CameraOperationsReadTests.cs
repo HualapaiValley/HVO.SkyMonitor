@@ -49,7 +49,9 @@ public sealed class CameraOperationsReadTests
         using (var job = await viewer.GetAsync(seed.Path($"jobs/{seed.InspectedJob:D}?take=1")).ConfigureAwait(false))
         {
             var payload = await job.Content.ReadAsStringAsync().ConfigureAwait(false);
-            payload.Should().NotContain("Lease").And.NotContain(seed.LeaseToken.ToString("D"));
+            // Attempt history keeps its lease-acquired time, as the capture trace does; credentials and ownership never appear.
+            payload.Should().NotContain(seed.LeaseToken.ToString("D")).And.NotContain("LeaseToken").And.NotContain("LeaseOwner")
+                .And.NotContain("LeaseExpires").And.NotContain("lease-owner");
             using var json = JsonDocument.Parse(payload);
             json.RootElement.GetProperty("Attempts").GetProperty("Items").GetArrayLength().Should().Be(1);
             json.RootElement.GetProperty("Attempts").GetProperty("NextCursor").GetString().Should().NotBeNullOrEmpty();
@@ -229,6 +231,7 @@ public sealed class CameraOperationsReadPerformanceTests
             ["event-associations"] = (async () => await service.ListEventAssociationsAsync(principal, seed.Observatory, seed.Camera, 50, null).ConfigureAwait(false), 6, 4_000)
         };
         var evidence = new List<object>();
+        var violations = new List<string>();
         foreach (var (name, (run, maxCommands, maxRowsRead)) in requests)
         {
             capture.Enabled = false;
@@ -248,9 +251,10 @@ public sealed class CameraOperationsReadPerformanceTests
             capture.Enabled = false;
             var plans = new List<Plan>();
             foreach (var command in capture.Commands) plans.Add(await ExplainAsync(connectionString, command).ConfigureAwait(false));
-            capture.Commands.Count.Should().BeLessThanOrEqualTo(maxCommands, name);
-            plans.Sum(plan => plan.ActualRowsRead).Should().BeLessThanOrEqualTo(maxRowsRead, name);
-            bytes.Should().BeLessThan(256 * 1024, name);
+            var rowsRead = plans.Sum(plan => plan.ActualRowsRead);
+            if (capture.Commands.Count > maxCommands) violations.Add($"{name}: {capture.Commands.Count} SQL commands > {maxCommands}");
+            if (rowsRead > maxRowsRead) violations.Add($"{name}: {rowsRead} rows read > {maxRowsRead}");
+            if (bytes >= 256 * 1024) violations.Add($"{name}: {bytes} response bytes");
             times.Sort();
             evidence.Add(new
             {
@@ -279,6 +283,7 @@ public sealed class CameraOperationsReadPerformanceTests
             Browser = "N/A: backend prerequisite, no UI changes",
             Results = evidence
         }, EvidenceJson)).ConfigureAwait(false);
+        violations.Should().BeEmpty();
     }
 
     private static async Task<Plan> ExplainAsync(string connectionString, Command command)
@@ -445,7 +450,8 @@ internal sealed class CameraOperationsSeed
 
         var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(revision.DefinitionJson)).Definition!;
         var plan = ProcessingGraphCompiler.Compile(parsed, new(ProcessingGraphHosts.LogicHost, [])).Plan!;
-        var anchors = new List<CentralArtifact>();
+        // The store requires an execution's anchor capture to belong to the execution's own installation.
+        var anchors = new Dictionary<Guid, CentralArtifact>();
         foreach (var (target, targetInstallation, count) in unrelatedVolume
             ? new[] { (camera, (retired, current), captures), (other, (otherInstallation, otherInstallation), captures) }
             : new[] { (camera, (retired, current), captures) })
@@ -458,7 +464,7 @@ internal sealed class CameraOperationsSeed
                 var frame = NewFrame(installation, registration, now.AddMinutes(-(index / 2)));
                 var raw = NewArtifact(frame, registration);
                 db.AddRange(frame, raw);
-                if (target == camera && index == 0) anchors.Add(raw);
+                anchors.TryAdd(installation.Id, raw);
                 if (index % jobEvery == 0)
                 {
                     for (var jobIndex = 0; jobIndex < (unrelatedVolume ? 3 : 1); jobIndex++)
@@ -505,17 +511,14 @@ internal sealed class CameraOperationsSeed
             }
         }
         await SaveAndClearAsync(db).ConfigureAwait(false);
-        var anchor = anchors.Single();
         foreach (var (target, installations) in unrelatedVolume
             ? new[] { (camera, new[] { retired, current }), (other, new[] { otherInstallation }) }
             : new[] { (camera, new[] { retired, current }) })
         {
-            var anchorArtifact = target == camera
-                ? anchor
-                : await db.CentralArtifacts.AsNoTracking().FirstAsync(item => item.Frame!.LogicalCameraInstallationId == otherInstallation.Id).ConfigureAwait(false);
             for (var index = 0; index < executions; index++)
             {
                 var installation = installations[index % installations.Length];
+                var anchorArtifact = anchors[installation.Id];
                 var execution = new CentralProcessingGraphExecution
                 {
                     ExecutionClass = CentralProcessingGraphExecutionClass.Replay,
@@ -550,7 +553,7 @@ internal sealed class CameraOperationsSeed
                         seed.InspectedExecution = execution.Id;
                         for (var ordinal = 0; ordinal < 3; ordinal++)
                         {
-                            var node = NewJob(anchor, execution.CreatedAtUtc);
+                            var node = NewJob(anchorArtifact, execution.CreatedAtUtc);
                             node.GraphExecutionId = execution.Id;
                             node.GraphNodeId = $"node-{ordinal}";
                             node.GraphNodeOrdinal = ordinal;
