@@ -249,6 +249,51 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    [DataRow("response")]
+    [DataRow("family")]
+    [DataRow("capture")]
+    public async Task PrepareAsync_RejectsAResponseThatDoesNotMatchTheFamilyAndEveryCapture(string mismatch)
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFamilyFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var family = fixture.Family(fixture.Member(LowGain), fixture.Member(HighGain));
+            var response = VirtualResponse();
+            var low = fixture.Lights[LowGain];
+            var high = fixture.Lights[HighGain];
+            Assert.AreEqual(response.Descriptor.SensorProfileSha256, family.SensorProfileSha256);
+            Assert.AreEqual(response.Descriptor.SensorProfileSha256, high.Profiles.Sensor.Sha256);
+            switch (mismatch)
+            {
+                case "response":
+                    response = VirtualResponse(VirtualResponseSensor() with { Name = "another-sensor" });
+                    break;
+                case "family":
+                    family = family with { SensorProfileSha256 = new string('A', 64) };
+                    break;
+                case "capture":
+                    // Keep one eligible input so silently excluding the other sensor cannot pass this regression.
+                    low = low with { Profiles = low.Profiles with { Sensor = low.Profiles.Sensor with { Sha256 = new string('B', 64) } } };
+                    break;
+            }
+            ProcessingFrozenRawInput[] inputs = [FrozenInput(high, 0), FrozenInput(low, -1)];
+
+            var failure = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
+                await NormalizationPlanFreezer.PrepareAsync(
+                    store, family, GainNormalizationPolicyV1.Approved, response, inputs, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(CalibrationFamilyReasonCodes.IdentityMismatch, failure.ReasonCode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task PrepareAsync_FailsWhenNoInputIsEligibleOrTheRatioBoundIsExceeded()
     {
         var root = CreateRoot();
@@ -350,10 +395,16 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             "raw/frame.bin");
 
     /// <summary>A pinned 16-bit simulation response for the family fixture's virtual sensor and readout.</summary>
-    private static GainResponse VirtualResponse()
+    private static GainResponse VirtualResponse(SensorProfile? sensor = null)
     {
-        var configuration = CreateVirtualConfiguration();
-        var sensor = configuration.Rig.Sensor with
+        var resolution = GainResponseResolver.Resolve(
+            GainResponseSourceKind.VirtualConfiguredResponse, sensor ?? VirtualResponseSensor(), CreateVirtualConfiguration().Rig.Readout);
+        Assert.IsTrue(resolution.IsAvailable, resolution.ReasonCode);
+        return resolution.Response!;
+    }
+
+    private static SensorProfile VirtualResponseSensor()
+        => CreateVirtualConfiguration().Rig.Sensor with
         {
             SimulationResponse = new ConfiguredSensorResponseProfile(
                 "virtual-calibration-test-response-v1",
@@ -368,11 +419,6 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 "ZWO 0.1 dB",
                 "virtual calibration test response")
         };
-        var resolution = GainResponseResolver.Resolve(
-            GainResponseSourceKind.VirtualConfiguredResponse, sensor, configuration.Rig.Readout);
-        Assert.IsTrue(resolution.IsAvailable, resolution.ReasonCode);
-        return resolution.Response!;
-    }
 
     /// <summary>
     /// A published synthetic-references bundle, whose master offsets and light-exposure ranges are null, for a light

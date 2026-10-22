@@ -1952,9 +1952,10 @@ public sealed partial class SqliteCalibrationLibraryStore(
 
     private async Task ValidateEvidenceCachedAsync(
         CalibrationLibraryBundleSnapshot bundle,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceValidation = false)
     {
-        if (_validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
+        if (!forceValidation && _validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
             Now().ToUnixTimeMilliseconds() - cached.ValidatedUnixMs < TimeSpan.FromMinutes(10).TotalMilliseconds &&
             cached.Files.All(FingerprintMatches))
         {

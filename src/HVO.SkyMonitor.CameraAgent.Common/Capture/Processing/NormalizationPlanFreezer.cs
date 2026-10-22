@@ -45,12 +45,13 @@ internal sealed class NormalizationPlanFreezer(
             .ConfigureAwait(false);
         var plan = await PrepareAsync(calibration, family, policy, response, inputs, cancellationToken)
             .ConfigureAwait(false);
-        return await processing.FreezeNormalizationPlanAsync(execution, nodeId, plan, cancellationToken)
+        return await processing.FreezeNormalizationPlanAsync(calibration, execution, nodeId, plan, cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Builds the plan for frozen inputs in window order. An input is excluded, with its stable reason, when the family
+    /// Builds the plan for frozen inputs in window order. The response must identify the family and every capture's
+    /// sensor, or the window fails with an identity mismatch. An input is excluded, with its stable reason, when the family
     /// selects no checked masters for it, its gain has no coefficient, or its layout differs from the first selected
     /// input's or from the response's code mapping. The plan fails when no input remains or the remaining
     /// coefficients exceed the policy's ratio bound; choosing a window inside the bound is the caller's.
@@ -72,6 +73,15 @@ internal sealed class NormalizationPlanFreezer(
         {
             throw new ArgumentException(
                 $"Between 1 and {NormalizationPlanV1.MaximumInputs} frozen inputs are required.", nameof(inputs));
+        }
+        if (!string.Equals(response.Descriptor.SensorProfileSha256, family.SensorProfileSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NormalizationPlanException(CalibrationFamilyReasonCodes.IdentityMismatch);
+        }
+        if (inputs.Any(input => !string.Equals(
+                response.Descriptor.SensorProfileSha256, input.Descriptor.Profiles.Sensor.Sha256, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new NormalizationPlanException(CalibrationFamilyReasonCodes.IdentityMismatch);
         }
         var reference = GainNormalizationContract.ResolveReference(policy, response);
         if (reference.Coefficient is not { } referenceCoefficient)

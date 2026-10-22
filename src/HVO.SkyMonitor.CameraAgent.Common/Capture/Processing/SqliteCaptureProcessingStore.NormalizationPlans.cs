@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
@@ -71,10 +72,24 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// execution lease, as the live output window is frozen. The plan must describe exactly the node's frozen raw
     /// window, and every master it selects must still be the published library master it was selected as. Freezing is
     /// idempotent: the same plan returns the stored plan, and a different plan for the same node is a conflict, so a
-    /// retry never replaces the plan its first attempt froze. Serialization and every hash happen before the
-    /// transaction.
+    /// retry never replaces the plan its first attempt froze. After the transaction has been disposed, every master
+    /// and its bundle evidence are verified again, including on an idempotent return. Verification failure leaves
+    /// the frozen plan unchanged and fails the window. Serialization and all hashing stay outside the transaction.
     /// </summary>
     internal async ValueTask<FrozenNormalizationPlan> FreezeNormalizationPlanAsync(
+        SqliteCalibrationLibraryStore calibration,
+        ProcessingExecutionContext execution,
+        string nodeId,
+        NormalizationPlanV1 plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(calibration);
+        var frozen = await FreezeNormalizationPlanCoreAsync(execution, nodeId, plan, cancellationToken).ConfigureAwait(false);
+        await NormalizationPlanFreezer.ConfirmAsync(calibration, frozen.Plan, cancellationToken).ConfigureAwait(false);
+        return frozen;
+    }
+
+    private async ValueTask<FrozenNormalizationPlan> FreezeNormalizationPlanCoreAsync(
         ProcessingExecutionContext execution,
         string nodeId,
         NormalizationPlanV1 plan,
