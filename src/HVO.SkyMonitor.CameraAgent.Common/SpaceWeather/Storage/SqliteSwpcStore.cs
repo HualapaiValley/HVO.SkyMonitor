@@ -21,6 +21,11 @@ public sealed partial class SqliteSwpcStore : ISwpcStore
     private readonly ILogger<SqliteSwpcStore> _logger;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Dispose drains the gate so late calls observe owner disposal.")]
     private readonly SemaphoreSlim _gate = new(1, 1);
+    // Decoded rows reused across operations. They are read and replaced only under the gate, and are
+    // dropped whenever a transaction does not commit, so they never describe rows that were rolled back.
+    private readonly Dictionary<SwpcProduct, DecodedSnapshot> _decoded = [];
+    private readonly Dictionary<long, DecodedMessage> _messages = [];
+    private DecodedNotices? _notices;
     private PhysicalRoot? _root;
     private FileStream? _ownership;
     private bool _initialized;
@@ -64,13 +69,21 @@ public sealed partial class SqliteSwpcStore : ISwpcStore
         finally { _gate.Release(); }
     }
 
-    private static T InTransaction<T>(SqliteConnection db, DateTimeOffset? atUtc, Func<SqliteConnection, SqliteTransaction, T> action, CancellationToken ct)
+    private T InTransaction<T>(SqliteConnection db, DateTimeOffset? atUtc, Func<SqliteConnection, SqliteTransaction, T> action, CancellationToken ct)
     {
-        using var tx = db.BeginTransaction(deferred: false);
-        if (atUtc is { } time) Purge(db, tx, time);
-        ct.ThrowIfCancellationRequested();
-        var result = action(db, tx);
-        ct.ThrowIfCancellationRequested(); tx.Commit(); return result;
+        var committed = false;
+        try
+        {
+            using var tx = db.BeginTransaction(deferred: false);
+            if (atUtc is { } time) Purge(db, tx, time);
+            ct.ThrowIfCancellationRequested();
+            var result = action(db, tx);
+            ct.ThrowIfCancellationRequested(); tx.Commit(); committed = true; return result;
+        }
+        finally
+        {
+            if (!committed) { _decoded.Clear(); _messages.Clear(); _notices = null; }
+        }
     }
     private void AcquireRoot()
     {
@@ -112,6 +125,7 @@ public sealed partial class SqliteSwpcStore : ISwpcStore
     { if (value.Offset != TimeSpan.Zero) throw new ArgumentException("Storage timestamps must be UTC."); }
     internal static string Json<T>(T value) => JsonSerializer.Serialize(value);
     internal static T Parse<T>(string value) => JsonSerializer.Deserialize<T>(value) ?? throw new InvalidDataException("Stored space-weather data is null.");
+    internal static T Parse<T>(ReadOnlySpan<byte> value) => JsonSerializer.Deserialize<T>(value) ?? throw new InvalidDataException("Stored space-weather data is null.");
     private static long Ticks(DateTimeOffset value) => value.UtcTicks;
     private static DateTimeOffset Time(long ticks) => new(ticks, TimeSpan.Zero);
     internal static void Bump(SqliteConnection db, SqliteTransaction tx) => Exec(db, tx, "UPDATE swpc_meta SET revision=revision+1 WHERE id=1;");
