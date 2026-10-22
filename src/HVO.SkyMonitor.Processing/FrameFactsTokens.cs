@@ -4,7 +4,8 @@ namespace HVO.SkyMonitor.Processing;
 
 public enum FrameFactsValueKind
 {
-    Text = 1,
+    None,
+    Text,
     WholeNumber,
     Number,
     Timestamp
@@ -73,7 +74,7 @@ public readonly record struct FrameFactsFact
 
     public static FrameFactsFact Available(FrameFactsValue value)
     {
-        if (!Enum.IsDefined(value.Kind))
+        if (value.Kind == FrameFactsValueKind.None || !Enum.IsDefined(value.Kind))
         {
             throw new ArgumentException("An initialized typed value is required.", nameof(value));
         }
