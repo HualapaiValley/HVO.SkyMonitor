@@ -432,14 +432,20 @@ current head equals the latest reviewed or waived head.
 
 This is the default route while the repository allows auto-merge
 (`allow_auto_merge` is true). It replaces the finalization lock below, because
-GitHub serializes merges itself. Branch protection requires:
+GitHub serializes merges itself. On `development/v1`, branch protection
+requires:
 - an up-to-date head;
 - green required checks;
 - resolved conversations;
 - the `hvo/reviewed-head` commit status on the exact head being merged.
 
 That status is the merge gate. It is published only on a head whose review
-converged, so no other commit can merge, whoever pushes it.
+converged, so on `development/v1` no other commit can merge, whoever pushes it.
+
+Other targets don't require the status today. `main` requires only
+`Required CI`, so the status adds no server-side guarantee there. PRs into
+`main` and `release/**` stay owner-approved: promotion and release PRs merge
+only on the owner's decision, after their classifier-selected CI.
 
 The operator's tooling (`hvo finalize`) performs steps 2–5 in one command. By
 hand:
@@ -624,7 +630,11 @@ protected CI, or merge.
 5. Mark the PR ready only now. This transition starts the target branch's
    authoritative protected CI profile: Development v1 checks for v1 PRs,
    classifier-selected full CI for main/release PRs.
-6. Hold the lock through CI and merge.
+6. Hold the lock through CI and merge. Before merging into a target that
+   requires `hvo/reviewed-head` (`development/v1`), publish it on the exact
+   reviewed head once fresh required checks pass, as in the auto-merge route's
+   step 4. The operator's merge decision is unchanged: publishing the gate
+   doesn't merge anything.
 
 If the target branch advances during CI, cancel the stale run when possible,
 return the PR to draft, release the lock, synchronize and review again, then
@@ -640,6 +650,10 @@ retain it for one bounded rerun. Releasing the lock means removing the
 - A product correction returns the PR to draft, runs affected local gates, and
   receives correction review before another ready transition. Do not repeat
   unchanged successful local gates.
+- On a target that requires it (`development/v1`), publish `hvo/reviewed-head`
+  on exactly that head before merging, whichever route is used. Never publish
+  it on a head that review didn't converge on, or before fresh required checks
+  have passed.
 - Merge only when the current head equals the reviewed or precisely waived head,
   the target branch is still current, the PR is mergeable, required checks are
   green for that exact head, and actionable conversations are resolved.

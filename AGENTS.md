@@ -243,7 +243,9 @@ must not redefine its policy inconsistently.
 - Finalize through GitHub auto-merge while the repository allows it. Once review
   has converged, mark the PR ready. Once the required checks pass on the
   reviewed head, publish the `hvo/reviewed-head` commit status on exactly that
-  head. Branch protection requires that status, so it is the merge gate. Then
+  head. `development/v1`'s branch protection requires that status, so it is the
+  merge gate there; `main` doesn't require it, and promotion PRs stay
+  owner-approved. Then
   merge, or enable auto-merge (merge commit) pinned to that head. Branch
   protection also enforces green required checks, an up-to-date head and
   resolved conversations. The PR lifecycle skill gives the steps and commands.
