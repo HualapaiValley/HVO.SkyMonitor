@@ -133,6 +133,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Stopping central graph recovery no longer reports an aborted SQL command as a database outage; faults while recovery is running still degrade health. (#1540)
+
 - Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
 
 - Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)

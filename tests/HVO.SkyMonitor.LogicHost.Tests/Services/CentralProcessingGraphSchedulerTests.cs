@@ -1332,6 +1332,44 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ConvergeBatchDoesNotReportShutdownAsDependencyFailure(bool stopping)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var failure = new ConvergenceSaveFailure(cancellation, stopping);
+        await using var context = CreateContext(failure);
+        var now = DateTimeOffset.UtcNow;
+        var source = CreateArtifact();
+        var execution = CreateExecution(source, now, expectedNodeCount: 1, expectedDependencyCount: 1);
+        var sourceRow = AddSource(execution, source, now);
+        var job = AddJob(execution, source, 0, ProcessingGraphNodeFailurePolicy.Required, now);
+        AddDependency(execution, sourceRow, job, now);
+        context.AddRange(source.Frame!, source, execution);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        await SealAsync(context, execution, now).ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry);
+        failure.Armed = true;
+
+        if (stopping)
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(() => scheduler.ConvergeBatchAsync(
+                now.AddSeconds(1), cancellation.Token)).ConfigureAwait(false);
+        }
+        else
+        {
+            await scheduler.ConvergeBatchAsync(now.AddSeconds(1), cancellation.Token).ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(failure.Triggered, "the provider fault must occur inside convergence");
+        Assert.AreEqual(!stopping,
+            telemetry.HasRecentDependencyFailure(now.AddSeconds(1), TimeSpan.FromMinutes(1)),
+            "a live database fault degrades health; a command aborted during shutdown does not");
+    }
+
+    [TestMethod]
     public async Task ConvergeBatchRecordsDependencyFailureOnlyForDatabaseFaults()
     {
         await using var context = CreateContext();
@@ -2838,11 +2876,39 @@ public sealed class CentralProcessingGraphSchedulerTests
             environmentalQuery);
     }
 
-    private static ApplicationDbContext CreateContext()
+    private static ApplicationDbContext CreateContext(params IInterceptor[] interceptors)
         => new(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .ConfigureWarnings(warnings => warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning))
+            .AddInterceptors(interceptors)
             .Options);
+
+    private sealed class ConvergenceSaveFailure(CancellationTokenSource cancellation, bool stopping)
+        : SaveChangesInterceptor
+    {
+        public bool Armed { get; set; }
+        public bool Triggered { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!Armed)
+            {
+                return ValueTask.FromResult(result);
+            }
+            Armed = false;
+            Triggered = true;
+            if (stopping)
+            {
+                cancellation.Cancel();
+            }
+            // SQL Server can surface an aborted command through EF's wrapped provider-fault path,
+            // rather than OperationCanceledException. Exercise both sides of the cancellation guard.
+            throw new InvalidOperationException("provider command failed", new DbUpdateException("aborted command"));
+        }
+    }
 
     private static ProcessingGraphDefinition CreatePreviewGraph(bool withWindow = false)
     {

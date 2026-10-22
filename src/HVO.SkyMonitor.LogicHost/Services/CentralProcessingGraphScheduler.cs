@@ -398,7 +398,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 // Only real database faults count as dependency failures (and degrade worker health). A graph whose
                 // frozen state cannot converge is recorded through the convergence "failed" outcome and the error
                 // log, not as a database outage.
-                if (IsDatabaseFailure(exception))
+                // SqlClient can wrap a shutdown-aborted command as a provider fault instead of cancellation.
+                // Keep logging/rotation, but do not publish a database outage after cancellation was requested.
+                if (!cancellationToken.IsCancellationRequested && IsDatabaseFailure(exception))
                 {
                     telemetry.RecordDependencyFailure("database", now);
                 }
