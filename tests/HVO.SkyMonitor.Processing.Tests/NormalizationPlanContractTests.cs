@@ -50,7 +50,8 @@ public sealed class NormalizationPlanContractTests
             Asi174Coefficient(40).ElectronsPerAduE12,
             parsed.Value.Inputs[1].Coefficient!.ElectronsPerAduE12);
         StringAssert.Contains(
-            Encoding.UTF8.GetString(bytes), "\"algorithmVersion\":\"linear16-gain-normalized-mean-v1\"", StringComparison.Ordinal);
+            Encoding.UTF8.GetString(bytes), "\"algorithmVersion\":\"linear16-gain-normalized-mean-v2\"", StringComparison.Ordinal);
+        StringAssert.Contains(Encoding.UTF8.GetString(bytes), "\"outputScale\":16", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -64,6 +65,10 @@ public sealed class NormalizationPlanContractTests
             text.Replace(NormalizationPlanV1.CurrentSchemaVersion, "hvo-normalization-plan-v2", StringComparison.Ordinal),
             NormalizationPlanReasonCodes.UnsupportedSchema);
         AssertParseFails(text[..^1], NormalizationPlanReasonCodes.InvalidContract);
+        // A plan frozen before the output scale was a kernel field cannot be read as a scaled plan.
+        AssertParseFails(
+            text.Replace("\"outputScale\":16,", string.Empty, StringComparison.Ordinal),
+            NormalizationPlanReasonCodes.InvalidContract);
         AssertParseFails("[]", NormalizationPlanReasonCodes.InvalidContract);
         AssertParseFails(
             text.Replace("\"disposition\":\"excluded\"", "\"disposition\":\"skipped\"", StringComparison.Ordinal),
@@ -90,6 +95,8 @@ public sealed class NormalizationPlanContractTests
             ("inputLayout", plan with { InputLayout = plan.InputLayout with { Readout = null } }),
             ("kernel", plan with { Kernel = plan.Kernel with { SaturationCode = ushort.MaxValue } }),
             ("kernel", plan with { Kernel = plan.Kernel with { Rounding = "away-from-zero" } }),
+            ("kernel", plan with { Kernel = plan.Kernel with { OutputScale = 1 } }),
+            ("kernel", plan with { Kernel = plan.Kernel with { AlgorithmVersion = "linear16-gain-normalized-mean-v1" } }),
             ("inputs", plan with { Inputs = [] }),
             ("inputs", plan with { Inputs = [.. Enumerable.Range(0, 129).Select(ordinal => Selected(ordinal, 0))] }),
             ("inputs.ordinal", plan with { Inputs = [selected with { Ordinal = 1 }] }),
@@ -165,7 +172,7 @@ public sealed class NormalizationPlanContractTests
             }).SaturationCode);
     }
 
-    private const string PinnedIdentitySha256 = "4C2390D97BBB3E7D1025D56CE9E868E74959F5198F3092B280835A3FF5118B4E";
+    private const string PinnedIdentitySha256 = "CBD6B8DC0F1DC12B3D9F2ED3C28B391B40246F532E559933C3C2026C9F50D326";
 
     private static NormalizationPlanV1 Plan()
     {

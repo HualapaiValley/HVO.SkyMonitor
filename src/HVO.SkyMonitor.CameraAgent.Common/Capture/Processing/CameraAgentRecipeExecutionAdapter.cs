@@ -284,8 +284,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
             rigProfile,
             HashText($"calibration:{config.Rig.Optics.CalibrationVersion}"),
             HashText("mask:none"),
-            CaptureContractJson.ComputeCanonicalJsonSha256(
-                JsonSerializer.SerializeToElement(config.Rig.Sensor)),
+            SensorProfileIdentity.ComputeSha256(config.Rig.Sensor),
             setpoint,
             CaptureContractJson.ComputeCanonicalJsonSha256(processing),
             config.DeploymentLocation?.ToProvenance().IdentitySha256);
