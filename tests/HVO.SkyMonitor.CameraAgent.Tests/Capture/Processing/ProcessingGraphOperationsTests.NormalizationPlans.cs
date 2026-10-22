@@ -336,8 +336,15 @@ public sealed partial class ProcessingGraphOperationsTests
                 GainNormalizationPreparation.None,
                 await preparer.PrepareAsync(fixture.NodeContext(null), CancellationToken.None).ConfigureAwait(false));
 
-            // With no frozen plan and no active family, the node is skipped with the stable reason and nothing is frozen.
-            var skipped = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+            // Replay never synthesizes a missing archived plan from live configuration.
+            var missingPlan = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false)).Outcome!;
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, missingPlan.Status);
+            Assert.AreEqual(ProcessingReasonCodes.MissingNormalizationPlan, missingPlan.ReasonCode);
+
+            // A live execution with no active family is skipped and freezes nothing.
+            var skipped = (await preparer.PrepareAsync(
+                fixture.NodeContext(fixture.Context with { ExecutionClass = ProcessingGraphExecutionClass.Live }), CancellationToken.None)
                 .ConfigureAwait(false)).Outcome!;
             Assert.AreEqual(ProcessingOutcomeStatus.Skipped, skipped.Status);
             Assert.AreEqual(ActiveCalibrationFamilySelector.NoActiveFamily, skipped.ReasonCode);
