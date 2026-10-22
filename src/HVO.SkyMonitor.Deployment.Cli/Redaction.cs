@@ -14,11 +14,20 @@ internal static class Redaction
 
     private const string KeyWords = CredentialWord + "|authorization|bearer";
 
+    private const string SecondKeyWords = SecondCredentialWord + "|authorization|bearer";
+
     // Space-only assignments accept explicit snake/kebab compounds, but not arbitrary words ending in a credential word.
     private const string SpacedKey = "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]\\x9C?" + CredentialWord + "|\\b" + CredentialWord + ")";
 
     private const string SecondSpacedKey =
         "(?:\\b[a-z][a-z0-9]*(?:[_-][a-z][a-z0-9]*)*[_-]\\x9C?" + SecondCredentialWord + "|\\b" + SecondCredentialWord + ")";
+
+    // The words of a configuration key may also be joined by a double underscore, as in ObjectStorage__SecretKey (#1523).
+    private const string ConfigurationSpacedKey = "\\b[a-z][a-z0-9]*(?:(?:__?|-)[a-z][a-z0-9]*)*(?:__?|-)\\x9C?" + SecondCredentialWord;
+
+    // An outer assignment and the inner keys it can consume before their value is seen (#1499).
+    private const string NestedKeys =
+        $"""(?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{CredentialWord}["']?\s*[=:]\s*|\x9C*{SpacedKey}\s+)+""";
 
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
@@ -29,6 +38,9 @@ internal static class Redaction
     // after a removed string still starts a word (#1491). It is a C1 control, so it is removed with the others afterwards.
     private const char Boundary = '\u009C';
 
+    // The origin of a character a pass wrote, such as a marker's, rather than kept from the text redaction started from.
+    private const int Written = -1;
+
     private static readonly System.Text.RegularExpressions.Regex UserInformation = new(
         "(?<=://)[^/@\\s]+@", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
@@ -38,9 +50,19 @@ internal static class Redaction
 
     private static readonly System.Text.RegularExpressions.Regex KeyWord = LinearPattern($"(?i){KeyWords}");
 
+    private static readonly System.Text.RegularExpressions.Regex SecondKeyWord = LinearPattern($"(?i){SecondKeyWords}");
+
     // Anchored where decoration ends, so it reads only the few characters of a key there.
     private static readonly System.Text.RegularExpressions.Regex KeyStart = new(
         $"\\G(?i:{KeyWords})", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    // The #1523 passes also start a word at a key only the second passes find, so SecretKey after decoration is a key.
+    private static readonly System.Text.RegularExpressions.Regex SecondKeyStart = new(
+        $"\\G(?i:{SecondKeyWords})", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    // A quoted value that ends in a key and its separator, as "password=" does, leaves that key's value after it (#1523).
+    private static readonly System.Text.RegularExpressions.Regex DanglingKey = LinearPattern(
+        $"""(?i)(?:{SecondKeyWords})["']?\s*[=:]\s*["']?\z""");
 
     // No pattern starts with an optional quote. With one, the nonbacktracking engine could skip the first of two credentials
     // when a quote came earlier in the text (#1491). A quote before a key is not part of the match, so it is kept as text.
@@ -66,7 +88,12 @@ internal static class Redaction
     // final value hidden before the ordinary passes replace any keys. A removed-decoration boundary can sit inside a key.
     // The repeated prefix and value match are nonbacktracking.
     private static readonly System.Text.RegularExpressions.Regex NestedValue = LinearPattern(
-        $"""(?i)((?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{CredentialWord}["']?\s*[=:]\s*|\x9C*{SpacedKey}\s+)+)[^"',;\s\x7D]+""");
+        $"""(?i)({NestedKeys})[^"',;\s\x7D]+""");
+
+    // The same chain before a quoted value, which the first quoted pass does not find after a tab, a no-break space or a NEL
+    // (#1523). Its value is hidden as a quoted value is, with the text joined to it.
+    private static readonly System.Text.RegularExpressions.Regex NestedQuotedCredential = LinearPattern(
+        $"""(?i)({NestedKeys})["']""");
 
     // The second passes read the first passes' output, so they can only hide more of it (#1509). A quoted value may also follow
     // its key after whitespace alone, which may be a tab, a no-break space or a NEL rather than a plain space.
@@ -79,6 +106,9 @@ internal static class Redaction
     private static readonly System.Text.RegularExpressions.Regex SecondSpacedValue = LinearPattern(
         "(?i)(" + SecondSpacedKey + "\\s+)[^ ,;]+");
 
+    private static readonly System.Text.RegularExpressions.Regex ConfigurationSpacedValue = LinearPattern(
+        "(?i)(" + ConfigurationSpacedKey + "\\s+)[^ ,;]+");
+
     // ESC and the C1 controls, each of which may start a control sequence.
     private static readonly System.Buffers.SearchValues<char> Introducers = System.Buffers.SearchValues.Create(
         "\u001B\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008A\u008B\u008C\u008D\u008E\u008F" +
@@ -88,8 +118,9 @@ internal static class Redaction
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [QuotedCredential, KeyWord, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue, UnquotedValue, SpacedValue, NestedValue,
-            SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue];
+        [QuotedCredential, KeyWord, SecondKeyWord, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
+            UnquotedValue, SpacedValue, NestedValue, NestedQuotedCredential, SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue,
+            ConfigurationSpacedValue];
 
     public static string SafeDiagnostic(string value)
     {
@@ -111,26 +142,109 @@ internal static class Redaction
         // A URL's user information is also found as the text stood, so punctuation inside removed decoration still counts.
         // Without a control character the two texts are the same, and without :// neither holds a URL.
         if (text.AsSpan().ContainsAny(Introducers)) text = WithoutUserInformation(text);
-        text = WithoutUserInformation(WithoutDecoration(text));
+        // Each pass reads what the passes before it left, so a pass that hides more can make a later one hide less: a value
+        // that now reaches a later key hides that key, and the key's own value is then shown. The #1523 passes therefore read
+        // the text apart from the merge base's, and a character either hides is hidden, so no value the merge base hid is shown.
+        var source = Tracked.Of(text);
+        return WithoutControls(WithHidden(Passes(source, extended: false), Passes(source, extended: true), text.Length));
+    }
+
+    /// <summary>
+    /// The merge base's passes, or with <paramref name="extended"/> set, the same passes with the #1523 additions: a key only
+    /// the second passes find starts a word after decoration, a quoted value that ends in a key hides that key's value, an
+    /// inner key's quoted value is found after any whitespace, and a configuration key's words may be joined by __.
+    /// </summary>
+    private static Tracked Passes(Tracked text, bool extended)
+    {
+        text = WithoutUserInformation(WithoutDecoration(text, extended ? SecondKeyStart : KeyStart));
         // Preserve inner keys until their quoted/nested values are hidden, including after a decoration boundary (#1499).
-        text = RedactQuotedCredentials(text, QuotedCredential, joined: false);
-        text = NestedValue.Replace(text, "$1<redacted>");
-        text = AuthorizationValue.Replace(text, "$1<redacted>");
-        text = BearerValue.Replace(text, "$1<redacted>");
-        text = DoubleQuotedValue.Replace(text, "$1<redacted>$2");
-        text = SingleQuotedValue.Replace(text, "$1<redacted>$2");
-        text = UnquotedValue.Replace(text, "$1<redacted>");
+        text = RedactQuotedCredentials(text, QuotedCredential, joined: false, extended);
+        // The first quoted pass has hidden every value it finds, so this pass cannot read a key inside one as the chain's.
+        if (extended) text = RedactQuotedCredentials(text, NestedQuotedCredential, joined: true, extended);
+        text = Replace(text, NestedValue);
+        text = Replace(text, AuthorizationValue);
+        text = Replace(text, BearerValue);
+        text = Replace(text, DoubleQuotedValue, closing: true);
+        text = Replace(text, SingleQuotedValue, closing: true);
+        text = Replace(text, UnquotedValue);
         text = RedactSpacedValues(text, SpacedValue);
         // The second passes find keys and values the first passes did not. They replace text only, and only in what the first
         // passes left, so a key they find around a value the first passes hid cannot show that value again (#1509).
-        text = RedactQuotedCredentials(text, SecondQuotedCredential, joined: true);
-        text = SecondUnquotedValue.Replace(text, "$1<redacted>");
+        text = RedactQuotedCredentials(text, SecondQuotedCredential, joined: true, extended);
+        text = Replace(text, SecondUnquotedValue);
         text = RedactSpacedValues(text, SecondSpacedValue);
-        return WithoutControls(text);
+        return extended ? RedactSpacedValues(text, ConfigurationSpacedValue) : text;
+    }
+
+    /// <summary>
+    /// The merge base's text with each character the extended passes hid hidden too, so its output is unchanged where they hide
+    /// nothing more. A run of such characters, with the markers and boundaries next to it, reads as one marker.
+    /// </summary>
+    private static string WithHidden(Tracked shown, Tracked extended, int length)
+    {
+        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return shown.Text;
+        var hidden = new bool[length];
+        Array.Fill(hidden, true);
+        foreach (var origin in extended.Origins)
+        {
+            if (origin != Written) hidden[origin] = false;
+        }
+        var result = new System.Text.StringBuilder(shown.Text.Length);
+        var position = 0;
+        while (position < shown.Text.Length)
+        {
+            var end = position;
+            var hides = false;
+            while (end < shown.Text.Length && (shown.Origins[end] == Written || hidden[shown.Origins[end]]))
+            {
+                hides |= shown.Origins[end++] != Written;
+            }
+            if (end == position) result.Append(shown.Text[end++]);
+            else if (hides) result.Append("<redacted>");
+            else result.Append(shown.Text, position, end - position);
+            position = end;
+        }
+        return result.ToString();
     }
 
     private static string WithoutUserInformation(string text)
         => text.Contains("://", StringComparison.Ordinal) ? UserInformation.Replace(text, "<redacted>@") : text;
+
+    private static Tracked WithoutUserInformation(Tracked text)
+    {
+        if (!text.Text.Contains("://", StringComparison.Ordinal)) return text;
+        var match = UserInformation.Match(text.Text);
+        if (!match.Success) return text;
+        var result = new TrackedBuilder(text.Text.Length);
+        var shown = 0;
+        while (match.Success)
+        {
+            // The marker replaces the user information and keeps its @.
+            result.Append(text, shown, match.Index - shown).AppendRedacted();
+            shown = match.Index + match.Length - 1;
+            match = match.NextMatch();
+        }
+        return result.Append(text, shown, text.Text.Length - shown).ToTracked();
+    }
+
+    /// <summary>
+    /// Replaces each match as <c>$1&lt;redacted&gt;</c> would, or with <paramref name="closing"/> set, as
+    /// <c>$1&lt;redacted&gt;$2</c> would, where the second group closes the match.
+    /// </summary>
+    private static Tracked Replace(Tracked text, System.Text.RegularExpressions.Regex pattern, bool closing = false)
+    {
+        var match = pattern.Match(text.Text);
+        if (!match.Success) return text;
+        var result = new TrackedBuilder(text.Text.Length);
+        var shown = 0;
+        while (match.Success)
+        {
+            result.Append(text, shown, match.Index + match.Groups[1].Length - shown).AppendRedacted();
+            shown = match.Index + match.Length - (closing ? match.Groups[2].Length : 0);
+            match = match.NextMatch();
+        }
+        return result.Append(text, shown, text.Text.Length - shown).ToTracked();
+    }
 
     /// <summary>What <see cref="Redact"/> leaves of <paramref name="value"/> when it holds no credential.</summary>
     internal static string WithoutControlSequences(string value) => WithoutControls(WithoutDecoration(value));
@@ -143,26 +257,30 @@ internal static class Redaction
     /// decoration, a boundary control stands in for it, so the word before it does not join the key. One forward pass.
     /// </summary>
     internal static string WithoutDecoration(string value)
+        => value.AsSpan().ContainsAny(Introducers) ? WithoutDecoration(Tracked.Of(value), KeyStart).Text : value;
+
+    private static Tracked WithoutDecoration(Tracked source, System.Text.RegularExpressions.Regex keyStart)
     {
+        var value = source.Text;
         var position = value.AsSpan().IndexOfAny(Introducers);
-        if (position < 0) return value;
-        var result = new System.Text.StringBuilder(value.Length).Append(value.AsSpan(0, position));
+        if (position < 0) return source;
+        var result = new TrackedBuilder(value.Length).Append(source, 0, position);
         while (position < value.Length)
         {
             var end = DecorationEnd(value, position);
             if (end > position)
             {
                 position = end;
-                var key = position < value.Length && char.IsLetter(value[position]) && KeyStart.IsMatch(value, position);
+                var key = position < value.Length && char.IsLetter(value[position]) && keyStart.IsMatch(value, position);
                 if (key) result.Append(Boundary);
             }
-            else result.Append(value[position++]);
+            else result.Append(source, position++, 1);
             var next = value.AsSpan(position).IndexOfAny(Introducers);
             var text = next < 0 ? value.Length - position : next;
-            result.Append(value.AsSpan(position, text));
+            result.Append(source, position, text);
             position += text;
         }
-        return result.ToString();
+        return result.ToTracked();
     }
 
     /// <summary>Where the decoration that starts at <paramref name="start"/> ends, or <paramref name="start"/> if none does.</summary>
@@ -212,26 +330,56 @@ internal static class Redaction
     /// Redacts a quoted credential value, consuming escaped/doubled quotes as content, or an unterminated value through the
     /// end of the diagnostic. The value's quotes are kept and any control sequence before it is dropped. When
     /// <paramref name="joined"/> is set, text joined to the closing quote, including another quoted part, is the same shell
-    /// word, so it is hidden with the value and dropped (#1509).
+    /// word, so it is hidden with the value and dropped (#1509). With <paramref name="dangling"/> set, a value that ends in a
+    /// key also hides that key's value after it (#1523).
     /// </summary>
-    private static string RedactQuotedCredentials(string value, System.Text.RegularExpressions.Regex pattern, bool joined)
+    private static Tracked RedactQuotedCredentials(Tracked text, System.Text.RegularExpressions.Regex pattern, bool joined, bool dangling)
     {
         // Both the nonbacktracking prefix search and the forward-only value scan are linear in the input length.
+        var value = text.Text;
         var match = pattern.Match(value);
-        if (!match.Success) return value;
-        var result = new System.Text.StringBuilder();
+        if (!match.Success) return text;
+        var result = new TrackedBuilder(value.Length);
         var consumed = 0;
         while (match.Success)
         {
-            result.Append(value.AsSpan(consumed, match.Index - consumed));
-            var quote = value[match.Index + match.Length - 1];
-            result.Append(match.Groups[1].Value).Append(quote).Append("<redacted>");
-            var closing = ClosingQuote(value, match.Index + match.Length, quote);
-            if (closing >= 0) result.Append(quote);
+            result.Append(text, consumed, match.Index - consumed);
+            var start = match.Index + match.Length;
+            result.Append(text, match.Index, match.Groups[1].Length).Append(text, start - 1, 1).AppendRedacted();
+            var closing = ClosingQuote(value, start, value[start - 1]);
+            if (closing >= 0) result.Append(text, closing, 1);
             consumed = closing < 0 ? value.Length : joined ? JoinedEnd(value, closing + 1) : closing + 1;
+            if (dangling && closing >= 0 && DanglingKey.IsMatch(value.AsSpan(start, closing - start)))
+            {
+                consumed = WithoutDanglingValue(text, closing + 1, consumed, result);
+            }
             match = pattern.Match(value, consumed);
         }
-        return result.Append(value.AsSpan(consumed)).ToString();
+        return result.Append(text, consumed, value.Length - consumed).ToTracked();
+    }
+
+    /// <summary>
+    /// Hides the value a key at the end of a quoted value leaves after its closing quote: the text joined to the quote, or else
+    /// the word after the whitespace (#1523). A word that holds a key is left, so its own value is still found, and the search
+    /// for one ends where the next match can start at the earliest, so no character is read twice. Returns where the consumed
+    /// text ends.
+    /// </summary>
+    private static int WithoutDanglingValue(Tracked text, int after, int consumed, TrackedBuilder result)
+    {
+        var value = text.Text;
+        var start = after;
+        if (start == value.Length || char.IsWhiteSpace(value[start]) || value[start] is ',' or ';' or '}')
+        {
+            while (start < value.Length && char.IsWhiteSpace(value[start])) start++;
+        }
+        // Joined text the caller hid with the value is that key's value already.
+        if (start < consumed) return consumed;
+        var key = SecondKeyWord.Match(value, start);
+        var limit = key.Success ? key.Index : value.Length;
+        var end = JoinedEnd(value.AsSpan(0, limit), start);
+        if (end == start || key.Success && end == limit) return consumed;
+        result.Append(text, consumed, start - consumed).AppendRedacted();
+        return end;
     }
 
     /// <summary>
@@ -241,11 +389,12 @@ internal static class Redaction
     /// A match whose key is already hidden adds only its own value: each extension then starts after the text hidden so far,
     /// so no character is scanned for two of them and the scans stay linear (PR-1521-R2 F3).
     /// </summary>
-    private static string RedactSpacedValues(string text, System.Text.RegularExpressions.Regex pattern)
+    private static Tracked RedactSpacedValues(Tracked tracked, System.Text.RegularExpressions.Regex pattern)
     {
+        var text = tracked.Text;
         var match = pattern.Match(text);
-        if (!match.Success) return text;
-        var result = new System.Text.StringBuilder(text.Length);
+        if (!match.Success) return tracked;
+        var result = new TrackedBuilder(text.Length);
         var shown = 0;
         var hidden = 0;
         while (match.Success)
@@ -259,19 +408,19 @@ internal static class Redaction
             }
             if (match.Index >= hidden)
             {
-                if (hidden > shown) result.Append("<redacted>");
-                result.Append(text.AsSpan(Math.Max(shown, hidden), value - Math.Max(shown, hidden)));
+                if (hidden > shown) result.AppendRedacted();
+                result.Append(tracked, Math.Max(shown, hidden), value - Math.Max(shown, hidden));
                 shown = value;
             }
             hidden = Math.Max(hidden, end);
             match = match.NextMatch();
         }
-        if (hidden > shown) result.Append("<redacted>");
-        return result.Append(text.AsSpan(Math.Max(shown, hidden))).ToString();
+        if (hidden > shown) result.AppendRedacted();
+        return result.Append(tracked, Math.Max(shown, hidden), text.Length - Math.Max(shown, hidden)).ToTracked();
     }
 
     /// <summary>The closing quote of a value that starts at <paramref name="position"/>, or -1 if the value is unterminated.</summary>
-    private static int ClosingQuote(string value, int position, char quote)
+    private static int ClosingQuote(ReadOnlySpan<char> value, int position, char quote)
     {
         while (position < value.Length)
         {
@@ -290,7 +439,7 @@ internal static class Redaction
     }
 
     /// <summary>Where the text joined to a closing quote ends: at whitespace, a comma, a semicolon or a closing brace.</summary>
-    private static int JoinedEnd(string value, int position)
+    private static int JoinedEnd(ReadOnlySpan<char> value, int position)
     {
         while (position < value.Length && !char.IsWhiteSpace(value[position]) && value[position] is not (',' or ';' or '}'))
         {
@@ -311,5 +460,48 @@ internal static class Redaction
         return lines.Length == 0
             ? SafeDiagnostic(value)
             : string.Join(Environment.NewLine, lines.TakeLast(MaximumDiagnosticLines).Select(SafeDiagnostic));
+    }
+
+    /// <summary>
+    /// A text the passes read, with the position each of its characters had in the text redaction started from, or
+    /// <see cref="Written"/> for one a pass wrote. Each character is kept once at most, in order, so two sets of passes over
+    /// the same text can be compared character by character (#1523).
+    /// </summary>
+    private readonly record struct Tracked(string Text, int[] Origins)
+    {
+        public static Tracked Of(string text)
+        {
+            var origins = new int[text.Length];
+            for (var index = 0; index < origins.Length; index++) origins[index] = index;
+            return new Tracked(text, origins);
+        }
+    }
+
+    private sealed class TrackedBuilder(int capacity)
+    {
+        private readonly System.Text.StringBuilder text = new(capacity);
+        private readonly List<int> origins = new(capacity);
+
+        public TrackedBuilder Append(Tracked source, int start, int length)
+        {
+            text.Append(source.Text, start, length);
+            origins.AddRange(source.Origins.AsSpan(start, length));
+            return this;
+        }
+
+        public TrackedBuilder Append(char written)
+        {
+            text.Append(written);
+            origins.Add(Written);
+            return this;
+        }
+
+        public TrackedBuilder AppendRedacted()
+        {
+            foreach (var written in "<redacted>") Append(written);
+            return this;
+        }
+
+        public Tracked ToTracked() => new(text.ToString(), [.. origins]);
     }
 }
