@@ -12,10 +12,11 @@ public sealed partial class SqliteSwpcStore
         return ExecuteAsync(null, (db, tx) => Purge(db, tx, atUtc), ct);
     }
 
-    private static SwpcPurgeResult Purge(SqliteConnection db, SqliteTransaction tx, DateTimeOffset atUtc)
+    private SwpcPurgeResult Purge(SqliteConnection db, SqliteTransaction tx, DateTimeOffset atUtc)
     {
         var notices = ReadNotices(db, tx);
-        var expired = notices.Groups.Where(g => SwpcNoticeLifecycle.IsRetentionExpired(SwpcNoticeLifecycle.Evaluate(g, notices.Groups, atUtc), atUtc)).ToArray();
+        var windows = SwpcNoticeLifecycle.EvaluateAll(notices.Groups, atUtc);
+        var expired = notices.Groups.Where((_, i) => SwpcNoticeLifecycle.IsRetentionExpired(windows[i], atUtc)).ToArray();
         var versions = 0;
         foreach (var group in expired)
         {

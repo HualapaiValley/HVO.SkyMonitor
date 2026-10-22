@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
 
@@ -6,7 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 
 public sealed partial class SqliteSwpcStore
 {
-    internal static (int Added, ImmutableHashSet<SwpcMessageNode> Touched, ImmutableArray<string> Diagnostics) SaveSnapshot(
+    internal (int Added, ImmutableHashSet<SwpcMessageNode> Touched, ImmutableArray<string> Diagnostics) SaveSnapshot(
         SqliteConnection db, SqliteTransaction tx, SwpcSnapshot candidate, SwpcFetchOutcome outcome, DateTimeOffset atUtc)
     {
         var diagnostics = new List<string>();
@@ -46,7 +47,7 @@ public sealed partial class SqliteSwpcStore
         if (outcome == SwpcFetchOutcome.Updated)
         {
             var rawHash = SwpcHash.Sha256UpperHex(candidate.DecodedBody.AsSpan());
-            Exec(db, tx, "INSERT OR IGNORE INTO swpc_raw(sha,body) VALUES($h,$b);", ("$h", rawHash), ("$b", candidate.DecodedBody.ToArray()));
+            Exec(db, tx, "INSERT OR IGNORE INTO swpc_raw(sha,body) VALUES($h,$b);", ("$h", rawHash), ("$b", ImmutableCollectionsMarshal.AsArray(candidate.DecodedBody)));
             Exec(db, tx, "INSERT INTO swpc_snapshots(product,sha,retrieved,envelope,raw_sha) VALUES($p,$h,$t,$e,$r);",
                 ("$p", (int)candidate.Product), ("$h", candidate.Sha256), ("$t", Ticks(candidate.RetrievedUtc)),
                 ("$e", Json(candidate with { DecodedBody = [] })), ("$r", rawHash));

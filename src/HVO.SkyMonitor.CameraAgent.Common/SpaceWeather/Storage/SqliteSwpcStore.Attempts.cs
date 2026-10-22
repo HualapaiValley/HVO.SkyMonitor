@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
 
@@ -197,8 +198,17 @@ public sealed partial class SqliteSwpcStore
             _ => throw new ArgumentException("Unsupported candidate body.", nameof(candidate))
         };
         if (!accepted || hash != candidate.Sha256 || time != candidate.InFileStampUtc ||
-            candidate.Parsed is null || candidate.Parsed.GetType() != verified.GetType() || Json<SwpcParsedBody>(candidate.Parsed) != Json(verified))
+            candidate.Parsed is null || candidate.Parsed.GetType() != verified.GetType() || !SameJson(candidate.Parsed, verified))
             throw new ArgumentException("Candidate bytes, hash and typed facts disagree.", nameof(candidate));
+    }
+    /// <summary>Compares the serializer's UTF-8 output, which is equal exactly when its string output is.</summary>
+    private static bool SameJson(SwpcParsedBody left, SwpcParsedBody right)
+    {
+        using var first = new PooledBuffer();
+        using var second = new PooledBuffer();
+        using (var writer = new Utf8JsonWriter(first)) JsonSerializer.Serialize(writer, left);
+        using (var writer = new Utf8JsonWriter(second)) JsonSerializer.Serialize(writer, right);
+        return first.Written.Span.SequenceEqual(second.Written.Span);
     }
     private static void ValidateEffects(SwpcCommitEffects effects, SwpcNoticeData notices)
     {
