@@ -970,19 +970,19 @@ internal sealed record ListedImage(string Id, string Repository, string Tag, str
     // Hub paths to library/. Other registries, ports and nested namespaces must retain their identity.
     private static string NormalizeRepository(string repository)
     {
-        var slash = repository.IndexOf('/');
+        var slash = repository.IndexOf('/', StringComparison.Ordinal);
         if (slash < 0) return "docker.io/library/" + repository;
         var domain = repository[..slash];
         var path = repository[(slash + 1)..];
         if (domain == "index.docker.io")
             domain = "docker.io";
-        else if (domain != "localhost" && !domain.Contains('.') && !domain.Contains(':') &&
-                 string.Equals(domain, domain.ToLowerInvariant(), StringComparison.Ordinal))
+        else if (domain != "localhost" && !domain.Contains('.', StringComparison.Ordinal) && !domain.Contains(':', StringComparison.Ordinal) &&
+                 !domain.Any(char.IsUpper))
         {
             domain = "docker.io";
             path = repository;
         }
-        if (domain == "docker.io" && !path.Contains('/')) path = "library/" + path;
+        if (domain == "docker.io" && !path.Contains('/', StringComparison.Ordinal)) path = "library/" + path;
         return domain + "/" + path;
     }
 }
