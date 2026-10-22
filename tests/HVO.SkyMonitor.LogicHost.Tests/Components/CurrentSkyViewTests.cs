@@ -146,6 +146,18 @@ public sealed class CurrentSkyViewTests
     }
 
     [TestMethod]
+    public void SelectedPreviewBeyondMetadataPage_IsRenderedWithoutDrainingArtifactHistory()
+    {
+        using var context = CreateContext(out var archive, out _);
+        archive.Detail = Detail() with { Artifacts = [], ArtifactsNextCursor = "bounded-artifact-continuation" };
+        var cut = Render(context);
+        cut.Find("img").GetAttribute("src").Should().Be("/selected-preview");
+        archive.ListCalls.Should().Be(0);
+        cut.Markup.Should().Contain("one bounded metadata page");
+        archive.Cursors.Should().ContainSingle();
+    }
+
+    [TestMethod]
     [DataRow("matching")]
     [DataRow("foreignCapture")]
     [DataRow("foreignBase")]

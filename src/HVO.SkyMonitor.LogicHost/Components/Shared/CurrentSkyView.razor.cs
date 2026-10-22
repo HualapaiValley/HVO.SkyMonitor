@@ -36,7 +36,9 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
 
     [JSInvokable]
     public Task RefreshAsync() => InvokeAsync(() => LoadAndRenderAsync(null));
-    private Task ContinueAsync() => LoadAndRenderAsync(selection?.NextCursor);
+    private Task ManualRefreshAsync() => loading ? Task.CompletedTask : RefreshAsync();
+    private Task ContinueAsync() => loading || selection?.NextCursor is not { } cursor
+        ? Task.CompletedTask : LoadAndRenderAsync(cursor);
 
     private async Task LoadAndRenderAsync(string? cursor)
     {

@@ -50,16 +50,26 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     internal CentralLayeredPresentation? Presentation { get; private set; }
     internal MarkupString PresentationSvg => new(Encoding.UTF8.GetString(Presentation?.Svg ?? []));
     internal string? MaterializationMessage { get; private set; }
-    internal string? SelectedPreviewPath => principal is not null &&
-        CentralArtifactCredentialAccess.HasOwnerCredential(principal) &&
-        Detail is { } authorized && CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) &&
-        CurrentSelection is { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection &&
-        selected.CaptureId == CaptureId && authorized.Artifacts.Any(artifact => artifact.ArtifactId == artifactId &&
-            artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
-            artifact.ObjectState == Data.CentralArtifactObjectState.Available &&
-            artifact.ReconstructionState == Data.CentralReconstructionState.Complete &&
-            artifact.ChecksumSha256 == selection.ChecksumSha256 && artifact.ContentPath == selection.ContentPath)
-        ? selection.ContentPath : null;
+    internal string? SelectedPreviewPath
+    {
+        get
+        {
+            if (principal is null || !CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
+                Detail is not { } authorized || !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) ||
+                CurrentSelection is not { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection ||
+                selected.CaptureId != CaptureId)
+                return null;
+            var artifact = authorized.Artifacts.FirstOrDefault(item => item.ArtifactId == artifactId);
+            // The selector verified this exact Preview independently of the bounded metadata page.
+            // Do not drain artifact history just to rediscover a selected Preview beyond that page.
+            if (artifact is null) return authorized.ArtifactsNextCursor is not null ? selection.ContentPath : null;
+            return artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
+                artifact.ObjectState == Data.CentralArtifactObjectState.Available &&
+                artifact.ReconstructionState == Data.CentralReconstructionState.Complete &&
+                artifact.ChecksumSha256 == selection.ChecksumSha256 && artifact.ContentPath == selection.ContentPath
+                ? selection.ContentPath : null;
+        }
+    }
     internal bool IsBaseImageUnavailable { get; private set; }
 
     // Each rendered base image is keyed to the presentation generation, identity and explicit retry

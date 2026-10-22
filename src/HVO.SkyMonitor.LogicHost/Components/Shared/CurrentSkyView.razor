@@ -1,7 +1,7 @@
 <section class="current-sky" @ref="root" aria-labelledby="current-sky-heading" data-selection-generation="@generation" aria-busy="@(loading ? "true" : "false")">
     <div class="current-toolbar">
         <h2 id="current-sky-heading">Current Sky</h2>
-        <button type="button" class="btn btn-outline-info" disabled="@loading" @onclick="RefreshAsync">Refresh Current Sky</button>
+        <button type="button" class="btn btn-outline-info" aria-disabled="@(loading ? "true" : "false")" @onclick="ManualRefreshAsync">Refresh Current Sky</button>
     </div>
     <p role="status">@message</p>
     @if (selection?.NextCursor is not null && !loading)
@@ -22,6 +22,10 @@
         </CascadingValue>
         <details>
             <summary>Retained content availability</summary>
+            @if (exact.ArtifactsNextCursor is not null)
+            {
+                <p>More artifact metadata is retained. Current Sky shows one bounded metadata page.</p>
+            }
             <ul>
                 @foreach (var artifact in exact.Artifacts)
                 {
