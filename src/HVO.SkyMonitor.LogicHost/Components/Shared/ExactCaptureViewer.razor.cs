@@ -54,11 +54,11 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         CentralArtifactCredentialAccess.HasOwnerCredential(principal) &&
         Detail is { } authorized && CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, authorized.Capture.ObservatoryId) &&
         CurrentSelection is { Status: "found", Capture: { } selected, ArtifactId: { } artifactId } selection &&
-        selected.CaptureId == CaptureId && Detail?.Artifacts.Any(artifact => artifact.ArtifactId == artifactId &&
+        selected.CaptureId == CaptureId && authorized.Artifacts.Any(artifact => artifact.ArtifactId == artifactId &&
             artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview &&
             artifact.ObjectState == Data.CentralArtifactObjectState.Available &&
             artifact.ReconstructionState == Data.CentralReconstructionState.Complete &&
-            artifact.ChecksumSha256 == selection.ChecksumSha256 && artifact.ContentPath == selection.ContentPath) == true
+            artifact.ChecksumSha256 == selection.ChecksumSha256 && artifact.ContentPath == selection.ContentPath)
         ? selection.ContentPath : null;
     internal bool IsBaseImageUnavailable { get; private set; }
 

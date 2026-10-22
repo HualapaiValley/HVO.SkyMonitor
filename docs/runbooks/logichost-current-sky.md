@@ -21,6 +21,6 @@ rechecks the selection and access.
 
 The page revalidates every 30 seconds and when the browser regains focus, comes
 online, becomes visible, or reconnects its server circuit. The previous display is
-cleared while revalidation is pending. Authorization and storage failures clear
-protected content. Existing protected content endpoints reauthorize requests;
+cleared while revalidation is pending. Authorization failures clear protected content; unavailable bytes retain only
+authorized metadata. Existing protected content endpoints reauthorize requests;
 Current Sky introduces no shared image cache or saved selection policy.

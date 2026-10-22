@@ -1,4 +1,4 @@
-<section class="current-sky" @ref="root" aria-labelledby="current-sky-heading" aria-busy="@(loading ? "true" : "false")">
+<section class="current-sky" @ref="root" aria-labelledby="current-sky-heading" data-selection-generation="@generation" aria-busy="@(loading ? "true" : "false")">
     <div class="current-toolbar">
         <h2 id="current-sky-heading">Current Sky</h2>
         <button type="button" class="btn btn-outline-info" disabled="@loading" @onclick="RefreshAsync">Refresh Current Sky</button>

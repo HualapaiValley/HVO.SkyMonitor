@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Diagnostics.CodeAnalysis;
 using Bunit;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
@@ -11,6 +12,7 @@ using BrowserErrorEventArgs = Microsoft.AspNetCore.Components.Web.ErrorEventArgs
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Components;
 
+[SuppressMessage("Reliability", "CA2025:Do not pass disposables into unawaited tasks", Justification = "Tests intentionally hold refresh tasks to inspect pending UI; each task is completed and awaited before context disposal.")]
 [TestClass]
 [TestCategory("Unit")]
 public sealed class CurrentSkyViewTests
@@ -177,8 +179,8 @@ public sealed class CurrentSkyViewTests
         context.Services.AddLogging();
         context.Services.AddSingleton(TimeProvider.System);
         context.Services.AddSingleton<ILogicalCameraArchiveReadService>(archive);
-        context.Services.AddSingleton<ICentralLayeredPresentationService, Presentations>();
-        context.Services.AddSingleton<ICentralPresentationMaterializer, Materializer>();
+        context.Services.AddSingleton<ICentralLayeredPresentationService>(new Presentations());
+        context.Services.AddSingleton<ICentralPresentationMaterializer>(new Materializer());
         return context;
     }
 

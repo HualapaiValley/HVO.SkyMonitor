@@ -81,7 +81,7 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             if (result is { Status: "no-result" or "dependency-unavailable" })
             {
                 var latest = await archive.ListCapturesAsync(principal, observatory, camera, new(), 1, null, token);
-                requestedCapture = latest.Items.FirstOrDefault()?.CaptureId;
+                requestedCapture = latest.Items.Count > 0 ? latest.Items[0].CaptureId : null;
             }
             if (requestedCapture is { } exactId)
                 capture = await archive.GetCaptureAsync(principal, observatory, camera, exactId, token);

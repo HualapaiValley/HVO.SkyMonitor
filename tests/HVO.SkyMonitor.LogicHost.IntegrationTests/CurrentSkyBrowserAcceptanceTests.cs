@@ -61,8 +61,16 @@ public sealed class CurrentSkyBrowserAcceptanceTests
         {
             await page.SetViewportSizeAsync(width, height);
             var refresh = page.GetByRole(AriaRole.Button, new() { Name = "Refresh Current Sky", Exact = true });
+            var before = int.Parse((await page.Locator(".current-sky").GetAttributeAsync("data-selection-generation"))!, System.Globalization.CultureInfo.InvariantCulture);
             await refresh.FocusAsync();
             await page.Keyboard.PressAsync("Enter");
+            await page.WaitForFunctionAsync("""
+                previous => {
+                    const root = document.querySelector('.current-sky');
+                    return Number(root?.dataset.selectionGeneration) > previous &&
+                        root.getAttribute('aria-busy') === 'false' && root.querySelector('img');
+                }
+                """, before);
             await Assertions.Expect(page.Locator(".current-sky img")).ToHaveAttributeAsync("src", imagePath!);
             await Assertions.Expect(refresh).ToBeEnabledAsync();
             await Assertions.Expect(refresh).ToBeFocusedAsync();
