@@ -44,6 +44,11 @@ internal sealed class GainNormalizationPreparer(
             {
                 frozen = existing;
             }
+            else if (execution.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+            {
+                return GainNormalizationPreparation.Failed(ProcessingOutcome.TerminalFailure(
+                    ProcessingReasonCodes.MissingNormalizationPlan, GainNormalizationCompatibility.PlanInputName));
+            }
             else
             {
                 var selection = await families.SelectAsync(context.Config, descriptor, cancellationToken).ConfigureAwait(false);

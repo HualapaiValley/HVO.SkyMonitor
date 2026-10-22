@@ -213,7 +213,7 @@ internal static class OwnerRecoveryManager
         if (!string.Equals(ownerState, PasswordChangeRequiredState, StringComparison.Ordinal) &&
             !string.Equals(ownerState, ReadyState, StringComparison.Ordinal))
         {
-            throw new InstallerException("CameraAgent owner recovery did not require temporary password replacement.");
+            throw new InstallerException("CameraAgent owner recovery did not require replacing the temporary password.");
         }
 
         state = state with { Completed = true, RetryAllowed = false, UpdatedUtc = DateTimeOffset.UtcNow };
@@ -286,7 +286,7 @@ internal static class OwnerRecoveryManager
         SafeFileSystem.ValidateOwnerFile(path);
         if (new FileInfo(path).Length is < OwnerCredentialDefaults.MinimumPasswordLength or > OwnerCredentialDefaults.MaximumPasswordLength)
         {
-            throw new InstallerException("The owner recovery password file length is invalid.");
+            throw new InstallerException("The owner recovery password-file length is invalid.");
         }
 
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
@@ -300,7 +300,7 @@ internal static class OwnerRecoveryManager
         }
         catch (DecoderFallbackException exception)
         {
-            throw new InstallerException("The owner recovery password file is not valid UTF-8.", exception);
+            throw new InstallerException("The owner recovery password-file is not valid UTF-8.", exception);
         }
         finally
         {
@@ -310,7 +310,7 @@ internal static class OwnerRecoveryManager
             password.Length > OwnerCredentialDefaults.MaximumPasswordLength ||
             password.Any(static character => character is < '!' or > '~'))
         {
-            throw new InstallerException("The owner recovery password file content is invalid.");
+            throw new InstallerException("The owner recovery password-file content is invalid.");
         }
         return password;
     }

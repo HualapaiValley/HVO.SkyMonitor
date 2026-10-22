@@ -42,6 +42,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent’s graph editor offers constellation colour and line thickness controls linked from Current Sky, with immutable draft revisions, validation, activation and rollback. (#1533)
+
 - LogicHost Current Sky shows the latest eligible retained capture for an authorized observatory and logical camera, with bounded search, independent capture/receipt times, and content/access revalidation. (#1535)
 
 - LogicHost camera-scoped operations history under `/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`: graph assignments (`processing-graph-assignments?targetHost=`), central executions with a node-paged inspector, jobs by capture with an inspector whose attempts, inputs and outputs page separately, delivery proposals with their stored terminal and latest facts and a fact page, and transient-event associations. Every collection is keyset paged (`take` 1–50, opaque `cursor`), covers retired and replaced installations, requires current membership of the camera's observatory, and rejects a continuation reused for another camera, list or filter. "Staged" appears only as a labelled, timestamp-free derivation: an Accepted proposal that was never activated or whose latest lifecycle fact is a rollback. `GET /api/internal/processing-graphs/revision-summaries` pages the global graph catalog beyond its latest 100 revisions without definition documents. (#1237)
@@ -170,6 +172,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   defaults clears the remembered choice of the view it is used in. (#1382)
 
 ### Security
+
+- Deployment CLI errors and warnings hide the value after a quoted value that ends in a key, as in `token="password=" VALUE`, a quoted value after a tab behind a nested key, as in `api_key=db_password` then a tab and `"a VALUE"`, the value of a space-separated key whose words are joined by `__`, such as `ObjectStorage__SecretKey VALUE`, and a `SecretKey` value after colour codes. A message holding one of these values now ends with `<redacted>…` at the first of them, or earlier where the previous redaction would hide more on reading the message again as an embedding error does, and the rest of the line is dropped. Other messages are unchanged, and nothing the previous redaction hid or cut off is shown, including where an error embeds a diagnostic beside another reason and is redacted and cut again. Password-file and owner-recovery errors are reworded so redaction no longer hides one of their words. (#1523)
 
 - Deployment CLI errors and warnings hide the values of `SecretKey`, `ObjectStorage__SecretKey`, `SecretAccessKey` and `secret-access-key`. They also hide the whole of a quoted credential value that follows its key after a tab or other whitespace character rather than a plain space, and text joined to a quoted credential value's closing quote. Restore warnings hide the whole value of a claim whose type already reads as redacted, and the `--password-file`/`--generate-password` usage error is shown in full. (#1509)
 
