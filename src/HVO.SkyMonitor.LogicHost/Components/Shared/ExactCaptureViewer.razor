@@ -44,7 +44,7 @@
                             </label>
                         }
                     </div>
-                    @if (detail.EffectiveRole is HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Manager
+                    @if (!ReadOnly && detail.EffectiveRole is HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Manager
                         or HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
                     {
                         <div class="mt-3 d-flex flex-wrap align-items-center gap-3">
@@ -66,6 +66,26 @@
                     <dt class="col-md-3">Manifest</dt><dd class="col-md-9 text-break font-monospace">@Presentation.ManifestIdentitySha256</dd>
                     <dt class="col-md-3">Presentation</dt><dd class="col-md-9 text-break font-monospace">@Presentation.PresentationIdentitySha256</dd>
                 </dl>
+            </div>
+        </section>
+    }
+    @if (CurrentSelection is not null && Presentation is null)
+    {
+        <section class="card mb-4" aria-label="Selected Preview">
+            <div class="card-body">
+                @if (SelectedPreviewPath is { } preview && !IsBaseImageUnavailable)
+                {
+                    var imageKey = BaseImageKey;
+                    <img class="selected-preview" @key="imageKey" src="@preview" alt="Selected Preview for capture @detail.Capture.CapturedAtUtc.ToString("u")" @onerror="() => OnBaseImageError(imageKey)" />
+                }
+                else
+                {
+                    <p role="status">The selected Preview is unavailable. Capture metadata is retained; no other image is substituted.</p>
+                    @if (SelectedPreviewPath is not null)
+                    {
+                        <button type="button" class="btn btn-outline-info" @onclick="RetryBaseImage">Retry image</button>
+                    }
+                }
             </div>
         </section>
     }

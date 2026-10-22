@@ -45,3 +45,5 @@
 .layered-unavailable {
     color: #e2e8f0;
 }
+
+.selected-preview { display: block; width: 100%; height: auto; object-fit: contain; }
