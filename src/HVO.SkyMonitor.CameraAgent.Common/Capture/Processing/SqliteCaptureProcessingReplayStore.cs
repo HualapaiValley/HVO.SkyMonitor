@@ -238,7 +238,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 insert.Parameters.AddWithValue("$definition", revision.State.DefinitionIdentitySha256);
                 insert.Parameters.AddWithValue("$shared_plan", revision.State.SharedPlanIdentitySha256);
                 insert.Parameters.AddWithValue("$local_plan", revision.State.LocalPlanIdentitySha256);
-                insert.Parameters.AddWithValue("$frozen_plan", revision.FrozenPlanJson);
+                insert.Parameters.AddWithValue("$frozen_plan", preparedInputs.FrozenPlanJson);
                 insert.Parameters.AddWithValue("$configuration", configurationJson);
                 insert.Parameters.AddWithValue("$trigger", submission.TriggerKind);
                 insert.Parameters.AddWithValue("$trigger_reference", submission.TriggerReference ?? executionId.ToString("N"));
@@ -415,6 +415,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         };
         var frozenOutputBytes = new Dictionary<string, long>(StringComparer.Ordinal);
         var auxiliaryOutputNodes = new HashSet<string>(StringComparer.Ordinal);
+        var frozenPlanJson = revision.FrozenPlanJson;
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: true);
@@ -423,7 +424,18 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             if (node.DependenciesJson.Contains("$raw", StringComparison.Ordinal))
             {
-                var frozenInputs = node.WindowJson is null
+                var archived = await ReadArchivedNormalizationWindowAsync(
+                    connection, transaction, source, node, cancellationToken).ConfigureAwait(false);
+                if (archived is { } original)
+                {
+                    frozenPlanJson = AddNormalizationPlan(
+                        frozenPlanJson, node.NodeId, original.Plan.IdentitySha256, original.Plan.CanonicalJson);
+                    if (frozenPlanJson.Length > MaximumFrozenExecutionPlanBytes)
+                    {
+                        throw new InvalidDataException("The archived normalization plans exceed the frozen execution plan bound.");
+                    }
+                }
+                var frozenInputs = archived?.Inputs ?? (node.WindowJson is null
                     ? [primaryInput]
                     : await ProcessingRawWindowSelector.SelectAsync(
                         connection,
@@ -432,7 +444,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                         JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(node.WindowJson, ExecutionSerializerOptions)
                             ?? throw new InvalidDataException($"Processing graph node '{node.NodeId}' has an invalid window."),
                         _executionOptions.MaximumWindowInputs,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken).ConfigureAwait(false));
                 rawInputsByNode[node.NodeId] = frozenInputs;
                 foreach (var frozenInput in frozenInputs)
                     pinnedRawInputs[frozenInput.RawCaptureRowId] = frozenInput;
@@ -483,7 +495,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 throw new FileNotFoundException("A frozen derived replay input is no longer retained.", payloadPath);
             frozenOutputBytes[frozenOutput.OutputIdentitySha256] = new FileInfo(payloadPath).Length;
         }
-        return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes, auxiliaryOutputNodes);
+        return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes,
+            auxiliaryOutputNodes, frozenPlanJson);
     }
 
     /// <summary>The registered stable step type alias of the projected-scene step.</summary>
@@ -720,7 +733,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         IReadOnlyDictionary<string, IReadOnlyList<ProcessingFrozenOutputInput>> OutputInputsByNode,
         IReadOnlyList<ProcessingFrozenRawInput> PinnedRawInputs,
         IReadOnlyDictionary<string, long> FrozenOutputBytes,
-        IReadOnlySet<string> AuxiliaryOutputNodes);
+        IReadOnlySet<string> AuxiliaryOutputNodes,
+        byte[] FrozenPlanJson);
 
     private static ProcessingFrozenRawInput CreatePrimaryInput(ProcessingReplaySource source)
         => new(
