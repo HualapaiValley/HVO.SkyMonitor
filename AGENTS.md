@@ -241,9 +241,14 @@ must not redefine its policy inconsistently.
   one-shot agent, or guarded resumed-session route; fleet scripts apply only to
   the enrolled resumed-session route they support.
 - Finalize through GitHub auto-merge while the repository allows it. Once review
-  has converged, mark the PR ready and enable auto-merge (merge commit) pinned
-  to the reviewed head. Branch protection then enforces green required checks,
-  an up-to-date head and resolved conversations.
+  has converged, mark the PR ready. Once the required checks pass on the
+  reviewed head, publish the `hvo/reviewed-head` commit status on exactly that
+  head. `development/v1`'s branch protection requires that status, so it is the
+  merge gate there; `main` doesn't require it, and promotion PRs stay
+  owner-approved. Then
+  merge, or enable auto-merge (merge commit) pinned to that head. Branch
+  protection also enforces green required checks, an up-to-date head and
+  resolved conversations. The PR lifecycle skill gives the steps and commands.
   - When the target branch advances, the operator's merge-train automation
     merges it into one queued PR at a time.
   - It pushes that merge only when two conditions hold. First, the only

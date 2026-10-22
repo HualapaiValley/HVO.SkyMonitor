@@ -1,7 +1,5 @@
 using System.Text.Json;
-using System.Security.Cryptography;
 using System.Text.Json.Serialization;
-using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -58,8 +56,14 @@ public static class OrbitalContract
     {
         ArgumentNullException.ThrowIfNull(input);
         ValidateRecordContent(input);
+        var record = NormalizeRecord(input);
+        return record with { RecordSha256 = ComputeRecordIdentity(record) };
+    }
+
+    private static OrbitalRecordV1 NormalizeRecord(OrbitalRecordV1 input)
+    {
         var e = input.Elements;
-        var record = input with
+        return input with
         {
             RecordSha256 = string.Empty,
             EpochUtc = input.EpochUtc.ToUniversalTime(),
@@ -78,71 +82,40 @@ public static class OrbitalContract
                 MeanMotionDdot = Zero(e.MeanMotionDdot)
             }
         };
-        return record with { RecordSha256 = ComputeRecordIdentity(record) };
     }
 
-    public static void ValidateRecord(OrbitalRecordV1 record)
+    public static void ValidateRecord(OrbitalRecordV1 record) => ValidateAndNormalizeRecord(record);
+
+    internal static OrbitalRecordV1 ValidateAndNormalizeRecord(OrbitalRecordV1 record)
     {
         ArgumentNullException.ThrowIfNull(record);
         ValidateRecordContent(record);
         Require(IsSha256(record.RecordSha256), "record-identity");
-        var normalized = CreateRecord(record);
-        Require(record.RecordSha256 == normalized.RecordSha256 &&
-            SerializeCanonical(record).AsSpan().SequenceEqual(SerializeCanonical(normalized)), "record-content-identity");
+        var normalized = NormalizeRecord(record);
+        var identity = ComputeRecordIdentity(normalized);
+        // These are the only fields normalization changes. Record equality alone ignores UTC offsets;
+        // negative zero compares equal, just as it does in the canonical bytes.
+        Require(record.RecordSha256 == identity && Utc(record.EpochUtc) &&
+            (record.ValidFromUtc is null || Utc(record.ValidFromUtc.Value)) &&
+            (record.ValidToUtc is null || Utc(record.ValidToUtc.Value)) &&
+            record.Elements == normalized.Elements, "record-content-identity");
+        return normalized with { RecordSha256 = identity };
     }
 
     /// <summary>Self identity is omitted, not set to a placeholder in the hashed document.</summary>
     public static string ComputeRecordIdentity(OrbitalRecordV1 value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Hash(new
-        {
-            value.ObjectIdentity,
-            value.SourceDataset,
-            value.SourceRecordId,
-            value.ObjectName,
-            value.InternationalDesignator,
-            value.SourceAssertedType,
-            value.SourceAssertedStatus,
-            value.EpochUtc,
-            value.ValidFromUtc,
-            value.ValidToUtc,
-            value.Model,
-            value.Elements
-        });
+        return OrbitalCanonicalJson.Digest(value, omitRecordIdentity: true).Sha256;
     }
 
     public static byte[] SerializeCanonical<T>(T value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var element = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(value));
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream)) WriteNormalized(writer, element);
-        return stream.ToArray();
+        return OrbitalCanonicalJson.Serialize(value);
     }
 
-    internal static string Hash<T>(T value) => Convert.ToHexString(SHA256.HashData(SerializeCanonical(value)));
-    private static void WriteNormalized(Utf8JsonWriter writer, JsonElement value)
-    {
-        if (value.ValueKind == JsonValueKind.Object)
-        {
-            writer.WriteStartObject();
-            foreach (var property in value.EnumerateObject())
-            {
-                writer.WritePropertyName(property.Name); WriteNormalized(writer, property.Value);
-            }
-            writer.WriteEndObject();
-        }
-        else if (value.ValueKind == JsonValueKind.Array)
-        {
-            writer.WriteStartArray();
-            foreach (var item in value.EnumerateArray()) WriteNormalized(writer, item);
-            writer.WriteEndArray();
-        }
-        else if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && number == 0)
-            writer.WriteNumberValue(0);
-        else value.WriteTo(writer);
-    }
+    internal static string Hash<T>(T value) => OrbitalCanonicalJson.Digest(value).Sha256;
     internal static void Require(bool condition, string reason)
     {
         if (!condition) throw new ArgumentException(reason);

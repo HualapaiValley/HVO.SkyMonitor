@@ -301,6 +301,118 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~OrbitalElementsRefreshPerformanceTests"
 ```
 
+### Orbital snapshot canonical serialization (Refs #1422)
+
+`OrbitalSnapshotAllocationEvidenceTests` (Manual, Astronomy test project) retains
+`synthetic-gp-contract-1422-v1`: 16,754 deterministic synthetic records for
+16,690 objects, 826 six-digit catalog numbers and 64 objects with two element
+sets. It measures the shared contract directly, with no provider bytes,
+network, filesystem or database operations in the measured stages. It isolates
+`Create`, `SerializePayload` and cold `Parse` (labelled `Load` in the report).
+This is a contract workload at #528's population size, rather than a rerun of
+its acquisition pipeline or a production qualification.
+
+Baseline: `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`. Candidate: the #1422
+implementation accompanying this evidence. The same standalone harness source
+and workload were run against both assemblies; the committed Manual test
+retains that generator and measurement loop. Each stage/implementation ran in
+a fresh process after input/reference-snapshot setup, one explicit warm-up and
+ten measured repeats with forced GC before each repeat. Allocation uses
+`GC.GetAllocatedBytesForCurrentThread` for the synchronous operation, wall time
+uses `Stopwatch`, and CPU uses `Process.TotalProcessorTime`. Peak working set
+is the process high-water mark across setup, warm-up and measurement, not a
+stage-local delta. Medians are shown except for that high-water mark. The host
+was native Ubuntu 24.04.5 x64, .NET SDK 10.0.402/runtime 10.0.13, workstation
+GC, 12 visible Intel i9-14900K CPUs and 16.15 GB RAM; Release configuration.
+
+| Stage | Allocated MB before / after | Wall ms before / after | CPU ms before / after | Peak working set MB before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Create | 4,561.32 / 29.98 | 1,876.55 / 121.22 | 1,905.15 / 177.86 | 760.25 / 180.81 |
+| SerializePayload | 471.84 / 22.70 | 199.76 / 91.65 | 207.74 / 115.81 | 632.01 / 186.44 |
+| Load (Parse) | 2,072.57 / 77.68 | 895.89 / 190.32 | 939.52 / 223.95 | 632.91 / 209.88 |
+
+MB is decimal. Candidate allocation falls by 99.34%, 95.19% and 96.25%,
+respectively. Wall and CPU costs also decrease in every measured stage.
+The table's two arms ran one after the other, not interleaved, so its wall
+and CPU columns are diagnostic only. Allocation and byte identities are the
+primary regression evidence. There is no storage I/O or backlog to qualify in
+these contract-only stages, and the result makes no frame-cadence claim.
+
+An interleaved confirmation then ran the committed Manual test against both
+arms on the same host. Each stage ran four fresh processes in counterbalanced
+order: baseline, candidate, candidate, baseline. All twelve ran within one
+heavy-lock hold, 2026-10-22T13:08:21Z to 13:10:17Z. The probable co-resident
+neighbour VM was not locked. Every process reproduced the table's allocation
+medians and both identities exactly. Per-process wall medians, followed by the
+range over all 20 trials in each arm, in milliseconds:
+
+| Stage | Baseline wall ms (B1, B4; range) | Candidate wall ms (C2, C3; range) |
+| --- | ---: | ---: |
+| Create | 1,822.20, 1,856.18; 1,745.10–1,909.83 | 110.29, 111.46; 103.27–546.61 |
+| SerializePayload | 195.05, 192.07; 185.80–199.35 | 96.00, 105.13; 71.48–119.48 |
+| Load (Parse) | 929.42, 896.27; 831.35–1,181.66 | 192.50, 194.97; 167.50–323.59 |
+
+In every stage the candidate's slowest trial beats the baseline's fastest, so
+the timing improvement is resolvable despite cross-session drift.
+
+Both runs produced exactly 21,228,568 payload bytes and identical identities:
+
+- Payload: `DFC48C3F199AFC74FC74C0D4ADDF26A8F728B5FD2AD0E0B530004F5D0FEA5CB3`.
+- Manifest: `473AF8AD671B56D3B231CAB0246AFA6696B0A9965B71A2E760FD0D3F38C471EB`.
+
+Snapshot graphs now write in ordinal property order directly through the JSON
+serializer, with v1 numeric-zero and timestamp escaping preserved. Hashing
+uses the serializer's bounded Stream path into incremental SHA-256. `Create`
+validates/normalizes each record identity once and reuses its payload digest;
+`Parse` compares the original input hash/length with one streamed canonical
+digest. Public generic canonicalization retains a sorted DOM fallback for
+other input shapes. The unchanged contract-v1 fixtures and an independent copy
+of the former canonical writer verify byte identity, including multi-buffer
+payloads, Unicode, offsets and floating-point edge cases. Rehashed
+noncanonical payloads are still rejected with the original reason code.
+
+After a Release solution build, reproduce each stage in a fresh test process:
+
+```bash
+for stage in Create SerializePayload Load; do
+  MSBUILDDISABLENODEREUSE=1 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+    HVO_ISSUE1422_PHASE="$stage" HVO_ISSUE1422_EVIDENCE_ROOT="$PWD/TestResults/issue-1422" \
+    env -u HVO_PRODUCTION_CATALOG_BUNDLE \
+    flock -o /tmp/hvo-heavy-gate.lock timeout 1500 \
+    dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+      --no-build --configuration Release \
+      --filter "FullyQualifiedName~OrbitalSnapshotAllocationEvidenceTests"
+done
+```
+
+Each invocation writes ten observations to `TestResults/issue-1422/<stage>.json`.
+The original standalone before/after reports are local ignored evidence under
+`TestResults/issue-1422/{before,after}-<stage>.json`; no generated population
+or payload is committed.
+
+To reproduce the baseline arm:
+
+1. Make a detached checkout of
+   `e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa`.
+2. Copy the committed
+   `tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs`
+   into it. The test uses only public APIs that already exist at the baseline.
+3. Build its Astronomy test project in Release.
+4. Run the same loop from that checkout with a separate evidence root.
+
+Alternating the two checkouts within each stage, as the confirmation above
+did, keeps the timing comparison inside one session:
+
+```bash
+git worktree add --detach ../hvo-1422-baseline e9c090eb8ab2a5d1f893758be8e32ee0e3eca3fa
+cp tests/HVO.SkyMonitor.Astronomy.Tests/OrbitalSnapshotAllocationEvidenceTests.cs \
+  ../hvo-1422-baseline/tests/HVO.SkyMonitor.Astronomy.Tests/
+(cd ../hvo-1422-baseline && dotnet build tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  --configuration Release -nodeReuse:false -p:UseSharedCompilation=false)
+# then run the loop above with `cd ../hvo-1422-baseline` and
+# HVO_ISSUE1422_EVIDENCE_ROOT="$PWD/TestResults/issue-1422/before"
+```
+
 ### Orbital consumer and sweep interference (Refs #1425)
 
 `OrbitalConsumerAndSweepInterferencePerformanceTests` extends the same in-process synthetic workload above. It
