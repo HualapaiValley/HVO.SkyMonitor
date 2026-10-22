@@ -203,7 +203,113 @@ public sealed partial class LifecycleContractTests
         }
     }
 
-    // #1523 item 5: the word after a bare password is hidden as its value, so a fixed message is worded to put none there. No
+    // A control between a key and its quoted value keeps the merge base's passes from reading them as an assignment. The control
+    // is removed afterwards, so when an installer error embeds the diagnostic and the top-level writer redacts it again, the merge
+    // base hid the value then. The #1523 passes hide that key as the value of the key before it, which must not show the value
+    // the second reading hid (PR-1528-R1 F4). The rows end in each of the #1523 items 1 to 4.
+    [TestMethod]
+    [DataRow(false, "token='password=' tailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
+        "token='<redacted>' tailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+    [DataRow(true, "token='password=' tailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
+        "token='<redacted>' tailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+    [DataRow(false, "token='password=' xtailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
+        "token='<redacted>' xtailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+    [DataRow(true, "token='password=' xtailtoken \u009C'" + Diagnostic1523Value + " db_password:' \"X\" tail",
+        "token='<redacted>' xtailtoken '<redacted>'", "token='<redacted>' <redacted> '<redacted>")]
+    [DataRow(false, "api_key=db_password\t\"a\"apassword \u0080\t\"" + Diagnostic1523Value + "\" tail",
+        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>\t\"<redacted>\"<redacted> \t\"<redacted>\" tail")]
+    [DataRow(true, "api_key=db_password\t\"a\"apassword \u0080\t\"" + Diagnostic1523Value + "\" tail",
+        "api_key=<redacted>\t\"a\"apassword \t\"<redacted>\" tail", "api_key=<redacted>\t\"<redacted>\"<redacted> \t\"<redacted>\" tail")]
+    [DataRow(false, "ObjectStorage__SecretKey xtailtoken \u0090\t \"" + Diagnostic1523Value + "\" tail",
+        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted> \t \"<redacted>")]
+    [DataRow(true, "ObjectStorage__SecretKey xtailtoken \u0090\t \"" + Diagnostic1523Value + "\" tail",
+        "ObjectStorage__SecretKey xtailtoken \t \"<redacted>\" tail", "ObjectStorage__SecretKey <redacted> \t \"<redacted>")]
+    [DataRow(false, "see\u001b[1mSecretKey xtailtoken \u0090 \"" + Diagnostic1523Value + "\" tail",
+        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>  \"<redacted>")]
+    [DataRow(true, "see\u001b[1mSecretKey xtailtoken \u0090 \"" + Diagnostic1523Value + "\" tail",
+        "seeSecretKey xtailtoken  \"<redacted>\" tail", "seeSecretKey <redacted>  \"<redacted>")]
+    public async Task Diagnostic1523_EmbeddedDiagnosticKeepsTheMergeBaseRescan(bool json, string diagnostic, string mergeBase, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        ArgumentNullException.ThrowIfNull(mergeBase);
+        ArgumentNullException.ThrowIfNull(expected);
+        const string prefix = "Docker command failed (docker run): ";
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(prefix + Redaction.SafeDiagnostic(diagnostic)));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        else error = error.TrimEnd('\r', '\n')["Installation failed: ".Length..];
+        Assert.IsFalse(error.Contains(Diagnostic1523Value, StringComparison.Ordinal), "Credential leaked: " + error);
+        Assert.AreEqual(prefix + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
+        // Differential: what is shown, apart from the markers, is a part of what the merge base's writer showed, in order.
+        var shown = expected.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var position = 0;
+        foreach (var character in shown)
+        {
+            position = rest.IndexOf(character, position) + 1;
+            Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(error)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
+        }
+    }
+
+    // A failed rollback's error embeds an error that embeds a diagnostic, and each is redacted and cut again. Reading a text
+    // again can shorten it, as when a marker runs into the marker after it, and a later cut then reaches a character the merge
+    // base's did not, so the diagnostic ends before any character the merge base's passes, reading it once or twice, show
+    // earlier than they show it in the merge base's output (PR-1528-R1 F4). Q stands for a value.
+    [TestMethod]
+    [DataRow(false, "docker run exited 125: ", 119,
+        "db__password xsecret\t\u0080 :Q=Q\tsee\u001b[1mSecretKey:'\"\"api_key=SecretKey\t'a b'\tx\u0080'Q Qfile= \" ",
+        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted> :<redacted>\tseeSecretKey:'<redacted>'")]
+    [DataRow(true, "docker run exited 125: ", 119,
+        "db__password xsecret\t\u0080 :Q=Q\tsee\u001b[1mSecretKey:'\"\"api_key=SecretKey\t'a b'\tx\u0080'Q Qfile= \" ",
+        "db__password xsecret\t :<redacted>\tseeSecretKey:'<redacted>' b'\tx", "db__password <redacted> :<redacted>\tseeSecretKey:'<redacted>'")]
+    [DataRow(false, "Docker image pull failed: ", 78,
+        "api_key=db_password\t\"a\"\txsecret  \u001b:'Q Q'client_secret=  'Q' tail see\u001b[1mSecretKey  SecretKey \u009C\u009C Q'Q\t/ ' ",
+        "api_key=<redacted>\t\"a\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  SecretKey <redacted> Q'",
+        "api_key=<redacted>\t\"<redacted>\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  <redacted>")]
+    [DataRow(true, "Docker image pull failed: ", 78,
+        "api_key=db_password\t\"a\"\txsecret  \u001b:'Q Q'client_secret=  'Q' tail see\u001b[1mSecretKey  SecretKey \u009C\u009C Q'Q\t/ ' ",
+        "api_key=<redacted>\t\"a\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  SecretKey <redacted> Q'",
+        "api_key=<redacted>\t\"<redacted>\"\txsecret  :'<redacted>'  '<redacted>' tail seeSecretKey  <redacted>")]
+    public async Task Diagnostic1523_NestedErrorKeepsTheMergeBaseCut(
+        bool json, string command, int padding, string diagnostic, string mergeBase, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        ArgumentNullException.ThrowIfNull(mergeBase);
+        ArgumentNullException.ThrowIfNull(expected);
+        const string rollback = "Candidate failed and exact rollback also failed: ";
+        // The failed command's error, with the arguments it names before the diagnostic.
+        var embedding = command + new string('p', padding) + " ";
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(rollback + Redaction.SafeDiagnostic(embedding + Redaction.SafeDiagnostic(diagnostic))));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        else error = error.TrimEnd('\r', '\n')["Installation failed: ".Length..];
+        Assert.IsFalse(error.Contains('Q', StringComparison.Ordinal), "Credential leaked: " + error);
+        Assert.AreEqual(rollback + embedding + expected.Replace("\t", "\\t", StringComparison.Ordinal), error);
+        // Differential: what is shown, apart from the markers, is a part of what the merge base's writer showed, in order.
+        var shown = expected.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var rest = mergeBase.Replace("<redacted>", string.Empty, StringComparison.Ordinal);
+        var position = 0;
+        foreach (var character in shown)
+        {
+            position = rest.IndexOf(character, position) + 1;
+            Assert.IsGreaterThan(0, position, $"{JsonSerializer.Serialize(error)} shows what {JsonSerializer.Serialize(mergeBase)} did not.");
+        }
+    }
+
+    // #1523 item 5:the word after a bare password is hidden as its value, so a fixed message is worded to put none there. No
     // message bypasses the scan; the top-level writer redacts each as it would any diagnostic, and every word must survive.
     [TestMethod]
     [DataRow("CredentialFile.cs")]

@@ -153,8 +153,9 @@ internal static class Redaction
     /// The redacted text, at most <paramref name="length"/> characters of it. The merge base cut its redacted text there, and
     /// text the #1523 passes hide is often shorter once redacted, so the cut is made where the merge base made it: what follows
     /// that is not shown, however much shorter the text before it is (PR-1528-R0 F1). A diagnostic is often embedded in a
-    /// message that is cut again, so a cut text also ends where it first becomes shorter than the merge base's: nothing it
-    /// shows comes earlier than the merge base showed it, and no later cut can reach further.
+    /// message that is redacted and cut again, so the text also hides what the merge base's passes hide when they read its
+    /// output again (PR-1528-R1 F4), and a cut text ends before the first character it would show earlier than the merge base
+    /// did: no later cut can reach further.
     /// </summary>
     private static string Redacted(string text, int length)
     {
@@ -166,8 +167,7 @@ internal static class Redaction
         // the text apart from the merge base's, and a character either hides is hidden, so no value the merge base hid is shown.
         var source = Tracked.Of(text);
         var shown = Passes(source, extended: false);
-        var redacted = WithoutControls(WithHidden(
-            shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length), cut: length != int.MaxValue));
+        var redacted = WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length), length);
         return redacted.Length <= length ? redacted : redacted[..length];
     }
 
@@ -214,24 +214,42 @@ internal static class Redaction
     }
 
     /// <summary>
-    /// The merge base's text before <paramref name="end"/>, with each character the extended passes hid hidden too, so its
-    /// output is unchanged where they hide nothing more. A run of such characters, with the markers and boundaries next to it,
-    /// reads as one marker. With <paramref name="cut"/> set, the text ends at the first marker that leaves it shorter than the
-    /// merge base's, apart from the controls both remove, so each character after the marker stays out of a later cut.
+    /// The merge base's text before <paramref name="end"/>, with each character the extended passes hid hidden too and the
+    /// controls removed, so its output is unchanged where they hide nothing more. A run of such characters, with the markers
+    /// and boundaries next to it, reads as one marker. A diagnostic is often embedded in an installer error that is redacted
+    /// again, and removing the controls can show the merge base's passes a key they then find: the text also hides what they
+    /// hide when they read the merge base's output again, because the #1523 passes may have hidden that key (PR-1528-R1 F4).
+    /// A text cut at <paramref name="length"/> ends before the first character it shows earlier than the merge base's output
+    /// does, and is then <see cref="Settled"/>, so no later cut reaches a character the merge base's would not.
     /// </summary>
-    private static string WithHidden(Tracked shown, Tracked extended, int length, int end, bool cut)
+    private static string WithHidden(Tracked shown, Tracked extended, int origins, int end, int length)
     {
-        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return shown.Text[..end];
-        var hidden = new bool[length];
+        if (string.Equals(shown.Text, extended.Text, StringComparison.Ordinal)) return WithoutControls(shown.Text[..end]);
+        var hidden = new bool[origins];
         Array.Fill(hidden, true);
         foreach (var origin in extended.Origins)
         {
             if (origin != Written) hidden[origin] = false;
         }
-        var result = new System.Text.StringBuilder(end);
+        // Where each character stands when the merge base's output is read again. The merge base's own output reads the same
+        // on a third reading, so one more reading finds every value a later redaction of it does.
+        var output = WithoutControls(shown, end);
+        var again = new int[origins];
+        Array.Fill(again, -1);
+        var rescanned = Passes(output, extended: false);
+        for (var index = 0; index < rescanned.Origins.Length; index++)
+        {
+            if (rescanned.Origins[index] != Written) again[rescanned.Origins[index]] = index;
+        }
+        foreach (var origin in output.Origins)
+        {
+            if (origin != Written && again[origin] < 0) hidden[origin] = true;
+        }
+        var cut = length != int.MaxValue;
+        var result = new TrackedBuilder(end);
         var position = 0;
-        // How much longer the text is so far than the merge base's.
-        var longer = 0;
+        // Where the next character stands in the merge base's output, apart from the controls.
+        var kept = 0;
         while (position < end)
         {
             var run = position;
@@ -240,17 +258,76 @@ internal static class Redaction
             {
                 hides |= shown.Origins[run++] != Written;
             }
-            if (run == position) result.Append(shown.Text[run++]);
-            else if (hides)
+            if (run == position)
             {
-                result.Append("<redacted>");
-                longer += "<redacted>".Length - Width(shown.Text.AsSpan(position, run - position));
-                if (cut && longer < 0) break;
+                if (cut && !IsControlIntroducer(shown.Text[run]) && result.Length < kept) break;
+                run++;
             }
-            else result.Append(shown.Text, position, run - position);
+            if (hides)
+            {
+                result.AppendRedacted();
+            }
+            else
+            {
+                for (var index = position; index < run; index++)
+                {
+                    if (!IsControlIntroducer(shown.Text[index])) result.Append(shown, index, 1);
+                }
+            }
+            kept += Width(shown.Text.AsSpan(position, run - position));
             position = run;
         }
-        return result.ToString();
+        return cut ? Settled(result.ToTracked(), again, length) : result.ToTracked().Text;
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> cut at <paramref name="length"/>, and then before the first character the merge base's passes
+    /// show earlier, when they read it once or twice, than they show it in the merge base's output: an installer error embeds a
+    /// diagnostic and is redacted and cut again, and an error can embed that error in turn. Reading the text can shorten what
+    /// comes before a character, as when a marker a quoted value runs into reads as part of that value, and a cut then reaches
+    /// one more character than the merge base's did (PR-1528-R1 F4). A shorter text can read differently near its end, so
+    /// the cut text is read again until no character is shown earlier.
+    /// </summary>
+    private static string Settled(Tracked text, int[] again, int length)
+    {
+        var end = Math.Min(text.Text.Length, length);
+        while (true)
+        {
+            text = new Tracked(text.Text[..end], text.Origins[..end]);
+            var once = Passes(text, extended: false);
+            var twice = Passes(once, extended: false);
+            var first = Math.Min(Earlier(text, once, again), Earlier(text, twice, again));
+            if (first == end) return text.Text;
+            end = first;
+        }
+    }
+
+    /// <summary>
+    /// The position in <paramref name="text"/> of the first character <paramref name="reading"/> of it shows earlier than
+    /// <paramref name="again"/> has it, or its length. The characters of both keep the order they had.
+    /// </summary>
+    private static int Earlier(Tracked text, Tracked reading, int[] again)
+    {
+        var at = 0;
+        for (var index = 0; index < text.Origins.Length; index++)
+        {
+            var origin = text.Origins[index];
+            if (origin == Written) continue;
+            while (at < reading.Origins.Length && (reading.Origins[at] == Written || reading.Origins[at] < origin)) at++;
+            if (at < reading.Origins.Length && reading.Origins[at] == origin && at < again[origin]) return index;
+        }
+        return text.Origins.Length;
+    }
+
+    /// <summary>The characters of <paramref name="text"/> before <paramref name="end"/> that removing the controls leaves.</summary>
+    private static Tracked WithoutControls(Tracked text, int end)
+    {
+        var result = new TrackedBuilder(end);
+        for (var position = 0; position < end; position++)
+        {
+            if (!IsControlIntroducer(text.Text[position])) result.Append(text, position, 1);
+        }
+        return result.ToTracked();
     }
 
     private static string WithoutUserInformation(string text)
@@ -539,6 +616,8 @@ internal static class Redaction
     {
         private readonly System.Text.StringBuilder text = new(capacity);
         private readonly List<int> origins = new(capacity);
+
+        public int Length => text.Length;
 
         public TrackedBuilder Append(Tracked source, int start, int length)
         {
