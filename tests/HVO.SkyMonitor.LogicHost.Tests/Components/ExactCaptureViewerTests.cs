@@ -330,6 +330,48 @@ public sealed class ExactCaptureViewerTests
     }
 
     [TestMethod]
+    public async Task SupersededActorChangeResumingAfterSignOut_RestoresNothing()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        var owner = Owner();
+        using var context = CreateContext(presentations, out var materializer, out var authentication, owner);
+        materializer.Pending = new TaskCompletionSource<CentralPresentationMaterializationResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        context.JSInterop.SetupModule(ExactCaptureViewer.ModulePath)
+            .Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([LayerIdentity(CaptureA, 1)]);
+        var host = RenderViewer(context, CaptureA, Detail(CaptureA));
+        var viewer = host.FindComponent<ExactCaptureViewer>();
+        _ = SaveButton(host).ClickAsync(new());
+        host.WaitForAssertion(() => materializer.Tokens.Should().ContainSingle());
+        // Hold the owner's save cancellation open so the first actor change is suspended while it cancels.
+        using var cancellationGate = new ManualResetEventSlim();
+        materializer.Tokens.Single().Register(() => cancellationGate.Wait(TimeSpan.FromSeconds(10)));
+        try
+        {
+            await host.InvokeAsync(() => authentication.Change(User("intermediate")));
+            await host.InvokeAsync(() => authentication.Change(new ClaimsPrincipal(new ClaimsIdentity())));
+            host.WaitForAssertion(() => AssertMetadataOnly(host, CaptureA, "the signed-out state is current"));
+            var renders = viewer.RenderCount;
+
+            cancellationGate.Set();
+            // The superseded change renders once more when it finishes, whatever it decides.
+            viewer.WaitForState(() => viewer.RenderCount > renders);
+        }
+        finally
+        {
+            cancellationGate.Set();
+        }
+
+        AssertMetadataOnly(host, CaptureA, "a superseded actor change cannot restore a presentation after sign-out");
+        viewer.Instance.Presentation.Should().BeNull();
+        presentations.Principals.Should().ContainSingle().Which.Should().BeSameAs(owner);
+        // A save attempted now completes at once rather than waiting on the owner's pending one.
+        materializer.Pending = null;
+        await viewer.InvokeAsync(viewer.Instance.SaveSelectedStackAsync);
+        materializer.Principals.Should().ContainSingle().Which.Should().BeSameAs(owner);
+    }
+
+    [TestMethod]
     public void ViewerRole_HasNoSaveControl()
     {
         var presentations = new RecordingPresentations(id => Found(Presentation(id)));

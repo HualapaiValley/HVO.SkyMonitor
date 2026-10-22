@@ -65,15 +65,11 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         {
             return;
         }
+        // Everything the previous capture or actor held is invalidated before the first await, so an update
+        // that is superseded while it waits can never restore its own actor or presentation over a newer one.
         captureId = requestedCaptureId;
         authenticationState = requestedAuthenticationState;
         principal = null;
-        if (presentationSaveCancellation is { } activeSave)
-        {
-            await activeSave.CancelAsync();
-            activeSave.Dispose();
-        }
-        presentationSaveCancellation = null;
         var generation = ++presentationGeneration;
         IsSavingPresentation = false;
         IsBaseImageUnavailable = false;
@@ -81,7 +77,14 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
         Presentation = null;
         PresentationStatusMessage = null;
         MaterializationMessage = null;
-        if (requestedCaptureId is not { } exactCaptureId)
+        var activeSave = presentationSaveCancellation;
+        presentationSaveCancellation = null;
+        if (activeSave is not null)
+        {
+            await activeSave.CancelAsync();
+            activeSave.Dispose();
+        }
+        if (generation != presentationGeneration || requestedCaptureId is not { } exactCaptureId)
         {
             return;
         }
