@@ -83,14 +83,20 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
     [TestMethod]
     [DataRow("constellationLineRed", "0")]
     [DataRow("constellationLineRed", "255")]
+    [DataRow("constellationLineRed", "-0")]
+    [DataRow("constellationLineGreen", "0")]
+    [DataRow("constellationLineGreen", "-0")]
     [DataRow("constellationLineGreen", "-1")]
     [DataRow("constellationLineGreen", "256")]
+    [DataRow("constellationLineBlue", "0")]
+    [DataRow("constellationLineBlue", "-0")]
     [DataRow("constellationLineBlue", "1.5")]
     [DataRow("constellationLineBlue", "1e2")]
     [DataRow("constellationLineBlue", "null")]
     [DataRow("constellationLineThickness", "1")]
     [DataRow("constellationLineThickness", "8")]
     [DataRow("constellationLineThickness", "0")]
+    [DataRow("constellationLineThickness", "-0")]
     [DataRow("constellationLineThickness", "9")]
     [DataRow("constellationLineThickness", "2.5")]
     [DataRow("constellationLineThickness", "2.0")]
@@ -106,30 +112,61 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
         Assert.AreEqual(BinderAccepts(edited), descriptorAccepts, $"{member}={token}");
     }
 
+    // The codec is stricter than the binder on quoted numbers and duplicate members. It reads an element rather than
+    // re-parsing its text, so it does not see comments or trailing commas that the binder rejects; the graph and
+    // configuration parsers admit neither, so no parsed node carries them.
     [TestMethod]
-    public async Task QuotedNumbersAreTheOneDeclaredDifferenceFromTheLenientBinder()
+    [DataRow("quoted-number", true, ProcessingOptionReasonCodes.WrongType)]
+    [DataRow("duplicate-member", true, ProcessingOptionReasonCodes.DuplicateMember)]
+    [DataRow("case-variant-duplicate-member", true, ProcessingOptionReasonCodes.DuplicateMember)]
+    [DataRow("comment", false, null)]
+    [DataRow("trailing-comma", false, null)]
+    public async Task TheDeclaredDifferencesFromTheBinderAreQuotedNumbersDuplicateMembersAndCommentSyntax(
+        string difference,
+        bool binderAccepts,
+        string? codecReason)
     {
-        var edited = WithSceneMember(await LoadAsync(W6).ConfigureAwait(false), "constellationLineThickness", "\"3\"");
+        var configuration = await LoadAsync(W6).ConfigureAwait(false);
+        var raw = SceneOptions(configuration).GetRawText().TrimEnd();
+        var edited = difference switch
+        {
+            "quoted-number" => WithSceneMember(configuration, "constellationLineThickness", "\"3\""),
+            "duplicate-member" => WithSceneOptions(
+                configuration, "{\"constellationLineRed\":1,\"constellationLineRed\":2," + raw[1..]),
+            "case-variant-duplicate-member" => WithSceneOptions(
+                configuration, "{\"constellationLineRed\":1,\"ConstellationLineRed\":2," + raw[1..]),
+            "comment" => WithSceneOptions(configuration, "{/*before*/" + raw[1..]),
+            "trailing-comma" => WithSceneOptions(configuration, raw[..^1] + ",}"),
+            _ => throw new ArgumentOutOfRangeException(nameof(difference), difference, null)
+        };
 
-        Assert.IsTrue(BinderAccepts(edited));
-        Assert.AreEqual(
-            ProcessingOptionReasonCodes.WrongType,
-            ProcessingNodeOptionsCodec.Decode(ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited))
-                .Diagnostics.Single().Code);
+        var decoded = ProcessingNodeOptionsCodec.Decode(
+            ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited));
+
+        Assert.AreEqual(binderAccepts, BinderAccepts(edited));
+        Assert.AreEqual(!binderAccepts, decoded.IsValid);
+        Assert.AreEqual(codecReason, decoded.Diagnostics.SingleOrDefault()?.Code);
     }
 
     private static CameraModuleConfig WithSceneMember(CameraModuleConfig configuration, string member, string token)
     {
-        var steps = configuration.Pipeline!.Steps.Select(step =>
-        {
-            if (step.Id != "scene-presentation")
-            {
-                return step;
-            }
-            var options = JsonNode.Parse(step.Options!.Value.GetRawText())!.AsObject();
-            options[member] = JsonNode.Parse(token);
-            return step with { Options = JsonSerializer.SerializeToElement(options) };
-        }).ToArray();
+        var options = JsonNode.Parse(SceneOptions(configuration).GetRawText())!.AsObject();
+        options[member] = JsonNode.Parse(token);
+        return WithSceneOptions(configuration, JsonSerializer.SerializeToElement(options));
+    }
+
+    private static CameraModuleConfig WithSceneOptions(CameraModuleConfig configuration, string json)
+    {
+        using var document = JsonDocument.Parse(
+            json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+        return WithSceneOptions(configuration, document.RootElement.Clone());
+    }
+
+    private static CameraModuleConfig WithSceneOptions(CameraModuleConfig configuration, JsonElement options)
+    {
+        var steps = configuration.Pipeline!.Steps
+            .Select(step => step.Id == "scene-presentation" ? step with { Options = options } : step)
+            .ToArray();
         return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
     }
 

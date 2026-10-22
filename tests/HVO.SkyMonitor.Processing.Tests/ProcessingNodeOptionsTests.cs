@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -126,6 +127,9 @@ public sealed class ProcessingNodeOptionsTests
     [DataRow("""{"ConstellationLineThickness":0}""", "processing.options.out-of-range", "ConstellationLineThickness")]
     [DataRow("""{"constellationLineRed":256}""", "processing.options.out-of-range", "constellationLineRed")]
     [DataRow("""{"constellationLineGreen":-1}""", "processing.options.out-of-range", "constellationLineGreen")]
+    [DataRow("""{"constellationLineRed":-0}""", "processing.options.out-of-range", "constellationLineRed")]
+    [DataRow("""{"constellationLineGreen":-0}""", "processing.options.out-of-range", "constellationLineGreen")]
+    [DataRow("""{"constellationLineBlue":-0}""", "processing.options.out-of-range", "constellationLineBlue")]
     [DataRow("""{"constellationLineBlue":1.5}""", "processing.options.wrong-type", "constellationLineBlue")]
     [DataRow("""{"constellationLineRed":"#60A0FF"}""", "processing.options.wrong-type", "constellationLineRed")]
     [DataRow("""{"constellationLineRed":1,"ConstellationLineRed":1}""", "processing.options.duplicate-member", "ConstellationLineRed")]
@@ -138,6 +142,20 @@ public sealed class ProcessingNodeOptionsTests
         var diagnostic = result.Diagnostics.Single();
         Assert.AreEqual(code, diagnostic.Code);
         Assert.AreEqual($"nodes[3].effectiveOptions.{member}", diagnostic.Path);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(255)]
+    public void DecodeAcceptsEveryChannelAtItsUnsignedBounds(int channel)
+    {
+        var result = ProcessingNodeOptionsCodec.Decode(Scene, Json(string.Create(
+            CultureInfo.InvariantCulture,
+            $$"""{"constellationLineRed":{{channel}},"constellationLineGreen":{{channel}},"constellationLineBlue":{{channel}}}""")));
+
+        Assert.IsTrue(result.IsValid);
+        var expected = (byte)channel;
+        Assert.AreEqual(new PresentationColor(expected, expected, expected), result.Get(Color).Value.AsColor());
     }
 
     [TestMethod]

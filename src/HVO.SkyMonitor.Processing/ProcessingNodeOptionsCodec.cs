@@ -42,14 +42,21 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// toggle is <c>true</c> or <c>false</c>, and a quoted number or <c>null</c> is the wrong type. Members the descriptor
 /// does not describe are never read or rewritten.
 /// </summary>
+/// <remarks>
+/// The declared differences from CameraAgent's options binding: a quoted number, which the binder reads, is the wrong
+/// type here; a described member repeated, also ignoring case, is a duplicate here where the binder keeps the last;
+/// and comments or trailing commas inside an element are not seen here, because the codec reads the element rather
+/// than re-parsing its text as the binder does. The graph and configuration parsers admit neither comments nor
+/// trailing commas, so no parsed node carries them.
+/// </remarks>
 public static class ProcessingNodeOptionsCodec
 {
     public const string DefaultPath = "effectiveOptions";
 
     private const byte MaximumChannel = byte.MaxValue;
 
-    // Options may come from operator configuration read with comments and trailing commas allowed, and those stay in
-    // the raw bytes that an edit preserves.
+    // An element built with comments or trailing commas allowed keeps them in its raw bytes, so the edit's span scan
+    // tolerates them and preserves them rather than failing.
     private static readonly JsonReaderOptions ReaderOptions = new()
     {
         CommentHandling = JsonCommentHandling.Skip,
@@ -215,10 +222,11 @@ public static class ProcessingNodeOptionsCodec
                 : new(ProcessingOptionReasonCodes.WrongType, MemberPath(path, member.Name),
                     $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}.");
         }
-        return option.Kind == ProcessingOptionKind.Color && value.AsWholeNumber() is < 0 or > MaximumChannel
+        // A channel is read as CameraAgent binds it, as an unsigned byte, so a signed zero is out of range like -1.
+        return option.Kind == ProcessingOptionKind.Color && !member.Value.TryGetByte(out _)
             ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name), string.Create(
                 CultureInfo.InvariantCulture,
-                $"Option '{option.Key}' member '{member.Name}' must be between 0 and {MaximumChannel}."))
+                $"Option '{option.Key}' member '{member.Name}' must be an unsigned whole number between 0 and {MaximumChannel}."))
             : null;
     }
 
