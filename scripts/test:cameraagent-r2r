@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """CameraAgent release publish contracts; no SDK, Docker or network required."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import runpy
+import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLISH = ROOT / 'scripts/release:cameraagent-publish'
 CHECK = ROOT / 'scripts/release:check-cameraagent-publish'
+UPDATE = ROOT / 'scripts/time-data:update'
+TIME_DATA = 'src/HVO.SkyMonitor.CameraAgent.Common/OrbitalPlanning/TimeData'
 
 
 class CameraAgentR2R(unittest.TestCase):
@@ -201,6 +206,13 @@ class CameraAgentR2R(unittest.TestCase):
         native[:6] = b'\x7fELF\x02\x01'
         struct.pack_into('<H', native, 18, 62)
         (self.root / 'libSkiaSharp.so').write_bytes(native)
+        (self.root / 'time-data').mkdir()
+        provenance = {'schema': 'hvo-bundled-time-data-v1'}
+        for name, file, content in [('earthOrientation', 'finals2000A.daily.extended', b'eop'),
+                                    ('leapSeconds', 'leap-seconds.list', b'leap')]:
+            (self.root / 'time-data' / file).write_bytes(content)
+            provenance[name] = {'file': file, 'sha256': hashlib.sha256(content).hexdigest().upper()}
+        (self.root / 'time-data/provenance.json').write_text(json.dumps(provenance))
 
     def test_checks_full_layout_and_rejects_wrong_native_library(self):
         self.layout()
@@ -213,6 +225,34 @@ class CameraAgentR2R(unittest.TestCase):
         struct.pack_into('<H', native, 18, 183)
         (self.root / 'libSkiaSharp.so').write_bytes(native)
         with self.assertRaisesRegex(ValueError, 'architecture mismatch'):
+            checker['check'](self.root, 'linux-x64')
+
+    def test_requires_bundled_time_data_matching_its_provenance(self):
+        self.layout()
+        checker = runpy.run_path(str(CHECK))
+        _, report = checker['check'](self.root, 'linux-x64')
+        self.assertEqual(report['timeDataFiles'], ['finals2000A.daily.extended', 'leap-seconds.list'])
+        provenance_path = self.root / 'time-data/provenance.json'
+        original = provenance_path.read_text()
+        (self.root / 'time-data/leap-seconds.list').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'leap-seconds.list does not match its provenance SHA-256'):
+            checker['check'](self.root, 'linux-x64')
+        (self.root / 'time-data/leap-seconds.list').write_bytes(b'leap')
+        (self.root / 'time-data/finals2000A.daily.extended').unlink()
+        with self.assertRaisesRegex(ValueError, 'finals2000A.daily.extended is missing'):
+            checker['check'](self.root, 'linux-x64')
+        (self.root / 'time-data/finals2000A.daily.extended').write_bytes(b'eop')
+        for edit, message in [(lambda p: p.update(schema='other'), 'not hvo-bundled-time-data-v1'),
+                              (lambda p: p.pop('leapSeconds'), 'does not name a file for leapSeconds'),
+                              (lambda p: p['earthOrientation'].update(file='../x'), 'does not name a file'),
+                              (lambda p: p['earthOrientation'].update(sha256='abc'), 'does not give a SHA-256')]:
+            provenance = json.loads(original)
+            edit(provenance)
+            provenance_path.write_text(json.dumps(provenance))
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                checker['check'](self.root, 'linux-x64')
+        provenance_path.unlink()
+        with self.assertRaisesRegex(ValueError, 'time-data/provenance.json is missing'):
             checker['check'](self.root, 'linux-x64')
 
     def test_rejects_forbidden_files_wrong_manifest_and_self_contained(self):
@@ -276,6 +316,86 @@ class CameraAgentR2R(unittest.TestCase):
         self.assertIn('window.Blazor', dockerfile)
         for path in (ROOT / 'docker-compose.apps.yml', ROOT / '.devcontainer/devcontainer.json'):
             self.assertNotIn('HVO_READY_TO_RUN', path.read_text())
+
+
+
+class TimeDataUpdateRollback(unittest.TestCase):
+    """scripts/time-data:update with fake curl and dotnet: no network, no SDK."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / 'scripts').mkdir()
+        shutil.copy2(UPDATE, self.root / 'scripts/time-data:update')
+        self.target = self.root / TIME_DATA
+        self.target.mkdir(parents=True)
+        self.previous = {'finals2000A.daily.extended': b'old eop\n', 'leap-seconds.list': b'old leap\n',
+                         'provenance.json': b'{"old": true}\n'}
+        for name, content in self.previous.items():
+            (self.target / name).write_bytes(content)
+            os.utime(self.target / name, (1_600_000_000, 1_600_000_000))
+        # The served pair is the committed snapshot, so the provider checksums and the summary are real.
+        snapshot = ROOT / TIME_DATA
+        serve = self.root / 'serve'
+        serve.mkdir()
+        eop = (snapshot / 'finals2000A.daily.extended').read_bytes()
+        (serve / 'finals2000A.daily.extended').write_bytes(eop)
+        (serve / 'checksums.sha512').write_text(f'{hashlib.sha512(eop).hexdigest()}  finals2000A.daily.extended\n')
+        (serve / 'daily.htm').write_text('<p>Distribution Statement A.</p><p>Approved for public release: distribution unlimited.</p>')
+        shutil.copy2(snapshot / 'leap-seconds.list', serve / 'leap-seconds.list')
+        self.served = {'finals2000A.daily.extended': eop, 'leap-seconds.list': (snapshot / 'leap-seconds.list').read_bytes()}
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'curl').write_text(f"""#!/usr/bin/env python3
+import shutil, sys
+args = sys.argv[1:]
+output = args[args.index('--output') + 1]
+headers = args[args.index('--dump-header') + 1]
+shutil.copyfile('{serve}/' + args[-1].rsplit('/', 1)[1], output)
+open(headers, 'w').write('HTTP/1.1 200 OK\\r\\nLast-Modified: Wed, 21 Oct 2026 17:11:48 GMT\\r\\n\\r\\n')
+""")
+        (bin_dir / 'dotnet').write_text("""#!/usr/bin/env python3
+import os, signal, sys
+mode = os.environ['FAKE_DOTNET']
+if mode == 'term':
+    os.kill(os.getppid(), signal.SIGTERM)
+sys.exit(1 if mode == 'fail' else 0)
+""")
+        for tool in ('curl', 'dotnet'):
+            (bin_dir / tool).chmod(0o755)
+        self.env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}')
+
+    def run_update(self, mode):
+        return subprocess.run(['bash', str(self.root / 'scripts/time-data:update')], env=dict(self.env, FAKE_DOTNET=mode),
+                              capture_output=True, text=True, timeout=120)
+
+    def assert_previous_restored_with_fresh_times(self, result):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restored the previous snapshot', result.stderr)
+        for name, content in self.previous.items():
+            self.assertEqual((self.target / name).read_bytes(), content, name)
+            self.assertGreater((self.target / name).stat().st_mtime, time.time() - 600, name)
+        self.assertEqual(sorted(path.name for path in self.target.iterdir()), sorted(self.previous))
+
+    def test_rejected_parse_restores_the_previous_snapshot_with_fresh_times(self):
+        self.assert_previous_restored_with_fresh_times(self.run_update('fail'))
+
+    def test_interrupted_parse_restores_the_previous_snapshot(self):
+        result = self.run_update('term')
+        self.assertEqual(result.returncode, 143, result.stderr)
+        self.assert_previous_restored_with_fresh_times(result)
+
+    def test_accepted_pair_is_kept_and_its_provenance_written(self):
+        result = self.run_update('pass')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('restored', result.stderr)
+        for name, content in self.served.items():
+            self.assertEqual((self.target / name).read_bytes(), content, name)
+        provenance = json.loads((self.target / 'provenance.json').read_text())
+        self.assertEqual(provenance['schema'], 'hvo-bundled-time-data-v1')
+        self.assertEqual(provenance['earthOrientation']['sha256'],
+                         hashlib.sha256(self.served['finals2000A.daily.extended']).hexdigest().upper())
 
 
 if __name__ == '__main__':

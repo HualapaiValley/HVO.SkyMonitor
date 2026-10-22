@@ -341,6 +341,7 @@ public class Program
         builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
         builder.Services.AddCameraAgentSatellitePlanning(builder.Configuration);
+        builder.Services.AddCameraAgentTimeDataRefresh();
         builder.Services.AddCameraAgentSatellitePlanningUi();
         builder.Services.AddSingleton<CalibrationOperationsTokenService>();
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
@@ -452,6 +453,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentOrbitalOperationsEndpoints();
+        app.MapCameraAgentTimeDataOperationsEndpoints();
         app.MapCameraAgentSpaceWeatherOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentSettingsEndpoints();

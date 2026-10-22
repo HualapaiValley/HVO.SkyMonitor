@@ -234,6 +234,7 @@ release_scripts_paths=(
   "scripts/release:check-cameraagent-publish"
   "scripts/cameraagent-release.targets"
   "scripts/test:cameraagent-r2r"
+  "scripts/time-data:update"
   "scripts/release:assets"
   "scripts/release:combine-images"
   "scripts/test:release-images"

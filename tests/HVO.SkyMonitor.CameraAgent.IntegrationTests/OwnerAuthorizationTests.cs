@@ -582,6 +582,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousOrbital = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/orbital-elements", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousOrbital.StatusCode);
+        using var anonymousTimeData = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/time-data", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousTimeData.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -638,6 +641,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerOrbital = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/orbital-elements", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerOrbital.StatusCode);
+        using var nonOwnerTimeData = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/time-data", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerTimeData.StatusCode);
         using var nonOwnerOrbitalRefresh = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative),
             new { reason = "unauthorized refresh" }).ConfigureAwait(false);
@@ -707,6 +713,13 @@ public sealed class OwnerAuthorizationTests
         StringAssert.Contains(orbitalJson, "orbital.disabled", StringComparison.Ordinal);
         Assert.IsFalse(orbitalJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(orbitalJson.Contains("celestrak", StringComparison.OrdinalIgnoreCase));
+        using var ownerTimeData = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/time-data", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerTimeData.StatusCode);
+        var timeDataJson = await ownerTimeData.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(timeDataJson, "hvo-time-data-status-v1", StringComparison.Ordinal);
+        StringAssert.Contains(timeDataJson, "\"refreshEnabled\":false", StringComparison.Ordinal);
+        Assert.IsFalse(timeDataJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         using var ownerPipeline = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerPipeline.StatusCode);

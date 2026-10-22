@@ -16,7 +16,7 @@ internal sealed record SatelliteSetupView(IReadOnlyList<CameraAgentSettingsGroup
     IReadOnlyList<SatelliteSetupProblem> Problems, IReadOnlyList<SatelliteTimeFileView> Files,
     OrbitalUtcInterval? EarthOrientationCoverage, DateTimeOffset? LeapSecondsExpireUtc,
     string? ActiveSource = null, OrbitalUtcInterval? FinalCoverage = null, OrbitalUtcInterval? PredictedCoverage = null,
-    OrbitalEarthOrientationStatus? WindowEarthOrientation = null);
+    OrbitalEarthOrientationStatus? WindowEarthOrientation = null, CameraAgentTimeDataStatus? TimeData = null);
 
 internal interface ICameraAgentSatelliteSetupUiService
 {
@@ -31,9 +31,16 @@ internal sealed class CameraAgentSatelliteSetupUiService(
     CameraAgentSettingsService settings,
     ICameraAgentOrbitalUiService orbital,
     ICameraAgentOrbitalTimeSource timeSource,
-    IOptionsMonitor<CameraAgentSatellitePlanningOptions> options) : ICameraAgentSatelliteSetupUiService
+    IOptionsMonitor<CameraAgentSatellitePlanningOptions> options,
+    CameraAgentTimeDataOperations? timeData = null) : ICameraAgentSatelliteSetupUiService
 {
     internal const string TimeDataLink = "/operations/site#satellite-time-data";
+
+    private static readonly string[] FeatureGroups =
+    [
+        CameraAgentSettingsCatalogue.OrbitalElementsGroup, CameraAgentSettingsCatalogue.SatellitePlanningGroup,
+        CameraAgentSettingsCatalogue.TimeDataRefreshGroup
+    ];
 
     public async Task<OperatorUiResult<SatelliteSetupView>> GetAsync(DateTimeOffset startUtc, DateTimeOffset endUtc,
         CancellationToken cancellationToken)
@@ -44,7 +51,7 @@ internal sealed class CameraAgentSatelliteSetupUiService(
         var canMutate = (await authorization.AuthorizeAsync(user, null,
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded;
         var groups = new List<CameraAgentSettingsGroupState>();
-        foreach (var name in new[] { CameraAgentSettingsCatalogue.OrbitalElementsGroup, CameraAgentSettingsCatalogue.SatellitePlanningGroup })
+        foreach (var name in FeatureGroups)
         {
             var group = (await settings.GetGroupAsync(name, cancellationToken).ConfigureAwait(false))!;
             if (!canMutate)
@@ -58,14 +65,20 @@ internal sealed class CameraAgentSatelliteSetupUiService(
         var snapshot = await orbital.GetAsync(cancellationToken).ConfigureAwait(false);
         if (snapshot is not { IsSuccess: true, Value: { HasData: true, Manifest: not null, StoreUnavailable: false } })
             problems.Add(new("no-snapshot", "No validated local orbital snapshot is available.", "/operations/software#software-orbital-heading", "Set up orbital refresh"));
-        var resolution = await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        var start = startUtc.ToUniversalTime();
+        var end = endUtc.ToUniversalTime();
+        // The pair planning would use for this window, which can differ from the one for the current time.
+        var resolution = await timeSource.ResolveAsync(new OrbitalUtcInterval(start, end), cancellationToken).ConfigureAwait(false);
         var time = resolution.Data;
         var bundled = resolution.Source == CameraAgentOrbitalTimeDataSource.Bundled;
-        var files = bundled
+        var refreshed = resolution.Source == CameraAgentOrbitalTimeDataSource.Managed;
+        var directory = refreshed && resolution.ActiveManagedPair is { } pair && timeData is not null
+            ? timeData.PairDirectory(pair) : CameraAgentPinnedOrbitalTimeSource.BundledDirectory;
+        var files = bundled || refreshed
             ? new[]
             {
-                Bundled("Earth orientation", resolution.BundledEarthOrientation, resolution.Problem),
-                Bundled("Leap seconds", resolution.BundledLeapSeconds, resolution.Problem)
+                Provenanced("Earth orientation", resolution.EarthOrientationProvenance, resolution.Problem, directory, refreshed),
+                Provenanced("Leap seconds", resolution.LeapSecondsProvenance, resolution.Problem, directory, refreshed)
             }
             : new[]
             {
@@ -81,15 +94,13 @@ internal sealed class CameraAgentSatelliteSetupUiService(
             problems.Add(new("no-time-data", !configuration.Enabled ? "Time data has not been resolved while planning is disabled." : resolution.Problem switch
             {
                 CameraAgentOrbitalTimeDataProblem.BundledInvalid =>
-                    "The bundled time-data pair is missing or failed verification. Reinstall CameraAgent, or configure a complete override.",
+                    "Neither the bundled time-data pair nor a refreshed pair is present and verified. Reinstall CameraAgent, turn on time-data refresh, or configure a complete override.",
                 CameraAgentOrbitalTimeDataProblem.OverrideIncomplete =>
                     "The time-data override is incomplete. Set both absolute paths and both SHA-256 values, or remove all four to use the bundled pair.",
                 _ => "The configured time-data override is missing, unreadable or invalid. The bundled pair is not used while an override is configured."
             }, TimeDataLink, "Configure time data"));
         else
         {
-            var start = startUtc.ToUniversalTime();
-            var end = endUtc.ToUniversalTime();
             try
             {
                 var first = time.Evaluate(start).Status;
@@ -100,23 +111,25 @@ internal sealed class CameraAgentSatelliteSetupUiService(
             catch (ArgumentException)
             {
                 problems.Add(new("coverage-expired", CameraAgentSatellitePlanner.CoverageEndsBefore(time, end) is { } until
-                    ? $"{(bundled ? "The bundled time data" : "The configured override")} covers planning only until {until:O} " +
+                    ? $"{(bundled ? "The bundled time data" : refreshed ? "The refreshed time data" : "The configured override")} covers planning only until {until:O} " +
                       $"(Earth orientation to {time.EarthOrientationCoverage?.EndUtc:O}; leap-second list expires {time.LeapTableExpiresUtc:O}). " +
-                      "Update CameraAgent for a newer bundled pair, or configure a newer override."
+                      "Update CameraAgent for a newer bundled pair, turn on time-data refresh, or configure a newer override."
                     : "Time data does not cover the selected window. Gaps between final and predicted Earth orientation and leap-second crossings are unsupported.",
                     TimeDataLink, "Update time data or change the planning window"));
             }
         }
+        var status = timeData is null ? null : await timeData.GetStatusAsync(cancellationToken).ConfigureAwait(false);
         return OperatorUiResult<SatelliteSetupView>.Success(new(groups, problems, files,
             time?.EarthOrientationCoverage, time?.LeapTableExpiresUtc,
-            bundled ? "Bundled with this CameraAgent release" : "Configured override",
-            time?.EarthOrientationFinalCoverage, time?.EarthOrientationPredictedCoverage, window));
+            bundled ? "Bundled with this CameraAgent release" : refreshed ? "Refreshed pair (managed time-data refresh)" : "Configured override",
+            time?.EarthOrientationFinalCoverage, time?.EarthOrientationPredictedCoverage, window, status));
     }
 
-    private static SatelliteTimeFileView Bundled(string title, CameraAgentBundledTimeFile? file, CameraAgentOrbitalTimeDataProblem problem)
+    private static SatelliteTimeFileView Provenanced(string title, CameraAgentTimeFileProvenance? file,
+        CameraAgentOrbitalTimeDataProblem problem, string directory, bool refreshed)
         => file is null
             ? new(title, null, null, problem == CameraAgentOrbitalTimeDataProblem.BundledInvalid ? "Bundled pair failed verification" : "Bundled; not resolved")
-            : new(title, Path.Combine(CameraAgentPinnedOrbitalTimeSource.BundledDirectory, file.File), file.Sha256, "Bundled and hash verified",
+            : new(title, Path.Combine(directory, file.File), file.Sha256, refreshed ? "Refreshed and hash verified" : "Bundled and hash verified",
                 $"Retrieved {file.RetrievedUtc:O} from {file.SourceUrl}. {file.Terms}");
 
     public async Task<OperatorUiResult<CameraAgentSettingsWriteResult>> SetAsync(string group, string version, string value,
@@ -127,7 +140,7 @@ internal sealed class CameraAgentSatelliteSetupUiService(
         if (string.IsNullOrWhiteSpace(actor) || !(await authorization.AuthorizeAsync(user, null,
                 CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded)
             return OperatorUiResult<CameraAgentSettingsWriteResult>.Failure(OperatorUiResultKind.Unauthorized, "Operations change rights are required.");
-        if (group is not (CameraAgentSettingsCatalogue.OrbitalElementsGroup or CameraAgentSettingsCatalogue.SatellitePlanningGroup))
+        if (!FeatureGroups.Contains(group, StringComparer.Ordinal))
             return OperatorUiResult<CameraAgentSettingsWriteResult>.Failure(OperatorUiResultKind.Invalid, "Unknown feature switch.");
         var result = await settings.WriteAsync(group, new(version,
             new Dictionary<string, JsonElement> { [group + ".enabled"] = JsonSerializer.SerializeToElement(value) }),

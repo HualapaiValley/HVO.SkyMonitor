@@ -37,8 +37,9 @@ CameraAgent host composes the planner and authenticated UI adapter after
 `AddCameraAgentInfrastructure`. That infrastructure supplies the singleton
 `IOrbitalSnapshotReader` from the local verified orbital store; it supplies
 neither EOP nor leap-second data. The planning registration resolves those from
-the pair bundled with each release, or from an explicit override (see
-[Bundled time data](bundled-time-data-v1.md)). Refresh and planning have independent enabled
+the pair bundled with each release, a newer pair adopted by the optional managed
+refresh, or an explicit override (see
+[Bundled and refreshed time data](bundled-time-data-v1.md)). Refresh and planning have independent enabled
 options: disabled or halted refresh still leaves the same validated
 last-known-good snapshot usable for explicitly enabled planning.
 
@@ -53,23 +54,29 @@ default:
 | `EarthOrientationSha256` | absent | Override: expected SHA-256 of those exact bytes. |
 | `LeapSecondsPath` | absent | Override: fully qualified path to retained leap-second bytes. |
 | `LeapSecondsSha256` | absent | Override: expected SHA-256 of those exact bytes. |
+| `TimeDataRefreshEnabled` | `false` | Allow the reserved daily automation to download and adopt a newer pair. |
 
 With none of the four override settings present, planning uses the pair bundled
 with the release in `time-data/` beside the application (`/app/time-data/` in the
 image): `finals2000A.daily.extended`, `leap-seconds.list` and their
-`provenance.json`. Each adoption verifies both files against the SHA-256 values in
-that record and parses them; a mismatch or malformed record leaves the bundled
-pair unavailable. Setting any of the four selects the override, which must then
-be complete and valid. An incomplete or invalid override makes planning
-unavailable with a reason; it never falls back to the bundled pair, and CameraAgent
-never writes the configured files. Only an options change or a new release adopts
-another pair.
+`provenance.json`, or a managed pair under `<RawIngressRoot>/.time-data/` when
+the refresh has adopted one. Of the verified pairs that continuously cover the
+planning window, the one whose planning coverage ends later is used (the bundled
+pair wins a tie), so the pair a refresh replaced stays in use until the new one
+covers the window. Each resolution verifies the files against the SHA-256 values in
+their provenance record and parses them; a mismatch or malformed record leaves
+that pair unavailable. Setting any of the four selects the override, which must
+then be complete and valid. An incomplete or invalid override makes planning
+unavailable with a reason; it never falls back to another pair, and CameraAgent
+never writes the configured files. Only an options change, a new release, a
+refresh adoption or a later planning window makes another pair active.
 
 The file source reads at most 8 MiB of EOP and 64 KiB of leap data. An embedding
 host may instead provide `ICameraAgentOrbitalTimeSource` to return an already
-resolved immutable `OrbitalTimeData` and its source. No route downloads or
-refreshes time data; refresh between releases is #1474 slice B2. Repository test
-fixtures are never default installed runtime inputs.
+resolved immutable `OrbitalTimeData` and its source. No planning or capture route
+downloads time data; only the reserved `time-data-refresh` automation does, at
+most once a day, when **Time-data refresh** is on. Repository test fixtures are
+never default installed runtime inputs.
 
 Absent, malformed, mismatched, expired or uncovered inputs remain unavailable.
 The original query interval is checked before loading the orbital snapshot or
@@ -86,16 +93,18 @@ remain in the producer's model facts. Returned messages omit local paths.
 ### Enable local planning
 
 **Observatory & location → Orbital refresh & satellite setup** offers independent
-**Orbital refresh** and **Satellite planning** switches from the settings
-catalogue. The equivalent planning CLI commands are:
+**Orbital refresh**, **Satellite planning** and **Time-data refresh** switches from
+the settings catalogue. The equivalent CLI commands are:
 
 ```bash
 hvo-sky config get satellitePlanning.enabled
 hvo-sky config set satellitePlanning.enabled=true
+hvo-sky config set timeDataRefresh.enabled=true   # optional: keep time data current between releases
+hvo-sky time-data                                 # active source, coverage, last refresh and adoption
 ```
 
-Planning uses the existing live options monitor: saving this switch applies
-immediately. Orbital refresh needs a CameraAgent restart. The catalogue exposes
+Planning and the time-data refresh use the existing live options monitor: saving
+either switch applies immediately. Orbital refresh needs a CameraAgent restart. The catalogue exposes
 both switches as the existing v1 enum choices `false`/`true` (Off/On), and writes
 JSON Booleans to `state/identity/appsettings.local.json`. Environment variables
 and `config/secrets` override the file; the web UI and CLI show the source and
@@ -105,19 +114,25 @@ off without changing retained snapshots or capture.
 Turning planning on is enough: the bundled time data needs no hand-placed files.
 To use other approved files, configure all four override paths/hashes in the
 options table, using absolute paths readable inside CameraAgent. The setup panel
-displays the active source (bundled or override), each file's status, path,
-SHA-256 and bundled provenance, the final and predicted EOP spans, whether the
+displays the active source (bundled, refreshed or override), each file's status,
+path, SHA-256 and provenance, the final and predicted EOP spans, whether the
 checked window uses final or predicted values, and the exclusive leap-second
-expiry. It makes no download request and never substitutes nominal zero EOP.
-**Refresh between releases is not available yet** (#1474 slice B2): the bundled
-pair ages with the release, and an upgrade brings a newer one. The panel checks the default six-hour window from the selected scene
+expiry. Its refresh facts show the planning coverage end (and plainly when it has
+expired or no verified pair covers the current time), the refresh switch and whether the daily automation exists, the last
+attempt with its outcome and reason, and the last adoption; a failed refresh is
+shown there and never as expiry. The panel makes no download request and never
+substitutes nominal zero EOP. Without the refresh, the bundled pair ages with the
+release and an upgrade brings a newer one. To keep it current between releases,
+turn **Time-data refresh** on and create the reserved daily automation from
+`/operations/automations?setup=time-data` (see
+[Managed refresh](bundled-time-data-v1.md#managed-refresh)). The panel checks the default six-hour window from the selected scene
 instant; an explicit search still validates its actual window and selected
 element epochs. Read-only paths are visible only through the authenticated setup
 surface; planner responses continue to omit local paths.
 
 The panel explains disabled planning, no validated orbital snapshot, missing or
-invalid time data (an incomplete or invalid override, or a bundled pair that failed
-verification), a configured SHA-256 mismatch, and expired/outside time coverage.
+invalid time data (an incomplete or invalid override, or neither the bundled nor a
+refreshed pair verifying), a configured SHA-256 mismatch, and expired/outside time coverage.
 Expired coverage names the source and the date coverage ends. Each reason links to the switch, Software & Catalog refresh setup, or
 the read-only time-data setup instructions. A hash match by itself does not mean
 the file parsed or its coverage is usable. After replacing hand-configured bytes,
