@@ -51,6 +51,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
                     HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
                  [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
               {
+                  NormalizationPlanIdentitySha256 = new string('A', 64),
+                  NormalizationInputs = [new(0, Guid.NewGuid(), Guid.NewGuid(), 0, "excluded", "/var/lib/secret failed")],
                   Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")],
                   OutputContracts = [new HVO.SkyMonitor.Processing.ProcessingGraphProductContract(
                       FrameArtifactRole.Metadata, "custom-assessment", HVO.SkyMonitor.Processing.ProcessingProductKind.Metadata,
@@ -73,6 +75,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value!.Nodes[0].Reason);
         Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].Outputs[0].AvailabilityReason);
         Assert.IsFalse(serialized.Contains("LeaseOwner", StringComparison.Ordinal));
+        Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].NormalizationInputs.Single().ExclusionReason);
         Assert.AreEqual("Produced", found.Value!.Nodes[0].Attempts[0].Outcome);
         Assert.AreEqual("$raw", found.Value.Nodes[0].Dependencies.Single().ProducerId);
         Assert.AreEqual("custom-assessment", found.Value.Nodes[0].OutputContracts.Single().Variant);
