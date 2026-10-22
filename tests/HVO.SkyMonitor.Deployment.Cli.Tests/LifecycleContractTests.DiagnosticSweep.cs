@@ -22,7 +22,8 @@ public sealed partial class LifecycleContractTests
         string[] files =
         [
             "CameraAgentStateSnapshot.cs", "CameraAgentLifecycleManager.Backup.cs",
-            "CameraAgentLifecycleManager.Restore.cs", "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs"
+            "CameraAgentLifecycleManager.Restore.cs", "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs",
+            "BackupVault.cs"
         ];
         var failures = new List<string>();
         foreach (var file in files)
@@ -36,6 +37,8 @@ public sealed partial class LifecycleContractTests
             {
                 var position = site.Index;
                 var before = rendered;
+                // The top-level writer carries a message the formatter composed as it is, so its text must be safe on its own.
+                var formatted = site.Value.EndsWith("Formatted(", StringComparison.Ordinal);
                 while (position < source.Length && source[position] != ';')
                 {
                     if (source[position] != '"')
@@ -48,7 +51,7 @@ public sealed partial class LifecycleContractTests
                         "Extend the diagnostic sweep for verbatim or raw string syntax.");
                     var message = Diagnostic1476Literal(source, ref position, out _);
                     rendered++;
-                    var output = await RenderDiagnostic1476ErrorAsync(message, json);
+                    var output = await RenderDiagnostic1476ErrorAsync(message, json, formatted);
                     if (output.TrimEnd('\r', '\n').Any(char.IsControl) ||
                         output.Contains("diagnostic-1476-sentinel", StringComparison.Ordinal))
                         failures.Add($"{file}:{source.AsSpan(0, site.Index).Count('\n') + 1}: {System.Text.Json.JsonSerializer.Serialize(output)}");
@@ -96,22 +99,28 @@ public sealed partial class LifecycleContractTests
         // These are compositions of already formatted fragments; formatting them again would corrupt Describe keys.
         // Their constituent message templates are included above; CarryFailures/Describe have real-path assertions.
         // A forwarded exception message is not one of them: an unmarked typed message is raw (PR-1487-R2 F6).
-        if (expression is "string.Join(\"; \", parts)" or "string.Join(\"; \", lowered)" or "reason" or "unread" or "list")
-            return CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2));
+        if (expression is "string.Join(\"; \", parts)" or "string.Join(\"; \", lowered)" or "reason" or "unread" or "list" or "problem")
+            return Diagnostic1476Describe();
         if (expression.StartsWith("CameraAgentStateDiagnostics.CarryFailures(", StringComparison.Ordinal) &&
             Diagnostic1476WholeCall(expression))
-            return CameraAgentStateDiagnostics.CarryFailures(
-                [(CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2)), HostileDiagnostic1476Name)]);
+            return CameraAgentStateDiagnostics.CarryFailures([(Diagnostic1476Describe(), HostileDiagnostic1476Name)]);
 
         // Scalar types cannot carry terminal text. 'what' is one of three private fixed capacity labels.
         if (expression is "instanceId:D" or "record.InstanceId:D" or "SchemaVersion" or "manifest.SchemaVersion" or
             "archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ" or "archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ" or
             "snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ" or "snapshot.SnapshotId:D" or "FormatBytes(required)" or
             "FormatBytes(measured.AvailableBytes + reclaimed)" or "RestoredOwnerSettings.AdminEmailSetting" or "what" or "held" or
-            "(holder.Email && holder.Name ? \"them\" : \"it\")")
+            "(holder.Email && holder.Name ? \"them\" : \"it\")" or "folder.Uid" or "NativeLinux.getuid()" or
+            "Convert.ToString((int)ancestor.Mode & 0xFFF, 8)" or "Convert.ToString((int)folder.Mode & 0xFFF, 8)")
             return "safe-scalar";
         return HostileDiagnostic1476Name;
     }
+
+    // A key with terminal controls keeps every character escaped, and a key that reads as a credential is hidden by Describe
+    // itself, since a formatted message is not scanned again (PR-1496-R1 F2).
+    private static string Diagnostic1476Describe()
+        => CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2)) + "; " +
+           CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "password=\"diagnostic-1476-sentinel\"", 2));
 
     private static bool Diagnostic1476WholeCall(string expression)
     {

@@ -116,7 +116,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(failure.IsFormattedDiagnostic, "A composed backup diagnostic must retain its formatting marker.");
         Assert.AreEqual("The backup failed, and nothing was kept; the instance is as it was. " +
             CameraAgentStateDiagnostics.Reason($"Input file '{path}' must not have hard links."), failure.Message);
-        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         AssertDiagnostic1476Safe(output);
         Assert.IsFalse(output.Contains('\u001b', StringComparison.Ordinal), "A raw typed refusal was carried under the formatting marker.");
     }
@@ -184,7 +184,7 @@ public sealed partial class LifecycleContractTests
         };
         Assert.IsTrue(failure.IsFormattedDiagnostic, "A composed diagnostic must retain its formatting marker.");
         Assert.AreEqual(expected, failure.Message);
-        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         AssertDiagnostic1476Safe(output);
         Assert.IsFalse(output.Contains('\u001b', StringComparison.Ordinal), "A raw typed failure was carried under the formatting marker.");
     }
