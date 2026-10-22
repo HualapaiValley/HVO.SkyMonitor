@@ -230,6 +230,9 @@ public sealed class OwnerRecoveryClientTests
         // A resume could only repeat this refusal, so the operation is closed and a fresh one is allowed.
         Assert.AreEqual(OwnerRecoveryFailureDisposition.FreshOperationRequired, exception.Disposition);
         Assert.AreEqual(0, handler.RequestCount);
+        const string expected = "Use 8 to 256 characters for the owner recovery password; start a new recovery operation.";
+        Assert.AreEqual(expected, CameraAgentStateDiagnostics.Message(exception.Message));
+        Assert.AreEqual(System.Text.Json.JsonEncodedText.Encode(expected).ToString(), CameraAgentStateDiagnostics.Reason(exception.Message));
     }
 
     private static byte[] CreateAttestationProof(string token, Guid operationId, ReadOnlySpan<byte> nonce)
