@@ -592,6 +592,49 @@ public sealed class LocalReplayRunnerTests
     }
 
     [TestMethod]
+    public void Review1530_ProjectionCarriesOnlyTheProducerDescriptorItsRecipeIdentityWasMadeFrom()
+    {
+        var options = CreateOptions(CreateSocketPath());
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.RollingMean, out var definition));
+        var producer = ProcessingIdentity.CreateRecipeIdentity(definition!, JsonSerializer.SerializeToElement(new { }));
+        var unproven = ProcessingConformanceFixture.CreateProcessingArtifact();
+        var produced = unproven with
+        {
+            RecipeIdentitySha256 = producer.IdentitySha256,
+            RecipeDescriptor = producer.Descriptor
+        };
+
+        // An artifact without a producer descriptor is projected exactly as before.
+        var plain = ReplayProjection.ProjectRequest(
+            AuthenticationKey, CreateJobContext(), ProcessingConformanceFixture.CreateRequest(unproven), options, DateTimeOffset.UtcNow);
+        Assert.IsFalse(JsonSerializer.SerializeToElement(plain.Metadata.Request.Inputs.Single(), ReplayProtocol.SerializerOptions)
+            .TryGetProperty("recipeDescriptor", out _));
+
+        // The runner reconstructs the descriptor a recipe uses to check what produced its input.
+        var projection = ReplayProjection.ProjectRequest(
+            AuthenticationKey, CreateJobContext(), ProcessingConformanceFixture.CreateRequest(produced), options, DateTimeOffset.UtcNow);
+        var reconstructed = ReplayProjection.ReconstructRequest(
+            projection.Metadata.Request, projection.Payloads.Select(static payload => payload.ToArray()).ToArray());
+        var descriptor = reconstructed.Inputs.Single().RecipeDescriptor;
+        Assert.IsNotNull(descriptor);
+        Assert.AreEqual(producer.IdentitySha256, ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256);
+
+        // A descriptor that is not the one the input's recipe identity was made from is refused on both sides.
+        var mismatched = unproven with { RecipeDescriptor = producer.Descriptor };
+        Assert.Throws<LocalReplayRunnerProtocolException>(() => ReplayProjection.ProjectRequest(
+            AuthenticationKey, CreateJobContext(), ProcessingConformanceFixture.CreateRequest(mismatched), options, DateTimeOffset.UtcNow));
+        var forged = projection.Metadata with
+        {
+            Request = projection.Metadata.Request with
+            {
+                Inputs = [projection.Metadata.Request.Inputs.Single() with { RecipeIdentitySha256 = unproven.RecipeIdentitySha256 }]
+            }
+        };
+        Assert.Throws<LocalReplayRunnerProtocolException>(() => ReplayProjection.ValidateRequestEnvelope(
+            forged, options, DateTimeOffset.UtcNow, validateAuthorizationTime: false));
+    }
+
+    [TestMethod]
     public void DescriptorOnlyFrameLayoutDoesNotRequirePixelPayloadTransfer()
     {
         var options = CreateOptions(CreateSocketPath());

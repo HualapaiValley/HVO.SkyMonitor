@@ -340,6 +340,17 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadRetentionHoldsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
 
+    /// <summary>
+    /// The library masters named by the normalization plans of pending and running executions, and of ended executions'
+    /// nodes whose outputs are still kept (#1475).
+    /// </summary>
+    internal ValueTask<IReadOnlyList<Guid>> GetNormalizationPlanMasterArtifactIdsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+        => PathsEqual(storageRoot, _storageRoot)
+            ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
+            : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
+
     public async ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
@@ -542,7 +553,8 @@ internal sealed partial class CaptureProcessingPersistence(
             {
                 ProductKind = restored.Product.Kind,
                 SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
+                RecipeDescriptor = restored.Product.Recipe.Descriptor
             });
         }
         return artifacts;
@@ -652,7 +664,16 @@ internal sealed partial class CaptureProcessingPersistence(
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
                     entry.Descriptor.Timing.ExposureStartedUtc,
                     entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    entry.Descriptor.Controls.EffectiveExposure),
+                Conditions: new ProcessingCaptureConditions(
+                    entry.Descriptor.Controls.EffectiveGain,
+                    entry.Descriptor.Controls.EffectiveOffset,
+                    entry.Descriptor.Controls.EffectiveTemperatureC))
+            {
+                // The capture evidence a frozen normalization plan binds each light to.
+                CaptureId = entry.Descriptor.Capture.CaptureId,
+                DescriptorIdentitySha256 = entry.DescriptorSha256
+            });
         }
         return artifacts;
     }
@@ -1320,7 +1341,8 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = restored.Product.SchemaVersion,
             ContentIdentitySha256 = restored.Product.ContentIdentitySha256 ?? restored.Product.OutputIdentitySha256,
             CaptureId = output.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = restored.Product.Recipe.Descriptor
         };
     }
 

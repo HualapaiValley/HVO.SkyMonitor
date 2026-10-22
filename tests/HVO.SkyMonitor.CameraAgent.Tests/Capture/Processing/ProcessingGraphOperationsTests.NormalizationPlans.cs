@@ -318,6 +318,200 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
+    [TestMethod]
+    public async Task GainNormalizationPreparerSuppliesTheFrozenPlanAndItsMastersOrAStableOutcome()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-plan-preparer");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        try
+        {
+            using var provider = CreateProvider(root, PlanSettings, clock);
+            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            var preparer = provider.GetRequiredService<GainNormalizationPreparer>();
+            var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
+
+            // Outside a durable execution there is no plan to freeze, and the recipe skips the window.
+            Assert.AreSame(
+                GainNormalizationPreparation.None,
+                await preparer.PrepareAsync(fixture.NodeContext(null), CancellationToken.None).ConfigureAwait(false));
+
+            // With no frozen plan and no active family, the node is skipped with the stable reason and nothing is frozen.
+            var skipped = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false)).Outcome!;
+            Assert.AreEqual(ProcessingOutcomeStatus.Skipped, skipped.Status);
+            Assert.AreEqual(ActiveCalibrationFamilySelector.NoActiveFamily, skipped.ReasonCode);
+            CollectionAssert.AreEqual(original, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
+
+            // A frozen plan is used as frozen, with the masters it selects and its canonical bytes as the plan input.
+            var frozen = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
+                .ConfigureAwait(false);
+            var prepared = await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNull(prepared.Outcome);
+            Assert.AreEqual(frozen.IdentitySha256, NormalizationPlanContractJson.ComputeIdentitySha256(prepared.Plan!));
+            CollectionAssert.AreEquivalent(
+                fixture.Bundle.Artifacts.Select(static master => master.ArtifactId).ToArray(),
+                prepared.Masters.Select(static master => master.ArtifactId).ToArray());
+            foreach (var master in prepared.Masters)
+            {
+                Assert.AreEqual(
+                    fixture.Bundle.Artifacts.Single(artifact => artifact.ArtifactId == master.ArtifactId).PayloadSha256,
+                    ProcessingIdentity.ComputePayloadSha256(master.Payload),
+                    ignoreCase: true);
+            }
+            var planInput = prepared.PlanInput!;
+            Assert.AreEqual(GainNormalizationCompatibility.PlanInputName, planInput.Name);
+            Assert.AreEqual(ProcessingAuxiliaryInputKind.CanonicalJson, planInput.Kind);
+            Assert.AreEqual(NormalizationPlanV1.CurrentSchemaVersion, planInput.SchemaVersion);
+            CollectionAssert.AreEqual(frozen.CanonicalJson, planInput.Payload.ToArray());
+            Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(planInput.Payload), planInput.IdentitySha256, ignoreCase: true);
+
+            // A pruned master fails the window as master-missing, and the plan is not re-derived.
+            var flat = MasterPayloadPath(root, fixture.Bundle.Artifacts.Single(
+                static artifact => artifact.Kind == CalibrationReferenceKinds.Flat));
+            var flatBytes = await File.ReadAllBytesAsync(flat).ConfigureAwait(false);
+            File.Delete(flat);
+            var missing = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false)).Outcome!;
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, missing.Status);
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMissing, missing.ReasonCode);
+            await File.WriteAllBytesAsync(flat, flatBytes).ConfigureAwait(false);
+            Assert.IsNull((await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false)).Outcome);
+
+            // Corrupt frozen evidence fails the window as an invalid plan.
+            var stored = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
+            await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, stored[..^2]).ConfigureAwait(false);
+            var invalid = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
+                .ConfigureAwait(false)).Outcome!;
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, invalid.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidNormalizationPlan, invalid.ReasonCode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AFrozenPlanHoldsItsMastersAfterTheirFamilyIsSupersededUntilItsExecutionEnds()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-plan-retention");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        try
+        {
+            using var provider = CreateProvider(root, PlanSettings, clock);
+            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            var families = provider.GetRequiredService<SqliteCalibrationFamilyStore>();
+            var activation = provider.GetRequiredService<CalibrationFamilyActivationService>();
+            var holds = provider.GetRequiredService<IProcessingRetentionHolds>();
+            var masters = fixture.Bundle.Artifacts.Select(static master => master.ArtifactId).Order().ToArray();
+            // Today every bundle holds its own artifacts. Clear that, so only a family or a frozen plan can hold the masters.
+            await ClearBundleRetentionHoldsAsync(root).ConfigureAwait(false);
+
+            async Task<Guid[]> HeldMastersAsync()
+            {
+                var held = (await holds.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false))
+                    .Select(static hold => hold.ArtifactId).Intersect(masters).Order().ToArray();
+                var sweep = (await ((IRawIngressLifecycleProcessingRetentionHolds)holds)
+                        .GetRetentionHoldsUnderLifecycleLockAsync(root, CancellationToken.None).ConfigureAwait(false))
+                    .Select(static hold => hold.ArtifactId).Intersect(masters).Order().ToArray();
+                CollectionAssert.AreEqual(held, sweep, "the sweep's read under the lifecycle lock holds the same masters");
+                return held;
+            }
+
+            Assert.IsEmpty(await HeldMastersAsync().ConfigureAwait(false));
+            var family = UnrelatedFamily(fixture.Bundle);
+            var stored = await families.StoreAsync(family, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue((await activation.ActivateAsync(
+                new CalibrationFamilyActivationRequest(
+                    "plan-activate",
+                    new CalibrationFamilyActivationTarget(
+                        family.AgentId, family.RigId, family.RigProfileSha256, family.SensorProfileSha256, family.AcquisitionModel),
+                    stored.IdentitySha256,
+                    "operator",
+                    null),
+                CancellationToken.None).ConfigureAwait(false)).IsAccepted);
+            CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false), "the active family holds them");
+
+            _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
+                .ConfigureAwait(false);
+            CollectionAssert.AreEqual(
+                masters,
+                (await fixture.Store.ReadNormalizationPlanMasterArtifactIdsAsync(CancellationToken.None).ConfigureAwait(false))
+                    .ToArray());
+
+            // The family is superseded: no family holds the masters, but the running execution's frozen plan does.
+            Assert.IsTrue((await activation.DeactivateAsync(
+                new CalibrationFamilyDeactivationRequest("plan-deactivate", family.AgentId, family.RigId, "operator", null),
+                CancellationToken.None).ConfigureAwait(false)).IsAccepted);
+            CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false), "a running plan holds them");
+
+            // The execution waits for a retry; its plan still holds them.
+            _ = await fixture.Store.CompleteReplayAsync(
+                fixture.Lease, CaptureLaneHandlerResult.Wait("test-release"), CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false), "a pending plan holds them");
+
+            // Once no execution that can still run references them, they are released.
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Cancelled, (await fixture.Operations.CancelReplayAsync(
+                fixture.ExecutionId, "plan-cancel", "owner-test", null, CancellationToken.None).ConfigureAwait(false)).Status);
+            Assert.IsEmpty(await fixture.Store.ReadNormalizationPlanMasterArtifactIdsAsync(CancellationToken.None)
+                .ConfigureAwait(false));
+            Assert.IsEmpty(await HeldMastersAsync().ConfigureAwait(false));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task Review1530_EscapedPlanMemberIsRejectedRatherThanReadableButUnheld()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-plan-escaped-member");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        try
+        {
+            using var provider = CreateProvider(root, PlanSettings, clock);
+            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
+            _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
+                fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
+                .ConfigureAwait(false);
+            var frozenJson = Encoding.UTF8.GetString(await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId)
+                .ConfigureAwait(false));
+            Assert.HasCount(fixture.Bundle.Artifacts.Count, await fixture.Store.ReadNormalizationPlanMasterArtifactIdsAsync(
+                CancellationToken.None).ConfigureAwait(false), "the running plan holds its masters");
+
+            // An escaped spelling of the member is the same JSON member, but retention finds plans by the literal name.
+            // A plan only one reader can see must be readable by none, so it neither runs nor needs its masters held.
+            foreach (var rewritten in new[]
+                     {
+                         frozenJson.Replace("\"normalizationPlans\":", "\"\\u006eormalizationPlans\":", StringComparison.Ordinal),
+                         frozenJson.Replace("\"normalizationPlans\":", "\"normalizationPlans\":[],\"normalizationPlans\":", StringComparison.Ordinal)
+                     })
+            {
+                Assert.AreNotEqual(frozenJson, rewritten);
+                await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, Encoding.UTF8.GetBytes(rewritten))
+                    .ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                    await fixture.Store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None)
+                        .ConfigureAwait(false)).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static readonly Dictionary<string, string?> PlanSettings = new()
     {
         ["CameraAgent:ProcessingGraphs:ReplayLeaseSeconds"] = "3",
@@ -341,9 +535,8 @@ public sealed partial class ProcessingGraphOperationsTests
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
         var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-        var receipt = await ingress.AcceptAsync(
-            configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
-            .ConfigureAwait(false);
+        var submission = CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1));
+        var receipt = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(receipt);
         await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
         var replay = await operations.SubmitReplayAsync(
@@ -385,7 +578,8 @@ public sealed partial class ProcessingGraphOperationsTests
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false)).LibraryBundle;
         _ = await provider.GetRequiredService<SqliteCalibrationLibraryStore>()
             .AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
-        return new PlanFixture(store, operations, replay.Execution.ExecutionId, lease, ContextFor(lease), inputs, bundle);
+        return new PlanFixture(
+            store, operations, replay.Execution.ExecutionId, lease, ContextFor(lease), inputs, bundle, configuration, submission, receipt);
     }
 
     private static ProcessingExecutionContext ContextFor(ProcessingReplayLease lease)
@@ -511,6 +705,21 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
+    private static string MasterPayloadPath(string root, CalibrationLibraryArtifactV1 master)
+        => Path.Combine(root, string.Concat(
+            master.ManifestRelativePath.AsSpan(0, master.ManifestRelativePath.Length - ".json".Length), ".bin")
+            .Replace('/', Path.DirectorySeparatorChar));
+
+    private static async Task ClearBundleRetentionHoldsAsync(string root)
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE calibration_library_bundles SET retention_hold = 0;";
+        Assert.IsGreaterThan(0, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
     private static async Task SetBundleStateAsync(string root, string bundleId, string state)
     {
         using var connection = new SqliteConnection(
@@ -530,5 +739,17 @@ public sealed partial class ProcessingGraphOperationsTests
         ProcessingReplayLease Lease,
         ProcessingExecutionContext Context,
         IReadOnlyList<ProcessingFrozenRawInput> Inputs,
-        CalibrationLibraryBundleV1 Bundle);
+        CalibrationLibraryBundleV1 Bundle,
+        CameraModuleConfig Configuration,
+        CaptureLoopSubmission Submission,
+        RawCaptureReceipt Receipt)
+    {
+        /// <summary>The processing context of the plan node, inside the fixture's replay or outside any execution.</summary>
+        public CaptureProcessingContext NodeContext(ProcessingExecutionContext? execution)
+        {
+            var context = new CaptureProcessingContext(Configuration, Submission, Receipt, null, execution);
+            context.BeginNode(PlanNode, ["$raw"]);
+            return context;
+        }
+    }
 }

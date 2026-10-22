@@ -238,13 +238,19 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, corrupt.ReasonCode);
             }
 
+            // A pruned payload is missing; one that cannot be read is unreadable (#1475).
             File.Delete(path);
+            var missing = await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(missing.IsSelected);
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMissing, missing.ReasonCode);
+            Directory.CreateDirectory(path);
             var unreadable = await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(unreadable.IsSelected);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterUnreadable, unreadable.ReasonCode);
             Assert.IsTrue((await store.SelectFamilyMastersAsync(
                 family, fixture.Lights[LowGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
 
+            Directory.Delete(path);
             await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
             Assert.IsTrue((await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
         }
