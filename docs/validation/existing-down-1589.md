@@ -606,3 +606,148 @@ Docker resource, remote target, push, GitHub mutation, base synchronization,
 watcher, delegation, claim release or lifecycle cleanup was performed. T3-only PR
 registration satisfies the harness requirement; the parent owns lifecycle.
 Full source/command/limitations and final resource state are in the local handoff.
+
+
+## Final target synchronization and local candidate evidence (2026-10-23)
+
+The parent owns independent review, GitHub updates, finalization and merge. This
+sole-editor subtask merged the fixed target locally, refreshed local evidence,
+and made no push, GitHub mutation, review dispatch, PR watch, claim release or
+workspace cleanup. Independent deep correction round 2 had converged on
+`d526b1dfc496fc56dd8f038a88bd63d1d96226e3`; its
+[full report](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1613#issuecomment-6372909558)
+and [disposition](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1613#issuecomment-6372909935)
+carry F1 and F2 as verified corrected. This local evidence is not an independent
+base-sync verdict.
+
+### Immutable merge and count resolution
+
+Merge commit `896fc6f7d63a27dce374131cb29af3063dd6968a` has exactly these
+parents, in order:
+
+- Reviewed PR head: `d526b1dfc496fc56dd8f038a88bd63d1d96226e3`.
+- Pinned target `origin/development/v1`: `58164c350bb7a1a9f977b548facef4c4c70868a0`.
+
+The original PR merge base was
+`4df5193e5967a7b02d1a31c7faf1a782e050da5d`; the synchronized PR merge base is
+exactly the pinned target. The target was not refreshed during active gates.
+The target must be freshly checked by the parent before finalization.
+
+`git merge --no-commit --no-ff 58164c350bb7a1a9f977b548facef4c4c70868a0`
+produced only the expected `docs/runbooks/ci-pipeline.md` conflict.
+`git show --remerge-diff 896fc6f7d63a27dce374131cb29af3063dd6968a` proves that
+only the two count lines were manually resolved. Counts came from the actual
+sum of every `tests/*/test-categories.json`: Unit **13778**, Integration **955**,
+Manual **284**, Soak **1**, External **0**, Hardware **1**. Original merge-base
+counts were Unit 13501 / Manual 282; the PR contributes Unit +139 / Manual +1,
+and the target contributes Unit +138 / Manual +1. Target prose was internally
+stale (Unit row 13616, declaration/inventory 13639); neither number was used as
+a merged count. Both parents' category deltas remain, and all seven nonempty
+added changelog lines from both sides are retained.
+
+The following two binary Git patches are byte-identical (SHA-256
+`ef808bb493db49b14d788214ab2ffa826cb77a3606c273616ef417085f14f391`):
+
+```bash
+git diff --binary --no-ext-diff --no-renames --unified=3 4df5193e5967a7b02d1a31c7faf1a782e050da5d d526b1dfc496fc56dd8f038a88bd63d1d96226e3 -- . ':(exclude)CHANGELOG.md' ':(exclude)docs/runbooks/ci-pipeline.md'
+git diff --binary --no-ext-diff --no-renames --unified=3 58164c350bb7a1a9f977b548facef4c4c70868a0 896fc6f7d63a27dce374131cb29af3063dd6968a -- . ':(exclude)CHANGELOG.md' ':(exclude)docs/runbooks/ci-pipeline.md'
+```
+
+This proof includes the category inventories and M5 workflow. All 29 affected
+product/test/script file states are also byte-identical to the converged head.
+The later evidence-only commit appends this section; its new prose is additional
+review scope and is not included in the unchanged patch claim.
+
+### Selector and target profile
+
+Profile is **development-v1**: **Development v1 / Preflight** and
+**Development v1 / Build and Unit**. Tier C complete local validation remains
+required. No full-qualification workflow was dispatched or requested.
+
+The exact classifier invocations were:
+
+```bash
+./scripts/ci:classify pull_request d526b1dfc496fc56dd8f038a88bd63d1d96226e3 896fc6f7d63a27dce374131cb29af3063dd6968a
+./scripts/ci:classify pull_request 58164c350bb7a1a9f977b548facef4c4c70868a0 896fc6f7d63a27dce374131cb29af3063dd6968a
+```
+
+| Output | Base-sync range | Full synchronized PR range |
+| --- | --- | --- |
+| mode | full | full |
+| deployment | false | true |
+| deployment_catalog | false | false |
+| deployment_shards | false | true |
+| deployment_installer | false | true |
+| complete | false | true |
+| shared / cameraagent / logichost / combined / delivery | all true | all true |
+| secret_scan_contract / release_scripts | both false | both false |
+| paths | 78 | 35 |
+
+The classifier selects affected local/full-qualification scope; `complete=true`
+does not authorize a full workflow. Local gates below combine this selection
+with the issue's Tier C acceptance and the explicit synchronization handoff.
+
+### Merged-head gate evidence
+
+UTC checkpoint: 2026-10-23T19:55:57Z. All gates completed; next is the parent-requested independent deep base-sync review. No local gate blocker remains.
+
+All heavy builds and test steps ran under `flock -o /tmp/hvo-heavy-gate.lock timeout ...`, with bounded per-gate timeouts, `MSBUILDDISABLENODEREUSE=1`, and shared compilation disabled. The candidate used `flock -o /tmp/hvo-heavy-gate.lock timeout 7200 bash /tmp/hvo-skymonitor-1589-base-sync.GI1oaL/gates.sh`; follow-up work used a bounded lock wait and `timeout 1800` around `extras.sh`. Both exited 0. The follow-up queue briefly waited for another worker, which was left untouched.
+
+Every `.head` pin for the build/test/control/category/boundary runs is `896fc6f7d63a27dce374131cb29af3063dd6968a`. The full Release build completed before Unit and strict source-stamp Integration; no tracked file or HEAD changed during either selection.
+
+| Gate command (inside its recorded timeout) | Result |
+| --- | --- |
+| `dotnet tool restore` | Pass |
+| `dotnet restore HVO.SkyMonitor.v9.slnx -nodeReuse:false -p:UseSharedCompilation=false` | Pass |
+| `dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false` | Pass, zero warnings/errors |
+| `dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false` | Pass, zero warnings/errors |
+| `dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes` | Pass, complete solution |
+| `./scripts/package:audit` | Pass |
+| `./scripts/ci:shell-syntax` | Pass |
+| `./scripts/test:ci-classification` | Pass |
+| `./scripts/test:coordination-guard` | Pass |
+| `./scripts/test:pr-review-tools` | Pass |
+| `./scripts/test:development-v1-ci` | Pass |
+| `./scripts/docs:audit-operations` | Pass; inventories and runbook agree |
+| Complete Unit selection below | 13654 passed / 124 expected skips / 0 failed; 13778 total |
+| Separate complete Integration selection below | 955 passed / 0 skipped / 0 failed |
+| `./scripts/test:deployment-installer-qualification` | Pass; bounded fake-Docker guard |
+| `./scripts/test:deploy-environment-cli` | Pass |
+| `./scripts/test:deployment-logichost-outage-contract` | Pass |
+| `./scripts/test:deployment-normal-flow-contract` | Pass |
+
+Exact Unit and Integration commands:
+
+```bash
+timeout 900 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter TestCategory=Unit --settings tests/coverage.runsettings --collect:XPlat\ Code\ Coverage --logger trx --results-directory /tmp/hvo-skymonitor-1589-base-sync.GI1oaL/Unit -nodeReuse:false -p:UseSharedCompilation=false 
+timeout 1500 env -u HVO_PRODUCTION_CATALOG_BUNDLE -u DOCKER_CONTEXT -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH DOCKER_HOST=unix:///var/run/docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter TestCategory=Integration --settings tests/coverage.runsettings --collect:XPlat\ Code\ Coverage --logger trx --results-directory /tmp/hvo-skymonitor-1589-base-sync.GI1oaL/Integration -nodeReuse:false -p:UseSharedCompilation=false 
+```
+
+All 132 teardown cases passed individually, including carried F1/F2 regressions. The CLI assembly has 2656 passed / 121 catalog-dependent skips / zero failures; its complete skip set is identical to F2. All 51 adjacent actual-host identity/password cases and four graph cases passed in the complete selections. All seven architecture Integration cases also passed. `trx-summary.json` and `boundary-results.json` bind these statements to raw TRX; `teardown-current-results.json` retains each teardown row.
+
+Real six-category discovery plus unfiltered discovery passed for each affected inventory, with complete, disjoint case-ID unions:
+
+| Project | Unit | Integration | Manual | Soak | External | Hardware | All |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `HVO.SkyMonitor.Deployment.Cli.Tests` | 2777 | 0 | 7 | 0 | 0 | 0 | 2784 |
+| `HVO.SkyMonitor.CameraAgent.Tests` | 7093 | 286 | 94 | 1 | 0 | 1 | 7475 |
+| `HVO.SkyMonitor.CameraAgent.AcceptanceTests` | 30 | 19 | 88 | 0 | 0 | 0 | 137 |
+| `HVO.SkyMonitor.Processing.Tests` | 829 | 0 | 15 | 0 | 0 | 0 | 844 |
+
+Each discovery invocation used `dotnet test tests/<project>/<project>.csproj --no-build --no-restore --configuration Release --list-tests --filter TestCategory=<category> --diag <owned-evidence-file> -nodeReuse:false -p:UseSharedCompilation=false`, with catalog unset and invalid Docker. The seventh invocation omits `--filter`. `category-audit.json` compares actual IDs/counts against all six inventory keys.
+
+Coverage collection retained 40 raw Unit and 39 raw Integration Cobertura files, all parsed successfully and individually SHA-256 pinned in `coverage-manifest.json`. This is local selection evidence; canonical CI aggregation, non-regression floors, whole-repository category discovery, whole-repository ShellCheck and macOS qualification remain with their documented full-CI owners. No selection, skip, timeout, category or coverage policy was weakened.
+
+### Retained boundaries, limits and resources
+
+The applied synchronization delta changes Processing and CameraAgent UI code/tests, their inventories, recovery target documentation and associated evidence. Prior solution build/Unit/Integration evidence was refreshed for these new source boundaries. The CLI teardown product/tests/scripts retain their converged bytes; all 14 source/dependency hashes selected from F2 remain unchanged. Additional pins prove unchanged host Program/appsettings, shared SSH host adapter, typed teardown, shard table and shell Docker-context teardown boundary. The current recovery-ordering policy explicitly keeps strict existing-behavior #893 CLI parity independent of new persistent-layout studies. No layout, upgrade implementation or new recovery architecture was introduced.
+
+The original phase/parity/input/configuration and paired resource evidence, plus F1/F2 evidence already justified above, remains applicable. No unchanged long shard, full installer campaign or benchmark was repeated beyond the explicitly required complete Unit/Integration selections. No new throughput, allocation, target-latency, backlog or whole-lane performance claim is made.
+
+All validation gates passed without a product correction or rerun. The expected initial merge conflict is retained in `merge.log` and `merge-remerge-diff.patch`. A derived audit initially grouped CLI tests by namespace and omitted four shared test rows from its CLI-only subtotal; assembly-based attribution corrects that subtotal to 2777 while preserving the raw results and the earlier derived JSON. This was an evidence-labeling correction, not a product/test failure. Historical failed attempts and private fixtures were preserved. No historical private environment map or credential fixture was printed, and no new full environment capture was made.
+
+Post-gate resource audit found no remaining gate processes in this workspace and zero Docker containers. Image, network and volume inventories match their pre-Integration baseline. Test fixtures disposed their own transient resources. No broad kill, Docker removal, shared-service mutation or workspace/scratch cleanup was issued. All build outputs, coverage, failed historical evidence and scratch remain retained.
+
+Evidence root: `/tmp/hvo-skymonitor-1589-base-sync.GI1oaL`. `gates-summary.json` contains every exact command, source pin, exit and available timing; companion `.log`, `.time`, `.exit` and `.head` files retain raw evidence. `candidate-source-pins.json` pins 3801 tracked source/build/test/script files, `source-after-integration.json` verifies all unchanged, and `release-binary-pins.json` identifies the rebuilt assemblies. Merge/conflict, inventory, changelog and byte-identical patch proofs are separate JSON/patch artifacts. Final immutable-range classifier outputs after this documentation append are retained in the same root.
+
+The follow-up commit changes only this validation ledger and retains the validated code/source pins. A later invocation that requires the latest Git commit in binary source stamps should rebuild first. The parent should request a **deep** base-sync review of conflict/count correctness, current recovery-contract context, host startup/source-link and Processing/UI boundary interactions, and individually carry F1/F2 from the verified correction-2 report. Protected v1 checks, a fresh target proof, push, finalization and merge remain parent work.
