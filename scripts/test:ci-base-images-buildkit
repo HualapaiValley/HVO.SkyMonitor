@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Optional independent BuildKit parse comparison; never builds or runs images."""
+import json
+import pathlib
+import subprocess
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def main():
+    cases = json.loads((ROOT / "tests/fixtures/ci-base-images-buildkit/cases.json").read_text())
+    for case in cases:
+        with tempfile.TemporaryDirectory(prefix="hvo-base-image-parse-") as scratch:
+            (pathlib.Path(scratch) / "Dockerfile").write_text(case["dockerfile"])
+            result = subprocess.run(
+                ["docker", "--context", "default", "buildx", "build", "--builder", "default",
+                 "--call=targets,format=json", "--progress=quiet", scratch],
+                capture_output=True, text=True, timeout=60,
+            )
+            if case["instructions"] is None:
+                if result.returncode == 0 or "unterminated heredoc" not in result.stderr:
+                    raise RuntimeError(f"{case['name']}: expected unterminated heredoc: {result.stderr}")
+            else:
+                if result.returncode:
+                    raise RuntimeError(f"{case['name']}: {result.stderr}")
+                targets = json.loads(result.stdout)["targets"]
+                actual = [target["location"]["ranges"][0]["start"]["line"] for target in targets]
+                expected = [line for line, instruction in case["instructions"] if instruction == "FROM"]
+                if actual != expected:
+                    raise RuntimeError(f"{case['name']}: FROM lines {actual}, expected {expected}")
+            print(f"PASS {case['name']}")
+
+
+if __name__ == "__main__":
+    main()

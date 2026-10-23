@@ -81,12 +81,14 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool useEnvironmentalAcquisition = false,
         Func<string, Task>? prepareRoot = null,
         bool useTransientEvidence = false,
-        string ownerPassword = OwnerPassword)
+        string ownerPassword = OwnerPassword,
+        string? scratchRoot = null)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
             : Path.GetTempPath();
-        var root = Path.Combine(temporaryRoot, $"hvo-cameraagent-browser-{Guid.NewGuid():N}");
+        var rootName = scratchRoot is null ? $"hvo-cameraagent-browser-{Guid.NewGuid():N}" : $"iv-{Guid.NewGuid():N}";
+        var root = Path.Combine(scratchRoot ?? temporaryRoot, rootName);
         Directory.CreateDirectory(root);
         var catalog = CatalogFixtureInstallation.Create(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
