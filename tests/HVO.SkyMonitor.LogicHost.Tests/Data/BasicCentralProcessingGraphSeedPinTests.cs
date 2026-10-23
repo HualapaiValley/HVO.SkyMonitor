@@ -9,12 +9,13 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Data;
 [TestCategory("Unit")]
 public sealed class BasicCentralProcessingGraphSeedPinTests
 {
-    // Captured from development/v1 b13f0d0e. Startup reseeding compares these bytes and identities with the
-    // existing row and refuses to start on any difference, so a change here is a seeded-graph migration.
-    private const string ExpectedDefinitionJsonSha256 = "C1365A0FF6614B1AED2FED96D2CB5B858764676FEAAE3CFD19403F63B24B7785";
-    private const string ExpectedDefinitionIdentitySha256 = "C1365A0FF6614B1AED2FED96D2CB5B858764676FEAAE3CFD19403F63B24B7785";
-    private const string ExpectedPortablePlanIdentitySha256 = "26D02C61ECD97F4DFC54CCC651267D670AD76781ED07E58CB3FDCF8EC9FDA64E";
-    private const string ExpectedCentralPlanIdentitySha256 = "26D02C61ECD97F4DFC54CCC651267D670AD76781ED07E58CB3FDCF8EC9FDA64E";
+    // Revision 2 (#526, measured stellar associations). Revision 1 (development/v1 b13f0d0e) is retained in
+    // CanonicalCentralGraphSeedChain. Startup reseeding compares these bytes and identities with the existing row and
+    // refuses to start on any difference, so a change here is a seeded-graph migration.
+    private const string ExpectedDefinitionJsonSha256 = "325B6E5A604642C8F08E30B0008F4687BA679A0DF20FADF544F5B51838988523";
+    private const string ExpectedDefinitionIdentitySha256 = "325B6E5A604642C8F08E30B0008F4687BA679A0DF20FADF544F5B51838988523";
+    private const string ExpectedPortablePlanIdentitySha256 = "16692249A028631B94E13A0B025C8CC02D1B3CB4B805CD47079C3F4D9B1CDEC9";
+    private const string ExpectedCentralPlanIdentitySha256 = "16692249A028631B94E13A0B025C8CC02D1B3CB4B805CD47079C3F4D9B1CDEC9";
 
     [TestMethod]
     public void SeededBasicCentralGraphIsByteIdenticalToItsPublishedRevision()

@@ -32,7 +32,10 @@ public sealed class PresentationOverlayDefaultsTests
     [TestMethod]
     public async Task SceneLayersUseTheOriginalColoursWithSolidLinesBadgesAndPlainCircleMarkers()
     {
-        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(await SceneAsync().ConfigureAwait(false));
+        var scene = await SceneAsync().ConfigureAwait(false);
+        // #526: every star is measured here so the label colours, not the association gate, are under test.
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
+            associations: MeasuredStellarAssociationFixtures.AllEligible(scene));
 
         Assert.IsNotEmpty(groups.StarAnnotations.Markers);
         foreach (var marker in groups.StarAnnotations.Markers)

@@ -32,6 +32,28 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     private const string Bucket = "skymonitor-artifacts";
 
     [TestMethod]
+    public async Task ReadHistoryFixturesDoNotPoisonWorkerIsolation()
+    {
+        var seed = await CameraOperationsSeed.CreateAsync(
+            captures: 2, jobEvery: 1, executions: 1, proposals: 0).ConfigureAwait(false);
+
+        // The same isolation pass every worker test uses must remain legal after read-history fixtures run.
+        // Unsealed foreign graph nodes reject this update in the real SQL durability trigger.
+        await DisableOtherActiveJobsAsync(Guid.NewGuid()).ConfigureAwait(false);
+
+        await WithDbAsync(async db =>
+        {
+            var execution = await db.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(item => item.Id == seed.InspectedExecution).ConfigureAwait(false);
+            Assert.IsNotNull(execution.ExpandedAtUtc);
+            Assert.IsTrue(TerminalGraphExecutionStatuses.Contains(execution.Status));
+            Assert.AreEqual(execution.ExpectedNodeCount,
+                await db.CentralDerivativeJobs.CountAsync(item => item.GraphExecutionId == execution.Id)
+                    .ConfigureAwait(false));
+        }).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     [DataRow(true)]
     [DataRow(false)]
     public async Task CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome(bool hasCandidate)

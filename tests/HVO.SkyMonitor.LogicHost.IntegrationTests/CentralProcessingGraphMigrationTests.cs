@@ -1176,7 +1176,13 @@ public sealed partial class CentralProcessingGraphMigrationTests
         var definition = basic with
         {
             Name = $"sql-{nodeId}-{slug}",
-            Nodes = [.. basic.Nodes.Where(node => node.Id == nodeId)]
+            // A node scheduled alone keeps only its required bindings: Annotation's optional measured-association
+            // producer (#526) is not in this graph.
+            Nodes = [.. basic.Nodes.Where(node => node.Id == nodeId).Select(static node => new ProcessingGraphNodeDefinition(
+                node.Id, node.StepAlias, node.StepVersion, node.OperationKind, node.Enabled, node.FailurePolicy, node.Order,
+                node.EffectiveOptions, [.. node.Dependencies.Where(static dependency => dependency.Required)],
+                [.. node.Inputs.Where(static input => input.Required)], node.Outputs, node.Window, node.CapabilityLabels,
+                node.HostApplicability))]
         };
         var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'A', now.AddMinutes(-1));
         context.AddRange(raw, CreateAssignment(definition, registry, camera, now));
