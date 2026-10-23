@@ -788,3 +788,188 @@ All commands, gate exit records and the exact patch hash are retained beside the
 original complete-gate evidence under the same recorded scratch root. This final
 append changes documentation only; independent base-sync review and finalization
 remain the parent's next actions.
+
+
+## Second pinned target synchronization: weather overlay (#1616)
+
+Recorded 2026-10-23 20:34:04 UTC. Previous independently reviewed head is
+`31c68beeba93d595002074be09c14924251b45e5`, CLEAN under request
+`hvo-1589-pr1613-base-sync-r0`; its complete request/report remain in
+`/tmp/hvo-skymonitor-1589-review-base-sync.6hQCJk/`. F1 and F2 were individually
+VERIFIED_CORRECTED in that report. The parent reported the PR returned to draft,
+auto-merge disabled and the old finalizer terminated before this local work.
+Remote lifecycle state was not changed or monitored by this child.
+
+Target is pinned to `dffab19529c55769e25fbd162fe06b248386eed0`; it was merged,
+without rebasing, in `c85de4ff3c93a14ae476759aa9c974d4ab4ebaf1`, with previous
+reviewed head and that target as its two parents. The corrected, tested code head
+is `cacbcb7d1f23b21ff2fc46546b452d2987d36a09`. No later target was fetched or chased.
+All evidence below is retained in the existing hvo-recorded scratch
+`/tmp/hvo-skymonitor-1589-base-sync2.fY8E0L`.
+
+### Conflict resolution and complete PR proof
+
+Only `CHANGELOG.md` and `docs/runbooks/ci-pipeline.md` conflicted. The sole changelog
+Fixed block retains both the #1589 recovery line and #1564 weather-label line;
+the unconflicted #1564 Added entry and every earlier entry from both parents
+also survive. Both runbook conflicts contain only counts. All per-project
+inventories were summed, yielding `Unit=13816`, `Integration=955`, `Manual=284`,
+`Soak=1`, `External=0`, `Hardware=1`. Every inventory is independently verified as
+new target plus the reviewed PR's own delta: +139 Unit/+1 Manual. Upstream adds
+38 Unit cases (Processing 23, CameraAgent 13, combined 2).
+
+The first merge commit used a greedy marker expression that truncated the tails
+of both documentation files. The operations audit failed before any build/test;
+an additional all-parent-entry assertion exposed the lost changelog entries.
+`cacbcb7d` reconstructs the merge from its immutable inputs with a line-by-line
+marker parser, preserving 438 changelog lines and all 1149 runbook lines.
+The failed audit, original conflict text, exact parser and corrective diff are
+preserved in `docs-inventory-truncation-failed.*`, `*.raw-conflicts`,
+`resolve-conflicts.py`, `merge-remerge-diff.patch` and `conflict-resolution.json`.
+No product source was edited during this correction.
+
+The complete PR patch `6bc53381..31c68bee` is byte-identical to
+`dffab195..cacbcb7d`, excluding exactly changelog, the runbook and this append-only
+ledger. Its 188162 bytes have SHA-256
+`19134579afce76790b83c0bd19b1ce5bb373213c9137c64cb2e5b0bacb20104e`.
+M5 and every category inventory remain included. `reviewed-pr.patch`,
+`merged-pr.patch`, `merge-proof.json`, `inventory-addition-proof.json` and
+`changelog-retention.json` retain the separate proofs; excluded documentation is
+checked explicitly above. The earlier ledger remains an exact byte prefix.
+
+### Selector and affected gates
+
+Protected profile remains **Development v1 / Preflight** plus **Development v1 /
+Build and Unit**. No protected or qualification workflow was dispatched. The
+selector is `scripts/ci:classify pull_request`, using immutable endpoints:
+
+| Range | Flags |
+| --- | --- |
+| Review delta `31c68bee..cacbcb7d` | `mode=full complete=false shared=true cameraagent=true logichost=true combined=true delivery=true`; `deployment=false deployment_catalog=false deployment_shards=false deployment_installer=false secret_scan_contract=false release_scripts=false`; 24 paths |
+| Complete PR `dffab195..cacbcb7d` | `mode=full complete=true shared=true cameraagent=true logichost=true combined=true delivery=true deployment=true deployment_shards=true deployment_installer=true`; `deployment_catalog=false secret_scan_contract=false release_scripts=false`; 35 paths |
+
+`complete=false` is authoritative for this component delta. The full PR's
+existing deployment scope does not request another complete candidate run or
+full CI dispatch. `affected-gate-plan.json` explicitly enumerates refreshed and
+retained gates with their source rationale; exact commands, tested heads,
+outputs, exits and GNU time are in `gates-summary.json` and each named gate's
+`.command`, `.head`, `.log`, `.exit` and `.time`. Driver scripts/commands retain
+the outer `flock -o /tmp/hvo-heavy-gate.lock timeout ...` acquisition.
+
+| Affected local gate at `cacbcb7d` | Result |
+| --- | --- |
+| Four CI-control guards, before base-sync review | Shell syntax, classification, coordination and PR-review tools all pass |
+| v1 profile and operations documentation audits | Both pass after the documented conflict correction |
+| Debug builds, warnings as errors | Processing, CameraAgent, combined-host, LogicHost, Architecture and Deployment.Cli test roots and dependency closures all pass, zero warnings/errors |
+| Release solution build, before strict source-stamp consumers | Pass, zero warnings/errors; 3:08.63 wall |
+| Format verification of every changed C#/Razor file | Pass |
+| `unit-Architecture` with coverage | 32 passed / 0 expected skips / 0 failed |
+| `unit-CameraAgent` with coverage | 7105 passed / 1 expected skips / 0 failed |
+| `unit-CameraAgent.AcceptanceTests` with coverage | 30 passed / 0 expected skips / 0 failed |
+| `unit-CameraAgent.LogicHost` with coverage | 76 passed / 0 expected skips / 0 failed |
+| `unit-LogicHost` with coverage | 957 passed / 1 expected skips / 0 failed |
+| `unit-Processing` with coverage | 852 passed / 0 expected skips / 0 failed |
+| `unit-ProcessingRunner` with coverage | 29 passed / 0 expected skips / 0 failed |
+| `teardown` with coverage | 132 passed / 0 expected skips / 0 failed |
+| `graph-integration` with coverage | 3 passed / 0 expected skips / 0 failed |
+
+The nine runs total 9216 passed / two unchanged expected skips / zero failures:
+9213 Unit passes plus three Integration graph passes. Production catalogs are
+unset and Docker is deliberately invalid for every positive Unit selection.
+The graph Integration checks need no Docker and use the same invalid endpoint.
+All build/test invocations disable node reuse and shared compilation. The two
+skipped cases individually match the prior complete-gate names; no skip, filter,
+timeout or coverage policy was weakened.
+
+`boundary-results.json` and `new-weather-case-results.json` verify every added
+weather row, all 11 both-host conformance rows, the complete 132-row teardown
+name set, all 51 actual-host identity/password rows and four graph checks.
+F1's eight stopped/absent crash/cancellation rows, two running-camera fresh-drain
+rows and eight Docker refusal rows pass. F2's two actual startup-validator rows
+and all 22 added restart-setting/durability/interruption rows pass. This is local
+regression evidence; the parent still obtains independent base-sync review.
+
+Two evidence-only reconciliation attempts are preserved. The first correctly
+noticed that upstream replaced `QualityDraftAuthorizationAndIdentifierValidationPrecedePersistence`
+with `ScalarDraftAuthorizationAndIdentifierValidationPrecedePersistence` rows.
+The source diff retains the old behavior under `ImageQuality` and adds
+`WeatherCloudOverlay`; both pass. The explicit mapping proves all 7996 prior
+cases in the three changed assemblies survive plus 38 added cases. The second
+noticed that each coverage report also has an attachment copy: all 18 XML files
+parse, and each pair has the same SHA-256, yielding nine unique reports.
+`results-audit-rename-failed.*`, `results-audit-coverage-failed.*`, earlier audit
+scripts and `test-case-rename-proof.json` preserve both attempts. Corrected
+`results-audit.*` passes without rerunning or changing an executable test.
+`coverage-manifest.json` retains every raw file and checksum. Canonical coverage
+aggregation/floors remain with their full-CI owner.
+
+Real unfiltered and six-category discoveries prove complete, disjoint case-ID
+unions for exactly the three changed inventories:
+
+| Project | Unit | Integration | Manual | Soak | External | Hardware | All |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `HVO.SkyMonitor.CameraAgent.Tests` | 7106 | 286 | 94 | 1 | 0 | 1 | 7488 |
+| `HVO.SkyMonitor.CameraAgent.LogicHost.Tests` | 76 | 0 | 1 | 0 | 0 | 0 | 77 |
+| `HVO.SkyMonitor.Processing.Tests` | 852 | 0 | 15 | 0 | 0 | 0 | 867 |
+
+`category-audit.json` and retained per-category diagnostic messages bind these
+counts to actual discovery. No whole-repository exhaustive discovery was repeated.
+
+### Retained boundaries, resources and handoff
+
+The complete Tier C baseline at `896fc6f7` remains retained: full Debug/Release,
+format, package/tool/restore/control evidence, 13654 Unit passes with 124 expected
+skips, and 955 Integration passes. It is supplemented by this affected gate set,
+not presented as a second unchanged whole-solution run. Comparison against all
+3801 baseline source pins finds 3786 unchanged files; the 15 changed existing
+files and four new source files are confined to the pinned weather descriptor,
+recipe, CameraAgent UI and associated tests/inventories. All 3894 current source
+pins remain unchanged through these gates. Thirteen rebuilt binary hashes and
+47 generated informational-version source stamps bind the Release closure to
+`cacbcb7d`. See `baseline-source-delta.json`, `retained-gate-source-audit.json`,
+`source-after-gates.json` and `release-binary-pins.json`.
+
+The 20 explicit F1/F2/startup/SSH/shell pins in
+`retained-boundary-source-proof.json` also match. Installer and typed teardown
+source/tests, host Program/appsettings/identity validator, shared transport,
+Docker-context shell boundary and shard table retain their reviewed bytes.
+Project/dependency/tool/package manifests, coverage/category selection engine,
+CI controls and secret/release inputs are unchanged. Package/tool audits and the
+prior 62-case secret contract/content-free full-history scan remain applicable.
+
+The shared-library siblings and SQL Server/Redis/Mailpit, object storage,
+migrations, persistence and startup registrations have no source/configuration/
+contract change. Their complete baseline Integration results are retained;
+changed recipe/descriptor/graph interactions are refreshed by the full affected
+project Unit selections, in-process both-host reconstruction, live graph
+coordinator behavior and repository graph checks above. The classifier does not
+select deployment contracts for this sync. Unchanged CLI Unit remainder,
+distribution/installer/shard/catalog boundaries, original phase parity and
+performance evidence remain retained. No long shard, installer campaign,
+performance harness, whole-solution Unit/Integration repeat or new production
+qualification was run. No new throughput, allocation, target latency, backlog or
+whole-lane performance claim is made.
+
+All heavy work is serialized by the host lock and bounded timeouts. The largest
+recorded single-process gate RSS is 3374372 KiB; GNU time retains CPU, wall and
+filesystem measurements per gate, without treating them as a benchmark.
+The final resource audit reports zero workspace dotnet/testhost processes and
+zero Docker containers. Docker images (5), volumes (3) and networks (3) have the
+same ID inventories as before testing. Fixtures disposed their transient state;
+no explicit resource, branch, worktree, scratch, claim or lifecycle cleanup was
+performed. Historical fixtures/evidence remain preserved; no private case,
+environment map or secret file was printed, and no full environment capture or
+credential testing was performed.
+
+This final ledger append changes no tested source. Lightweight controls/v1/docs
+are repeated on its committed head before handoff; final immutable-range
+classifiers and the complete-PR hash proof are retained separately. A subsequent
+strict source-stamp test requires a rebuild at the then-current commit.
+Finished: pinned merge, conflict correction, source/delta proofs and affected
+local gates. Current: documentation handoff and final lightweight checks.
+Next: parent pushes the final local head, requests a deep base-sync review of
+`31c68bee..<final-head>` with both F1/F2 carried, then performs fresh target/head
+proof and development/v1 finalization. Blockers: none in local implementation;
+independent review and protected checks remain parent-owned. No push, GitHub
+mutation, watcher, delegation, finalization or claim release was performed.
+The required T3-only PR association does not mutate GitHub or enable watching.
