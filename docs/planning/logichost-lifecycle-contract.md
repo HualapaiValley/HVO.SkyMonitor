@@ -46,6 +46,16 @@ for the filesystem-only release. #538 importer and #539 workspace retain their
 own owners and acceptance; publication must name the central features it actually
 ships. #541 owns optional exact-digest combined acceptance.
 
+Before overlapping recovery/profile/layout work or a substantial forward upgrade
+path commits to an approach, #1244/#1245/#589/#591 cite #1608's recorded bounded
+keep/change outcome and their supported forward inputs under
+[the ordering gate](agent-execution.md#skymonitor-recovery-ordering-gate).
+Keeping the current mechanism satisfies it. Clean-install preparation, release
+verification and unrelated features stay independent. A separately declared
+forward-only conversion specifies validation, interruption/resume and operator
+recovery/data-loss expectations; it does not require reverse migration solely
+due to size or waive ordinary protected checkpoint recovery.
+
 ## Supported Topology and State Ownership
 
 The first release targets one LogicHost replica with a dedicated same-host Linux

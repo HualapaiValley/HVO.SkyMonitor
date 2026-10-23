@@ -56,6 +56,33 @@ replacement must prove supported forward migration and whole-point recovery
 before dropping the universal old-reader obligation. Existing explicit
 backup/restore remains independently supported and tested.
 
+## Ordering and Forward-Only Conversions
+
+The [owner clarification](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606#issuecomment-6370275612)
+allows #1607/#1608 to be scheduled now or later, but requires their applicable
+recorded keep/change outcome before overlapping persistent-layout/recovery work
+or a substantial forward migration commits to a path. Each affected story cites
+its decision and supported forward source/target inputs. A bounded,
+evidence-backed keep-current decision satisfies this gate; no new filesystem,
+framework or implementation PR is necessary. This contract's baseline
+recommendation is not a substitute for those recorded study outcomes.
+
+Apply the gate to overlaps in CameraAgent #1059/#1060/#1300 and LogicHost
+#1244/#1245/#589/#591. Unrelated features, clean-install preparation, release
+verification and strict existing-behavior #893 CLI parity remain independent.
+The [execution protocol](agent-execution.md#skymonitor-recovery-ordering-gate)
+requires checking this when selecting work; study timing does not create a
+blanket hold on unrelated stories.
+
+Larger DB/file/schema conversions may explicitly be forward-only. Their stories
+and operator guidance declare supported inputs, preflight and output validation,
+interruption/resume, operator recovery and any data-loss expectations before
+mutation. Do not build reverse migrations, old-binary/new-schema compatibility
+or rollback solely because conversion size is substantial. Ordinary protected
+upgrades still restore their exact paired checkpoint on failure: forward-only
+migration does not remove that protection. No universal waiver or silent
+destructive conversion is authorized; existing required gates remain intact.
+
 ## Qualification Children and Remaining Experiment Questions
 
 Both children depend on this contract and then may run independently:
