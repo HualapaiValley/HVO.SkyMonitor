@@ -14,7 +14,9 @@ When `FixedTransfer` is absent or null, the existing `encoded-preview-v1`
 recipe exposes black percentile (default 0.5, range 0–0.999999), white percentile
 (default 0.9999, range 0.000001–1) and asinh strength (default 4, range 0.01–1000).
 Percentiles are fractions, and black must be less than white. These controls
-produce packed output; JPEG encoding is a separate node.
+produce packed output; JPEG encoding is a separate node. The stretch applies to
+Mono16/BayerRggb16 input. Existing Mono8/Rgb24 input keeps its packed-copy
+behavior.
 
 When `FixedTransfer` is present, the existing `fixed-preview-v1` recipe stays
 active. Its nested levels and gamma are preserved exactly. Percentile/asinh

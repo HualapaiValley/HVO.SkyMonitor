@@ -69,3 +69,22 @@ endpoint. Disposable coordinator state is deleted by the fixtures. Existing
 execution outcomes and reason codes remain the runtime signals; telemetry,
 worker behavior and measured hot paths are unchanged, so no canonical performance
 run is required. This evidence does not qualify physical hardware or promotion.
+
+Candidate validation at source head `5354d22f` passed the Release solution build
+with zero warnings/errors. Unit executions: Processing 905; affected CameraAgent
+379; combined host conformance 35; LogicHost graph/conformance 183; architecture
+32; Deployment CLI 2,656; distribution 115. All 4,305 executed cases passed.
+The delivery selections additionally reported 122 catalog-dependent inconclusive
+cases because the required production catalog bundle is deliberately unset for
+Unit validation. They are not counted as executed evidence; no installer or
+catalog qualification is claimed. All four CI-control guards and the operations
+documentation audit passed. Final formatting/discovery results are in the PR
+ledger. Documentation-only result updates preserve this source evidence.
+
+Changed-source formatting passed. Positive Unit discovery verified Processing
+905, CameraAgent 7,189, combined-host 82 and LogicHost 959 cases. This also
+reconciles inherited inventory drift in the first three projects (+17/+23/+5
+beyond this slice's new cases), without removing tests or weakening selection.
+The runbook total matches the per-project inventories. Unchanged binaries and
+saved discovery diagnostics provide the verification after these count-only
+corrections; no long suite is repeated.
