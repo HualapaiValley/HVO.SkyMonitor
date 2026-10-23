@@ -19,6 +19,22 @@ Heavy builds/tests use `flock -o /tmp/hvo-heavy-gate.lock timeout ...` with
 `HVO_PRODUCTION_CATALOG_BUNDLE` and use the invalid Docker endpoint
 `unix:///tmp/hvo-no-docker.sock`. The local gate results are recorded on the PR.
 
+| Final local gate | Result |
+| --- | --- |
+| Release solution build, warnings as errors | Passed; zero warnings/errors |
+| Changed-file `dotnet format --no-restore --verify-no-changes` | Passed |
+| Processing Unit selection | 852 passed |
+| CameraAgent affected editor/service/graph/shipped-pipeline selection | 201 passed |
+| Both-host conformance Unit selection | 76 passed |
+| LogicHost processing-graph Unit selection | 148 passed |
+| Architecture Unit selection | 32 passed |
+| Shell syntax, CI classification, coordination and PR-review-tool guards | Passed |
+| Operations documentation audit and diff whitespace check | Passed |
+
+The final 1,309 selected tests have no failures or skips. The lifecycle fixture
+uses a 16-bit raw input and a 2×1 assessment grid appropriate to its 2×2 image;
+the real factory continues rejecting unsuitable bit depth and compound inputs.
+
 ## Contract and execution checks
 
 - The descriptor pins `WeatherCloudOverlay` / `weather-cloud-overlay-v1` and

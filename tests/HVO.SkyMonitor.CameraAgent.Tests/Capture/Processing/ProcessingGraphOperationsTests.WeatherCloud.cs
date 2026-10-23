@@ -63,10 +63,13 @@ public sealed partial class ProcessingGraphOperationsTests
             };
             StringAssert.Contains(Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(missingPreview)).Message,
                 "required compound inputs", StringComparison.Ordinal);
-            var disabledProducer = config with { Pipeline = config.Pipeline with
+            var disabledProducer = config with
             {
-                Steps = [.. config.Pipeline.Steps.Select(step => step.Id == "cloud" ? step with { Enabled = false } : step)]
-            }};
+                Pipeline = config.Pipeline with
+                {
+                    Steps = [.. config.Pipeline.Steps.Select(step => step.Id == "cloud" ? step with { Enabled = false } : step)]
+                }
+            };
             Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(disabledProducer));
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
@@ -85,8 +88,17 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual("weather-cloud-overlay-v1", original.Nodes.Single(static node => node.NodeId == "weather").Outputs.Single().Variant);
             var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "weather", "2");
             model.Nodes[2].OptionsForm!.Set("outputVariant", "weather-custom");
+            model.Nodes[2].OptionsForm!.Set("lineThickness", "4");
+            model.Nodes[2].OptionsForm!.Set("drawLabels", "False");
+            model.Nodes[2].OptionsForm!.Set("maximumLabelCharacters", "12");
             Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
             Assert.AreEqual(90, pipeline.Steps[2].Order);
+            var editedGraph = factory.CreateGraph(config with { Pipeline = pipeline });
+            var effective = editedGraph.SharedPlan!.Nodes.Single(static node => node.Definition.Id == "weather").Definition.EffectiveOptions;
+            Assert.AreEqual(4, effective.GetProperty("lineThickness").GetInt32());
+            Assert.IsFalse(effective.GetProperty("drawLabels").GetBoolean());
+            Assert.AreEqual(12, effective.GetProperty("maximumLabelCharacters").GetInt32());
+            editedGraph.DisposeSteps();
             var draft = await operations.CreateRevisionAsync("weather", "2", pipeline, "create", "test", null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, draft.Lifecycle);
             await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
