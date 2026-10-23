@@ -53,6 +53,7 @@
     <Compile Include="..\HVO.SkyMonitor.CameraAgent\Configuration\OwnerPasswordFileText.cs" Link="Shared/OwnerPasswordFileText.cs" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="SplitHost/*.jq" />
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />
   </ItemGroup>
 </Project>
