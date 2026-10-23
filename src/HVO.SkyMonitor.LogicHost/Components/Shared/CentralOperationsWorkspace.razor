@@ -163,7 +163,8 @@
                     <div class="central-actions"><button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.ConfirmEvent, renderedGeneration)">Confirm exact event assessment</button><button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.RejectEvent, renderedGeneration)">Reject exact event assessment</button></div>
                 }
                 else { <p>Event review requires Manager/Owner authority for every contributor, or existing global administrative authority.</p> }
-                <details><summary>Retained event observations and assessments</summary><pre>@Document(eventDetail.Event)</pre></details>
+                <p class="central-event-bounds">Bounded event evidence: each collection, including nested evidence, shows at most @CentralOperationsWorkspaceService.PageSize items. History is newest first; observation, geometry and lineage order is preserved. Collections with Truncated set to true omit older or additional items; the immutable canonical event retains those items. This bounded view is not a complete event document. The exact current assessment is identified separately from truncated history.</p>
+                <details class="central-event-evidence"><summary>Bounded event observations, current assessment and history</summary><pre>@Document(eventDetail.Evidence)</pre></details>
             }
             @if (data.Policy is { } policy)
             {

@@ -21,7 +21,7 @@ internal sealed record CentralOperationsSnapshot(ObservatoryMembershipRole Role,
     ProcessingGraphDeliveryProposalView? Proposal = null,
     CameraOperationsPage<ProcessingGraphDeliveryFactView>? Facts = null,
     CameraCaptureAnchoredPage<CameraTransientEventAssociation>? Events = null,
-    CentralTransientEventDetail? Event = null,
+    CentralWorkspaceEventDetail? Event = null,
     bool CanReviewEvent = false,
     CentralProcessingPolicySummary? Policy = null,
     OperationsArtifactPage? Artifacts = null);
@@ -144,7 +144,7 @@ internal sealed class CentralOperationsWorkspaceService(ApplicationDbContext db,
                     var detail = await events.GetAsync(principal, eventId, cancellationToken).ConfigureAwait(false);
                     if (detail is null) return null;
                     var reviewable = await reviews.ListReviewableEventIdsAsync(principal, [eventId], cancellationToken).ConfigureAwait(false);
-                    result = result with { Event = detail, CanReviewEvent = reviewable.Contains(eventId) };
+                    result = result with { Event = CentralWorkspaceEventDetail.Create(detail), CanReviewEvent = reviewable.Contains(eventId) };
                 }
                 break;
             case "policy":

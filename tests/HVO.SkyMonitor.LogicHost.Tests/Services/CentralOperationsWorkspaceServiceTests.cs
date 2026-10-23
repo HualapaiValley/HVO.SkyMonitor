@@ -13,6 +13,63 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class CentralOperationsWorkspaceServiceTests
 {
     [TestMethod]
+    public async Task ExactEventRetainsBoundedReviewNotificationAndNestedEvidenceWithoutChangingCanonicalState()
+    {
+        await using var world = await World.CreateAsync(ObservatoryMembershipRole.Manager);
+        var original = CentralWorkspaceEventHistory.Create(world.A.Event);
+        var before = HVO.SkyMonitor.Processing.TransientContractJson.Serialize(original.Event);
+        var events = new EventRead(original);
+        var read = new CentralOperationsWorkspaceService(world.Db, world.Service(), null!, null!, null!, events, new Reviews(),
+            TimeProvider.System, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+        var snapshot = await read.ReadAsync(Member(), world.A.Observatory, world.A.Camera, new() { View = "events", Event = world.A.Event });
+        snapshot!.Event!.Summary.Should().Be(original.Summary);
+        snapshot.CanReviewEvent.Should().BeTrue();
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(snapshot.Event);
+        Console.WriteLine($"Retained event projection: {json.GetRawText().Length} characters; canonical: {before.Length} bytes; 1000 reviews and 1000 notifications.");
+        json.GetRawText().Length.Should().BeLessThan(80_000, "retained event children must be bounded before reaching the renderer");
+        CentralWorkspaceEventHistory.AssertBounds(json);
+        var evidence = json.GetProperty("Evidence");
+        evidence.GetProperty("Reviews").GetProperty("Truncated").GetBoolean().Should().BeTrue();
+        evidence.GetProperty("Notifications").GetProperty("Truncated").GetBoolean().Should().BeTrue();
+        evidence.GetProperty("CurrentAssessment").GetProperty("AssessmentId").GetGuid().Should().Be(original.Summary.ActiveAssessmentId);
+        evidence.GetProperty("CurrentAssessment").GetProperty("ConfidenceMillionths").GetInt32().Should().Be(original.Event.Assessments[^1].ConfidenceMillionths);
+        evidence.GetProperty("CurrentAssessment").GetProperty("RecipeIdentitySha256").GetString().Should().Be(original.Event.Assessments[^1].RecipeIdentitySha256);
+        evidence.GetProperty("CurrentAssessment").GetProperty("Reasons").GetProperty("Truncated").GetBoolean().Should().BeTrue();
+        json.GetRawText().Should().Contain(original.Event.Reviews[^1].ReviewId.ToString()).And.Contain(original.Event.Notifications[^1].NotificationId.ToString())
+            .And.NotContain(original.Event.Reviews[0].ReviewId.ToString()).And.NotContain(original.Event.Notifications[0].NotificationId.ToString());
+        HVO.SkyMonitor.Processing.TransientContractJson.Serialize(original.Event).Should().Equal(before);
+        events.Calls.Should().Be(1, "the workspace must not drain event history");
+    }
+
+    [TestMethod]
+    [DataRow(0, false)]
+    [DataRow(25, false)]
+    [DataRow(26, true)]
+    public void ExactEventChildTruncationDistinguishesEmptyFullAndOverflow(int count, bool truncated)
+    {
+        var original = CentralWorkspaceEventHistory.Create(Guid.NewGuid());
+        var detail = original with { Event = original.Event with { Reviews = original.Event.Reviews.Take(count).ToArray(), Notifications = original.Event.Notifications.Take(count).ToArray() } };
+        var projection = CentralWorkspaceEventDetail.Create(detail);
+        foreach (var name in new[] { "Reviews", "Notifications" })
+        {
+            projection.Evidence.GetProperty(name).GetProperty("Truncated").GetBoolean().Should().Be(truncated);
+            projection.Evidence.GetProperty(name).GetProperty("Items").GetArrayLength().Should().Be(Math.Min(count, 25));
+        }
+        projection.Summary.Should().Be(original.Summary);
+        projection.Evidence.GetProperty("EventIdentity").GetProperty("SourceSchemaVersion").GetString().Should().Be(original.Event.SchemaVersion);
+        projection.Evidence.TryGetProperty("SchemaVersion", out _).Should().BeFalse("a display projection must not advertise itself as a canonical event");
+    }
+
+    private sealed class EventRead(CentralTransientEventDetail detail) : ICentralTransientEventReadService
+    {
+        internal int Calls { get; private set; }
+        public Task<CentralTransientEventDetail?> GetAsync(ClaimsPrincipal principal, Guid centralTransientEventId, CancellationToken cancellationToken)
+        { Calls++; return Task.FromResult<CentralTransientEventDetail?>(detail); }
+        public Task<CentralTransientEventPage> ListAsync(ClaimsPrincipal principal, int take, string? cursor, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<CentralTransientPublicationAuthority>> ListPublicationAuthoritiesAsync(ClaimsPrincipal principal, IReadOnlyCollection<Guid> centralTransientEventIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    [TestMethod]
     [DataRow("Viewer")]
     [DataRow("Manager")]
     [DataRow("Owner")]
@@ -127,7 +184,7 @@ public sealed class CentralOperationsWorkspaceServiceTests
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1, HVO.SkyMonitor.Processing.TransientEventState.Provisional,
             CentralTransientReviewState.NeedsReview, Guid.NewGuid(), HVO.SkyMonitor.Processing.TransientClassification.Meteor, null, 500_000,
             CentralTransientEventEtag.Create([0, 0, 0, 0, 0, 0, 0, 2]));
-        var read = new SnapshotRead(new(ObservatoryMembershipRole.Manager, false, Event: new(summary, null!), CanReviewEvent: true));
+        var read = new SnapshotRead(new(ObservatoryMembershipRole.Manager, false, Event: new(summary, default), CanReviewEvent: true));
         var reviews = new Reviews();
         var mutation = new CentralOperationsWorkspaceMutationService(read, null!, null!, reviews, null!, null!, null!, TimeProvider.System);
         var command = new CentralWorkspaceCommand(CentralWorkspaceAction.ConfirmEvent, new() { View = "events", Event = eventId }, "same-event-request", etag, assessment);
@@ -152,12 +209,13 @@ public sealed class CentralOperationsWorkspaceServiceTests
         internal CentralTransientReviewRequest? Request { get; private set; }
         internal string? Key { get; private set; }
         internal int Calls { get; private set; }
-        public Task<IReadOnlySet<Guid>> ListReviewableEventIdsAsync(ClaimsPrincipal principal, IReadOnlyCollection<Guid> centralTransientEventIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlySet<Guid>> ListReviewableEventIdsAsync(ClaimsPrincipal principal, IReadOnlyCollection<Guid> centralTransientEventIds, CancellationToken cancellationToken) => Task.FromResult<IReadOnlySet<Guid>>(centralTransientEventIds.ToHashSet());
         public Task<CentralTransientReviewMutationResult> ReviewAsync(ClaimsPrincipal principal, Guid centralTransientEventId, byte[] expectedRowVersion, string idempotencyKey, CentralTransientReviewRequest request, CancellationToken cancellationToken)
         { Calls++; Version = expectedRowVersion; Request = request; Key = idempotencyKey; return Task.FromResult(new CentralTransientReviewMutationResult(CentralTransientReviewMutationStatus.PreconditionFailed)); }
     }
 
-    internal static CentralOperationsWorkspaceService Read(World world) => new(world.Db, world.Service(), null!, null!, null!, null!, null!, TimeProvider.System, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+    internal static CentralOperationsWorkspaceService Read(World world, CentralTransientEventDetail? eventDetail = null) => new(world.Db, world.Service(), null!, null!, null!,
+        eventDetail is null ? null! : new EventRead(eventDetail), new Reviews(), TimeProvider.System, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
     internal static ClaimsPrincipal Member() => Principal("member");
     internal static ClaimsPrincipal Principal(string user) => new(new ClaimsIdentity(
         [new(ClaimTypes.NameIdentifier, user), new("account_type", "User")], "Identity.Application"));

@@ -18,6 +18,28 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Components;
 [SuppressMessage("Reliability", "CA2025:Do not pass disposables into unawaited tasks", Justification = "Delayed reads are completed before disposing the renderer.")]
 public sealed class CentralOperationsWorkspaceTests
 {
+    [TestMethod]
+    public async Task ExactEventDisclosureBoundsReviewNotificationAndNestedHistoryAndPreservesReviewPreconditions()
+    {
+        await using var world = await CameraOperationsReadServiceTests.World.CreateAsync(ObservatoryMembershipRole.Manager);
+        var original = CentralWorkspaceEventHistory.Create(world.A.Event);
+        using var context = Context(out var read, out var mutations, out _);
+        read.Result = await CentralOperationsWorkspaceServiceTests.Read(world, original).ReadAsync(CentralOperationsWorkspaceServiceTests.Member(),
+            world.A.Observatory, world.A.Camera, new() { View = "events", Event = world.A.Event });
+        var cut = Render(context, new() { View = "events", Event = original.Summary.CentralTransientEventId });
+        Console.WriteLine($"Bounded collapsed event disclosure: {cut.Markup.Length} markup characters; 1000 reviews and 1000 notifications.");
+        cut.Markup.Length.Should().BeLessThan(100_000, "collapsed disclosures still contribute DOM and retained render state");
+        cut.Find(".central-event-bounds").TextContent.Should().Contain("25").And.Contain("truncated").And.Contain("canonical event");
+        cut.Find(".central-event-evidence").TextContent.Should().Contain("Truncated").And.Contain(original.Event.Reviews[^1].ReviewId.ToString())
+            .And.Contain(original.Event.Notifications[^1].NotificationId.ToString()).And.NotContain(original.Event.Reviews[0].ReviewId.ToString())
+            .And.NotContain(original.Event.Notifications[0].NotificationId.ToString());
+        cut.Markup.Should().Contain(original.Summary.ActiveAssessmentId.ToString());
+        cut.FindAll("code").Should().Contain(c => c.TextContent == original.Summary.ETag);
+        await cut.FindAll("button").Single(b => b.TextContent == "Confirm exact event assessment").ClickAsync(new());
+        mutations.Commands.Should().ContainSingle().Which.ETag.Should().Be(original.Summary.ETag);
+        mutations.Commands[0].Assessment.Should().Be(original.Summary.ActiveAssessmentId);
+    }
+
     private static readonly Guid Observatory = Guid.NewGuid();
     private static readonly Guid Camera = Guid.NewGuid();
     private static readonly Guid Execution = Guid.NewGuid();
@@ -206,7 +228,7 @@ public sealed class CentralOperationsWorkspaceTests
         var summary = new CentralTransientEventSummary(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "agent", DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1, HVO.SkyMonitor.Processing.TransientEventState.Provisional,
             CentralTransientReviewState.NeedsReview, Guid.NewGuid(), HVO.SkyMonitor.Processing.TransientClassification.Meteor, null, 500_000, "\"AAAAAAAAAAE=\"");
-        read.Result = new(ObservatoryMembershipRole.Manager, false, Event: new(summary, null!), CanReviewEvent: true);
+        read.Result = new(ObservatoryMembershipRole.Manager, false, Event: new(summary, System.Text.Json.JsonSerializer.SerializeToElement(new { })), CanReviewEvent: true);
         var cut = Render(context, new() { View = "events", Event = summary.CentralTransientEventId });
         await cut.FindAll("button").Single(b => b.TextContent == "Confirm exact event assessment").ClickAsync(new());
         await cut.FindAll("button").Single(b => b.TextContent == "Confirm exact event assessment").ClickAsync(new());

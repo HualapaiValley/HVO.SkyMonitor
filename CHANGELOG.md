@@ -50,7 +50,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- LogicHost camera workspaces now include bounded central execution, job, graph assignment, delivery-fact and event inspection, with authorized recovery, future-job policy and exact-artifact publication controls. (#1241)
+- LogicHost camera workspaces now include bounded central execution, job, graph assignment, delivery-fact and event inspection, including explicit truncation of nested event evidence and review/notification history, with authorized recovery, future-job policy and exact-artifact publication controls. (#1241)
 - LogicHost camera workspaces now inspect immutable imported CameraAgent execution evidence, exact input/output lineage and independent receipt and byte observations, with bounded history and comparison to an explicitly selected central execution. (#1240)
 - LogicHost exposes authorized, bounded mappings and exact-artifact reconciliation observations for retained imported execution evidence. (#1554)
 

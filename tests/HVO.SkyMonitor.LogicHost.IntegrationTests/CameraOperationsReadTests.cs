@@ -796,12 +796,19 @@ internal sealed class CameraOperationsSeed
             await SaveAndClearAsync(db).ConfigureAwait(false);
             // Read-history fixtures finish the normal sealing transition with their actual frozen counts.
             // Their terminal nodes keep later shared-fixture workers and health checks scoped to live test work.
-            await db.CentralProcessingGraphExecutions.Where(item => item.LogicalCameraId == target.Id)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.ExpandedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc)
-                    .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
-                    .SetProperty(item => item.CompletedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc))
-                .ConfigureAwait(false);
+            // Keep each store-invariant check bounded when constructing 10K-row browser histories.
+            // This fixture preparation is outside the measured read/render interval.
+            for (var sealedCount = 0; sealedCount < executions; sealedCount += 250)
+            {
+                await db.CentralProcessingGraphExecutions
+                    .Where(item => item.LogicalCameraId == target.Id && item.ExpandedAtUtc == null)
+                    .OrderBy(item => item.Id).Take(250)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.ExpandedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc)
+                        .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                        .SetProperty(item => item.CompletedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc))
+                    .ConfigureAwait(false);
+            }
             for (var index = 0; index < proposals; index++)
             {
                 var installation = installations[index % installations.Length];
