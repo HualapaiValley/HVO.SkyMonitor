@@ -86,6 +86,14 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         Assert.IsTrue(probe.Commands.All(command => command.Parameters.Length + 3 < 2100));
         TestContext.WriteLine("256 distinct sources; max_parameters={0}; RPC_overhead_allowance=3",
             probe.Commands.Max(command => command.Parameters.Length));
+        foreach (var table in new[] { "EnvironmentalObservationSources", "EnvironmentalObservations" })
+        {
+            var query = probe.Commands.Last(command => command.Text.Contains($"FROM [{table}]", StringComparison.Ordinal));
+            TestContext.WriteLine("{0}: parameters={1}; distinct_values={2}; type_size_counts={3}", table, query.Parameters.Length,
+                query.Parameters.Select(parameter => parameter.Value).Distinct().Count(),
+                string.Join(", ", query.Parameters.GroupBy(parameter => (parameter.SqlDbType, parameter.Size))
+                    .Select(group => $"{group.Key}:{group.Count()}")));
+        }
     }
 
     [TestMethod]
