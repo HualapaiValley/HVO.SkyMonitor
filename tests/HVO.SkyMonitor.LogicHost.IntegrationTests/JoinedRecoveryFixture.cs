@@ -42,6 +42,8 @@ internal sealed partial class JoinedRecoveryFixture
     private byte[] sqlBackup = [];
     private string sqlFacts = string.Empty;
     private string phase = "setup";
+    private bool containerRemoved;
+    private bool filesRemoved;
 
     internal string SourceObjects => Path.Combine(root, "source-objects");
     internal string ObjectBackup => Path.Combine(root, "object-backup");
@@ -76,10 +78,12 @@ internal sealed partial class JoinedRecoveryFixture
         phase = "cleanup";
         // Only this disposable container and this exact run directory are owned by this fixture.
         await container.DisposeAsync();
+        containerRemoved = true;
         Require(container.State == TestcontainersStates.Undefined, "container-cleanup");
         Directory.Delete(root, recursive: true);
+        filesRemoved = true;
         Require(!Directory.Exists(root), "filesystem-cleanup");
-        Console.WriteLine("issue1630 cleanup: one owned SQL container (source/target databases and native backup), one owned filesystem tree removed; no shared services used");
+        Console.WriteLine(JsonSerializer.Serialize(new { Issue = 1630, ContainerRemoved = containerRemoved, FilesRemoved = filesRemoved, SharedServicesUsed = false }));
     }
 
     // Called at the outer test boundary; raw exceptions, endpoints, paths and key material never reach MSTest.
@@ -97,7 +101,7 @@ internal sealed partial class JoinedRecoveryFixture
         },
         SqlNumber = exception is SqlException sql ? sql.Number
             : exception is SanitizedScriptException script ? script.SqlErrorNumber : 0,
-        ResourcesRetained = true
+        ContainerRemoved = containerRemoved, FilesRemoved = filesRemoved
     });
 
     internal void RetainPrivateAttribution()
