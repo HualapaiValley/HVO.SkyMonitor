@@ -91,6 +91,45 @@ The production retention sweep must retain all 256 old pinned inputs and delete
 one old unpinned control. These are baseline controls; slice B retains #252's
 separate retention-race, deadlock/retry and restart/fault acceptance obligations.
 
+## Retained current-source result
+
+Measured source: `d7fa7d8fd7568d4da90afc73f7596f825b4416d6` (clean Release assemblies; SDK 10.0.402, .NET 10.0.13, server GC, Ubuntu 24.04.4 x64, Intel Core Ultra 9 285H, eight effective processors; pinned SQL Server 2022 CU26). Recorded 2026-10-23T00:39:51.559517+00:00.
+
+The [baseline JSON](evidence/issue-1557/maximum-lineage-baseline.json), [typed commands and actual plans](evidence/issue-1557/sql-replay.json.gz), [compressed deadlock graphs](evidence/issue-1557/deadlocks.xml.gz), and [SHA-256 manifest](evidence/issue-1557/sha256.json) are retained together. `gzip -dc deadlocks.xml.gz` restores the XML named by the baseline JSON; its decompressed checksum is included. No credentials, connection strings, private network addresses, or physical client identities are retained.
+
+The workload completed 360 measured attempts: **240 accepted and 120 SQL1205 victims**. Five warm-ups per arm plus lane priming contributed 112 further accepted derived observations. All 352 accepted derived rows passed durable ordinal/composite-identity/hash verification. No victim was retried or replaced; the concurrency arms expose a production failure and do not qualify healthy ingest.
+
+| References | Concurrency | Accepted / victims | Commands accepted / victim | All-attempt p50 ms | p95 ms | p99 ms | Accepted/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 30 / 0 | 10 / — | 14.299 | 27.815 | 33.782 | 61.334 |
+| 1 | 4 | 30 / 0 | 10 / — | 12.614 | 32.851 | 67.476 | 230.516 |
+| 1 | 8 | 30 / 0 | 10 / — | 15.959 | 42.856 | 57.611 | 307.666 |
+| 32 | 1 | 30 / 0 | 72 / — | 89.624 | 133.970 | 152.158 | 10.659 |
+| 32 | 4 | 22 / 8 | 72 / 72 | 49.538 | 8755.266 | 9737.557 | 2.010 |
+| 32 | 8 | 6 / 24 | 72 / 72 | 857.569 | 2361.132 | 2363.227 | 1.531 |
+| 128 | 1 | 30 / 0 | 267 / — | 102.175 | 161.596 | 166.968 | 9.534 |
+| 128 | 4 | 10 / 20 | 267 / 264 | 513.848 | 7510.024 | 8765.969 | 0.737 |
+| 128 | 8 | 3 / 27 | 267 / 264 | 865.901 | 7521.764 | 9364.052 | 0.296 |
+| 256 | 1 | 30 / 0 | 526 / — | 637.781 | 732.336 | 813.025 | 1.786 |
+| 256 | 4 | 13 / 17 | 526 / 520 | 713.496 | 9346.361 | 11570.570 | 0.797 |
+| 256 | 8 | 6 / 24 | 526 / 520 | 953.918 | 12540.046 | 14035.070 | 0.400 |
+
+At 256 references each attempt performs **257 source and 257 observation lookups**: 512 lineage lookups plus two own-identity lookups. The 526-command accepted sequence comprises those 514 SELECTs, three target-binding reads, two application-lock commands and seven EF write batches. The replay contains 525 actual plans, 5,640 logical reads and 4,886 aggregate operator rows read. Actual write operators insert one observation and 256 lineage rows; there are no source inserts in this source-primed diagnostic. Each source SELECT returns a full 15-column entity; observation SELECTs materialize 27 columns. The repeated source-reference queries each use `nvarchar(64)`, while observation lookups use two `uniqueidentifier` parameters. The largest emitted write batch has 150 typed parameters.
+
+| 256-reference concurrency | Transaction p95 ms | Retention interval p95 ms | Client CPU ms | Allocations MiB | Peak sampled RSS MiB | Physical log bytes written | Log file growth bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 726.239 | 724.322 | 13385.568 | 909.00 | 354.55 | 5,472,256 | 0 |
+| 4 | 9342.515 | 9341.665 | 8533.445 | 1329.90 | 349.36 | 3,092,480 | 0 |
+| 8 | 12536.153 | 12535.218 | 5436.276 | 1319.94 | 390.53 | 2,174,976 | 0 |
+
+The concurrent transaction/retention distributions include victims, whose intervals end at client error return. Those are upper bounds on server lock ownership. Source-lock acquisition p95 at C1/C4/C8 was 1.657/965.729/5,000.997 ms; shared-retention acquisition p95 was 2.183/1.624/0.880 ms. Allocations include process-wide instrumentation and aborted work. Index leaf counters also include attempted work that may later roll back; they are not durable inserted-row counts. Log used-space deltas can be negative after log reuse (the 32-reference/C1 arm grew its log file by 64 MiB); there was no further file growth in the maximum-lineage arms. The separate replay reports 3 ms summed, millisecond-resolution SQL CPU and cannot substitute for natural-concurrency server CPU or client CPU.
+
+All four negative controls preserved source/observation/lineage counts. Replay preserved the original record ID, receipt time and content hash. Diagnostic SQL replay rolled back its writes. The production retention sweep kept all 256 expired pinned inputs and deleted the one unpinned control.
+
+The disposable server retained 106 graphs for the 120 victims. Their captured resources are key locks on `EnvironmentalObservations` / `PK_EnvironmentalObservations`, with shared-lock requests cycling against exclusive owners in read-committed user transactions. Truncated parameter-list input buffers and unknown frames prevent attributing the exact causal statement. This supports a concrete deadlock/retry investigation in #1558; it does not establish a new index or procedure requirement.
+
+Before/after optimization comparison is N/A in slice A: production code is unchanged and this is its current-source baseline. Latency varies with this host/topology; no portable throughput or budget threshold is inferred. Slice B must compare equivalent workloads, report every failed attempt, and preserve the existing W3M/W4 qualification boundaries.
+
 ## Slice B handoff
 
 Use the retained command sequence to distinguish own-source/own-observation
