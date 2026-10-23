@@ -514,5 +514,6 @@ public static class ProcessingNodeOptionsDescriptors
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
         [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
-            CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor];
+            CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
+            CloudAssessmentOptionDescriptors.Descriptor];
 }
