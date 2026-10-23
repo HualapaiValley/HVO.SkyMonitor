@@ -21,6 +21,7 @@ public sealed class ProgramOutputTests
 
         Commands:
           partial-prepare-cleanup
+          existing-down
           status
           cameraagent install
           cameraagent recover-owner

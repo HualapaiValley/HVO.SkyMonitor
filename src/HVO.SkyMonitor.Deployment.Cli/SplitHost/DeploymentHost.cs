@@ -55,7 +55,8 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
         {
             var line = operation + " " + string.Join(' ', arguments.Select(value => Convert.ToBase64String(Encoding.UTF8.GetBytes(value)) is { Length: > 0 } encoded ? encoded : "-"));
             Require(line.Length <= 128 * 1024, "ssh-request-too-large");
-            process.StandardInput.WriteLine(line); process.StandardInput.Flush();
+            process.StandardInput.WriteLineAsync(line.AsMemory(), command.Token).GetAwaiter().GetResult();
+            process.StandardInput.FlushAsync(command.Token).GetAwaiter().GetResult();
             var response = ReadReplyAsync(process.StandardOutput, command.Token).GetAwaiter().GetResult();
             Require(response is { Length: <= 2 * 1024 * 1024 } && response.StartsWith("ok ", StringComparison.Ordinal), "host-primitive-failed");
             return Encoding.UTF8.GetString(Convert.FromBase64String(response![3..]));
@@ -86,9 +87,10 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
     internal const string Adapter = """
         set -euo pipefail
         export LC_ALL=C
+        umask 077
         while IFS=' ' read -r op rest; do
           args=(); for encoded in $rest; do
-            if [[ "$encoded" == - ]]; then args+=(''); else args+=("$(printf '%s' "$encoded" | base64 -d)"); fi
+            if [[ "$encoded" == - ]]; then args+=(''); else decoded="$(printf '%s' "$encoded" | base64 -d; printf '.')"; args+=("${decoded%.}"); fi
           done
           a=${args[0]:-}; b=${args[1]:-}
           case "$op" in
@@ -104,6 +106,9 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
             move) mv -T -n -- "$a" "$b"; value=moved ;;
             unlink) rm -f -- "$a"; value=removed ;;
             rmdir) rmdir -- "$a"; value=removed ;;
+            mkdir) mkdir -m 700 -- "$a"; value=created ;;
+            write) (umask 077; set -C; printf '%s' "$b" > "$a"); value=written ;;
+            http) value=$(curl "${args[@]}"); value="$value" ;;
             sync) sync -- "$a"; value=synced ;;
             *) exit 96 ;;
           esac
