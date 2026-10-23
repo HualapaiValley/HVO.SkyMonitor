@@ -99,7 +99,7 @@ internal sealed class OwnerRecoveryClient : IOwnerRecoveryClient
         {
             throw new OwnerRecoveryProtocolException(
                 OwnerRecoveryFailureDisposition.FreshOperationRequired,
-                "The owner recovery password must be 8 to 256 characters long; start a new recovery operation.");
+                "Use 8 to 256 characters for the owner recovery password; start a new recovery operation.");
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

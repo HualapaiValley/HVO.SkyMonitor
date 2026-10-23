@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
+
 - Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
 
 - CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
