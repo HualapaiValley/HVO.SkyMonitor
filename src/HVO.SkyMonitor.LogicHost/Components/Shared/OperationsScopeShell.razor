@@ -52,6 +52,7 @@
                     {
                         <a href="@($"/app/network/observatories/{observatory!.ObservatoryId:D}/cameras/{camera.LogicalCameraId:D}/current")" aria-current="@(ActiveSection == "current" ? "page" : null)">Current Sky</a>
                         <a href="@($"/app/network/observatories/{observatory!.ObservatoryId:D}/cameras/{camera.LogicalCameraId:D}/archive")" aria-current="@(ActiveSection == "archive" ? "page" : null)">Camera archive</a>
+                        <a href="@($"/app/network/observatories/{observatory!.ObservatoryId:D}/cameras/{camera.LogicalCameraId:D}/imported-executions")" aria-current="@(ActiveSection == "imported" ? "page" : null)">Imported executions</a>
                         <a href="@($"/app/cameras/{camera.LogicalCameraId:D}")">Installation and capture history</a>
                     }
                     else if (observatory is not null)

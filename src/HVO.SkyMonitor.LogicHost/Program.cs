@@ -469,6 +469,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IProcessingGraphDeliveryService, ProcessingGraphDeliveryService>();
         builder.Services.AddScoped<IProcessingGraphProposalReadService, ProcessingGraphProposalReadService>();
         builder.Services.AddScoped<ICameraOperationsReadService, CameraOperationsReadService>();
+        builder.Services.AddScoped<IImportedExecutionInspectorReadService, ImportedExecutionInspectorReadService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
         builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()

@@ -1,0 +1,7 @@
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}/imported-executions"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Imported executions | HVO SkyMonitor</PageTitle>
+<OperationsScopeShell ObservatoryId="ObservatoryId" CameraId="CameraId" ActiveSection="imported">
+    <ImportedExecutionInspector ObservatoryId="ObservatoryId" CameraId="CameraId" Query="Selection" />
+</OperationsScopeShell>
