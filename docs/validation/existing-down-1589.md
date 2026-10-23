@@ -142,7 +142,72 @@ it does not establish improved target-host teardown latency.
 ## Local candidate evidence
 
 Candidate and classifier commands, immutable source head, complete outputs and
-GNU time records are retained under the scratch root. Results are recorded here
-after the gate completes. Integration uses only the explicitly selected local
+GNU time records are retained under the scratch root. Integration uses only the explicitly selected local
 Docker Unix endpoint; Unit has no production catalog bundle and an invalid Docker
 endpoint. No production resource or remote target is used.
+
+
+Code candidate: `6b9dd60b08e67026ce21de7b91057be85bcfcf9f`;
+`post-correction-source/source-pins.json` retains all 31 changed files. The final
+ledger commit changes documentation only. Classifier on the immutable range
+`4df5193e5967a7b02d1a31c7faf1a782e050da5d..<candidate>` reports:
+
+```text
+mode=full deployment=true deployment_catalog=false deployment_shards=true
+ deployment_installer=true complete=true shared=true cameraagent=true
+ logichost=true combined=true delivery=true secret_scan_contract=false
+ release_scripts=false
+```
+
+`complete=true` selects the affected/full-qualification plan; it does not override
+the development/v1 protected profile or authorize a qualification dispatch.
+`classifier-help-corrected.log` and the final-range classifier log retain the
+selector output. No protected CI was dispatched by this child.
+
+| Local gate | Result / retained evidence |
+| --- | --- |
+| Tool restore / solution restore | Passed; `candidate/tool-restore.*`, `restore.*` |
+| Whole solution Debug / Release, warnings as errors | Passed, zero warnings/errors; 172.38 s / 193.93 s wall. Affected builds passed after whitespace and CLI diagnostic corrections. |
+| Whole solution format | Initial whitespace findings in two new files corrected; full verification passed. The later two-file CLI presentation delta also passed affected format verification. |
+| Package audit | Passed: no vulnerabilities or exact deprecated package occurrences |
+| Shell syntax / classification / coordination / PR review tools | All four passed; `candidate/{shell-syntax,classification-guard,coordination-guard,review-tools}.*` |
+| development/v1 profile / operations documentation inventory | Passed; `candidate/{v1-profile,docs-inventory}.*` |
+| Complete Unit selection, invalid Docker endpoint, production catalog unset | 13,598 cases in 415.71 s. Initial 13,465 passed / 124 skipped / nine failed CLI presentation assertions. Corrected command listing and named-option diagnostics; affected run passed 356/356 without skips in 26.97 s. Every original failure is individually matched to a passing result in `unit-correction-audit.json`. |
+| Complete Integration selection, separate pinned local Docker endpoint | 955 cases in 776.38 s. Initial 952 passed; three evidence tests refused stale Release source stamps after the presentation commits. Whole Release rebuild at the candidate SHA passed, zero warnings/errors, 79.22 s; exactly those three passed without skips in 49.31 s. `integration-correction-audit.json` verifies every case. |
+| Effective complete category evidence | Original selections plus affected corrections: Unit 13,474 passed / 124 expected skips / zero unresolved failures; Integration 955 passed / zero skips or unresolved failures. `effective-category-results.json` matches cases by stable ID and name. These are combined evidence, not second whole-solution runs. |
+| Current-head retained comparison audit | One Manual audit passed again across all 56 complete receipts; `candidate/Parity-current-head/`, 4.79 s |
+| Focused ShellCheck | All six changed shell files passed at warning severity. An optional recursive external-source expansion was stopped at 3.68 GB RSS; its interrupted log is retained and is not a pass. Whole-repository ShellCheck remains full CI. |
+| CLI/coordinator / installer / outage / normal-flow / filesystem boundaries | All passed; `focused/{deployment-cli,installer-boundary,logichost-outage,normal-flow,filesystem-qualification}.*`. Installer qualification here is the bounded fake-Docker guard, not the production installer campaign. |
+| Complete parallel deployment shard lane | All ten passed, eight workers, 679.67 s wall (coordinator rounds to 680 s), 213,780 KiB maximum descendant RSS, 1,112.53 s user / 1,111.29 s system CPU, 68,424 / 1,531,176 filesystem input/output blocks. `focused/shards.{log,time}` and its retained per-shard directory. The typed down shard passed all 90 cases without skips; its full shard envelope was 47 s. This is a current absolute lane measurement, not a current before/after comparison. |
+| Changed-project category discovery | 2,735 Unit / zero Integration / seven Manual = 2,742 total, disjoint and complete; `focused/category-audit.json`. Whole-repository exhaustive discovery remains full CI. |
+
+The 124 Unit skips are 122 approved-catalog-dependent cases (the catalog bundle is
+intentionally unset), one macOS-only case, and one provider state that cannot
+occur for that transport. All 90 new teardown Unit cases passed without skips in
+the full selection, correction run, and current down shard. No coverage threshold
+or filter was lowered. Current affected coverage records 64/64 instrumented lines
+for `DownObservation`, 155/173 for `ExistingDown`, and 151/153 for
+`ExistingDownHost`. The four thin Docker-wrapper lines and source-checkout entry
+are covered by real CLI comparison receipts rather than this in-process Unit
+collector; `candidate/affected-coverage.json` records that distinction.
+
+Every heavy build/test/benchmark used `flock -o /tmp/hvo-heavy-gate.lock timeout
+...`, with `MSBUILDDISABLENODEREUSE=1`, `UseSharedCompilation=false`, and explicit
+`-nodeReuse:false -p:UseSharedCompilation=false` on build/test commands. Exact
+commands, GNU time records and all failed/interrupted attempts remain outside
+git. Machine pin: Linux x86_64, kernel 6.8.0-142-generic, 12 logical processors,
+15,707,108 KiB RAM, SDK 10.0.402 (`resource-host.json`).
+
+The paired phase timing predates only the documented authentication registration
+correction, whitespace, and CLI usage diagnostics; the auth delta was separately
+replayed on three affected exact inputs. No lifecycle policy changed after the
+complete comparison. The archived source/binary pins make that scope explicit.
+Managed allocation totals, real-target throughput/latency/backlog, remote-host
+qualification and a current full-lane before/after experiment are not claimed.
+
+The Docker snapshots before and after Integration both contain zero running
+containers. Testcontainers disposed its observed transient containers; no shared
+resource was manually deleted. Retained fake-host trees, receipts and source
+archives are evidence, and remain in the recorded scratch root and referenced
+fixture directories. There was no nested delegation, live deployment, release,
+promotion, publication, push, PR mutation or claim release by this child.
