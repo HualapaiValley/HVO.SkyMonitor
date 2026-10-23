@@ -751,3 +751,40 @@ Post-gate resource audit found no remaining gate processes in this workspace and
 Evidence root: `/tmp/hvo-skymonitor-1589-base-sync.GI1oaL`. `gates-summary.json` contains every exact command, source pin, exit and available timing; companion `.log`, `.time`, `.exit` and `.head` files retain raw evidence. `candidate-source-pins.json` pins 3801 tracked source/build/test/script files, `source-after-integration.json` verifies all unchanged, and `release-binary-pins.json` identifies the rebuilt assemblies. Merge/conflict, inventory, changelog and byte-identical patch proofs are separate JSON/patch artifacts. Final immutable-range classifier outputs after this documentation append are retained in the same root.
 
 The follow-up commit changes only this validation ledger and retains the validated code/source pins. A later invocation that requires the latest Git commit in binary source stamps should rebuild first. The parent should request a **deep** base-sync review of conflict/count correctness, current recovery-contract context, host startup/source-link and Processing/UI boundary interactions, and individually carry F1/F2 from the verified correction-2 report. Protected v1 checks, a fresh target proof, push, finalization and merge remain parent work.
+
+### Fresh documentation-only target synchronization
+
+After the complete merged-code gate, the target advanced to
+`6bc53381dc75681a9fdde6c0ab39cd3ee6843cce` through the #1615 documentation
+comparison and its immutable synthetic-digest secret-scan exception. Merge
+`d816ab423027f52461245e9373a680cdad7dd8ba` incorporates that tip. The sole
+conflict was the Unit row in this runbook: both parent updates are preserved by
+using the actual combined inventory, Unit 13,778 / Integration 955 / Manual 284.
+The target's corrected Unit row does not remove this PR's additional cases.
+
+`git diff --exit-code 896fc6f7 HEAD -- src tests scripts tools .agents AGENTS.md
+Directory.Build.props Directory.Build.targets Directory.Packages.props global.json
+.github` passed. Runtime, tests, build inputs and workflows remain byte-identical
+to the complete-gate source, so the 13,654 Unit passes / 124 expected skips and
+955 Integration passes remain applicable. New changes are upstream documentation,
+validation evidence and `.gitleaks.toml`; no unchanged long suite was repeated.
+
+The exact fresh merge range's classifier reports `mode=full complete=true
+ deployment=false secret_scan_contract=true`, with all component flags true.
+The full PR range reports `mode=full complete=true deployment=true
+ deployment_shards=true deployment_installer=true secret_scan_contract=false`.
+The classifier-selected additional secret-scan contract passed all 62 cases, and
+the actual full-history content-free secret scan passed. All four CI-control
+guards, the v1 profile and operations documentation audit passed again on the
+fresh merge. The new allowlist parses and retains the exact immutable upstream
+commit/path restriction. Target protected profile remains Development v1
+Preflight plus Build and Unit; no qualification workflow was dispatched.
+
+`fresh-pr-diff-proof.json` proves that the reviewed PR delta and fresh PR delta
+are byte-identical when excluding only `CHANGELOG.md`, the CI count runbook and
+this append-only validation ledger. M5 and category inventory deltas remain
+included. The excluded changes are explicitly part of the base-sync review.
+All commands, gate exit records and the exact patch hash are retained beside the
+original complete-gate evidence under the same recorded scratch root. This final
+append changes documentation only; independent base-sync review and finalization
+remain the parent's next actions.
