@@ -31,6 +31,8 @@ public sealed class CaptureScalarOptionsEditorTests
         };
         service.StepAliases = ["ImageQuality", "Telemetry", "VirtualSkyCloudObservation"];
         var cut = context.Render<ProcessingGraphEditorPage>();
+        var ids = cut.FindAll("[id]").Select(static element => element.Id).ToArray();
+        Assert.AreEqual(ids.Length, ids.Distinct(StringComparer.Ordinal).Count(), "Every panel must have a unique section anchor.");
         Assert.IsFalse(cut.Find("#node-options-1-enabled").HasAttribute("checked"));
         cut.Find("form").Submit();
         Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));

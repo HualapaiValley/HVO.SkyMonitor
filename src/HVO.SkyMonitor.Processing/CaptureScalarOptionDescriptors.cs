@@ -17,7 +17,7 @@ public static class CaptureScalarOptionDescriptors
     // These steps have no shared recipe: their graph versions use the factory's existing alias-based fallback.
     public static ProcessingNodeOptionsDescriptor Telemetry { get; } = new(
         "telemetry-options-v1", "Telemetry", "cameraagent-step-v2:Telemetry", "Capture telemetry",
-        "CameraAgent's existing local capture telemetry policy; it remains outside shared recipe execution.",
+        "Capture samples, metrics and completion logs from this CameraAgent.",
         [ProcessingOptionDescriptor.Toggle("enabled", "enabled", "Enable telemetry",
             "Report capture samples, metrics and the completion log when this graph node is enabled. Archived replay does not publish telemetry.", true)]);
 

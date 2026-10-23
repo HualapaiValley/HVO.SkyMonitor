@@ -1,7 +1,7 @@
 @using HVO.SkyMonitor.Processing
 
 <div class="node-options">
-    <p>@Form.Descriptor.Help</p>
+    <p class="node-options-help">@Form.Descriptor.Help</p>
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
