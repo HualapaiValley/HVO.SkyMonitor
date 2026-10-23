@@ -90,7 +90,8 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private sealed record ConstellationCapture(string RevisionId, Guid ArtifactId, PresentationLayerPayloadV1 Payload, byte[] Bytes);
+    private sealed record ConstellationCapture(string RevisionId, Guid ArtifactId, PresentationLayerPayloadV1 Payload, byte[] Bytes,
+        Guid AnnotationArtifactId, PresentationLayerPayloadV1 Annotations);
 
     private static async Task<ConstellationCapture> CaptureConstellationsAsync(ServiceProvider provider, CameraModuleConfig config, int sequence)
     {
@@ -132,7 +133,10 @@ public sealed partial class ProcessingGraphOperationsTests
         var detail = await operations.ReadExecutionDetailAsync(executionId!.Value, CancellationToken.None).ConfigureAwait(false);
         var output = detail!.Nodes.Single(static node => node.NodeId == "overlay").Outputs.Single(static output => output.Variant == "scene-constellation-layer-v1");
         var result = await ReadConstellationPayloadAsync(provider, output.ArtifactId).ConfigureAwait(false);
-        return new(detail.Execution.GraphRevisionId, output.ArtifactId, result.Payload, result.Bytes);
+        var annotations = detail.Nodes.Single(static node => node.NodeId == "overlay").Outputs
+            .Single(static output => output.Variant == "scene-annotation-layer-v1");
+        var starLayer = await ReadConstellationPayloadAsync(provider, annotations.ArtifactId).ConfigureAwait(false);
+        return new(detail.Execution.GraphRevisionId, output.ArtifactId, result.Payload, result.Bytes, annotations.ArtifactId, starLayer.Payload);
     }
 
     private static async Task<(PresentationLayerPayloadV1 Payload, byte[] Bytes)> ReadConstellationPayloadAsync(ServiceProvider provider, Guid artifactId)
