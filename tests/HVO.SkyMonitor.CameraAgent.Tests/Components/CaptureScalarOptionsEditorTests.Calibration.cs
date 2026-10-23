@@ -93,6 +93,23 @@ public sealed partial class CaptureScalarOptionsEditorTests
     }
 
     [TestMethod]
+    public void CalibrationStrategyChangePreservesOpaqueLibrarySelection()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "Calibration", """{ "masterIdentity":"retained", "future":[1e+02] }""");
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        cut.Find("#node-options-0-strategy").Change("CalibrationLibrary");
+        cut.Find("form").Submit();
+        cut.Find("button.btn-primary").Click();
+        var options = service.Created.Single().Pipeline.Steps[0].Options!.Value;
+        Assert.AreEqual("CalibrationLibrary", options.GetProperty("strategy").GetString());
+        Assert.AreEqual("retained", options.GetProperty("masterIdentity").GetString());
+        Assert.AreEqual("[1e+02]", options.GetProperty("future").GetRawText());
+        Assert.IsFalse(options.TryGetProperty("outputVariant", out _));
+        Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
     public void RestoredCalibrationScalarsDoNotMaterializeAbsentDefaults()
     {
         using var context = new BunitContext();

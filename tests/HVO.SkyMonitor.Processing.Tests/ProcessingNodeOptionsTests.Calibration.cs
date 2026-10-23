@@ -29,7 +29,7 @@ public sealed partial class ProcessingNodeOptionsTests
             ["outputVariant"] = ProcessingOptionValue.FromText("corrected")
         });
         Assert.IsTrue(changed.IsValid);
-        Assert.AreEqual(source.GetRawText()[..^1] + ",\"outputVariant\":\"corrected\"}", changed.Options!.Value.GetRawText());
+        Assert.AreEqual(source.GetRawText()[..^2] + ",\"outputVariant\":\"corrected\" }", changed.Options!.Value.GetRawText());
         Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"),
             defaults.Options.ToDictionary(static item => item.Descriptor.Key, static item => item.Value)).Options!.Value.GetRawText());
     }
