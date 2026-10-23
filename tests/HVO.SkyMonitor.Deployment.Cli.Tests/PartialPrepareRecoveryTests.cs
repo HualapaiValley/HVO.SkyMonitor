@@ -315,6 +315,51 @@ public sealed class PartialPrepareRecoveryTests
         Assert.IsFalse(Directory.Exists(host.Physical(host.Prepared[0].RuntimeRoot)));
     }
     [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    public async Task SshPrimitiveAdapter_UnexpectedEntries_RefuseBeforeAnyRemoteMutation(bool controlDirectory, bool inspect)
+    {
+        using var host = new DeploymentFakeHost { UseShellPrimitives = true }; await host.StageAsync();
+        var root = host.Physical(host.Prepared[0].RuntimeRoot);
+        var unexpected = root + (controlDirectory ? "/.hvo-deploy" : "") + "/application-state";
+        DeploymentFakeHost.Write(unexpected, "unexpected application bytes\n");
+        var remote = host.Directory + "/remote";
+        var before = await SnapshotRemoteTreeAsync(remote);
+        var mutations = new List<string>();
+        host.BeforePrimitive = (operation, _) => { if (operation is "move" or "unlink" or "rmdir") mutations.Add(operation); };
+        InstallerException? refusal = null;
+        try { await host.RunAsync(inspect); }
+        catch (InstallerException exception) { refusal = exception; }
+
+        CollectionAssert.AreEqual(before, await SnapshotRemoteTreeAsync(remote), "Refusal must preserve every remote path, identity, mode and file byte, including ownership/lock provenance.");
+        Assert.HasCount(0, mutations, "Unexpected entries must be refused before any remote mutation is attempted.");
+        Assert.IsNotNull(refusal, "The real adapter must not report success when the bound directory contains application state.");
+        StringAssert.Contains(refusal.Message, "provenance-or-content-invalid", StringComparison.Ordinal);
+    }
+    [TestMethod]
+    public void SshPrimitiveAdapter_ListFailure_IsNotReturnedAsAnEmptyDirectory()
+    {
+        using var host = new DeploymentFakeHost();
+        using var files = new SshDeploymentFiles("", CancellationToken.None, local: true);
+        var handle = files.Call("open", host.Directory);
+        var descriptor = files.Call("path", handle);
+        // GNU find fails for this missing child. Its failure must survive head/base64 rather than produce ok-empty.
+        Assert.ThrowsExactly<InstallerException>(() => files.Call("list", descriptor + "/missing-entry"));
+    }
+    private static async Task<string[]> SnapshotRemoteTreeAsync(string root)
+    {
+        using var files = new DeploymentFakeFiles();
+        var entries = new List<string>();
+        foreach (var path in new[] { root }.Concat(Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)).Order(StringComparer.Ordinal))
+        {
+            var content = Directory.Exists(path) ? "" : Convert.ToBase64String(await File.ReadAllBytesAsync(path));
+            entries.Add(Path.GetRelativePath(root, path) + "\t" + files.Call("stat", path) + "\t" + content);
+        }
+        return entries.ToArray();
+    }
+    [TestMethod]
     public async Task ExistingServiceInfrastructureContext_IsStillScannedForRunResources()
     {
         using var host = new DeploymentFakeHost();

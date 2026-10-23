@@ -84,7 +84,7 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
     // An authenticated SSH session holds file/directory descriptors and flock for its lifetime. The adapter has no
     // prepare, recovery, inventory, ownership, journal, or deletion policy. It exposes bounded Linux primitives only.
     internal const string Adapter = """
-        set -eu
+        set -euo pipefail
         export LC_ALL=C
         while IFS=' ' read -r op rest; do
           args=(); for encoded in $rest; do
@@ -98,7 +98,7 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
             open) exec {fd}<"$a"; value=$fd ;;
             lock) flock -n "$a"; value=locked ;;
             read) value=$(head -c 1048577 -- "/proc/$$/fd/$a" | base64 -w0) ;;
-            list) value=$(find -P "$a" -mindepth 1 -maxdepth 1 -printf '%f\0' | head -c 1048577 | base64 -w0) ;;
+            list) value=$(find -P "$a/." -mindepth 1 -maxdepth 1 -printf '%f\0' | head -c 1048577 | base64 -w0) ;;
             mounts) value=$(head -c 1048577 /proc/self/mountinfo | base64 -w0) ;;
             path) value="/proc/$$/fd/$a" ;;
             move) mv -T -n -- "$a" "$b"; value=moved ;;

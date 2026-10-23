@@ -131,12 +131,49 @@ wrapper, environment manifest, raw per-vector timings and result JSON make both
 sides reproducible without live hosts. Use the shared heavy-gate flock and the
 repository's build flags when rerunning.
 
-The expanded migrated shard has 79 native Unit cases. Like the existing installer
+The expanded migrated shard has 84 native Unit cases. Like the existing installer
 contracts, those cases and the Manual replay declare their Linux-only descriptor
 semantics explicitly. The macOS inventory retains their discovered cases and adds
-the 79 new recovery cases plus seven Linux-only exit rows to its skip pin; no
+the 84 recovery cases plus seven Linux-only exit rows to its skip pin; no
 Linux case is skipped. The migrated shard is a superset, so its
 wall time is not an identical-workload comparison. This slice makes no whole-lane
 speed, production-network, ARM64, physical-device or release-qualification claim.
 Final immutable candidate range, selector output and candidate gates are recorded
 in the issue/PR evidence ledger and retained evidence bundle.
+
+## F1: real descriptor-directory enumeration correction
+
+The initial review at `a302f80532e1abafaf25c0db3b48488d310afa2d` found that
+`find -P /proc/<pid>/fd/<fd>` lists the descriptor symlink rather than its bound
+directory. A failing `find` was also hidden by the succeeding `head | base64`
+pipeline. The correction enumerates the bound descriptor's `/.` directory and
+sets `pipefail`, so enumeration errors terminate the adapter instead of replying
+with a successful empty list. It retains descriptor confinement and bounded
+output; it does not follow child symlinks.
+
+Before changing production, five real-adapter regressions failed on the reviewed
+production bytes: four `SshPrimitiveAdapter_UnexpectedEntries_RefuseBeforeAnyRemoteMutation`
+rows (runtime root/control directory, dry run/confirmed cleanup), and
+`SshPrimitiveAdapter_ListFailure_IsNotReturnedAsAnEmptyDirectory`. The existing
+`SshPrimitiveAdapter_PerformsTheSameDescriptorBoundCleanup` passed. After the
+correction all six cases passed with no skipped case. The actual adapter now
+returns the same nonempty listing through both descriptor forms and exits with
+no success reply for the failing enumeration. A retained suffix-only negative
+control still returns a successful empty reply on that error, demonstrating why
+pipeline failure propagation is required as well. The four
+entry cases compare every remote path, identity, mode and file byte, including
+ownership marker, prepare lock and sidecar, and forbid attempted move/unlink/rmdir
+operations before refusal. The error case uses an actual failing GNU find on a
+missing child below a bound descriptor; it also detects a correction that only
+adds `/.` without propagating pipeline failure.
+
+Retained correction evidence is under the hvo-recorded scratch
+`/tmp/hvo-skymonitor-1588-correction-f1.sZc3u4`. `before/` contains the exact
+reviewed adapter, test patch/source, reproduction, command, log and failing TRX;
+`after/` records corrected runs. The focused command is
+`dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj
+--configuration Release --filter FullyQualifiedName~PartialPrepareRecoveryTests.SshPrimitiveAdapter_`.
+Use the shared heavy-gate flock/timeout, default short test TMPDIR, disabled node
+reuse/shared compilation, unset production catalog and invalid Docker endpoint.
+The correction evidence ledger binds the final SHA, complete affected CLI Unit
+selection, unchanged 45-vector replay, classifier and control/format results.
