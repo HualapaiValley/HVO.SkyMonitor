@@ -66,7 +66,7 @@ internal sealed partial class JoinedRecoveryFixture
             return !db.Database.HasPendingModelChanges();
     }
 
-    internal async Task RunAsync()
+    internal async Task RunAsync(bool verifySqlFailurePreservation = false)
     {
         root = Directory.CreateTempSubdirectory("hvo-1630-").FullName;
         sourceDatabase = "Hvo1630_" + runId;
@@ -80,6 +80,12 @@ internal sealed partial class JoinedRecoveryFixture
             connectionString = new SqlConnectionStringBuilder(container.GetConnectionString()) { Pooling = false }.ConnectionString;
         });
         await MeasureAsync("canonical-seed", SeedAsync);
+        if (verifySqlFailurePreservation)
+        {
+            await MeasureAsync("sql-failure-preservation", VerifySqlFailurePreservationAsync);
+            await CleanupAsync();
+            return;
+        }
         await MeasureAsync("sql-backup-restore-checkdb", BackupSqlAsync);
         await MeasureAsync("object-backup", async () =>
         {
@@ -91,6 +97,11 @@ internal sealed partial class JoinedRecoveryFixture
         await MeasureAsync("joined-admission", async () => Require(await AdmitAsync(positive) == "admitted", "positive-admission"));
         await MeasureAsync("refusals", async () => await ExerciseRefusalsAsync(positive));
         await EmitEvidenceAsync();
+        await CleanupAsync();
+    }
+
+    private async Task CleanupAsync()
+    {
         phase = "cleanup";
         // Only this disposable container and this exact run directory are owned by this fixture.
         // WithCleanUp(false) preserves failed runs from the reaper, and DisposeAsync alone
@@ -249,7 +260,9 @@ internal sealed partial class JoinedRecoveryFixture
         sqlFacts = await ReadSqlFactsAsync(sourceDatabase);
     }
 
-    private async Task BackupSqlAsync()
+    private Task BackupSqlAsync() => BackupSqlAsync(null);
+
+    private async Task BackupSqlAsync(Func<string, string>? prepareAfterRetention)
     {
         phase = "sql-backup-restore-checkdb";
         await using var master = new SqlConnection(connectionString);
@@ -269,7 +282,8 @@ internal sealed partial class JoinedRecoveryFixture
             ["MetadataRetentionDeclaredDays"] = "1",
             ["MetadataRetentionControlReference"] = "issue1630-disposable-owner-cleanup"
         };
-        var result = await SqlOperationsIssue255Tests.ExecuteScriptAsync(master, "backup-restore-checkdb.sql", variables, RetainTarget);
+        var result = await SqlOperationsIssue255Tests.ExecuteScriptAsync(master, "backup-restore-checkdb.sql", variables,
+            script => prepareAfterRetention is null ? RetainTarget(script) : prepareAfterRetention(RetainTarget(script)));
         var row = result.ResultSets.SelectMany(set => set.Rows).Single(item => item.ContainsKey("copy_only"));
         Require(Convert.ToInt32(row["copy_only"], CultureInfo.InvariantCulture) == 1 && Equals(row["state"], "passed"), "sql-native-result");
         Require(Equals(row["source_canonical_sha256"], row["restored_canonical_sha256"]), "sql-invariant");
