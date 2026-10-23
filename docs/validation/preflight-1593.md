@@ -235,3 +235,25 @@ was created by the implementation. Retained artifacts are beneath the existing
 hvo-tracked scratch root, plus explicitly preserved disposable container fixtures.
 Original failed comparison/build/test/tool attempts remain intact. The parent
 owns container/scratch cleanup after review and finalization.
+
+## Candidate control corrections
+
+After synchronizing with `development/v1` at
+`5c2f0f9860660578b00f225aadb45e0244b13432`, the parent completed the whole
+Unit selection with coverage: 14,083 cases in 21 assemblies. The initial results
+are retained in `candidate-nonroot/unit/` and `unit-summary-initial.json`.
+Seven output assertions exposed a shared expected-help string missing the new
+`preflight` command; that expectation now includes the command. Three existing
+orbital endpoint cases hit the test image's Development-mode exception behavior.
+Those exact three passed unchanged under the CI-equivalent Production environment
+(`cameraagent-environment-repro.log` and TRX).
+
+Real discovery also found stale upstream Unit declarations. The complete,
+disjoint six-category audit in `candidate-nonroot/category-audit/report.json`
+confirms Processing 885, combined-host 81, CameraAgent 7,154 and Deployment CLI
+2,958 Unit cases. The three stale declarations and aggregate runbook total are
+corrected to the observed values; repository totals are Unit 14,083, Integration
+955 and Manual 285. No test behavior or primary category changed. The complete
+phase production sources remain identical to the accepted comparison inputs.
+The PR's append-only ledger records affected correction results and the remaining
+candidate/finalization evidence, preserving every original failure.
