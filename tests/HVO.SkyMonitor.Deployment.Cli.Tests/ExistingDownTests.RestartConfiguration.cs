@@ -62,7 +62,8 @@ public sealed partial class ExistingDownTests
         if (point != "cleanup")
         {
             foreach (var path in seeded) Assert.IsTrue(File.Exists(fixture.Host.Physical(path)), path);
-            Assert.AreEqual("[]", Canonical(System.Text.Json.Nodes.JsonNode.Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/private-upload-registry.json")))));
+            var registry = System.Text.Json.Nodes.JsonNode.Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/private-upload-registry.json"));
+            Assert.AreEqual("[]", Canonical(registry));
         }
         else Assert.AreEqual("true", DeploymentFakeHost.Read(fixture.Host.Physical(setting)));
         fixture.Host.BeforePrimitive = null; fixture.Host.AfterPrimitive = null;

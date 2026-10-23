@@ -37,7 +37,12 @@ internal sealed class DeploymentFakeFiles : IDeploymentFiles
             case "write": DeploymentFakeHost.Write(path, args[1]); return "written";
             case "sync":
                 if (Directory.Exists(path)) NativeLinux.FlushDirectory(path + "/.");
-                else { using var descriptor = NativeLinux.OpenReadOnlyNoFollow(path); RandomAccess.FlushToDisk(descriptor); }
+                else
+                {
+                    var opened = handles.Values.SingleOrDefault(file => path == $"/proc/{Environment.ProcessId}/fd/{file.DangerousGetHandle()}");
+                    if (opened is not null) RandomAccess.FlushToDisk(opened);
+                    else { using var descriptor = NativeLinux.OpenReadOnlyNoFollow(path); RandomAccess.FlushToDisk(descriptor); }
+                }
                 return "synced";
             default: throw new InvalidOperationException("Unexpected host primitive " + operation);
         }
