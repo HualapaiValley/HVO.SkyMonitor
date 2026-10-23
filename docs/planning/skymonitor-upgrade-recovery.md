@@ -6,7 +6,27 @@ The [install contract section 6](../hvo-install-contract.md#skymonitor-approved-
 owns approved target behavior. This map identifies delivered inputs and remaining
 work; it implements no runtime backend, on-disk migration or new command.
 
-## Baseline and Recommendation for the Studies
+## Current cost decision and study history
+
+**#1615 reassessment (2026-10-23): simplify the pending-upgrade protocol on
+current storage primitives first.** The
+[runtime/recurring-cost comparison](../validation/upgrade-recovery-cost-1615.md)
+adds current-source lifecycle measurements, a disposable controlled Btrfs unit
+comparison and a named completed-PR/job/step/local-ledger sample. It charges the
+inventory/fence/reference/pairing gaps to every option, attributes old-reader
+and post-commit-toggle removal to policy, and keeps the snapshot alternative
+reversible on explicit complexity/pause evidence. This is the current
+implementation direction; the #1607/#1608 studies below retain their historical
+evidence and limits. It authorizes no backend rollout or current gate reduction.
+
+The smallest next CameraAgent slice seals the complete recovery inventory and
+predecessor identities so restore never rediscovers roots through candidate
+schema. The pending checkpoint/receipt, all-writer fence and durable
+protected/unprotected transaction still require acceptance. LogicHost retains COPY_ONLY plus coherent
+object/config recovery as its implementation starting point; no delivered
+central upgrade runtime or measured whole-application saving is implied.
+
+### Baseline and earlier study recommendations
 
 Credit the delivered mechanism first. `CameraAgentStateSnapshot.cs` uses SQLite
 online backup, verifies self-contained copies with hashes, integrity/schema/row
@@ -52,7 +72,7 @@ owns host policy; coordinate their contracts without taking their claims.
 | `UPGRADE-RECOVERY-002`: complete logical point and non-rewindable facts | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateLayout.cs`, `CameraAgentStateCounters*.cs`; `docs/runbooks/product-instance-layout.md`; LogicHost `src/HVO.SkyMonitor.LogicHost/Data/CentralRecovery*.cs` and `deploy/sql/` | Inventory every DB, recovery file, mutable file/config/key and referenced payload, including external roots. Prove coherent DB/file generations and identity/catalog pairing. Replace broad store exclusions/best-effort carry with minimal verified exceptions or proof that the fence prevents new external facts. SQL Server remains central authority. |
 | `UPGRADE-RECOVERY-003`: all-writer fence, candidate health and durable decision before admission | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycle*.cs`; current authenticated lifecycle/drain operations and host health endpoints | Prove every writer and external acknowledgement is fenced. Qualify semantic health, dependency/auth/read checks and isolated persistence/retrieval probe under a timeout. Commit durably before resuming; interrupted decision never rewinds acknowledged work. |
 | `UPGRADE-RECOVERY-004`: durable CameraAgent protected/unprotected path and interruption-safe restore | Snapshot/journal/retention code in `src/HVO.SkyMonitor.Deployment.Cli/`; `tests/HVO.SkyMonitor.Deployment.Cli.Tests/CameraAgentStateSnapshotTests.cs`, `LifecycleContractTests.SnapshotRecovery.cs`, `LifecycleContractTests.RecoveryReads.cs` | Detect actual qualified capability; verify completion or warn and durably record unprotected without demanding backup proof. Missing/partial/damaged/space-exhausted checkpoints never claim protection. Journal/capsule/receipt survive outside reverted roots. Failed unprotected mutation cannot start an old binary. |
-| `UPGRADE-RECOVERY-005`: bounded studies and risk-based evidence | `docs/planning/performance-validation.md`; `docs/validation/logichost-filesystem-qualification-586.md`; `scripts/ci:classify`; `docs/development-v1.md` | #1607 and #1608 compare end-to-end costs, preserve current gates, propose justified evidence reuse and recommend keep/change. Backend adoption and gate changes require subsequent reviewed work. |
+| `UPGRADE-RECOVERY-005`: bounded studies and risk-based evidence | `docs/planning/performance-validation.md`; `docs/validation/logichost-filesystem-qualification-586.md`; `scripts/ci:classify`; `docs/development-v1.md`; [#1615 cost comparison](../validation/upgrade-recovery-cost-1615.md) | #1607/#1608 evidence plus #1615's current-source and recurring-cost reassessment select simpler current primitives first, with a reversible controlled-snapshot alternative. Its exact proposed test replacements/reuse remain subject to subsequent reviewed adoption. |
 
 Existing `PreviousReleaseStoreReadabilityTests` under
 `tests/HVO.SkyMonitor.CameraAgent.Tests/State/` and
@@ -78,6 +98,10 @@ recommendation is not a substitute for those recorded study outcomes.
 Apply the gate to overlaps in CameraAgent #1059/#1060/#1300 and LogicHost
 #1244/#1245/#589/#591. Unrelated features, clean-install preparation, release
 verification and strict existing-behavior #893 CLI parity remain independent.
+The owner-requested #1615 follow-up is now recorded in the cost comparison above;
+overlapping stories cite its simplify-first disposition as well as #1606 and
+their applicable #1607/#1608 inputs. This clears reassessment ordering without
+closing any implementation acceptance or newly restricting supported installs.
 The [execution protocol](agent-execution.md#skymonitor-recovery-ordering-gate)
 requires checking this when selecting work; study timing does not create a
 blanket hold on unrelated stories.
@@ -123,6 +147,9 @@ qualification, a release or permission to format a device.
 
 This is a proposal for later reviewed adoption; all existing required gates,
 risk tiers and `development/v1` Preflight / Build and Unit checks remain intact.
+The [#1615 test-policy delta](../validation/upgrade-recovery-cost-1615.md#proposed-test-policy-delta-with-replacement-proof)
+names exact retiring/replacement tests, separates process and backend savings,
+and records measured versus unknown recurring cost.
 `scripts/ci:classify` still selects affected local scope. This contract creates
 no classifier lane or every-PR filesystem matrix.
 
