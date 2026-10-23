@@ -437,6 +437,9 @@ public static class CameraAgentServiceCollectionExtensions
             "EnvironmentPresentationLayer", typeof(EnvironmentPresentationLayerCaptureProcessingStep),
             typeof(EnvironmentPresentationLayerProcessingStepOptions), 72, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            FrameFactsPresentation.StepAlias, typeof(FrameFactsPresentationCaptureProcessingStep),
+            typeof(FrameFactsPresentationProcessingStepOptions), 72, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "OverlayManifest", typeof(OverlayManifestCaptureProcessingStep),
             typeof(OverlayManifestProcessingStepOptions), 80, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
