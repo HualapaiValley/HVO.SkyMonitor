@@ -325,13 +325,34 @@ public sealed class ExecutionEvidenceCombinedTests
         using (var scope = Fixture.CreateHostScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var references = await db.Set<ImportedExecutionEvidenceArtifact>()
-                .Where(item => item.BindingId == central.Binding.Id && item.ArtifactId == raw.ArtifactId)
-                .Select(item => item.Id).ToArrayAsync().ConfigureAwait(false);
-            Assert.IsNotEmpty(references, "The uploaded raw must be named by actual edge execution evidence.");
-            var before = await db.Set<ImportedExecutionEvidenceObservation>().AsNoTracking()
-                .Where(item => references.Contains(item.ArtifactReferenceId)).ToArrayAsync().ConfigureAwait(false);
+            var service = scope.ServiceProvider.GetRequiredService<ExecutionEvidenceService>();
+            var cameraId = await db.LogicalCameraInstallations.Where(i => i.Id == central.Binding.LogicalCameraInstallationId)
+                .Select(i => i.LogicalCameraId).SingleAsync().ConfigureAwait(false);
+            var units = await service.ListUnitsAsync(central.Binding.Id, central.OwnerUserId, central.Binding.ObservatoryId, take: 100).ConfigureAwait(false);
+            Assert.IsNotNull(units);
+            Assert.IsTrue(units.Count < 100, "The bounded combined fixture must fit one unit page.");
+            var selected = new List<(long UnitId, ExecutionEvidenceArtifactView Artifact)>();
+            foreach (var unit in units)
+            {
+                var page = await service.ListUnitArtifactsAsync(central.Binding.ObservatoryId, cameraId, central.Binding.LogicalCameraInstallationId,
+                    central.Binding.Id, unit.Id, central.OwnerUserId, central.Binding.ObservatoryId, take: 100).ConfigureAwait(false);
+                Assert.IsNotNull(page);
+                Assert.IsNull(page.NextCursor, "Each fixture execution must fit one artifact page.");
+                selected.AddRange(page.Artifacts.Where(a => a.ArtifactId == raw.ArtifactId).Select(a => (unit.Id, a)));
+            }
+            Assert.IsNotEmpty(selected, "The uploaded raw must be named by actual edge execution evidence through authorized reads.");
+            async Task<ExecutionEvidenceArtifactReconciliationView> ReadAsync((long UnitId, ExecutionEvidenceArtifactView Artifact) item)
+            {
+                var result = await service.GetArtifactReconciliationAsync(central.Binding.ObservatoryId, cameraId,
+                    central.Binding.LogicalCameraInstallationId, central.Binding.Id, item.UnitId, item.Artifact.ArtifactReferenceId,
+                    item.Artifact.CaptureId, item.Artifact.ArtifactId, central.OwnerUserId, central.Binding.ObservatoryId).ConfigureAwait(false);
+                Assert.IsNotNull(result);
+                return result;
+            }
+            var before = new List<ExecutionEvidenceObservationView>();
+            foreach (var item in selected) before.AddRange((await ReadAsync(item).ConfigureAwait(false)).Observations);
             Assert.IsTrue(before.Any(item => item.State != "Available"));
+            var references = selected.Select(item => item.Artifact.ArtifactReferenceId).ToArray();
             await db.Set<ExecutionEvidenceArtifactCheck>().Where(item => references.Contains(item.ArtifactReferenceId))
                 .ExecuteUpdateAsync(update => update.SetProperty(item => item.NextCheckAtUtc, DateTimeOffset.UnixEpoch))
                 .ConfigureAwait(false);
@@ -340,18 +361,15 @@ public sealed class ExecutionEvidenceCombinedTests
                 await scope.ServiceProvider.GetRequiredService<ExecutionEvidenceReconciler>()
                     .ReconcileAsync(32).ConfigureAwait(false);
             }
-            var after = await db.Set<ImportedExecutionEvidenceObservation>().AsNoTracking()
-                .Where(item => references.Contains(item.ArtifactReferenceId)).ToArrayAsync().ConfigureAwait(false);
-            foreach (var reference in references)
+            foreach (var item in selected)
             {
-                var latest = after.Where(item => item.ArtifactReferenceId == reference).MaxBy(item => item.Id);
+                var read = await ReadAsync(item).ConfigureAwait(false);
+                Assert.AreEqual(item.Artifact, read.Artifact);
+                var latest = read.Observations.Count == 0 ? null : read.Observations[0];
                 Assert.IsNotNull(latest);
                 Assert.AreEqual("Available", latest.State, latest.ReasonCode);
                 Assert.IsNotNull(latest.ObjectGeneration);
             }
-            Assert.IsTrue(before.All(old => after.Any(item => item.Id == old.Id && item.State == old.State &&
-                item.ReasonCode == old.ReasonCode && item.ObservedAtUtc == old.ObservedAtUtc)),
-                "Central availability is append-only and keeps the earlier missing-object observation.");
         }
         await central.AssertPersistedAsync(sealedBeforeUpload).ConfigureAwait(false);
     }

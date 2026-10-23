@@ -35,6 +35,18 @@ public sealed class MixedGainNormalizedMeanRecipeTests
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
     [TestMethod]
+    public void SupportRasterBoundsCoverLargeSensorsWithoutTheStructuredMetadataLimit()
+    {
+        var layout = MixedGainSupportV1.CreateLayout(4096, 4096);
+        Assert.AreEqual(16_777_216L, layout.ByteLength);
+        Assert.AreEqual(4096, layout.StrideBytes);
+        Assert.IsTrue(layout.ByteLength > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => MixedGainSupportV1.CreateLayout(0, 1));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => MixedGainSupportV1.CreateLayout(int.MaxValue / 2 + 1, 1));
+        Assert.ThrowsExactly<OverflowException>(() => MixedGainSupportV1.CreateLayout(int.MaxValue, 2));
+    }
+
+    [TestMethod]
     public async Task OneReferenceGainInputIsEncodedAtSixteenCodesPerCalibratedCode()
     {
         // Bias 4369 is stored code 273. Dark 8738 is 273 codes over bias in 4 s, so 136.5 codes in the 2 s light,
@@ -47,7 +59,31 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         var outcome = await ExecuteAsync(Request(plan, [light, .. member.All]));
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
-        var product = outcome.Products.Single();
+        var product = outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined);
+        var diagnosticProduct = outcome.Products.Single(static product => product.MediaType == MixedGainDiagnosticsV1.MediaType);
+        var diagnostic = MixedGainDiagnosticsV1.Parse(diagnosticProduct.Payload);
+        Assert.IsNotNull(diagnostic);
+        Assert.AreEqual(product.OutputIdentitySha256, diagnostic.CombinedOutputIdentitySha256);
+        Assert.AreEqual(product.ChecksumSha256, diagnostic.CombinedChecksumSha256);
+        Assert.AreEqual(1, diagnostic.ClippedLowCount);
+        Assert.AreEqual(0, diagnostic.ClippedHighCount);
+        Assert.AreEqual(2, diagnostic.NoCoverageCount);
+        Assert.AreEqual(1, diagnostic.Inputs.Single().SaturatedSampleCount);
+        Assert.AreEqual(1, diagnostic.Inputs.Single().InvalidSampleCount);
+        var valid = outcome.Products.Single(static product => product.Algorithms.Any(algorithm => algorithm.Version == MixedGainSupportV1.ValidCountsEncoding));
+        var supportMask = outcome.Products.Single(static product => product.Algorithms.Any(algorithm => algorithm.Version == MixedGainSupportV1.NoCoverageEncoding));
+        CollectionAssert.AreEqual(new byte[] { 1, 1, 1, 1, 0, 0, 1, 1 }, valid.Payload.ToArray());
+        CollectionAssert.AreEqual(new byte[] { 0, 0, 0, 0, 1, 1, 0, 0 }, supportMask.Payload.ToArray());
+        // Both output sites encode zero, but the measured zero has one contributor and the saturated site has none.
+        Assert.AreEqual(1, valid.Payload.Span[1]);
+        Assert.AreEqual(0, supportMask.Payload.Span[1]);
+        Assert.AreEqual(0, valid.Payload.Span[4]);
+        Assert.AreEqual(1, supportMask.Payload.Span[4]);
+        Assert.AreEqual(ProcessingProductKind.PixelData, valid.Kind);
+        Assert.AreEqual(FrameArtifactRole.Metadata, valid.Role);
+        Assert.AreEqual(MixedGainSupportV1.CreateLayout(4, 2), valid.Layout);
+        Assert.AreEqual(valid.OutputIdentitySha256, diagnostic.Support[0].OutputIdentitySha256);
+        CollectionAssert.AreEqual(product.SourceArtifactIds.ToArray(), valid.SourceArtifactIds.ToArray());
         // 16 × 591; zero signal; a negative mean clamps to 0; 16 × 3685 below saturation; saturated light has no
         // coverage; a defect has no coverage; one calibrated code is sixteen output codes; 16 × 2591.
         CollectionAssert.AreEqual(new ushort[] { 9456, 0, 0, 58960, 0, 0, 16, 41456 }, Values(product.Payload.Span));
@@ -89,8 +125,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         // defect; 8 × (1 + 2); 8 × 2 × 3685 = 16 × 3685.
         CollectionAssert.AreEqual(
             new ushort[] { 656, 3856, 0, 9456, 0, 0, 24, 58960 },
-            Values(outcome.Products.Single().Payload.Span));
-        Assert.AreEqual(LightExposure * 2, outcome.Products.Single().TotalIntegration);
+            Values(outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
+        Assert.AreEqual(LightExposure * 2, outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).TotalIntegration);
     }
 
     [TestMethod]
@@ -110,7 +146,14 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         // zero signal; no valid flat; 8 × 200.
         CollectionAssert.AreEqual(
             new ushort[] { 3200, 320, 65535, 32, 0, 0, 0, 1600 },
-            Values(outcome.Products.Single().Payload.Span));
+            Values(outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
+        var diagnostics = MixedGainDiagnosticsV1.Parse(outcome.Products.Single(static product => product.MediaType == MixedGainDiagnosticsV1.MediaType).Payload)!;
+        Assert.AreEqual(1, diagnostics.ClippedHighCount);
+        Assert.AreEqual(0, diagnostics.ClippedLowCount);
+        Assert.AreEqual(2, diagnostics.NoCoverageCount);
+        Assert.AreEqual(1, diagnostics.Inputs.Single().InvalidSampleCount);
+        Assert.IsNull(MixedGainDiagnosticsV1.Parse(diagnostics.Serialize().AsMemory(1)));
+        Assert.IsNull(MixedGainDiagnosticsV1.Parse((diagnostics with { NoCoverageCount = 9 }).Serialize()));
     }
 
     [TestMethod]
@@ -137,7 +180,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
                                (Int128)higherCoefficient * (Code(second, index) - 273);
             expected[index] = (ushort)Int128.Clamp(RoundHalfEven(16 * electrons, 2 * (Int128)referenceCoefficient), 0, 65535);
         }
-        var actual = Values(outcome.Products.Single().Payload.Span);
+        var actual = Values(outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span);
         CollectionAssert.AreEqual(expected, actual);
         // The higher-gain input carries about half the electrons per code, so the mean is not the equal-gain mean.
         Assert.AreNotEqual((ushort)(8 * ((1000 - 409) + (2000 - 273))), actual[0]);
@@ -146,7 +189,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
                 .Concat(reference.All.Select(static master => master.ArtifactId))
                 .Concat(higher.All.Select(static master => master.ArtifactId))
                 .ToArray(),
-            outcome.Products.Single().SourceArtifactIds.ToArray());
+            outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).SourceArtifactIds.ToArray());
     }
 
     [TestMethod]
@@ -184,7 +227,15 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             NormalizationKernelV1.ReferenceGainOutputScale,
             photosites,
             CancellationToken.None);
-        CollectionAssert.AreEqual(expected.PixelData.ToArray(), outcome.Products.Single().Payload.ToArray());
+        CollectionAssert.AreEqual(expected.PixelData.ToArray(), outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.ToArray());
+        var diagnostics = MixedGainDiagnosticsV1.Parse(outcome.Products.Single(static product => product.MediaType == MixedGainDiagnosticsV1.MediaType).Payload)!;
+        Assert.AreEqual(expected.ClippedLowCount, diagnostics.ClippedLowCount);
+        Assert.AreEqual(expected.ClippedHighCount, diagnostics.ClippedHighCount);
+        Assert.AreEqual(expected.NoCoverageCount, diagnostics.NoCoverageCount);
+        var valid = outcome.Products.Single(static product => product.Algorithms.Any(algorithm => algorithm.Version == MixedGainSupportV1.ValidCountsEncoding));
+        var supportMask = outcome.Products.Single(static product => product.Algorithms.Any(algorithm => algorithm.Version == MixedGainSupportV1.NoCoverageEncoding));
+        CollectionAssert.AreEqual(expected.ValidCounts.ToArray().Select(static count => checked((byte)count)).ToArray(), valid.Payload.ToArray());
+        CollectionAssert.AreEqual(expected.ValidCounts.ToArray().Select(static count => count == 0 ? (byte)1 : (byte)0).ToArray(), supportMask.Payload.ToArray());
     }
 
     [TestMethod]
@@ -301,10 +352,10 @@ public sealed class MixedGainNormalizedMeanRecipeTests
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, first.Status, first.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, second.Status, second.ReasonCode);
-        CollectionAssert.AreEqual(new ushort[] { 9456, 0, 0, 58960, 0, 25456, 16, 41456 }, Values(first.Products.Single().Payload.Span));
-        CollectionAssert.AreEqual(first.Products.Single().Payload.ToArray(), second.Products.Single().Payload.ToArray());
-        Assert.AreEqual(first.Products.Single().ChecksumSha256, second.Products.Single().ChecksumSha256);
-        Assert.AreEqual(first.Products.Single().OutputIdentitySha256, second.Products.Single().OutputIdentitySha256);
+        CollectionAssert.AreEqual(new ushort[] { 9456, 0, 0, 58960, 0, 25456, 16, 41456 }, Values(first.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
+        CollectionAssert.AreEqual(first.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.ToArray(), second.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.ToArray());
+        Assert.AreEqual(first.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256, second.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256);
+        Assert.AreEqual(first.Products.Single(static product => product.Role == FrameArtifactRole.Combined).OutputIdentitySha256, second.Products.Single(static product => product.Role == FrameArtifactRole.Combined).OutputIdentitySha256);
     }
 
     [TestMethod]
@@ -368,7 +419,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, baseline.Status, baseline.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, lowercase.Status, lowercase.ReasonCode);
-        Assert.AreEqual(baseline.Products.Single().ChecksumSha256, lowercase.Products.Single().ChecksumSha256);
+        Assert.AreEqual(baseline.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256, lowercase.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256);
     }
 
     [TestMethod]
@@ -395,11 +446,11 @@ public sealed class MixedGainNormalizedMeanRecipeTests
             [fixture.Light with { Integration = TimeSpan.FromSeconds(3) }, .. fixture.Member.All]));
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, withLiveArtifacts.Status, withLiveArtifacts.ReasonCode);
-        Assert.AreEqual(baseline.Products.Single().ChecksumSha256, withLiveArtifacts.Products.Single().ChecksumSha256);
-        Assert.AreEqual(baseline.Products.Single().OutputIdentitySha256, withLiveArtifacts.Products.Single().OutputIdentitySha256);
+        Assert.AreEqual(baseline.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256, withLiveArtifacts.Products.Single(static product => product.Role == FrameArtifactRole.Combined).ChecksumSha256);
+        Assert.AreEqual(baseline.Products.Single(static product => product.Role == FrameArtifactRole.Combined).OutputIdentitySha256, withLiveArtifacts.Products.Single(static product => product.Role == FrameArtifactRole.Combined).OutputIdentitySha256);
         CollectionAssert.AreEqual(
-            baseline.Products.Single().SourceArtifactIds.ToArray(),
-            withLiveArtifacts.Products.Single().SourceArtifactIds.ToArray());
+            baseline.Products.Single(static product => product.Role == FrameArtifactRole.Combined).SourceArtifactIds.ToArray(),
+            withLiveArtifacts.Products.Single(static product => product.Role == FrameArtifactRole.Combined).SourceArtifactIds.ToArray());
         foreach (var outcome in new[] { changedLight, changedGain, changedExposure })
         {
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
@@ -421,9 +472,9 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         CollectionAssert.AreEqual(
             new ushort[] { 9456, 0, 0, 58960, 0, 25456, 16, 41456 },
-            Values(outcome.Products.Single().Payload.Span));
-        CollectionAssert.DoesNotContain(outcome.Products.Single().SourceArtifactIds.ToArray(), excluded.ArtifactId);
-        Assert.AreEqual(LightExposure, outcome.Products.Single().TotalIntegration);
+            Values(outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
+        CollectionAssert.DoesNotContain(outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).SourceArtifactIds.ToArray(), excluded.ArtifactId);
+        Assert.AreEqual(LightExposure, outcome.Products.Single(static product => product.Role == FrameArtifactRole.Combined).TotalIntegration);
     }
 
     [TestMethod]
@@ -603,8 +654,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         };
         var stacked = await ExecuteAsync(RollingRequest(combined, [first, second]));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, stacked.Status, stacked.ReasonCode);
-        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single().Payload.Span));
-        Assert.AreEqual(normalized, stacked.Products.Single().Compatibility);
+        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
+        Assert.AreEqual(normalized, stacked.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Compatibility);
         // Products of different plans are never averaged together.
         var mixedPlans = await ExecuteAsync(RollingRequest(
             combined, [first, second with { Compatibility = GainNormalizationCompatibility.Normalize(higher.Compatibility, otherPlan) }]));
@@ -673,7 +724,7 @@ public sealed class MixedGainNormalizedMeanRecipeTests
                 ProducedBy(second, ProducerIdentity(BuiltInProcessingRecipes.MixedGainNormalizedMean, otherPlan))
             ]));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, stacked.Status, stacked.ReasonCode);
-        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single().Payload.Span));
+        CollectionAssert.AreEqual(Fill(8, 200), Values(stacked.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Payload.Span));
     }
 
     [TestMethod]
@@ -689,8 +740,8 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         var secondWindow = await ExecuteAsync(Request(secondPlan, [reference, higher, .. member.All]));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, firstWindow.Status, firstWindow.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, secondWindow.Status, secondWindow.ReasonCode);
-        var first = ProductArtifact(firstWindow.Products.Single(), CaptureTime);
-        var second = ProductArtifact(secondWindow.Products.Single(), CaptureTime.AddSeconds(5));
+        var first = ProductArtifact(firstWindow.Products.Single(static product => product.Role == FrameArtifactRole.Combined), CaptureTime);
+        var second = ProductArtifact(secondWindow.Products.Single(static product => product.Role == FrameArtifactRole.Combined), CaptureTime.AddSeconds(5));
         Assert.AreNotEqual(first.RecipeIdentitySha256, second.RecipeIdentitySha256);
         Assert.AreEqual(first.Compatibility, second.Compatibility);
         var combined = ProcessingInputSelector.Combined(OutputVariant);
@@ -698,10 +749,10 @@ public sealed class MixedGainNormalizedMeanRecipeTests
         var mean = await ExecuteAsync(RollingRequest(combined, [first, second]));
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, mean.Status, mean.ReasonCode);
-        Assert.AreEqual(first.Compatibility, mean.Products.Single().Compatibility);
+        Assert.AreEqual(first.Compatibility, mean.Products.Single(static product => product.Role == FrameArtifactRole.Combined).Compatibility);
         // The rolling mean propagates the normalized compatibility under its own identity, which a later window accepts
         // next to the mixed-gain products it averaged.
-        var rolled = ProductArtifact(mean.Products.Single(), CaptureTime.AddSeconds(10)) with { Variant = OutputVariant };
+        var rolled = ProductArtifact(mean.Products.Single(static product => product.Role == FrameArtifactRole.Combined), CaptureTime.AddSeconds(10)) with { Variant = OutputVariant };
         var again = await ExecuteAsync(RollingRequest(combined, [second, rolled]));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, again.Status, again.ReasonCode);
         // Without the descriptors the same products are only labels and are refused.

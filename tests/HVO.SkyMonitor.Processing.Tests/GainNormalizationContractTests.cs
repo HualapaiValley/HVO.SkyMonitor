@@ -120,7 +120,7 @@ public sealed class GainNormalizationContractTests
     [DataRow(0.0, 7_900_000_000_000L)]
     [DataRow(100.0, 2_498_199_351_533L)]
     [DataRow(120.0, 1_984_390_280_893L)]
-    [DataRow(121.0, 1_961_675_153_184L)]
+    [DataRow(110.0, 2_226_522_515_699L)]
     [DataRow(200.0, 790_000_000_000L)]
     [DataRow(400.0, 79_000_000_000L)]
     public void VirtualAsi174MmResolvesHandComputedCoefficients(double gain, long expected)

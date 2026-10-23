@@ -66,15 +66,25 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             {
                 var nodeId = kind == "Centered" ? "centered" : NodeId;
                 var source = await LiveExecutionAsync(run).ConfigureAwait(false);
-                var original = (await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false)).Outputs.Single();
+                var original = (await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false)).Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined);
                 if (kind == "Centered")
                 {
                     var seeded = await SeedOriginalCenteredStackAsync(run).ConfigureAwait(false);
                     var completed = await RunReplayAsync(run, seeded.Execution.ExecutionId).ConfigureAwait(false);
                     source = completed.Execution;
                     original = (await run.Store.ReadOutputByArtifactIdAsync(
-                        completed.Nodes.Single(node => node.NodeId == nodeId).Outputs.Single().ArtifactId, CancellationToken.None)
+                        completed.Nodes.Single(node => node.NodeId == nodeId).Outputs.Single(static output => output.Role == FrameArtifactRole.Combined).ArtifactId, CancellationToken.None)
                         .ConfigureAwait(false))!;
+                }
+                var supportBytes = new Dictionary<string, byte[]>();
+                if (!ordinaryMean)
+                {
+                    var originalDetail = await run.Store.ReadExecutionDetailAsync(source.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                    foreach (var support in originalDetail!.Nodes.Single(node => node.NodeId == nodeId).MixedGainDiagnostics!.Support)
+                    {
+                        var retained = await run.Store.ReadOutputByArtifactIdAsync(ProcessingIdentity.CreateArtifactId(support.OutputIdentitySha256), CancellationToken.None).ConfigureAwait(false);
+                        supportBytes.Add(support.OutputIdentitySha256, await File.ReadAllBytesAsync(Path.Combine(run.Root, retained!.PayloadRelativePath)).ConfigureAwait(false));
+                    }
                 }
                 var expected = await File.ReadAllBytesAsync(Path.Combine(run.Root, original.PayloadRelativePath)).ConfigureAwait(false);
                 var plan = ordinaryMean ? null : await run.Store.ReadNormalizationPlanAsync(source.ExecutionId, nodeId, CancellationToken.None)
@@ -139,13 +149,26 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 }
                 var detail = await RunReplayAsync(restartedRun, replay.Execution.ExecutionId).ConfigureAwait(false);
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status, detail.Execution.FailureReason);
-                var output = detail.Nodes.Single(node => node.NodeId == nodeId).Outputs.Single();
+                var output = detail.Nodes.Single(node => node.NodeId == nodeId).Outputs.Single(static output => output.Role == FrameArtifactRole.Combined);
                 var produced = await restartedRun.Store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(produced);
                 var actual = await File.ReadAllBytesAsync(Path.Combine(run.Root, produced.PayloadRelativePath)).ConfigureAwait(false);
                 CollectionAssert.AreEqual(expected, actual);
                 Assert.AreEqual(original.OutputIdentitySha256, output.OutputIdentitySha256);
                 Assert.AreEqual(original.RecipeIdentitySha256, produced.RecipeIdentitySha256);
+                if (!ordinaryMean)
+                {
+                    var replayNode = detail.Nodes.Single(node => node.NodeId == nodeId);
+                    Assert.IsNotNull(replayNode.MixedGainDiagnostics, replayNode.MixedGainDiagnosticsUnavailableReason);
+                    Assert.AreEqual(plan!.IdentitySha256, replayNode.MixedGainDiagnostics.PlanIdentitySha256);
+                    Assert.AreEqual(original.Artifact.ChecksumSha256, replayNode.MixedGainDiagnostics.CombinedChecksumSha256);
+                    foreach (var support in replayNode.MixedGainDiagnostics.Support)
+                    {
+                        var retained = await restartedRun.Store.ReadOutputByArtifactIdAsync(ProcessingIdentity.CreateArtifactId(support.OutputIdentitySha256), CancellationToken.None).ConfigureAwait(false);
+                        CollectionAssert.AreEqual(supportBytes[support.OutputIdentitySha256],
+                            await File.ReadAllBytesAsync(Path.Combine(run.Root, retained!.PayloadRelativePath)).ConfigureAwait(false));
+                    }
+                }
             });
 
     [TestMethod]

@@ -50,6 +50,18 @@ internal sealed class ProjectedSceneRetentionGuard(
         DurableProcessingEvidence candidate, CancellationToken cancellationToken)
     {
         if (candidate.Role != FrameArtifactRole.Metadata) return false;
+        // Metadata-role support rasters have an ordinary reconstruction manifest, not a layoutless JSON manifest.
+        using (var document = JsonDocument.Parse(candidate.EvidenceJson))
+        {
+            if (document.RootElement.TryGetProperty("schemaVersion", out var schema) &&
+                schema.GetString() == ArtifactManifestV2.CurrentSchemaVersion)
+            {
+                var parsed = CaptureContractJson.ParseManifest(candidate.EvidenceJson);
+                if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor.Artifact.ArtifactId != candidate.ArtifactId)
+                    throw new InvalidDataException("Retained metadata raster evidence is invalid.");
+                return false;
+            }
+        }
         var product = DurableProcessingProductManifestJson.Parse(candidate.EvidenceJson);
         if (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.ProductSchemaVersion)) return false;
         var inventory = await store.ReadSceneConsumersAsync(candidate.CaptureId, candidate.ArtifactId, AccountBytes, cancellationToken)
