@@ -74,9 +74,18 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
         {
             ledger = state.Recover(value => ValidateJournal(value, inventory, request, projection)) ?? new JsonObject
             {
-                ["schemaVersion"] = 1, ["publicationGeneration"] = 0, ["runId"] = request.RunId, ["mode"] = request.Mode,
-                ["inventorySha256"] = inventory.Sha256, ["sourceRevision"] = inventory.Revision, ["operation"] = request.DryRun ? "dry-run" : "cleanup",
-                ["phaseStatus"] = "running", ["startedAt"] = Now(), ["updatedAt"] = Now(), ["targets"] = projection, ["resources"] = new JsonArray()
+                ["schemaVersion"] = 1,
+                ["publicationGeneration"] = 0,
+                ["runId"] = request.RunId,
+                ["mode"] = request.Mode,
+                ["inventorySha256"] = inventory.Sha256,
+                ["sourceRevision"] = inventory.Revision,
+                ["operation"] = request.DryRun ? "dry-run" : "cleanup",
+                ["phaseStatus"] = "running",
+                ["startedAt"] = Now(),
+                ["updatedAt"] = Now(),
+                ["targets"] = projection,
+                ["resources"] = new JsonArray()
             };
             ledger["phaseStatus"] = "running"; ledger.Remove("completedAt");
             await VerifyAllAsync(inventory, request, preflight, prepared, ledger, token).ConfigureAwait(false);
@@ -217,12 +226,12 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
         }
         if (inventory.Document["deployment"]!["services"]!.Text("mode") == "deploy") endpoints[contexts[inventory.Document["sharedServices"]!.Text("dockerContext")]].Add(inventory.Document["deployment"]!["resources"]!.Text("project") + "-services");
         foreach (var endpoint in endpoints)
-        foreach (var filter in endpoint.Value.Select(project => "label=com.docker.compose.project=" + project).Append("label=io.hvoskymonitor.run-id=" + run))
-        foreach (var kind in new[] { "container", "network", "volume" })
-        {
-            var result = await host.DockerAsync(["--host", endpoint.Key, kind, "ls", .. (kind == "container" ? AllContainers : []), "--quiet", "--filter", filter], token).ConfigureAwait(false);
-            Require(result.ExitCode == 0 && result.StandardOutput.TrimEnd('\n').Length == 0, "unexpected-deployment-resource");
-        }
+            foreach (var filter in endpoint.Value.Select(project => "label=com.docker.compose.project=" + project).Append("label=io.hvoskymonitor.run-id=" + run))
+                foreach (var kind in new[] { "container", "network", "volume" })
+                {
+                    var result = await host.DockerAsync(["--host", endpoint.Key, kind, "ls", .. (kind == "container" ? AllContainers : []), "--quiet", "--filter", filter], token).ConfigureAwait(false);
+                    Require(result.ExitCode == 0 && result.StandardOutput.TrimEnd('\n').Length == 0, "unexpected-deployment-resource");
+                }
     }
     private async Task<JsonObject> DockerJsonAsync(string[] args, CancellationToken token)
     {

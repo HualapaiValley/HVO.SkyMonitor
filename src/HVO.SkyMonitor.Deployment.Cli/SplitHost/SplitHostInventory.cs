@@ -50,10 +50,18 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
             var old = original["deployment"]!["catalog"]!;
             projected["catalogs"] = new JsonArray(new JsonObject
             {
-                ["catalogId"] = "legacy", ["displayName"] = "Legacy retained catalog", ["kind"] = catalog["kind"]!.DeepClone(),
-                ["version"] = catalog["version"]!.DeepClone(), ["schemaVersion"] = "legacy", ["preprocessingVersion"] = "legacy",
-                ["sha256"] = catalog["sha256"]!.DeepClone(), ["length"] = catalog["length"]!.DeepClone(), ["rowCount"] = catalog["rowCount"]!.DeepClone(),
-                ["bundlePath"] = old["bundlePath"]!.DeepClone(), ["installRoot"] = "/hvo-schema7-recovery-validation/catalog", ["allowFixture"] = old["allowFixture"]!.DeepClone()
+                ["catalogId"] = "legacy",
+                ["displayName"] = "Legacy retained catalog",
+                ["kind"] = catalog["kind"]!.DeepClone(),
+                ["version"] = catalog["version"]!.DeepClone(),
+                ["schemaVersion"] = "legacy",
+                ["preprocessingVersion"] = "legacy",
+                ["sha256"] = catalog["sha256"]!.DeepClone(),
+                ["length"] = catalog["length"]!.DeepClone(),
+                ["rowCount"] = catalog["rowCount"]!.DeepClone(),
+                ["bundlePath"] = old["bundlePath"]!.DeepClone(),
+                ["installRoot"] = "/hvo-schema7-recovery-validation/catalog",
+                ["allowFixture"] = old["allowFixture"]!.DeepClone()
             });
             projected.Remove("catalog"); ((JsonObject)projected["deployment"]!).Remove("catalog");
             var apps = new[] { projected["logicHost"]! }.Concat(projected.Array("cameraAgents").Select(n => n!)).ToArray();
@@ -99,14 +107,14 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
         var apps = targets.Where(t => t.Component is not null).ToArray();
         Require(targets.Select(t => t.Name).Distinct(StringComparer.Ordinal).Count() == targets.Count, "duplicate-target-name");
         foreach (var a in targets)
-        foreach (var b in targets.Where(b => b.Name != a.Name))
-        {
-            Require(a.SshHost != b.SshHost || (a.HostName, a.HostIdentity, a.Architecture) == (b.HostName, b.HostIdentity, b.Architecture), "target-identity-collision");
-            Require(a.DockerContext != b.DockerContext || (a.DockerDaemonIdentity, a.Architecture) == (b.DockerDaemonIdentity, b.Architecture), "target-identity-collision");
-            Require(a.HostIdentity != b.HostIdentity || (a.HostName, a.Architecture) == (b.HostName, b.Architecture), "target-identity-collision");
-            Require(a.DockerDaemonIdentity != b.DockerDaemonIdentity || a.Architecture == b.Architecture, "target-identity-collision");
-            Require((a.HostIdentity, a.RuntimeRoot) != (b.HostIdentity, b.RuntimeRoot), "target-resource-collision");
-        }
+            foreach (var b in targets.Where(b => b.Name != a.Name))
+            {
+                Require(a.SshHost != b.SshHost || (a.HostName, a.HostIdentity, a.Architecture) == (b.HostName, b.HostIdentity, b.Architecture), "target-identity-collision");
+                Require(a.DockerContext != b.DockerContext || (a.DockerDaemonIdentity, a.Architecture) == (b.DockerDaemonIdentity, b.Architecture), "target-identity-collision");
+                Require(a.HostIdentity != b.HostIdentity || (a.HostName, a.Architecture) == (b.HostName, b.Architecture), "target-identity-collision");
+                Require(a.DockerDaemonIdentity != b.DockerDaemonIdentity || a.Architecture == b.Architecture, "target-identity-collision");
+                Require((a.HostIdentity, a.RuntimeRoot) != (b.HostIdentity, b.RuntimeRoot), "target-resource-collision");
+            }
         var appNodes = new[] { doc["logicHost"]! }.Concat(doc.Array("cameraAgents").Select(n => n!)).ToArray();
         var ports = appNodes.SelectMany(t => t.Array("ports").Select(p => (t.Text("expectedHostIdentity"), p!.GetValue<int>()))).ToArray();
         Require(ports.Distinct().Count() == ports.Length, "target-resource-collision");
