@@ -32,7 +32,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
 
         internal void Finish()
         {
-            TransactionMilliseconds = Stopwatch.GetElapsedTime(TransactionStarted).TotalMilliseconds;
+            if (TransactionStarted != 0)
+                TransactionMilliseconds = Stopwatch.GetElapsedTime(TransactionStarted).TotalMilliseconds;
             if (RetentionAcquired != 0)
                 RetentionHeldMilliseconds = Stopwatch.GetElapsedTime(RetentionAcquired).TotalMilliseconds;
         }
@@ -73,6 +74,19 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                 else SourceLockMilliseconds = eventData.Duration.TotalMilliseconds;
             }
             return ValueTask.FromResult(result);
+        }
+
+        public override Task CommandFailedAsync(DbCommand command, CommandErrorEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("sp_getapplock", StringComparison.Ordinal))
+            {
+                if (command.Parameters.Cast<SqlParameter>().Any(parameter =>
+                    Equals(parameter.Value, "environmental-observation-retention")))
+                    RetentionAcquireMilliseconds = eventData.Duration.TotalMilliseconds;
+                else SourceLockMilliseconds = eventData.Duration.TotalMilliseconds;
+            }
+            return Task.CompletedTask;
         }
 
         internal sealed class LineageTransactions : DbTransactionInterceptor
@@ -134,7 +148,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "Replays only captured production EF command text with its original typed parameters in a disposable database.")]
-    private static async Task<object> ReplayLineageCommandsAsync(string connectionString, List<LineageCommand> commands, string output)
+    private static async Task<object> ReplayLineageCommandsAsync(string connectionString, List<LineageCommand> commands, string output, int minimumSelectPlans = 514, string artifact = "sql-replay.json.gz")
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync().ConfigureAwait(false);
@@ -222,8 +236,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         {
             await transaction.RollbackAsync().ConfigureAwait(false);
         }
-        Assert.IsTrue(plansCount >= 514, "Capture actual plans for both own identity and all 512 lineage SELECTs.");
-        var path = Path.Combine(output, "sql-replay.json.gz");
+        Assert.IsTrue(plansCount >= minimumSelectPlans, "Capture actual plans for own identity and every lineage SELECT.");
+        var path = Path.Combine(output, artifact);
         await using (var stream = File.Create(path))
         await using (var gzip = new GZipStream(stream, CompressionLevel.SmallestSize))
         {
@@ -236,8 +250,10 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             LogicalReads = totalReads,
             ActualRowsRead = totalRowsRead,
             ServerCpuMilliseconds = serverCpu,
-            Artifact = "sql-replay.json.gz",
-            Boundary = "One untimed 256-reference production command sequence; exact parameters, all writes rolled back"
+            Artifact = artifact,
+            MaximumParameters = commands.Max(command => command.Parameters.Length),
+            RpcParameterOverheadAllowance = 3,
+            Boundary = "One untimed production command sequence; exact parameters, all writes rolled back"
         };
     }
 
