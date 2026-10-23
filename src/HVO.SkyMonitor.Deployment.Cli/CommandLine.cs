@@ -72,6 +72,9 @@ internal static class CommandLine
     /// </summary>
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
+        new(["partial-prepare-cleanup"], null, "Inspect or recover an interrupted split-host prepare without creating containers.",
+            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--dry-run", "--json"],
+            "Requires the retained passed preflight and failed prepare. Specify --dry-run or --confirm RUN-ID; interrupted cleanup resumes with the same inputs."),
         new(["status"], null, "Show the installed instances, or the one --instance-id names.", InstanceValueOptions, ["--json"]),
         new(["cameraagent", "install"], null,
             "Install a CameraAgent instance, or change an installed one's container limits.",
@@ -130,6 +133,12 @@ internal static class CommandLine
     /// </summary>
     private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
     {
+        ["--inventory"] = ("<file>", "The immutable split-host inventory used by the failed prepare (schema 8 or retained schema 7)."),
+        ["--mode"] = ("<isolated|persistent>", "The failed prepare's deployment mode."),
+        ["--run-id"] = ("<id>", "The failed prepare's run ID."),
+        ["--state-root"] = ("<path>", "The retained owner-only state directory."),
+        ["--evidence-root"] = ("<path>", "The retained owner-only evidence directory."),
+        ["--confirm"] = ("<run-id>", "Confirm cleanup of only artifacts created by this failed run."),
         [AnswersOption] = ("<file>", "Read the install from a JSON answers file with \"schemaVersion\": 1."),
         ["--config"] = ("<file>", "Deprecated: read the whole install from a JSON file. Use --answers."),
         ["--instance-id"] = ("<uuid>", "The instance's ID."),
@@ -294,7 +303,7 @@ internal static class CommandLine
             .AppendLine()
             .AppendLine("Options:");
         AppendRows(usage, [
-            .. command.ValueOptions.Concat(command.Flags).Select(static option => OptionHelp[option] switch
+            .. command.ValueOptions.Concat(command.Flags).Select(option => (command.Name == "partial-prepare-cleanup" && option == "--dry-run" ? ((string? Value, string Description))(null, "Inspect recovery candidates and write private evidence without changing a target.") : OptionHelp[option]) switch
             {
                 (null, var description) => (option, description),
                 var (value, description) => ($"{option} {value}", description)
@@ -383,6 +392,7 @@ internal static class CommandLine
             // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
             throw InstallerException.Refused(exception.Message, exception);
         }
+        if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {

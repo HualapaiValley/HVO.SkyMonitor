@@ -28,6 +28,7 @@ public sealed class ExitCodeContractTests
     /// <summary>Every command the parser accepts, with arguments it accepts.</summary>
     private static readonly (string Name, string[] Arguments)[] Commands =
     [
+        ("partial-prepare-cleanup", ["partial-prepare-cleanup", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "failed-run", "--dry-run"]),
         ("status", ["status", "--instance-id", Id]),
         ("cameraagent install",
             ["cameraagent", "install", "--friendly-name", "North Camera", "--catalog-bundle", "/srv/hvo/catalog.bundle", "--image-ref", ImageRef]),
@@ -61,6 +62,10 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("partial-prepare-cleanup", "done", 0)]
+    [DataRow("partial-prepare-cleanup", "failed", 1)]
+    [DataRow("partial-prepare-cleanup", "refused", 3)]
+    [DataRow("partial-prepare-cleanup", "interrupted", 130)]
     [DataRow("status", "done", 0)]
     [DataRow("status", "failed", 1)]
     [DataRow("status", "refused", 3)]
@@ -141,6 +146,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent recover-owner")]
@@ -171,6 +177,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent recover-owner")]
@@ -202,6 +209,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent recover-owner")]
@@ -388,7 +396,10 @@ public sealed class ExitCodeContractTests
                 1, "completed", Guid.NewGuid(), request.InstanceId!.Value, null, "owner-password-change-required", DateTimeOffset.UtcNow)),
             (request, _) => Run(() => new LifecycleResult(
                 1, request.Operation, "completed", Guid.NewGuid(), request.InstanceId, null, request.ProductRoot, null, null, null,
-                null, null, null, null, null, [], null, DateTimeOffset.UtcNow)));
+                null, null, null, null, null, [], null, DateTimeOffset.UtcNow)))
+        {
+            PartialPrepare = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" })
+        };
     }
 
     private static CameraAgentStatePreflightReport Report(Guid instanceId, bool compatible)

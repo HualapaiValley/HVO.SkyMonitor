@@ -388,6 +388,13 @@ shard_enabled() {
     [[ "$SELECTED_SHARD" == all || "$SELECTED_SHARD" == "$1" ]]
 }
 
+# The migrated shard constructs its disposable typed hosts itself. Keep coordinator
+# and injected-fault behaviour above this boundary, without the unrelated shell fixture.
+if [[ "$SELECTED_SHARD" == partial-prepare ]]; then
+    . "$REPO_ROOT/scripts/deploy-contracts/partial-prepare.sh"
+    exit 0
+fi
+
 # `mkdir -m MODE -p a/b/c` applies MODE to the leaf only; intermediates get the umask
 # (ShellCheck SC2174). Fixture trees that are meant to be owner-private at every level
 # use this instead. Every level it creates is 0700. A level that already exists is set

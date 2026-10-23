@@ -52,6 +52,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Inspect and clean up a failed split-host prepare with `hvo-sky-install partial-prepare-cleanup`, preserving private evidence, retained schema 7 recovery and resumable cleanup without creating containers. (#1588)
 - Explicitly selected Frame Facts graphs can retain and reproduce four independent corner templates with packaged fonts, colour, size and bold/italic/underline on either host; existing graphs and historical annotations keep their current version and defaults. #1552
 
 - LogicHost camera workspaces now include bounded central execution, job, graph assignment, delivery-fact and event inspection, including explicit truncation of nested event evidence and review/notification history, with authorized recovery, future-job policy and exact-artifact publication controls. (#1241)

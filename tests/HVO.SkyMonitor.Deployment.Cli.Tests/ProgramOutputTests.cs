@@ -20,6 +20,7 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
+          partial-prepare-cleanup
           status
           cameraagent install
           cameraagent recover-owner

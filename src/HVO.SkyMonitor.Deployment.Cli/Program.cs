@@ -109,7 +109,17 @@ internal static class Program
                     await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
-            if (command is InstallDeploymentCommand install)
+            if (command is PartialPrepareRequest partial)
+            {
+                try
+                {
+                    var result = await services.PartialPrepare(partial, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(partial.Json ? result.ToJsonString(SplitHostJson.Options) :
+                        $"partial-prepare-cleanup complete passed {(partial.DryRun ? "inspected" : "cleaned")}").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is InstallDeploymentCommand install)
             {
                 var result = await services.Install(install.Request, cancellationToken).ConfigureAwait(false);
                 if (install.ParseWarnings.Count > 0)
@@ -423,6 +433,7 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;
     /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>
     public InstallTerminal Terminal { get; init; } = InstallTerminal.Current();
 
