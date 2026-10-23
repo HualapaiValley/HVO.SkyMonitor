@@ -19,7 +19,8 @@ internal sealed record ExistingDownRequest(string Inventory, string Mode, string
             var key = args[i];
             if (key == "--json" && !json) { json = true; continue; }
             if (key is "--preserve-state" or "--delete-state" && policy is null) { policy = key == "--preserve-state" ? "preserve" : "delete"; continue; }
-            if (key is not ("--inventory" or "--mode" or "--run-id" or "--state-root" or "--evidence-root" or "--confirm") || i + 1 >= args.Length || !options.TryAdd(key, args[++i])) throw new InstallUsageException("Invalid existing-down option.");
+            if (key is not ("--inventory" or "--mode" or "--run-id" or "--state-root" or "--evidence-root" or "--confirm")) throw new InstallUsageException($"Unknown option '{key}'.");
+            if (i + 1 >= args.Length || !options.TryAdd(key, args[++i])) throw new InstallUsageException($"Missing value or repeated option '{key}'.");
         }
         string Need(string key) => options.GetValueOrDefault(key) ?? throw new InstallUsageException(key + " is required.");
         var run = Need("--run-id"); var output = Path.GetFullPath("TestResults/deploy/" + run);
