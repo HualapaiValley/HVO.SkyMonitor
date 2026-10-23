@@ -516,5 +516,5 @@ public static class ProcessingNodeOptionsDescriptors
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
             CloudAssessmentOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
-            CalibrationOptionDescriptors.References];
+            CalibrationOptionDescriptors.References, .. PreviewOptionDescriptors.All];
 }
