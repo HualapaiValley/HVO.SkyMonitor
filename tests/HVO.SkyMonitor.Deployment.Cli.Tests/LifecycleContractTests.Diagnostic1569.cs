@@ -55,10 +55,8 @@ public sealed partial class LifecycleContractTests
     public void Diagnostic1569_KeepsThePreChangeVisiblePrefix()
     {
         const string diagnostic = "token db_password\t\"a " + Diagnostic1569Value + "\" tail";
-        const string before = "token <redacted> " + Diagnostic1569Value + "\" tail";
         var shown = Redaction.SafeDiagnostic(diagnostic);
         Assert.AreEqual("token <redacted>…", shown);
-        StringAssert.StartsWith(before, shown[..^"<redacted>…".Length], StringComparison.Ordinal);
     }
 
     [TestMethod]

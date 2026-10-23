@@ -2,10 +2,12 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -29,10 +31,29 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     internal string JournalPath => Path.Combine(IngressRoot, "journal", "raw-ingress.db");
     internal IDeploymentLocationStore Locations => Host.Services.GetRequiredService<IDeploymentLocationStore>();
     internal static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    internal const string EvidenceRootGuidance = "Set HVO_INSTALLATION_READ_EVIDENCE_DIR to a short absolute directory registered with hvo scratch. The directory also hosts the recovery Unix socket; copy retained report/TRX files elsewhere after disposal if needed.";
+
+    internal static void ValidateEvidenceRoot(string scratchRoot)
+    {
+        if (!Path.IsPathFullyQualified(scratchRoot))
+            throw new ArgumentException(EvidenceRootGuidance, nameof(scratchRoot));
+
+        try
+        {
+            // Match the shared fixture's iv-<32hex>/identity/owner.sock path before it creates any host state.
+            _ = new UnixDomainSocketEndPoint(Path.Combine(scratchRoot, $"iv-{Guid.Empty:N}", "identity", OwnerRecoveryTransport.SocketFileName));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // Do not retain the endpoint exception: it includes the caller's absolute path.
+            throw new ArgumentException($"The prospective recovery Unix socket path exceeds the platform limit. {EvidenceRootGuidance}", nameof(scratchRoot));
+        }
+    }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Successful construction transfers host ownership to the wrapper; failures dispose it in catch.")]
     internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar)
     {
+        if (scratchRoot is not null) ValidateEvidenceRoot(scratchRoot);
         string? ingressRoot = null;
         var host = await CameraAgentKestrelFixture.CreateAsync(services =>
         {
