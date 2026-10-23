@@ -1,7 +1,8 @@
 # HVO Product Installation and Release Contract
 
-Status: **draft 4**, 2026-10-18. It includes the owner's decisions of 2026-10-16 and 2026-10-18 (section 10). The
-owner accepted draft 4's decisions on 2026-10-18. Owner: roys.
+Status: **draft 4 with approved SkyMonitor recovery revision**, 2026-10-23. The owner accepted draft 4 on
+2026-10-18 and revised SkyMonitor recovery in #1606 on 2026-10-23 (sections 6 and 10). Owner: roys.
+The revision is a target contract, not a claim that its runtime implementation or qualification has shipped.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
 and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
@@ -178,7 +179,8 @@ Every release carries assets with these names and kinds:
     decision, 2026-10-16).
   - The release environment requires the owner's approval to publish, except for the integration pre-releases of
     section 3.
-  - Installers refuse an older version on `upgrade`; only `rollback` goes back.
+  - Installers refuse an older version on `upgrade`. RoofController's `rollback` goes back;
+    SkyMonitor's approved rollback is only recovery of the pending upgrade's exact checkpoint (section 6).
 
 ## 5. Installer
 
@@ -216,7 +218,7 @@ HVO.RoofController#127):
 | --- | --- |
 | *(none)* / `install` | Install; interactive on a terminal, otherwise from flags or `--answers` |
 | `upgrade [--version V]` | Upgrade to the latest release or to `V` (section 6) |
-| `rollback` | Return to the release recorded as previous |
+| `rollback` | RoofController: return to the release recorded as previous. SkyMonitor target: recover the pending upgrade's paired checkpoint; no arbitrary downgrade or post-commit grace period (section 6) |
 | `backup` / `restore FILE` | A self-verifying archive of the product's own data, with a manifest, that only its owner can read (below) |
 | `uninstall [--purge --confirm HOST --backup\|--no-backup]` | Remove what was installed; `--purge` also removes data |
 | `status` | What is installed here, its versions and health |
@@ -242,6 +244,8 @@ HVO.RoofController#127):
   and `~/.local/bin/hvo-sky-install`. Both kinds are checked against release.json and SHA256SUMS, published atomically
   with mode `0755`, reported by `--plan`, and projected into `install-programs.json` beside the install record. Upgrade keeps replaced files as
   `.previous`; rollback republishes the verified files retained for the previous image, without the release folder.
+  This describes today's lifecycle. Under the approved section 6 target, those retained programs belong to the
+  pending checkpoint/image pair and do not authorize a post-commit binary downgrade.
   - SkyMonitor keeps per-image program sets and cached files under the instance's deployment state. The machine
     install-record sidecar is their summary, consistent with D10. The schema-1 `install.json` keeps exactly its released
     members: older strict readers, including a kept `.previous` installer, can still read it for recovery. The separate
@@ -311,6 +315,109 @@ HVO.RoofController#127):
 
 ## 6. Upgrade and rollback
 
+**Scope and precedence.** The SkyMonitor target below supersedes its previous-release readability and small-store
+fallback obligations from #1318 / D2. The existing swap/readability/copy rules following it remain RoofController's
+policy and describe SkyMonitor's legacy implementation only. RoofController's safety and lifecycle policy is unchanged.
+
+### SkyMonitor approved target: upgrade-time checkpoint recovery
+
+Owner decision, 2026-10-23, [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606).
+**No downgrades:** an older binary never opens candidate-mutated state. Recovery restores the exact pre-upgrade
+checkpoint with its matching prior image digest, configuration and catalog selection. A previous binary need not
+read a newly migrated CameraAgent store. Forward migrations must still correctly accept only declared supported
+inputs; store/image declarations and integrity/path/capacity checks remain required.
+
+The protected upgrade boundary is:
+
+1. Verify current/candidate inputs, ownership, supported forward migration and capacity. Serialize lifecycle work
+   for the exact UUID. Pause acquisition/ingress and drain or durably settle accepted work. Fence **all writers**:
+   workers, replay result publication, outboxes, retention, provider refresh, configuration/identity/key changes,
+   maintenance tools and other processes. Keep the fence across checkpoint, candidate validation and recovery.
+2. Detect a qualified checkpoint capability for the actual backend/topology and create and verify the checkpoint
+   before any candidate mutation. CameraAgent may use its existing SQLite-copy mechanism if qualification proves
+   the whole logical point below; a filesystem snapshot, new filesystem or layout is not prescribed.
+3. Durably pair the checkpoint manifest/hash and completion proof with instance UUID, operation, prior exact
+   image/platform, configuration, immutable catalog identities and supported recovery procedure. Keep journal,
+   protected/unprotected disposition, restore progress and final receipt **outside every tree being reverted**.
+   Publish intent before effects, and completion only after data and directory entries are durable.
+4. Migrate and start the candidate with external work admission still closed. Candidate health requires the exact
+   image/config/catalog/schema and identity/key-ring match; DB integrity and referenced payload checks; bounded
+   dependency-aware readiness, authenticated read/API checks, and an isolated representative persistence/retrieval
+   probe with verified output. A live process or HTTP liveness alone is insufficient. Probe writes must be isolated
+   or part of the disposable candidate state; probes must not export identities, send provider requests, acknowledge
+   production submissions or release results. Name checks, timeout and expected health disposition in the candidate
+   qualification; unavailable required checks fail the decision. CameraAgent standalone health needs no LogicHost.
+5. On success, durably commit the new image/state receipt and recovery decision, then release admission and resume
+   acquisition/ingress and workers. **No externally acknowledged new work before this commit.** On failure, stop the
+   candidate, validate and restore the complete paired point while fenced, start the matching old image, verify its
+   restored health and references, durably record recovery, then resume. If restoration cannot verify, stay fenced
+   with an explicit repair instruction. A restart reconciles journal and actual state; it never guesses success or
+   repeats a pre-upgrade restore after committed service has admitted work.
+
+This phase ends the automatic rollback window at commit. Retention for diagnosis does not authorize later rollback.
+There is no daily/periodic snapshot command, arbitrary downgrade command, repeated previous-image toggle or
+last-checkpoint grace period. Explicit `backup` / `restore` remains separate; a full recovery archive is not an
+automatic prerequisite for every upgrade.
+
+**CameraAgent protected or operator-managed.** If qualified capability is unavailable or checkpoint creation or
+verification fails, clearly warn before candidate mutation that this upgrade is **unprotected** and backup/manual
+restore is the operator's responsibility. Allow it without forcing a backup, requiring proof or adding an approval
+gate. Ordinary ownership, integrity, path and space failures still refuse; this option bypasses only checkpoint
+protection. Record the reason and unprotected status durably outside the revert tree before proceeding. Never label
+a partial checkpoint usable. If the unprotected candidate changes state or its effects are uncertain, failure leaves
+the instance fenced for manual recovery or a supported forward repair; never claim snapshot recovery or start an
+old binary on that state. If the disposition cannot be persisted, do not mutate. LogicHost has its own coherent
+SQL/object/config cutoff and qualification; CameraAgent's unprotected allowance does not implicitly extend to it.
+
+**One logical recovery point.** Include the instance's mutable databases and all DB recovery files (WAL/journal or
+native log/backup chain), referenced raw/archive/derived/calibration/content files, configuration/Compose,
+application binding, Identity/provisioning secrets and key ring. Verify that every restored DB reference resolves
+to the matching payload/generation. Inventory external configured roots; a separate mount or omitted root cannot
+silently reduce coverage. A native SQLite backup may consolidate committed WAL state into a self-contained DB;
+it must prove that result and remove stale live sidecars safely on restore. Catalogs remain immutable: pin and retain
+the exact selected and historically referenced packages and hashes rather than rewinding a shared `current` pointer.
+Pair the exact image and retained verified installer/runtime programs as well. Sibling instances and shared services
+must remain unchanged. LogicHost remains SQL Server; SQL, objects, configuration, Identity and keys must share one
+fenced cutoff, not independent snapshots taken while another writer runs.
+
+Preserve **non-rewindable external facts**, provider Retry-After/backoff/halts, exported capture/job/event identities,
+sequence/version floors and credential revocations through a minimal explicit exception/capsule outside the reverted
+trees. Inventory each exception, its authority, old-image-compatible application, durability and verification.
+Reapply and verify it before work resumes; failure keeps recovery fenced, rather than silently reissuing an identity
+or weakening a provider floor. Do not exempt an entire mutable store merely to retain one floor. If fencing proves no
+such fact can change in this boundary, retain that proof instead of building a general framework. Existing best-effort
+counter carry and store exclusions below are baseline behavior, not qualification of this stricter target.
+
+### SkyMonitor qualification and adoption
+
+[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent;
+[#1608](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1608) independently evaluates LogicHost after this
+contract. Both must credit existing evidence, time-box the first study/probe to roughly 60–90 minutes, test the most
+promising alternative first and stop early without a credible net benefit. Keeping the current mechanism is success.
+Measure setup/dependencies, operating steps, failure modes, test upkeep and end-to-end upgrade/recovery time;
+snapshot creation speed alone is insufficient. No backend/layout change is required by this contract.
+
+Minimal qualification must show:
+
+- One instance restored while a running sibling's state, image, configuration, catalog selection and work remain
+  unchanged; exact DB/payload hashes or logical invariants, identity/key/catalog pairing and external floors agree.
+- Every writer fenced, pre-commit production requests refused without success acknowledgement, accepted old work
+  accounted for, candidate health failures recovering before admission and post-commit restarts never rewinding work.
+- Durable checkpoint/image pairing and restore intent/progress surviving interruption before/after publication,
+  candidate migration/start, each DB/file/config restore, capsule application and final decision. Missing/partial,
+  damaged, wrong-instance, wrong-image/catalog and space-exhausted checkpoints never become successful recovery.
+- Capability absence and checkpoint failure produce the durable CameraAgent unprotected warning/path; unsafe
+  ordinary preflight failures still refuse. An unprotected failed mutation cannot launch an old binary.
+- No arbitrary downgrade or daily-snapshot command, and no recovery of a pending checkpoint after commit.
+
+The [implementation and qualification map](planning/skymonitor-upgrade-recovery.md) identifies current code/tests,
+remaining experiments and proposed regression routing. Full storage recovery campaigns are proposed when lifecycle,
+backend, layout or durability behavior changes; other changes may reuse unchanged applicable evidence with explicit
+identity/boundary justification. **Existing required gates remain in force until a separately reviewed policy change
+adopts that routing.** This contract adds no every-PR filesystem matrix and runs no new qualification campaign.
+
+### RoofController policy and SkyMonitor legacy behavior
+
 - **Before upgrading**, the installer prints the upgrade notes of every release between the installed and the target
   version. It refuses an older target and points to `rollback`.
 - **Swap:**
@@ -359,7 +466,8 @@ it gives the newest schema a release may write, and every schema it reads:
   store's schema is the version that store records about itself, never one the installer infers.
 - **A breaking change** is a target that writes a schema, for some store, newer than the installed release reads
   (`target.writes > installed.reads.max`). A rollback to the installed release would then meet a store it cannot read.
-  Any other change keeps rollback a swap.
+  Any other change keeps RoofController's rollback a swap. For SkyMonitor this is legacy selection logic;
+  the target always recovers the paired checkpoint, never relies on reverse readability.
 - Reason: per-store numbers let the installer decide "swap" or "breaking" by comparing two `release.json` files, with
   no knowledge of the product's schemas.
 - **Today:** RoofController declares this shape in `build/release-assets.py` and in its controller Dockerfile's label
@@ -395,18 +503,20 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
   active. No earlier release opens it, so a rollback needs no copy of it. A snapshot or backup that an earlier installer
   took does not list it, and verification requires every store the snapshot list names, so listing it would make those
   refused. A full `backup` archives it with the instance's other files and `restore` puts it back. A future schema
-  change that older releases cannot read must revisit this exclusion under #1340. The space-weather store holds per-product Retry-After floors, backoff and provider/product halts; restoring an older copy would rewind them. Future incompatible schema changes must revisit this exclusion under #1340. The orbital store holds the provider's
+  change must revisit this legacy exclusion when adopting #1606's complete recovery point. The space-weather store holds per-product Retry-After floors, backoff and provider/product halts; restoring an older copy would rewind them. Future incompatible schema changes must revisit this legacy exclusion. The orbital store holds the provider's
   attempt floor and any halt. Restoring an older copy would rewind them, and the release rolled back to could then
   request inside the floor or after the provider refused. A future orbital schema change that older releases cannot
-  read must revisit this exclusion under #1340.
+  read must revisit this legacy exclusion. The approved target inventories all three stores and their content,
+  preserving only explicit non-rewindable facts through the verified exception/capsule above.
 - The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
   accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
 - Every store's schema is declared from these markers (#1359, #1364). Deciding a migration by comparing the declared
   contracts is not done yet, as above.
 
-### Copies of the small stores
+### Copies of the small stores (RoofController policy; SkyMonitor legacy implementation)
 
-Decision D2. Before an upgrade can change a small store, a restorable copy of it exists.
+Decision D2. Before an upgrade can change a small store, a restorable copy of it exists. For SkyMonitor this
+describes the delivered #1340 mechanism, superseded as a target obligation by #1606 above.
 - **When to copy.** A product copies at least when the target declares a state change. It may copy on every upgrade.
 - **Rollback.** A rollback restores the copy of every store the release it returns to cannot read. It may restore
   every copied store. It says which changes made since the upgrade are lost, before it changes anything.
@@ -537,3 +647,12 @@ Owner decision of 2026-10-18, on #1353:
    installer's existing folder-preparation helper only to create that folder and an absent instance root, both the
    account's, and a restore leaves the machine install record to `reinstall`. RoofController keeps running its backups
    as root. SkyMonitor met this in #1353 (#1369).
+
+Owner decision of 2026-10-23, on #1606:
+
+9. **SkyMonitor recovery is upgrade-time checkpoint rollback, with no downgrades.** Section 6 supersedes the
+   SkyMonitor part of #1318 / D2 and the previous-release readability obligation. CameraAgent can proceed durably
+   unprotected with a clear manual-recovery warning when qualified checkpoint protection is unavailable or fails;
+   ordinary integrity/path/space checks remain. #1607 and #1608 qualify the smallest adequate mechanism, including
+   keeping the current one. No new backend, layout, periodic snapshot or post-commit grace period is authorized.
+   RoofController policy is unchanged.

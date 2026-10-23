@@ -103,7 +103,7 @@ runbook describes the installer as it behaves today.
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Upgrade and rollback decide between a swap and a breaking change by comparing `stateContracts` (contract section 6, D1) | `release.json` and the image's `io.hvo.skymonitor.state-contracts` label declare `stateContracts`, but the installer still decides a state migration from the image's state boundary labels ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | Epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318); no issue yet |
+| Upgrade-time checkpoint recovery only, complete DB/file/config/identity/key coverage and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer selects SQLite copies using boundary labels and supports later rollback; neither complete instance protection nor the new admission/decision boundary is qualified ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
 
 ## install.sh
 
@@ -1933,6 +1933,31 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
+**Implementation status, #1606 (2026-10-23).** The commands, database snapshot
+rules, post-upgrade rollback and previous-release readability tests documented
+in this section describe the current implementation. The
+[approved SkyMonitor target](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+supersedes their policy: rollback recovers only a pending upgrade's exact
+checkpoint and matching image/config/catalog, before new work is admitted.
+There is no arbitrary downgrade, post-commit grace period or periodic snapshot
+feature in that target. The existing CLI has not changed with this contract PR;
+do not infer that it implements complete instance checkpoints or durable
+protected/unprotected selection. In particular, capture drain alone does not
+prove that every config/identity/provider/maintenance writer is fenced.
+
+`CameraAgentStateSnapshot` currently uses SQLite online backup copies for a
+selected store list, plus checksummed manifests, sidecar-safe restore and durable
+journaling. That is useful delivered recovery machinery, not a filesystem
+snapshot or proof of complete DB/file/config/key coverage. Its existing provider
+store exclusions and best-effort counter carry need explicit reconciliation
+with the target's non-rewindable-fact rules. #1607 qualifies the smallest adequate
+mechanism; keeping SQLite copies is valid. See the
+[implementation/qualification map](../planning/skymonitor-upgrade-recovery.md).
+Existing required tests, including readability/exception guards, remain required
+until a reviewed implementation/policy change replaces their obligation with
+forward-migration and complete checkpoint-recovery evidence. #893 owns CLI
+parity; this change edits none of its implementation files.
+
 Run lifecycle commands, `backup` and `restore` included, as the Docker-capable deployment user, the instance's service
 account, never as root or with `sudo` (see [Backup and restore](#backup-and-restore)).
 Image and catalog transitions authenticate through the lifecycle-control credential
@@ -2426,7 +2451,7 @@ restored stores, so it cannot overwrite what that image has captured since. `--r
 (below) and then resumes capture instead of retrying. A retry takes a new snapshot. Snapshots are kept with their
 operation and are not deleted automatically.
 
-**Migration rule.** A CameraAgent schema change must stay readable by the previous release for one release: add
+**Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
 SQL image at the location the instance keeps it, for the storage roots the fixture's `manifest.json` names. Each image
