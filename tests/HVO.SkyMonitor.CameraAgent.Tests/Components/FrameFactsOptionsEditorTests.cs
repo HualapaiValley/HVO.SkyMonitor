@@ -221,7 +221,7 @@ public sealed class FrameFactsOptionsEditorTests
         StringAssert.Contains(cut.Find(".frozen-preview").TextContent, "every scalar is MISSING", StringComparison.Ordinal);
         Assert.IsFalse(cut.Find("button").HasAttribute("disabled"));
 
-        cut.Find("#facts-topLeftTemplate").Change("AFTER {{capture.sequence}}");
+        await cut.Find("#facts-topLeftTemplate").ChangeAsync(new ChangeEventArgs { Value = "AFTER {{capture.sequence}}" }).ConfigureAwait(false);
         await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
         StringAssert.Contains(cut.Find(".preview-text").TextContent, "AFTER UNAVAILABLE", StringComparison.Ordinal);
         await UploadAsync(validBytes).ConfigureAwait(false);
