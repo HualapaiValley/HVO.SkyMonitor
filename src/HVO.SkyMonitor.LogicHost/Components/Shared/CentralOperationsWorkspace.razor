@@ -1,0 +1,200 @@
+@using HVO.SkyMonitor.LogicHost.Services
+@using HVO.SkyMonitor.LogicHost.Data
+
+<section class="central-workspace" @ref="root" data-session-check="@SessionCheckPath" aria-busy="@(loading || busy ? "true" : "false")">
+    <header class="central-toolbar">
+        <div><h2 id="central-heading" tabindex="-1">Central operations</h2><p>Central jobs and retained delivery facts. CameraAgent received executions remain immutable in <a href="@($"/app/network/observatories/{ObservatoryId:D}/cameras/{CameraId:D}/imported-executions")">Imported executions</a>.</p></div>
+        <button class="btn btn-outline-light" disabled="@(loading || busy)" @onclick="RefreshAsync">Refresh central operations</button>
+    </header>
+    <p role="status">@message</p>
+    @if (!loading && data is not null)
+    {
+        var renderedGeneration = generation;
+        <div class="central-protected">
+            @if (outcome is not null) { <p class="alert alert-info" role="status">@outcome</p> }
+            <nav class="central-tabs" aria-label="Central operation sections">
+                @foreach (var (view, label) in new[] { ("executions", "Executions"), ("jobs", "Jobs"), ("graphs", "Assignments"), ("catalog", "Graph catalog"), ("delivery", "Delivery facts"), ("events", "Events"), ("policy", "Future-job policy") })
+                { <a href="@Section(view)" aria-current="@(Query.View == view ? "page" : null)">@label</a> }
+            </nav>
+            @if (data.Executions is { } executions)
+            {
+                <h3>Camera central executions</h3>
+                <p>One page across retained installations, newest creation first. Execution state and object availability are separate.</p>
+                @if (executions.Items.Count == 0) { <p>No central executions on this page.</p> }
+                <ul class="central-executions central-list">
+                    @foreach (var item in executions.Items)
+                    {
+                        <li><a id="@($"central-execution-{item.Id:D}")" data-evidence-focus="@($"central-execution-{item.Id:D}")" href="@SelectExecution(item.Id)">Execution @item.Id</a>
+                            <span>@item.ExecutionClass · @item.Status · @Time(item.CreatedAtUtc) · @item.ReasonCode</span></li>
+                    }
+                </ul>
+                <CentralOperationsPager Current="Query.Page" Next="executions.NextCursor" FirstLink="@Url(Query with { Page = null, Execution = null, NodesPage = null, Focus = "central-heading" })" NextLink="@Url(Query with { Page = executions.NextCursor, Execution = null, NodesPage = null, Focus = "central-heading" })" Label="executions" />
+            }
+            @if (data.Execution is { } execution)
+            {
+                <section class="central-exact">
+                    <h3 id="central-execution-heading" tabindex="-1">Exact central execution @execution.Execution.Id</h3>
+                    <p>@execution.Execution.ExecutionClass · @execution.Execution.Status · @execution.Execution.ReasonCode</p>
+                    <p>Revision <a href="@Url(Query with { Revision = execution.Execution.RevisionId, Focus = "central-revision-heading" })">@execution.Execution.RevisionId</a>. Definition SHA-256 <code>@execution.DefinitionIdentitySha256</code>. Frozen central plan SHA-256 <code>@execution.CentralPlanIdentitySha256</code>.</p>
+                    <p>Predecessor: @Text(execution.PredecessorExecutionId?.ToString("D")) · Successor: @Text(execution.SuccessorExecutionId?.ToString("D"))</p>
+                    <p>Started @Time(execution.StartedAtUtc) · Completed @Time(execution.Execution.CompletedAtUtc) · Cancellation requested @Time(execution.CancellationRequestedAtUtc)</p>
+                    <h4>Frozen exact sources</h4>
+                    <ul class="central-list">@foreach (var source in execution.Sources) { <li>@source.Ordinal · @source.SourceId · @source.ArtifactId · @source.ArtifactByteLength bytes · SHA-256 <code>@source.ArtifactChecksumSha256</code> · Selected @Time(source.SelectedAtUtc)</li> }</ul>
+                    <div class="central-actions">
+                        @if (CanCancel) { <button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.CancelExecution, renderedGeneration)">Request central execution cancellation</button> }
+                        @if (CanManage && Query.Request is not null)
+                        {
+                            <button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.ReplayExecution, renderedGeneration)">Replay these exact sources and revision</button>
+                            <p>Replay creates separate central work. Request key: <code>@Query.Request</code>. Retain this URL to retry an uncertain response with the same key.</p>
+                        }
+                    </div>
+                    <h4 id="central-nodes-heading" tabindex="-1">Central nodes</h4>
+                    <ul class="central-nodes central-list">@foreach (var node in execution.Nodes.Items) { <li><a href="@SelectJob(node.JobId)">Node @node.NodeId</a> · @node.Status · @node.StateReasonCode · Attempts @node.AttemptCount / @node.MaxAttempts · Resolved inputs @node.ResolvedInputCount / @node.InputCount · Bound outputs @node.BoundOutputCount / @node.OutputCount<details><summary>Retained node facts</summary><pre>@Document(node)</pre></details></li> }</ul>
+                    <CentralOperationsPager Current="Query.NodesPage" Next="execution.Nodes.NextCursor" FirstLink="@Url(Query with { NodesPage = null, Focus = "central-nodes-heading" })" NextLink="@Url(Query with { NodesPage = execution.Nodes.NextCursor, Focus = "central-nodes-heading" })" Label="nodes" />
+                    <a href="@Url(Query with { Execution = null, NodesPage = null, Revision = null, Focus = $"central-execution-{execution.Execution.Id:D}" })">Back to execution page</a>
+                </section>
+            }
+            @if (data.Jobs is { } jobs)
+            {
+                <h3>Camera central jobs</h3><p>Examined @jobs.ExaminedCaptures of at most 50 camera captures in this request. A short or empty page can still continue. No total is inferred.</p>
+                @if (jobs.Items.Count == 0) { <p>No jobs in this bounded capture window.</p> }
+                <ul class="central-jobs central-list">@foreach (var item in jobs.Items) { <li><a id="@($"central-job-{item.JobId:D}")" href="@Url(Query with { Job = item.JobId, AttemptsPage = null, InputsPage = null, OutputsPage = null, Focus = "central-job-heading" })">Job @item.JobId</a><span>@item.Status · @item.RecipeName · @item.TargetRole / @item.TargetVariant · Attempts @item.AttemptCount / @item.MaxAttempts · @item.StateReasonCode</span></li> }</ul>
+                <CentralOperationsPager Current="Query.Page" Next="jobs.NextCursor" FirstLink="@Url(new() { View = "jobs" })" NextLink="@Url(new() { View = "jobs", Page = jobs.NextCursor, Focus = "central-heading" })" Label="jobs" />
+            }
+            @if (data.Job is { } job)
+            {
+                <section class="central-exact">
+                    <h3 id="central-job-heading" tabindex="-1">Exact central job @job.Job.JobId</h3>
+                    <p>@job.Job.Status · @job.Job.StateReasonCode · Attempt count @job.Job.AttemptCount / @job.Job.MaxAttempts</p>
+                    <p>Predecessor @Text(job.Job.PredecessorJobId?.ToString("D")) · Superseded by @Text(job.Job.SupersededByJobId?.ToString("D"))</p>
+                    <p><a href="@Artifacts(job.Job.CaptureId)">Inspect exact capture artifacts and publication</a> · <a href="@($"/app/network/observatories/{ObservatoryId:D}/cameras/{CameraId:D}/archive/{job.Job.CaptureId:D}")">Open exact capture viewer</a></p>
+                    @if (CanManage)
+                    {
+                        <div class="central-actions">
+                            @if (job.Job.Status is CentralDerivativeJobStatus.Waiting or CentralDerivativeJobStatus.Pending or CentralDerivativeJobStatus.Leased or CentralDerivativeJobStatus.RetryableFailure) { <button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.CancelJob, renderedGeneration)">Cancel central job</button> }
+                            @if (job.Job.GraphExecutionId is null && job.Job.Status is (CentralDerivativeJobStatus.TerminalFailure or CentralDerivativeJobStatus.Quarantined or CentralDerivativeJobStatus.Canceled or CentralDerivativeJobStatus.Skipped)) { <button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.RetryJob, renderedGeneration)">Requeue same job for a new attempt</button> }
+                            <button class="btn btn-outline-light" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.ReprocessJob, renderedGeneration)">Request successor reprocessing</button>
+                        </div>
+                    }
+                    else { <p>Job recovery is read only for this role.</p> }
+                    @if (job.Job.GraphExecutionId is { } graph) { <p>Graph nodes cannot be requeued independently. <a href="@SelectExecution(graph)">Inspect the exact central graph execution for replay</a>.</p> }
+                    <details><summary>Exact job identity, reason, timing and lineage</summary><pre>@Document(job.Job)</pre></details>
+                    <h4 id="central-attempts-heading" tabindex="-1">Retained attempts</h4>
+                    <ul class="central-attempts central-list">@foreach (var attempt in job.Attempts.Items) { <li>Attempt @attempt.AttemptNumber · @attempt.Outcome · @attempt.ReasonCode · Acquired @Time(attempt.LeaseAcquiredAtUtc) · Ended @Time(attempt.EndedAtUtc) · Input @attempt.InputBytes bytes · Output @attempt.OutputBytes bytes</li> }</ul>
+                    <CentralOperationsPager Current="Query.AttemptsPage" Next="job.Attempts.NextCursor" FirstLink="@Url(Query with { AttemptsPage = null, Focus = "central-attempts-heading" })" NextLink="@Url(Query with { AttemptsPage = job.Attempts.NextCursor, Focus = "central-attempts-heading" })" Label="attempts" />
+                    <h4 id="central-inputs-heading" tabindex="-1">Exact selected inputs</h4>
+                    <ul class="central-inputs central-list">@foreach (var input in job.Inputs.Items) { <li>@input.Ordinal · @input.BindingName · @input.ResolutionState · @input.ResolutionReasonCode · Artifact @Text(input.ArtifactId?.ToString("D"))<details><summary>Input identity, checksum and lineage</summary><pre>@Document(input)</pre></details></li> }</ul>
+                    <CentralOperationsPager Current="Query.InputsPage" Next="job.Inputs.NextCursor" FirstLink="@Url(Query with { InputsPage = null, Focus = "central-inputs-heading" })" NextLink="@Url(Query with { InputsPage = job.Inputs.NextCursor, Focus = "central-inputs-heading" })" Label="inputs" />
+                    <h4 id="central-outputs-heading" tabindex="-1">Exact output bindings</h4>
+                    <ul class="central-outputs central-list">@foreach (var output in job.Outputs.Items) { <li>@output.Ordinal · @output.Role / @output.Variant · Artifact @Text(output.ArtifactId?.ToString("D")) · Bound @Time(output.BoundAtUtc)<details><summary>Output identity and contract</summary><pre>@Document(output)</pre></details></li> }</ul>
+                    <CentralOperationsPager Current="Query.OutputsPage" Next="job.Outputs.NextCursor" FirstLink="@Url(Query with { OutputsPage = null, Focus = "central-outputs-heading" })" NextLink="@Url(Query with { OutputsPage = job.Outputs.NextCursor, Focus = "central-outputs-heading" })" Label="outputs" />
+                    <a href="@Url(Query with { Job = null, AttemptsPage = null, InputsPage = null, OutputsPage = null, Focus = $"central-job-{job.Job.JobId:D}" })">Back to job page</a>
+                </section>
+            }
+            @if (data.Assignments is { } assignments)
+            {
+                <h3>Effective assignment and retained assignment history</h3>
+                <nav aria-label="Assignment target"><a href="@Url(new() { View = "graphs", Target = "Central" })">Central target</a><a href="@Url(new() { View = "graphs", Target = "Edge" })">Edge delivery target</a></nav>
+                <p>Target @Query.Target. Effective assignment is resolved now; retained history also includes expired and future assignments.</p>
+                @if (data.Effective is { } effective) { <p>Effective: @effective.Id · @effective.Scope · <a href="@Url(Query with { Revision = effective.RevisionId, Focus = "central-revision-heading" })">@effective.Revision.Name / @effective.Revision.Revision</a> · @effective.ReasonCode</p> }
+                else { <p>No effective assignment is available.</p> }
+                <ul class="central-assignments central-list">@foreach (var item in assignments.Items) { <li>@item.Id · @item.TargetHost / @item.Scope · <a href="@Url(Query with { Revision = item.RevisionId, Focus = "central-revision-heading" })">@item.RevisionName / @item.Revision</a> · @item.RevisionLifecycle · Effective @Time(item.EffectiveFromUtc) through @Time(item.EffectiveUntilUtc) · @item.ReasonCode</li> }</ul>
+                <CentralOperationsPager Current="Query.Page" Next="assignments.NextCursor" FirstLink="@Url(Query with { Page = null })" NextLink="@Url(Query with { Page = assignments.NextCursor, Focus = "central-heading" })" Label="assignments" />
+            }
+            @if (data.Revisions is { } revisions)
+            {
+                <h3>Global reusable graph catalog</h3><p>Shared definitions grant no authority to camera assignments or executions. Catalog mutation requires PlatformEditor authority.</p>
+                <ul class="central-catalog central-list">@foreach (var item in revisions.Items) { <li><a href="@Url(Query with { Revision = item.Id, Focus = "central-revision-heading" })">@item.Name / @item.Revision</a> · @item.Id · @item.Lifecycle · SHA-256 <code>@item.DefinitionIdentitySha256</code></li> }</ul>
+                <CentralOperationsPager Current="Query.Page" Next="revisions.NextCursor" FirstLink="@Url(Query with { Page = null })" NextLink="@Url(Query with { Page = revisions.NextCursor, Focus = "central-heading" })" Label="revisions" />
+            }
+            @if (Query.Revision is not null)
+            {
+                <h3 id="central-revision-heading" tabindex="-1">Exact graph revision</h3>
+                @if (data.Revision is { } revision)
+                {
+                    <p>@revision.Id · @revision.Name / @revision.Revision · @revision.Lifecycle · SHA-256 <code>@revision.DefinitionIdentitySha256</code></p>
+                    <p>Created @Time(revision.CreatedAtUtc) · Published @Time(revision.PublishedAtUtc) · Retired @Time(revision.RetiredAtUtc)</p>
+                    <p>Portable plan <code>@revision.PortablePlanIdentitySha256</code> · Edge plan <code>@Text(revision.EdgePlanIdentitySha256)</code> · Central plan <code>@Text(revision.CentralPlanIdentitySha256)</code></p>
+                    <details><summary>Definition document (display limited to 8,192 characters)</summary><pre>@Definition(revision.Definition)</pre></details>
+                    @if (data.PlatformEditor)
+                    {
+                        @if (revision.Lifecycle == CentralProcessingGraphLifecycle.Draft) { <button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.PublishRevision, renderedGeneration)">Publish this global revision</button> }
+                        @if (revision.Lifecycle == CentralProcessingGraphLifecycle.Published) { <button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.RetireRevision, renderedGeneration)">Retire this global revision</button> }
+                    }
+                }
+                else { <p>This revision is unavailable.</p> }
+            }
+            @if (data.Proposals is { } proposals)
+            {
+                <h3>Proposal delivery history</h3><p>Retrieved, Accepted, Rejected, Activated, RolledBack, Expired and Superseded are separate persisted facts. Heartbeat does not establish delivery or activation.</p>
+                @if (proposals.Items.Count == 0) { <p>No retained proposals on this page.</p> }
+                <ul class="central-proposals central-list">
+                    @foreach (var item in proposals.Items)
+                    {
+                        <li><a id="@($"central-proposal-{item.Proposal.Id:D}")" href="@Url(Query with { Proposal = item.Proposal.Id, FactsPage = null, Focus = "central-facts-heading" })">Proposal @item.Proposal.Id</a> · Issued @Time(item.Proposal.IssuedAtUtc) · Expires @Time(item.Proposal.ExpiresAtUtc)
+                            @if (item.DerivedStatus is { } derived) { <p>@derived.Status (derived; staging timestamp is not recorded). @derived.Basis</p> }
+                            <p>Terminal: @Text(item.TerminalFact?.Kind) · Latest: @Text(item.LatestFact?.Kind) · Latest activation/rollback: @Text(item.LatestLifecycleFact?.Kind)</p></li>
+                    }
+                </ul>
+                <CentralOperationsPager Current="Query.Page" Next="proposals.NextCursor" FirstLink="@Url(new() { View = "delivery" })" NextLink="@Url(new() { View = "delivery", Page = proposals.NextCursor, Focus = "central-heading" })" Label="proposals" />
+            }
+            @if (data.Proposal is { } proposal && data.Facts is { } facts)
+            {
+                <h3 id="central-facts-heading" tabindex="-1">Exact proposal @proposal.Id</h3>
+                <p>Central installation @proposal.LogicalCameraInstallationId · Installation public ID @proposal.InstallationPublicId · Revision <a href="@Url(Query with { Revision = proposal.RevisionId, Focus = "central-revision-heading" })">@proposal.RevisionId</a></p>
+                <details><summary>Exact proposal facts</summary><pre>@Document(proposal)</pre></details>
+                <ul class="central-facts central-list">@foreach (var fact in facts.Items) { <li>@fact.Kind · @fact.Source · Occurred @Time(fact.OccurredAtUtc) · Recorded @Time(fact.RecordedAtUtc) · @Text(fact.ReasonCode)<details><summary>Fact identity and plans</summary><pre>@Document(fact)</pre></details></li> }</ul>
+                <CentralOperationsPager Current="Query.FactsPage" Next="facts.NextCursor" FirstLink="@Url(Query with { FactsPage = null, Focus = "central-facts-heading" })" NextLink="@Url(Query with { FactsPage = facts.NextCursor, Focus = "central-facts-heading" })" Label="facts" />
+            }
+            @if (data.Events is { } events)
+            {
+                <h3>Camera event associations</h3><p>Examined @events.ExaminedCaptures of at most 50 captures; an empty page can continue. Every source and background contributor must remain authorized.</p>
+                @if (events.Items.Count == 0) { <p>No authorized event associations in this capture window.</p> }
+                <ul class="central-events central-list">@foreach (var item in events.Items) { <li><a href="@Url(Query with { Event = item.CentralTransientEventId, Focus = "central-event-heading" })">Event @item.CentralTransientEventId</a> · @item.EventState / @item.ReviewState · @item.EffectiveClassification · Source @item.CaptureIsObservationSource / Background @item.CaptureIsBackground · <a href="@Artifacts(item.CaptureId)">Exact contributing capture artifacts</a></li> }</ul>
+                <CentralOperationsPager Current="Query.Page" Next="events.NextCursor" FirstLink="@Url(new() { View = "events" })" NextLink="@Url(new() { View = "events", Page = events.NextCursor, Focus = "central-heading" })" Label="events" />
+            }
+            @if (data.Event is { } eventDetail)
+            {
+                <h3 id="central-event-heading" tabindex="-1">Exact event review @eventDetail.Summary.CentralTransientEventId</h3>
+                <p>Event @eventDetail.Summary.EventId · Version @eventDetail.Summary.Version · Assessment @eventDetail.Summary.ActiveAssessmentId · @eventDetail.Summary.ReviewState · @eventDetail.Summary.EffectiveClassification</p>
+                <p>Strong If-Match: <code>@eventDetail.Summary.ETag</code>. Each decision carries an Idempotency-Key. Stale assessments and conflicting requests require a refresh.</p>
+                @if (data.CanReviewEvent)
+                {
+                    <div class="central-actions"><button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.ConfirmEvent, renderedGeneration)">Confirm exact event assessment</button><button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.RejectEvent, renderedGeneration)">Reject exact event assessment</button></div>
+                }
+                else { <p>Event review requires Manager/Owner authority for every contributor, or existing global administrative authority.</p> }
+                <details><summary>Retained event observations and assessments</summary><pre>@Document(eventDetail.Event)</pre></details>
+            }
+            @if (data.Policy is { } policy)
+            {
+                <h3>Observatory policy for future central jobs</h3><p>Version @(policy.Version?.ToString() ?? "inherited"). This observatory-wide override does not change frozen execution plans.</p>
+                <p>Effective cloud threshold @policy.EffectiveCloudTransmissionThresholdMillionths millionths · Central validation @(policy.EffectiveCentralValidationEnabled ? "enabled" : "disabled").</p>
+                <label for="central-cloud">Cloud threshold override (millionths; blank inherits @policy.GlobalCloudTransmissionThresholdMillionths)</label>
+                <input id="central-cloud" class="form-control" type="number" min="1" max="999999" @bind="cloudThreshold" disabled="@(busy || data.Role != ObservatoryMembershipRole.Owner)" />
+                <label for="central-validation">Central transient validation</label>
+                <select id="central-validation" class="form-select" @bind="validation" disabled="@(busy || data.Role != ObservatoryMembershipRole.Owner)"><option value="inherit">Inherit (@policy.GlobalCentralValidationEnabled)</option>@if (policy.GlobalCentralValidationEnabled) { <option value="enabled">Enabled</option><option value="disabled">Disabled</option> }</select>
+                @if (data.Role == ObservatoryMembershipRole.Owner) { <button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.SavePolicy, renderedGeneration)">Activate successor policy for future jobs</button> }
+                else { <p>Policy is read only for this role.</p> }
+            }
+            @if (data.Artifacts is { } artifacts)
+            {
+                <h3 id="central-artifacts-heading" tabindex="-1">Exact capture artifacts and publication</h3><p>Capture @Query.Capture. Materialization and public release are independent. Each decision targets one exact eligible artifact.</p>
+                <ul class="central-artifacts central-list">
+                    @foreach (var artifact in artifacts.Items)
+                    {
+                        <li>@artifact.ArtifactId · @artifact.Role / @artifact.Variant · @artifact.OriginLabel · @artifact.ByteLength bytes · SHA-256 <code>@artifact.ChecksumSha256</code>
+                            <p>@artifact.ObjectState / @artifact.ReconstructionState · @Text(artifact.StateReasonCode) · Publicly eligible @artifact.IsPubliclyEligible · Released @artifact.IsPubliclyReleased</p>
+                            @if (data.Role == ObservatoryMembershipRole.Owner)
+                            {
+                                @if (artifact.IsPubliclyEligible && !artifact.IsPubliclyReleased) { <button class="btn btn-outline-info" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.ReleaseArtifact, renderedGeneration, artifact.ArtifactId)">Release artifact @artifact.ArtifactId</button> }
+                                @if (artifact.IsPubliclyReleased) { <button class="btn btn-outline-warning" disabled="@busy" @onclick="() => MutateAsync(CentralWorkspaceAction.WithdrawArtifact, renderedGeneration, artifact.ArtifactId)">Withdraw artifact @artifact.ArtifactId</button> }
+                            }
+                        </li>
+                    }
+                </ul>
+                <CentralOperationsPager Current="Query.Page" Next="artifacts.NextCursor" FirstLink="@Url(Query with { Page = null })" NextLink="@Url(Query with { Page = artifacts.NextCursor, Focus = "central-artifacts-heading" })" Label="artifacts" />
+            }
+        </div>
+    }
+    else if (!loading) { <a href="@Section(Query.View)">Start from the first page</a> }
+</section>
