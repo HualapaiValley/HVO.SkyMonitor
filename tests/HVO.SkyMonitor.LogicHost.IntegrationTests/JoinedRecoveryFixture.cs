@@ -119,7 +119,8 @@ internal sealed partial class JoinedRecoveryFixture
         },
         SqlNumber = exception is SqlException sql ? sql.Number
             : exception is SanitizedScriptException script ? script.SqlErrorNumber : 0,
-        ContainerRemoved = containerRemoved, FilesRemoved = filesRemoved
+        ContainerRemoved = containerRemoved,
+        FilesRemoved = filesRemoved
     });
 
     internal void RetainPrivateAttribution()
@@ -127,8 +128,13 @@ internal sealed partial class JoinedRecoveryFixture
         // No password/key bytes. This local receipt is private and is never attached to test output.
         File.WriteAllText(Path.Combine(root, "private-attribution.json"), JsonSerializer.Serialize(new
         {
-            Run = runId, ContainerId = container.Id, SourceDatabase = sourceDatabase,
-            TargetDatabase = targetDatabase, Backup = BackupPath, Root = root, Phase = phase
+            Run = runId,
+            ContainerId = container.Id,
+            SourceDatabase = sourceDatabase,
+            TargetDatabase = targetDatabase,
+            Backup = BackupPath,
+            Root = root,
+            Phase = phase
         }));
     }
 
@@ -150,9 +156,14 @@ internal sealed partial class JoinedRecoveryFixture
         // Public configuration carries a reference only; the ephemeral SQL password is never serialized.
         await File.WriteAllTextAsync(Path.Combine(SourceHost, "config.json"), JsonSerializer.Serialize(new
         {
-            Instance = instance, Cutoff, Provider = "Filesystem", Buckets,
-            CredentialReference = "ephemeral-test-credential", KeyReference = expectedClaims["key"],
-            CatalogId = "hyg-v42-fixture", PackageVersion = "hyg-v42-fixture-1"
+            Instance = instance,
+            Cutoff,
+            Provider = "Filesystem",
+            Buckets,
+            CredentialReference = "ephemeral-test-credential",
+            KeyReference = expectedClaims["key"],
+            CatalogId = "hyg-v42-fixture",
+            PackageVersion = "hyg-v42-fixture-1"
         }));
         using (var catalog = CatalogFixtureInstallation.Create(Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite")))
         {
@@ -198,7 +209,9 @@ internal sealed partial class JoinedRecoveryFixture
             DevicePublicId = Guid.Parse("16300000-0000-0000-0000-000000000003"),
             ObservatoryId = Guid.Parse("16300000-0000-0000-0000-000000000004"),
             FrameId = Guid.Parse("16300000-0000-0000-0000-000000000005"),
-            AgentId = "joined-recovery-fixture", CapturedAtUtc = Cutoff, FirstReceivedAtUtc = Cutoff
+            AgentId = "joined-recovery-fixture",
+            CapturedAtUtc = Cutoff,
+            FirstReceivedAtUtc = Cutoff
         };
         for (var i = 0; i < 2; i++)
         {
@@ -207,11 +220,17 @@ internal sealed partial class JoinedRecoveryFixture
             {
                 Id = Guid.Parse($"16300000-0000-0000-0001-{i + 1:D12}"),
                 ArtifactId = Guid.Parse($"16300000-0000-0000-0002-{i + 1:D12}"),
-                DevicePublicId = frame.DevicePublicId, Frame = frame, CentralFrameId = frame.Id,
+                DevicePublicId = frame.DevicePublicId,
+                Frame = frame,
+                CentralFrameId = frame.Id,
                 Role = i == 0 ? FrameArtifactRole.Raw : FrameArtifactRole.Preview,
-                RecipeVersion = "fixture-1", ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
-                MediaType = fact.ContentType, ByteLength = fact.Length, ChecksumSha256 = fact.Sha256,
-                StorageReference = $"object://{fact.Bucket}/{fact.Key}", ReceivedAtUtc = Cutoff,
+                RecipeVersion = "fixture-1",
+                ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
+                MediaType = fact.ContentType,
+                ByteLength = fact.Length,
+                ChecksumSha256 = fact.Sha256,
+                StorageReference = $"object://{fact.Bucket}/{fact.Key}",
+                ReceivedAtUtc = Cutoff,
                 IdempotencyKey = Hash(Encoding.UTF8.GetBytes("artifact-" + i.ToString(CultureInfo.InvariantCulture)))
             });
         }
@@ -228,11 +247,18 @@ internal sealed partial class JoinedRecoveryFixture
         await master.OpenAsync();
         var variables = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["DatabaseName"] = sourceDatabase, ["RunId"] = runId,
-            ["ApprovedBackupDirectory"] = "/var/opt/mssql/data", ["BackupFilePrefix"] = "hvo1630_",
-            ["BackupFilePath"] = BackupPath, ["InvariantSchema"] = "dbo", ["InvariantTable"] = "AspNetUserClaims",
-            ["InvariantKeyColumn"] = "Id", ["InvariantTextColumn"] = "ClaimValue", ["InvariantNumberColumn"] = "Id",
-            ["MetadataRetentionDeclaredDays"] = "1", ["MetadataRetentionControlReference"] = "issue1630-disposable-owner-cleanup"
+            ["DatabaseName"] = sourceDatabase,
+            ["RunId"] = runId,
+            ["ApprovedBackupDirectory"] = "/var/opt/mssql/data",
+            ["BackupFilePrefix"] = "hvo1630_",
+            ["BackupFilePath"] = BackupPath,
+            ["InvariantSchema"] = "dbo",
+            ["InvariantTable"] = "AspNetUserClaims",
+            ["InvariantKeyColumn"] = "Id",
+            ["InvariantTextColumn"] = "ClaimValue",
+            ["InvariantNumberColumn"] = "Id",
+            ["MetadataRetentionDeclaredDays"] = "1",
+            ["MetadataRetentionControlReference"] = "issue1630-disposable-owner-cleanup"
         };
         var result = await SqlOperationsIssue255Tests.ExecuteScriptAsync(master, "backup-restore-checkdb.sql", variables, RetainTarget);
         var row = result.ResultSets.SelectMany(set => set.Rows).Single(item => item.ContainsKey("copy_only"));
@@ -311,13 +337,30 @@ internal sealed partial class JoinedRecoveryFixture
             .Select(item => new { item.UserId, item.ClaimType, item.ClaimValue }).ToArrayAsync();
         var artifacts = await db.CentralArtifacts.AsNoTracking().OrderBy(item => item.Id).Select(item => new
         {
-            item.Id, item.ArtifactId, item.CentralFrameId, item.DevicePublicId, item.Role, item.RecipeVersion,
-            item.MediaType, item.ByteLength, item.ChecksumSha256, item.StorageReference, item.ReceivedAtUtc,
-            item.ObjectState, item.ReconstructionState, item.IdempotencyKey
+            item.Id,
+            item.ArtifactId,
+            item.CentralFrameId,
+            item.DevicePublicId,
+            item.Role,
+            item.RecipeVersion,
+            item.MediaType,
+            item.ByteLength,
+            item.ChecksumSha256,
+            item.StorageReference,
+            item.ReceivedAtUtc,
+            item.ObjectState,
+            item.ReconstructionState,
+            item.IdempotencyKey
         }).ToArrayAsync();
         var frames = await db.CentralFrames.AsNoTracking().OrderBy(item => item.Id).Select(item => new
         {
-            item.Id, item.FrameId, item.DevicePublicId, item.RegistrationId, item.ObservatoryId, item.AgentId, item.CapturedAtUtc
+            item.Id,
+            item.FrameId,
+            item.DevicePublicId,
+            item.RegistrationId,
+            item.ObservatoryId,
+            item.AgentId,
+            item.CapturedAtUtc
         }).ToArrayAsync();
         var seed = await db.CentralProcessingGraphRevisions.AsNoTracking().OrderBy(item => item.Id)
             .Select(item => new { item.Id, item.DefinitionIdentitySha256, item.PortablePlanIdentitySha256, item.CentralPlanIdentitySha256 }).ToArrayAsync();

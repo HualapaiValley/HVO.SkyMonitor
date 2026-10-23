@@ -138,16 +138,23 @@ internal sealed partial class JoinedRecoveryFixture
         {
             Issue = 1630,
             Source = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-            SqlImage = IntegrationTestFixture.SqlServerImage, SqlEngine = engine,
-            Runtime = RuntimeInformation.FrameworkDescription, OS = RuntimeInformation.OSDescription,
+            SqlImage = IntegrationTestFixture.SqlServerImage,
+            SqlEngine = engine,
+            Runtime = RuntimeInformation.FrameworkDescription,
+            OS = RuntimeInformation.OSDescription,
             ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
             Topology = "one disposable SQL container; separate process-local filesystem source, backup and restored trees; no application writers",
             SqlScriptSha256 = Hash(await File.ReadAllBytesAsync(script)),
-            SqlBackupSha256 = Hash(sqlBackup), SqlBackupBytes = sqlBackup.LongLength,
+            SqlBackupSha256 = Hash(sqlBackup),
+            SqlBackupBytes = sqlBackup.LongLength,
             SqlFactsSha256 = Hash(Encoding.UTF8.GetBytes(sqlFacts)),
             ObjectInventorySha256 = Hash(await File.ReadAllBytesAsync(Path.Combine(ObjectBackup, FilesystemObjectBackup.InventoryFileName))),
-            PublicConfigSha256 = expectedClaims["config"], CatalogManifestSha256 = expectedClaims["catalog"], CatalogDataSha256 = expectedClaims["catalog-data"],
-            Objects = expectedObjects, Refusals = refused, PhaseMilliseconds = timings,
+            PublicConfigSha256 = expectedClaims["config"],
+            CatalogManifestSha256 = expectedClaims["catalog"],
+            CatalogDataSha256 = expectedClaims["catalog-data"],
+            Objects = expectedObjects,
+            Refusals = refused,
+            PhaseMilliseconds = timings,
             Limitations = "fixture admission and identity comparison only; no authentication restart, writer fencing, encryption/off-host, interrupted integrated restore, production RPO/RTO, native ext4 qualification or ARM64 SQL claim"
         });
         Require(!evidence.Contains(password, StringComparison.Ordinal) && !evidence.Contains(root, StringComparison.Ordinal)
