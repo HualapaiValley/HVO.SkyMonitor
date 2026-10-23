@@ -1,0 +1,73 @@
+{
+  "schema": "issue-1618-inputs-v1",
+  "baseline": "dffab19529c55769e25fbd162fe06b248386eed0",
+  "candidate": "26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+  "sha256ByRevision": {
+    "dffab19529c55769e25fbd162fe06b248386eed0": {
+      "global.json": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+      "Directory.Packages.props": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs": "52d9b6d0fb9ca8c95f9d3fd4528fbc90026ae729832ec8c2833f335475c09050",
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationReadAttribution.cs": null,
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs": "e7072eac09cd75c2e4683497e826d2228c9898ad922b32a5440f20c061cae74e",
+      "src/HVO.SkyMonitor.AgentCore/CaptureContractJson.cs": "3f429edab9dcc932b0956a1e5712500cb2b41c3490625a0f1ee2e07d13afb982",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.cs": "71a396469a32c2c7070f96c5186a6f41e7b82ebe4605c1b7079cbf046cfc1ef4",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/InstallationReadAttributionFixture.cs": "56f007895494fee869ba7b5142054a9d75ea2928207d0d50e58a53bde13d43e8",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/CameraAgentKestrelFixture.cs": "b67a8159d9c8db5999b79ce31982da289b73484de7cfdb3a71c8cb397e46230b"
+    },
+    "26ac697fdc71eb7b822e8138cc1c26691fecbf97": {
+      "global.json": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+      "Directory.Packages.props": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs": "917aa05069e8524aeba48f375123e2ac83fb0f2360dd78e3d41fbb3e27935bb7",
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationReadAttribution.cs": "b941b462b7854c323df777fff6f2a23583473f63cdb5ee648786a176fe44b727",
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs": "e7072eac09cd75c2e4683497e826d2228c9898ad922b32a5440f20c061cae74e",
+      "src/HVO.SkyMonitor.AgentCore/CaptureContractJson.cs": "3f429edab9dcc932b0956a1e5712500cb2b41c3490625a0f1ee2e07d13afb982",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.cs": "0eac43e3951077a949a6b9493d63f366eb7719157c4060ec370a6635bf19c6e7",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/InstallationReadAttributionFixture.cs": "f8665dff5f7b11f16553d632a0d4bc245a1838cfba70d41f7fa5d45d002c10f1",
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/CameraAgentKestrelFixture.cs": "b67a8159d9c8db5999b79ce31982da289b73484de7cfdb3a71c8cb397e46230b"
+    }
+  },
+  "cohortOrder": [
+    "b1",
+    "i1",
+    "c1",
+    "c2",
+    "i2",
+    "i3",
+    "c3",
+    "c4",
+    "i4",
+    "i5",
+    "c5",
+    "b2"
+  ],
+  "trialModes": {
+    "b": "baseline-listener",
+    "i": "listener",
+    "c": "no-listener"
+  },
+  "constraints": {
+    "processorCount": 1,
+    "affinity": "CPU 0",
+    "managedHeapAvailableBytes": 402653184,
+    "settlingReads": 120,
+    "measuredReads": 30,
+    "fixedAndSolar": true,
+    "files": 5000,
+    "journalRows": 5000
+  },
+  "primarySample": "Median of 30 measured reads per trial; five trial medians per candidate mode. Report median/min/max, no five-trial percentile inference.",
+  "targetProfile": "development-v1",
+  "riskTier": "C",
+  "dirtyDisposition": "All measured executable inputs committed; clean native test clones; final report/evidence added later.",
+  "artifacts": {
+    "issue-1618-retained-attribution.json.gz": {
+      "sha256": "5c61454e01604e573e7bb86693367898c6e321bef940365ac1f8d9d332faedd2"
+    },
+    "issue-1618-retained-summary.json": {
+      "sha256": "418bc87fc444c05381af56cc2dfc429dcc06b9d202458d476e522db360c909c1"
+    },
+    "issue-1618-local-gate.json": {
+      "sha256": "4632a16d4d4ebd258b981bfcf75e664db222d4b209267d9f2679858921979be9"
+    }
+  }
+}
