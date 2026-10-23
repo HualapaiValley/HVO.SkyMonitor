@@ -8,6 +8,9 @@ public sealed class DeploymentLocationTelemetry : IDisposable
     public const string MeterName = "HVO.SkyMonitor.CameraAgent.DeploymentLocation";
     public const string ActivitySourceName = MeterName;
     public static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
+    // Diagnostic stages are deliberately separate from the host's registered operational source.
+    internal const string AttributionActivitySourceName = ActivitySourceName + ".Attribution";
+    internal static ActivitySource AttributionActivitySource { get; } = new(AttributionActivitySourceName);
     private readonly Meter _meter = new(MeterName);
     private readonly Counter<long> _operations;
     private readonly Histogram<double> _duration;
