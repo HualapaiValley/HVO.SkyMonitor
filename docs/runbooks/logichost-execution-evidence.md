@@ -401,8 +401,13 @@ successor controls in this view.
 
 Refresh removes the old snapshot before awaiting authority, uses a fresh service
 scope, cancels older loads and rejects late responses from superseded generations.
-Authentication changes clear child components too. The existing authorized HTTP
-binding-discovery route rechecks the browser's current credential before later
+Authentication changes clear child components too. Browser session and resource
+checks run both before the composed read and immediately
+before its snapshot is published, so a browser cookie lost or switched during
+a held read cannot restore evidence through the circuit's older principal. The
+generation/cancellation guards run again after that final asynchronous check.
+The existing authorized HTTP binding-discovery route rechecks the browser's
+current credential before later
 interactive reads; the protected status endpoint also checks that its actor name
 matches the circuit, including before an installation is selected. This handles a circuit that outlives its
 login cookie; it supplements server-side resource authorization. Focus, visibility,

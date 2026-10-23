@@ -148,6 +148,15 @@ public sealed partial class ImportedExecutionInspector : ComponentBase, IAsyncDi
                 .ReadAsync(principal, observatory, camera, selection, token);
             token.ThrowIfCancellationRequested();
             if (disposed || version != generation) return;
+            // The HTTP cookie may change while a read is in flight without notifying the circuit.
+            // Verify the same browser actor again before publishing any protected snapshot.
+            if (module is not null && !await module.InvokeAsync<bool>("hasSession", token, root, principal.Identity?.Name))
+            {
+                if (version == generation) message = "Session unavailable or access was removed. Sign in or reconnect, then refresh.";
+                return;
+            }
+            token.ThrowIfCancellationRequested();
+            if (disposed || version != generation) return;
             data = result;
             message = result is null ? "Imported evidence not found or access was removed." :
                 "Retained immutable evidence. Refresh rechecks access and central observations; receipts never establish image availability.";

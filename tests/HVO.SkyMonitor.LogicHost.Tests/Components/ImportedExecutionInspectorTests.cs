@@ -228,6 +228,27 @@ public sealed class ImportedExecutionInspectorTests
     }
 
     [TestMethod]
+    public async Task BrowserSessionLossDuringHeldReadNeverPublishesCircuitPrincipalEvidence()
+    {
+        var sessionAvailable = true;
+        using var context = Context(out var read, out _, () => sessionAvailable);
+        var cut = Render(context);
+        var old = read.Result;
+        var pending = new TaskCompletionSource<ImportedExecutionSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        read.Load = _ => pending.Task;
+        var calls = read.Requests.Count;
+        var refresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
+        cut.WaitForAssertion(() => read.Requests.Should().HaveCount(calls + 1));
+        // The browser cookie is lost while the circuit retains its original authenticated principal.
+        // No authentication-state event or generation change can hide this interleaving.
+        sessionAvailable = false;
+        pending.SetResult(old);
+        await refresh;
+        cut.FindAll(".imported-exact,.artifact-identity").Should().BeEmpty();
+        cut.Markup.Should().Contain("Session unavailable or access was removed").And.NotContain("Payload SHA-256");
+    }
+
+    [TestMethod]
     public async Task ScopeChangeCancelsAndRejectsOldResponse()
     {
         using var context = Context(out var read, out _);
@@ -317,12 +338,13 @@ public sealed class ImportedExecutionInspectorTests
     private static IRenderedComponent<ImportedExecutionInspector> Render(BunitContext context) => context.Render<ImportedExecutionInspector>(p =>
         p.Add(c => c.ObservatoryId, Observatory).Add(c => c.CameraId, Camera).Add(c => c.Query, Selection));
 
-    private static BunitContext Context(out Read read, out Authentication auth)
+    private static BunitContext Context(out Read read, out Authentication auth, Func<bool>? browserSession = null)
     {
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var module = context.JSInterop.SetupModule("./Components/Shared/ImportedExecutionInspector.razor.js");
-        module.Setup<bool>("hasSession", _ => true).SetResult(true);
+        module.Setup<bool>("hasSession", _ => browserSession?.Invoke() is not false).SetResult(true);
+        module.Setup<bool>("hasSession", _ => browserSession?.Invoke() is false).SetResult(false);
         read = new Read(); auth = new Authentication();
         context.Services.AddSingleton<IImportedExecutionInspectorReadService>(read);
         context.Services.AddSingleton<AuthenticationStateProvider>(auth);
