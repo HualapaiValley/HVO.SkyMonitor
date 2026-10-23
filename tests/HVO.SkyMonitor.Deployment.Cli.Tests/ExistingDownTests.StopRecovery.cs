@@ -30,7 +30,8 @@ public sealed partial class ExistingDownTests
         Assert.AreEqual(camera == "east" ? 1 : 2, fixture.Stops);
         var ledger = Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/down-ledger.json"));
         Assert.AreEqual("intent", ledger.Array("resources").Single(n => n!.Text("resource") == "cameraagent:" + camera)!.Text("status"));
-        var diagnostics = Directory.GetFiles(fixture.Host.StateRoot + "/down-private").ToDictionary(path => path, File.ReadAllBytes);
+        var diagnostics = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var path in Directory.GetFiles(fixture.Host.StateRoot + "/down-private")) diagnostics.Add(path, await File.ReadAllBytesAsync(path));
         Assert.IsTrue(diagnostics.Count > 0);
         var httpBefore = fixture.Queries.Count;
 
@@ -42,7 +43,7 @@ public sealed partial class ExistingDownTests
         Assert.AreEqual(0, fixture.StoppedHttpAttempts);
         var stoppedEndpoints = fixture.Host.Inventory.Array("cameraAgents").Where(n => camera == "west" || n!.Text("name") == "east").Select(n => n!.Text("internalEndpoint")).ToArray();
         Assert.IsFalse(fixture.Queries.Skip(httpBefore).Any(url => stoppedEndpoints.Any(endpoint => url.StartsWith(endpoint, StringComparison.Ordinal))));
-        foreach (var (path, bytes) in diagnostics) CollectionAssert.AreEqual(bytes, File.ReadAllBytes(path), path);
+        foreach (var (path, bytes) in diagnostics) CollectionAssert.AreEqual(bytes, await File.ReadAllBytesAsync(path), path);
         AssertPrivateAbsent(fixture);
         AssertPreserved(fixture);
         Assert.AreEqual(Canonical(result), Canonical(Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/down-manifest.json"))));
