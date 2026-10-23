@@ -171,7 +171,14 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
     {
-        var section = node.OptionsForm?.Descriptor.StepAlias == HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias ? "frame-facts" : "constellations";
+        var section = node.OptionsForm?.Descriptor.StepAlias switch
+        {
+            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias => "frame-facts",
+            "ImageQuality" => "image-quality",
+            "Telemetry" => "capture-telemetry",
+            "VirtualSkyCloudObservation" => "simulated-cloud-observations",
+            _ => "constellations"
+        };
         var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
     }
