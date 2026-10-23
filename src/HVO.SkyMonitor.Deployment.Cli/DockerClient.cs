@@ -946,7 +946,8 @@ internal sealed record ListedImage(string Id, string Repository, string Tag, str
     /// <summary>
     /// Whether Docker holds this image under <paramref name="name"/>, as an import records names: a bare <c>sha256</c>
     /// digest is its ID or its repository digest, <c>repository@digest</c> its repository and digest, and
-    /// <c>repository:tag</c> (or a bare repository, which is <c>:latest</c>) its repository and tag.
+    /// <c>repository:tag</c> (or a bare repository, which is <c>:latest</c>) its repository and tag. Docker Hub's familiar
+    /// and fully qualified repository names are equivalent; when both tag and digest are given, the digest selects it.
     /// </summary>
     public bool Shows(string name)
     {
@@ -954,11 +955,34 @@ internal sealed record ListedImage(string Id, string Repository, string Tag, str
         if (name.StartsWith("sha256:", StringComparison.Ordinal))
             return string.Equals(Id, name, StringComparison.Ordinal) || string.Equals(Digest, name, StringComparison.Ordinal);
         var at = name.LastIndexOf('@');
-        if (at > 0)
-            return string.Equals(Repository, name[..at], StringComparison.Ordinal) && string.Equals(Digest, name[(at + 1)..], StringComparison.Ordinal);
-        var colon = name.LastIndexOf(':');
-        return colon > name.LastIndexOf('/')
-            ? string.Equals(Repository, name[..colon], StringComparison.Ordinal) && string.Equals(Tag, name[(colon + 1)..], StringComparison.Ordinal)
-            : string.Equals(Repository, name, StringComparison.Ordinal) && string.Equals(Tag, "latest", StringComparison.Ordinal);
+        var named = at > 0 ? name[..at] : name;
+        var colon = named.LastIndexOf(':');
+        var hasTag = colon > named.LastIndexOf('/');
+        var repository = hasTag ? named[..colon] : named;
+        if (!string.Equals(NormalizeRepository(Repository), NormalizeRepository(repository), StringComparison.Ordinal))
+            return false;
+        return at > 0
+            ? string.Equals(Digest, name[(at + 1)..], StringComparison.Ordinal)
+            : string.Equals(Tag, hasTag ? named[(colon + 1)..] : "latest", StringComparison.Ordinal);
+    }
+
+    // Docker reference splitDockerDomain rules: default only unqualified names to Hub, and only single-component
+    // Hub paths to library/. Other registries, ports and nested namespaces must retain their identity.
+    private static string NormalizeRepository(string repository)
+    {
+        var slash = repository.IndexOf('/', StringComparison.Ordinal);
+        if (slash < 0) return "docker.io/library/" + repository;
+        var domain = repository[..slash];
+        var path = repository[(slash + 1)..];
+        if (domain == "index.docker.io")
+            domain = "docker.io";
+        else if (domain != "localhost" && !domain.Contains('.', StringComparison.Ordinal) && !domain.Contains(':', StringComparison.Ordinal) &&
+                 !domain.Any(char.IsUpper))
+        {
+            domain = "docker.io";
+            path = repository;
+        }
+        if (domain == "docker.io" && !path.Contains('/', StringComparison.Ordinal)) path = "library/" + path;
+        return domain + "/" + path;
     }
 }
