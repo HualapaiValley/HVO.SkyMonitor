@@ -59,6 +59,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent graph drafts expose the existing cloud-assessment output route, grid, transmission/support/saturation thresholds and tile mask, with validation and explicit activation or rollback while retaining opaque clear-reference provisioning. (#1565)
+
 - Current Sky links to weather and cloud overlay settings in graph drafts: enablement, artifact/output labels, boundary thickness and label visibility/length, with validation and explicit activation or rollback. (#1564)
 
 - CameraAgent graph drafts expose image-quality routing and enable switches for image quality, capture telemetry and explicitly simulated VirtualSky cloud observations, using the existing validate, activate and rollback flow. (#1563)
