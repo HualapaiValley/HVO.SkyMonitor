@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
+
 - The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
 
 - An optional, off-by-default **Time-data refresh** (`timeDataRefresh.enabled` in the web UI and `hvo-sky config`) keeps satellite planning's Earth-orientation and leap-second pair current between releases. The reserved daily `time-data-refresh` automation downloads the files from IERS/USNO over HTTPS at most once a day, checks the providers' SHA-512 and `#h` checksums, parses the pair and adopts it atomically under `state/raw/.time-data/`; any failure keeps the current pair. Without an override, planning uses whichever verified pair (refreshed, its intact retained predecessor, or bundled) covers the planned time and covers later (the bundled pair on a tie), so a refresh never takes away coverage of the current day. The setup panel, the new read-only `GET /api/v1/operations/time-data` and `hvo-sky time-data` show the active source, coverage and expiry, whether any pair covers the current time, the last refresh attempt and the last adoption. (#1474)
