@@ -220,10 +220,18 @@ public sealed class FrameFactsRetainedContext
             Number("astronomy.boresightAltitude", scene.Projection.BoresightAltitudeDegrees, configured);
             Number("astronomy.boresightAzimuth", scene.Projection.BoresightAzimuthDegrees, configured);
             Number("astronomy.roll", scene.Projection.RollDegrees, configured);
-            foreach (var (name, id) in new[] { ("sun", "solar-system:Sun"), ("moon", "solar-system:Moon") })
+            foreach (var (name, selectedBody) in new[] { ("sun", SolarSystemBody.Sun), ("moon", SolarSystemBody.Moon) })
             {
+                var id = $"solar-system:{selectedBody}";
                 var body = scene.Objects.SingleOrDefault(item => item.Id == id);
                 var derived = source with { Nature = scene.Kind + ": retained derived geometry" };
+                if (body is not null && (body.Kind != CelestialObjectKind.SolarSystemBody ||
+                    !scene.Selection.SolarSystemBodies.Contains(selectedBody) || string.IsNullOrWhiteSpace(scene.EphemerisModelVersion)))
+                {
+                    foreach (var coordinate in new[] { "geometricAltitude", "apparentAltitude", "azimuth" })
+                        Unavailable($"astronomy.{name}.{coordinate}", FrameFactsAvailability.Conflicting, derived);
+                    continue;
+                }
                 Number($"astronomy.{name}.geometricAltitude", body?.GeometricHorizontal.AltitudeDegrees, derived);
                 Number($"astronomy.{name}.apparentAltitude", body?.ApparentHorizontal.AltitudeDegrees, derived);
                 Number($"astronomy.{name}.azimuth", body?.ApparentHorizontal.AzimuthDegrees, derived);
@@ -256,7 +264,7 @@ public sealed class FrameFactsRetainedContext
                     association.ExposureFromUtc != descriptor.Timing.ExposureStartedUtc ||
                     association.ExposureThroughUtc != descriptor.Timing.ExposureEndedUtc)) status = FrameFactsAvailability.Conflicting;
                 else if (association is not null && !IsSha256(association.AssociationIdentity)) status = FrameFactsAvailability.Unsupported;
-                var validObservation = observation is not null && EnvironmentalObservationFactJson.Validate(observation).IsValid;
+                var validObservation = observation is not null && ValidObservation(observation);
                 if (validObservation && (observation!.Value.Kind != kind || observation.RigId is not null && observation.RigId != descriptor.Capture.RigId))
                 {
                     status = FrameFactsAvailability.Conflicting;
@@ -285,6 +293,10 @@ public sealed class FrameFactsRetainedContext
                 else Number(prefix, observation!.Value.NumericValue, source);
             }
         }
+
+        // The V2 validator computes source identity before validating Value; isolate malformed optional input.
+        private static bool ValidObservation(EnvironmentalObservationFactV1 observation)
+            => observation.Value is not null && EnvironmentalObservationFactJson.Validate(observation).IsValid;
 
         private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 

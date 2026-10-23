@@ -225,6 +225,21 @@ public sealed class FrameFactsRetainedContextTests
     }
 
     [TestMethod]
+    [DataRow(EnvironmentalObservationSchemaVersions.V1)]
+    [DataRow(EnvironmentalObservationSchemaVersions.V2)]
+    public void MalformedOptionalEnvironmentalValueDoesNotDiscardCaptureFacts(string schemaVersion)
+    {
+        var observation = Observation();
+        var association = Association(observation) with { Observation = observation with { SchemaVersion = schemaVersion, Value = null! } };
+
+        var context = FrameFactsRetainedContext.Create(new(Descriptor(), Environment: [association]));
+
+        Assert.AreEqual("42", Evaluate("{{capture.sequence}}", context));
+        Assert.AreEqual("UNAVAILABLE UNSUPPORTED", Evaluate("{{environment.airTemperature}} {{environment.airTemperature.status}}", context));
+        Assert.AreEqual("UNSUPPORTED", Evaluate("{{environment.airTemperature.sourceKind.status}}", context));
+    }
+
+    [TestMethod]
     public void LegacyDisplayTextAndVirtualSceneNeverInventAnEnvironmentalReading()
     {
         var context = FrameFactsRetainedContext.Create(new(Descriptor()));
@@ -270,6 +285,57 @@ public sealed class FrameFactsRetainedContextTests
         Assert.AreEqual("CONFLICTING", Evaluate("{{astronomy.kind.status}}", FrameFactsRetainedContext.Create(new(descriptor, Astronomy: scene with { Source = scene.Source with { CaptureId = ArtifactId } }))));
         Assert.AreEqual("UNSUPPORTED", Evaluate("{{lineage.catalog.name.status}}", FrameFactsRetainedContext.Create(new(descriptor, Astronomy: scene with { SchemaVersion = "future-v99" }))));
         Assert.AreEqual("UNSUPPORTED", Evaluate("{{astronomy.kind.status}}", FrameFactsRetainedContext.Create(new(descriptor, Astronomy: scene with { SceneIdentitySha256 = Hash }))));
+    }
+
+    [TestMethod]
+    [DataRow(SolarSystemBody.Sun)]
+    [DataRow(SolarSystemBody.Moon)]
+    public async Task CatalogueStarsWithSolarBodyIdsCannotSupplySolarGeometry(SolarSystemBody body)
+    {
+        var descriptor = Descriptor();
+        var retained = await SceneAsync(descriptor).ConfigureAwait(false);
+        var equatorial = retained.Objects.Single().J2000Equatorial;
+        var catalog = new InMemoryCelestialCatalog([new CelestialCatalogObject($"solar-system:{body}", "A catalogue star",
+            equatorial.RightAscensionHours, equatorial.DeclinationDegrees, 1)]);
+        var visible = await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(Epoch,
+            new ObserverLocation(0, 0, 0), new ProjectionContext(ProjectionModel.EquidistantFisheye, 968, 608, 500, 500, 1936, 1216,
+                ProjectionAperture.Circular, ImageCircleRadiusPixels: 600, BoresightAltitudeDegrees: 90), new CatalogQuery(6, 10),
+            new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), Hash, "test", "v1"),
+            projectionVersion: "fixture-projection-v1")).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible, ProjectedSceneImageTransformV1.Identity(1936, 1216),
+            retained.Source, "cal-v1", "fixture-projection-v1");
+        ProjectedSceneJson.Validate(scene);
+        Assert.AreEqual(CelestialObjectKind.Star, scene.Objects.Single().Kind);
+        Assert.IsEmpty(scene.Selection.SolarSystemBodies);
+        Assert.IsNull(scene.EphemerisModelVersion);
+
+        var context = FrameFactsRetainedContext.Create(new(descriptor, Astronomy: scene));
+        var prefix = body == SolarSystemBody.Sun ? "astronomy.sun." : "astronomy.moon.";
+        foreach (var coordinate in new[] { "geometricAltitude", "apparentAltitude", "azimuth" })
+            Assert.AreEqual("UNAVAILABLE CONFLICTING", Evaluate("{{" + prefix + coordinate + "}} {{" + prefix + coordinate + ".status}}", context));
+        Assert.AreEqual("42 AVAILABLE", Evaluate("{{capture.sequence}} {{astronomy.kind.status}}", context));
+    }
+
+    [TestMethod]
+    [DataRow(SolarSystemBody.Sun)]
+    [DataRow(SolarSystemBody.Moon)]
+    public async Task RetainedSolarBodyRequiresMatchingSelectionAndEphemerisProvenance(SolarSystemBody body)
+    {
+        var descriptor = Descriptor();
+        var scene = await SceneAsync(descriptor, body: body).ConfigureAwait(false);
+        var key = body == SolarSystemBody.Sun ? "astronomy.sun.geometricAltitude" : "astronomy.moon.geometricAltitude";
+        Assert.AreEqual("AVAILABLE", Evaluate("{{" + key + ".status}}", FrameFactsRetainedContext.Create(new(descriptor, Astronomy: scene))));
+
+        var unselected = scene with { Selection = scene.Selection with { SolarSystemBodies = [] } };
+        unselected = unselected with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(unselected) };
+        ProjectedSceneJson.Validate(unselected);
+        Assert.AreEqual("UNAVAILABLE CONFLICTING", Evaluate("{{" + key + "}} {{" + key + ".status}}",
+            FrameFactsRetainedContext.Create(new(descriptor, Astronomy: unselected))));
+
+        var unproven = scene with { EphemerisModelVersion = null };
+        unproven = unproven with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(unproven) };
+        Assert.AreEqual("UNAVAILABLE UNSUPPORTED", Evaluate("{{" + key + "}} {{" + key + ".status}}",
+            FrameFactsRetainedContext.Create(new(descriptor, Astronomy: unproven))));
     }
 
     [TestMethod]
@@ -334,15 +400,16 @@ public sealed class FrameFactsRetainedContextTests
             kind == EnvironmentalObservationSourceKind.Derived ? [new(Hash, ArtifactId)] : [], "rig-1");
     }
 
-    internal static async Task<ProjectedSceneV1> SceneAsync(ReconstructionDescriptor descriptor, ProjectedSceneKind kind = ProjectedSceneKind.Predicted)
+    internal static async Task<ProjectedSceneV1> SceneAsync(ReconstructionDescriptor descriptor, ProjectedSceneKind kind = ProjectedSceneKind.Predicted,
+        SolarSystemBody body = SolarSystemBody.Sun)
     {
         var sidereal = AstronomyTime.LocalMeanSiderealDegrees(Epoch, 0) / 15;
-        var ephemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition> { [SolarSystemBody.Sun] = new(new(sidereal, 0), -26) });
+        var ephemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition> { [body] = new(new(sidereal, 0), -26) });
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, ephemeris).BuildAsync(new VisibleSceneRequest(Epoch,
             new ObserverLocation(0, 0, 0), new ProjectionContext(ProjectionModel.EquidistantFisheye, 968, 608, 500, 500, 1936, 1216,
                 ProjectionAperture.Circular, ImageCircleRadiusPixels: 600, BoresightAltitudeDegrees: 90), new CatalogQuery(6, 10),
             new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), Hash, "test", "v1"),
-            projectionVersion: "fixture-projection-v1", solarSystemBodies: [SolarSystemBody.Sun])).ConfigureAwait(false);
+            projectionVersion: "fixture-projection-v1", solarSystemBodies: [body])).ConfigureAwait(false);
         return ProjectedSceneJson.Create(kind, visible, ProjectedSceneImageTransformV1.Identity(1936, 1216),
             new(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor)), "cal-v1", "fixture-projection-v1");
     }

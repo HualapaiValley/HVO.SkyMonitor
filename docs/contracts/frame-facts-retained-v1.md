@@ -163,7 +163,8 @@ validation checks supported schema, identity, source provenance, units, ranges,
 time shape and lineage. Validity must span the exposure and `StaleAfterUtc`
 must be later than exposure end; otherwise the scalar is `STALE`. Only `Good`
 quality is scalar-available; unknown/suspect quality and unsupported schemas or
-units are `UNSUPPORTED`. Missing structured observations remain `MISSING`.
+units are `UNSUPPORTED`. Malformed optional observation values are also
+`UNSUPPORTED` without discarding unrelated capture facts. Missing structured observations remain `MISSING`.
 Freshness uses this retained exposure interval, never wall-clock age at viewing.
 
 `Measured`, `Simulated`, `Imported`, `Manual` and `Derived` are preserved as
@@ -190,6 +191,10 @@ The scene must pass the existing pure projected-scene validator, including its
 identity, and its source must match the descriptor's capture ID, artifact ID
 and descriptor identity. Unsupported/invalid scenes are `UNSUPPORTED`; source
 disagreement is `CONFLICTING`. Missing scenes/objects remain `MISSING`.
+Sun/Moon objects also require `CelestialObjectKind.SolarSystemBody`, the matching
+retained solar-system selection and ephemeris provenance. A reserved body ID on
+a catalogue star or an unselected body is `CONFLICTING`; it cannot supply solar
+geometry. Missing ephemeris provenance invalidates the scene as `UNSUPPORTED`.
 Configured observer/projection facts have explicit configured provenance;
 solar/lunar geometry has derived provenance retaining the scene kind. Even an
 ImageRegistered scene is not automatically a physical detection. No current
