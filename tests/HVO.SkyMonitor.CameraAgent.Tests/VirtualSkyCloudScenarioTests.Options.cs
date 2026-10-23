@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -44,6 +43,8 @@ public sealed partial class VirtualSkyCloudScenarioTests
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
             var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(5), CaptureMode.Still);
             var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+            // Re-execute one captured artifact, including its identity, rather than allocating a new raw id per context.
+            result = result with { Artifacts = new FrameArtifactSet(result.Frame!) };
             var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
             async Task<ProcessingProduct?> Execute(CapturePipelineConfig pipeline)
             {
@@ -107,7 +108,6 @@ public sealed partial class VirtualSkyCloudScenarioTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }

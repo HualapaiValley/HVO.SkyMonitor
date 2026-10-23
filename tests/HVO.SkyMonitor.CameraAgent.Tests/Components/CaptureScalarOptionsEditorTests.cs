@@ -38,7 +38,7 @@ public sealed class CaptureScalarOptionsEditorTests
         Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
         Assert.IsEmpty(service.Created);
         var path = Path.Combine(TestContext.TestResultsDirectory!, "capture-scalar-options.html");
-        File.WriteAllText(path, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><title>Capture scalar options: rendered component fixture</title><body>" + cut.Markup + "</body></html>");
+        File.WriteAllText(path, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><title>Capture scalar options: rendered component fixture</title><body data-theme='hvo-dark'>" + cut.Markup + "</body></html>");
         TestContext.AddResultFile(path);
         cut.Find("#node-options-1-enabled").Change(true);
         cut.Find("form").Submit();
