@@ -37,14 +37,14 @@ public sealed class ProcessRunnerTests
             await Assert.ThrowsExactlyAsync<IOException>(() => new ProcessRunner().RunWithInputAsync("bash",
                 ["-c", "printf '%s' $$ > \"$1\"; exec 1>&- 2>&-; sleep 0.1; exec 0<&-; sleep 30", "bash", pidFile], new string('x', 256 * 1024), cancellation.Token));
             Assert.IsTrue(File.Exists(pidFile));
-            var pid = int.Parse(File.ReadAllText(pidFile), CultureInfo.InvariantCulture);
+            var pid = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
             try { child = Process.GetProcessById(pid); }
             catch (ArgumentException) { /* Reaped by the process runner. */ }
             Assert.IsTrue(child is null || child.HasExited, "An input failure left the command alive after its output readers completed.");
         }
         finally
         {
-            if (child is not null && !child.HasExited) { child.Kill(entireProcessTree: true); child.WaitForExit(); }
+            if (child is not null && !child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
             child?.Dispose(); File.Delete(pidFile);
         }
     }
