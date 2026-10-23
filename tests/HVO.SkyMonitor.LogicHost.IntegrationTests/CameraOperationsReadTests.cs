@@ -608,7 +608,10 @@ internal sealed class CameraOperationsSeed
         var retired = NewInstallation(camera, registrations[0], ownerId, now.AddDays(-30), now.AddDays(-15), null);
         var current = NewInstallation(camera, registrations[1], ownerId, now.AddDays(-15), null, retired.Id);
         var otherInstallation = NewInstallation(other, registrations[2], ownerId, now.AddDays(-30), null, null);
-        var revision = await db.CentralProcessingGraphRevisions.AsNoTracking().FirstAsync().ConfigureAwait(false);
+        // Other suites may publish catalog revisions after this fixture's frozen observation time.
+        // Bind provenance to the canonical seed rather than an unordered shared-catalog row.
+        var revision = await db.CentralProcessingGraphRevisions.AsNoTracking()
+            .SingleAsync(item => item.Id == CanonicalCentralGraphSeedChain.Current.RevisionId).ConfigureAwait(false);
         db.AddRange(camera, other, retired, current, otherInstallation);
         foreach (var (assignmentScope, cameraId, host) in new (CentralProcessingGraphAssignmentScope, Guid?, CentralProcessingGraphTargetHost)[]
         {
@@ -793,12 +796,19 @@ internal sealed class CameraOperationsSeed
             await SaveAndClearAsync(db).ConfigureAwait(false);
             // Read-history fixtures finish the normal sealing transition with their actual frozen counts.
             // Their terminal nodes keep later shared-fixture workers and health checks scoped to live test work.
-            await db.CentralProcessingGraphExecutions.Where(item => item.LogicalCameraId == target.Id)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.ExpandedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc)
-                    .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
-                    .SetProperty(item => item.CompletedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc))
-                .ConfigureAwait(false);
+            // Keep each store-invariant check bounded when constructing 10K-row browser histories.
+            // This fixture preparation is outside the measured read/render interval.
+            for (var sealedCount = 0; sealedCount < executions; sealedCount += 250)
+            {
+                await db.CentralProcessingGraphExecutions
+                    .Where(item => item.LogicalCameraId == target.Id && item.ExpandedAtUtc == null)
+                    .OrderBy(item => item.Id).Take(250)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.ExpandedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc)
+                        .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                        .SetProperty(item => item.CompletedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc))
+                    .ConfigureAwait(false);
+            }
             for (var index = 0; index < proposals; index++)
             {
                 var installation = installations[index % installations.Length];
