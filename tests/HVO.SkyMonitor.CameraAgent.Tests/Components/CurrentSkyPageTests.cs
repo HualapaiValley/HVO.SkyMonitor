@@ -16,7 +16,7 @@ public sealed partial class CurrentSkyPageTests
         using var context = new BunitContext();
         Configure(context);
         var cut = context.Render<CurrentSkyPage>();
-        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=constellations#constellations']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay']"));
     }
 
     [TestMethod]
