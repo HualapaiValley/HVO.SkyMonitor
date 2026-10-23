@@ -1,8 +1,8 @@
 # #1541 measured-product delivery validation
 
-Local candidate evidence only. The parent owns independent review, PR creation, final synchronization and the Development v1 checks. No push, PR transition, merge or issue closure was performed.
+This records the original local candidate and the pre-initial-review synchronization below. The parent owns PR1592, independent review, protected checks and finalization. The implementer has not pushed or changed PR state.
 
-## Revisions and method
+## Original revisions and method
 
 - Target/base: `development/v1`, `6ea815f24e1522fe1ba81107fd9a3a2ad993e18e`.
 - Built/measured/test candidate: `5faac7563fb2fcdb01822de38075530f68ca062f`.
@@ -219,10 +219,81 @@ Durable root: `/home/roys/development-state/HVO.SkyMonitor/evidence/1541`.
   remove these and ignored outputs after review/finalization under the scratch
   procedure; retain both durable evidence packs. No #1540 path was touched.
 
-The documentation-only delivery commit containing this report has no delta
-from the built candidate in source, tests, fixtures, SDK, packages or build
-configuration. Its exact SHA and that reuse check are recorded outside Git in
-`gates/final-candidate.json`; binary evidence remains labeled `5faac756`, not
-silently relabeled. The parent must perform independent review, final target
-synchronization, any resulting affected validation and the target-branch CI.
-Default shipped-profile activation and broader qualification remain excluded.
+The original documentation-only delivery commit `5fc6a377` had no delta
+from built candidate `5faac756` in source, tests, fixtures, SDK, packages or build
+configuration. Its original SHA and reuse check remain in
+`gates/final-candidate.json`; those binary results retain their original labels.
+The subsequent synchronization and transfer assessment follow below.
+
+## Pre-initial-review target synchronization
+
+Parent opened draft [PR1592](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1592)
+at `5fc6a377`; no independent review had occurred. One fresh target fetch selected
+`e20f945d8f7108cb7a15e272dc42a6289107b2ed`, merged without rebasing into
+**`0bf4198fc2f5c634f821918ab50ae3dc443022fe`**, the newly built/tested head.
+The only conflict was CI-runbook totals: target Unit 13,330 plus this issue's
+two cases gives **13,332**; Integration **939** and Manual **277** retain the
+target's increments. Both coverage-slot corrections and incoming guidance
+remain. At the merge, non-runbook feature files were byte-identical to the
+original candidate; this results note is the only subsequent semantic change.
+
+Both selectors are retained: `ci:classify pull_request 5fc6a377 0bf4198f`
+selects `mode=full`, `complete=true`, all components and deployment-installer;
+`ci:classify pull_request e20f945d 0bf4198f` selects `mode=full`,
+`complete=false`, CameraAgent only. Final documentation-head selectors and
+exact SHAs are retained too. The protected profile remains **Development v1 /
+Preflight + Build and Unit**. Broad sync classification does not authorize a
+full workflow or exhaustive deployment campaign; none was dispatched or claimed.
+Installer source, deployment scripts/configuration and workflow inputs are
+unchanged; complete current delivery selections and the changed offline
+base-image corpus qualify their affected local boundaries.
+
+Production `src`/`tools`, exact actual-producer harness, qualification fixtures,
+catalog/settings, SDK/dependencies, tracked build/tool configuration and coverage
+policy/baselines are identical. Changed fixture/test work touches three test
+projects; linked common test infrastructure is unchanged. Current builds can
+carry a new informational Git revision. Original binary hashes, source labels,
+tc0 runtime profile, five-pair cost rule and 21-case accuracy bounds stay attached
+to `5faac756`; no current-binary remeasurement or wider qualification follows.
+Both producer packs and the original gate pack remain unchanged.
+
+| Fresh affected validation at `0bf4198f` | Actual result |
+| --- | --- |
+| Solution Debug / Release, `--no-restore -warnaserror` | Pass, 177.48 / 158.71 s; zero warnings/errors |
+| Format; all four CI-control guards | Pass; format 127 s |
+| Changed offline base-image corpus, base-image guard, runbook audit | Pass |
+| Complete category discovery | Pass: Unit 13,332 / Integration 939 / Manual 277 / Soak 1 / External 0 / Hardware 1 |
+| Catalog-unset, Docker-disabled complete affected Unit projects | CA acceptance 30/30; LH supplemental 18/18; CLI 2,421 passed / 121 catalog skips / zero failed |
+| Complete LH Docker Integration | **572/572**, zero skips/failures, **705.53 s first attempt** |
+| Complete CA standalone Integration | **19/19**, zero skips/failures, 64.31 s first attempt |
+| Separate complete catalog-backed delivery Unit | CLI 2,541 passed / one absent-v4.4 cross-lineage skip; Distribution 116/116 |
+| CA / LH / delivery coverage | **89.9413% / 76.5253%**; **84.2758% / 67.4261%**; **92.3452% / 79.3256%** line / branch, unchanged floors pass |
+| Exact 23-report aggregate | **89.3686% line / 75.4020% branch**, unchanged floors pass |
+
+All heavy steps retained the shared lock, finite per-step/overall bounds and
+node/shared-compilation restrictions. All pre-test HVO assembly hashes match
+after execution. Fresh TRXs verify H1190 ingest/runner, lease/frozen authority,
+old-trigger/concurrency/seed and toolkit acceptance; eleven incoming unsealed-
+graph cleanup routes, runtime isolation and the evidence-root case also pass.
+No new gate failure, retry or executable correction occurred.
+
+Exactly five fresh canonical inputs replace affected reports; eighteen are
+checksum-verified transfers. Shared/combined coverage, unchanged complete
+category receipts, package/tool audit, architecture/publishes and migration
+results transfer under per-project source/test/dependency proof, retaining old
+revision labels. The composed selection is Unit **13,208 passed / 124 skipped**
+(2,590 fresh selected + 10,742 transferred) and Integration **939 passed**
+(591 fresh + 348 transferred). This is explicitly **not a fresh complete
+current-head matrix**. Catalog-backed delivery receipts remain separate.
+
+New durable evidence is `evidence/1541/base-sync-20261023-e20f945d`: exact endpoint,
+conflict/resolution, selectors, source-transfer/feature proofs, current binary
+pins/assemblies/PDBs, argv/receipts, TRX/Cobertura, all 23 canonical inputs,
+coverage reports and named acceptance summary. Final source/range proof and
+SHA256 inventory bind the documentation-only delivery descendant; the manifest
+digest is in the PR handoff. The source bundle requires retained base `e20f945d`.
+H1190:F1/F2/R0, unrecovered F3 +13.56%, separate slice-A producer-OFF -0.8198%
+and PR1549 SQL1205/6106 histories retain the distinctions above. Parent retains
+push, initial independent review, future synchronization/affected validation,
+protected checks and finalization. Default activation and wider qualification
+remain excluded.
