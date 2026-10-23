@@ -49,9 +49,10 @@ proof that every original acceptance row was covered.
 - [Archive acceptance](issue-1536-archive.md), merged by
   [PR #1547](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1547) at
   `3e118ee8a69a05794bbe6904368e33fc37b6f132`. Since then, the archive markup
-  and browser assertions received the heading accessibility correction; archive
-  read services, viewer composition code-behind and measured cost harness are
-  unchanged. Rerun the current archive browser class, including its cost case.
+  and browser assertions received the heading accessibility correction, including
+  heading-level composition in the viewer code-behind. Archive read services,
+  presentation selection and the measured cost method are unchanged. Rerun the
+  current archive browser class, including its cost case.
 - [PR #1583](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1583), clean
   reviewed head `8c1085c1cf41da7edc89b9cee941ca92e5f7d931`, contains the imported
   inspector's 1k/10k SQL/response/browser/heap evidence and source/assembly
