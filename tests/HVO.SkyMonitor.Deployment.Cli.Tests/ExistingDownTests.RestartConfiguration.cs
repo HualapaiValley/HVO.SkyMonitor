@@ -21,12 +21,13 @@ public sealed partial class ExistingDownTests
         var (seeded, setting) = await StageStoppedBeforeLoginAsync(fixture);
         using var cancellation = new CancellationTokenSource();
         var fired = false; var fileSynced = false; var directorySynced = false;
+        var referenceRemoved = false; var referenceSynced = false;
         bool AtBoundary(string operation, string[] args) => point switch
         {
             "write" => operation == "write" && args[0] == setting,
             "file-sync" => operation == "sync" && args[0].StartsWith("/proc/", StringComparison.Ordinal),
             "directory-sync" => operation == "sync" && args[0] == Path.GetDirectoryName(setting),
-            _ => operation == "unlink" && args[0] == seeded[0]
+            _ => operation == "unlink" && args[0] == seeded[1]
         };
         void Interrupt(string operation, string[] args)
         {
@@ -42,12 +43,16 @@ public sealed partial class ExistingDownTests
         {
             if (operation == "unlink" && seeded.Contains(args[0], StringComparer.Ordinal))
                 Assert.IsTrue(fileSynced && directorySynced, "Credentials must survive until both restart-setting syncs succeed.");
+            if (operation == "unlink" && args[0] == seeded[0])
+                Assert.IsTrue(referenceSynced, "The password reference must be durably absent before its target is erased.");
             if (!after) Interrupt(operation, args);
         };
         fixture.Host.AfterPrimitive = (operation, args) =>
         {
             if (operation == "sync" && args[0].StartsWith("/proc/", StringComparison.Ordinal)) fileSynced = true;
             if (operation == "sync" && args[0] == Path.GetDirectoryName(setting)) directorySynced = true;
+            if (operation == "unlink" && args[0] == seeded[1]) referenceRemoved = true;
+            if (operation == "sync" && args[0] == Path.GetDirectoryName(setting) && referenceRemoved) referenceSynced = true;
             if (after) Interrupt(operation, args);
         };
 
@@ -65,7 +70,11 @@ public sealed partial class ExistingDownTests
             var registry = System.Text.Json.Nodes.JsonNode.Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/private-upload-registry.json"));
             Assert.AreEqual("[]", Canonical(registry));
         }
-        else Assert.AreEqual("true", DeploymentFakeHost.Read(fixture.Host.Physical(setting)));
+        else
+        {
+            Assert.AreEqual("true", DeploymentFakeHost.Read(fixture.Host.Physical(setting)));
+            AssertCameraStartupConfiguration(fixture, "east");
+        }
         fixture.Host.BeforePrimitive = null; fixture.Host.AfterPrimitive = null;
 
         var result = await fixture.RunAsync();

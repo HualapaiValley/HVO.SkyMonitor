@@ -136,8 +136,12 @@ internal sealed class ExistingDownHost(IDeploymentHost host, SplitHostInventory 
         await CorrelateAsync(target, token).ConfigureAwait(false);
         // An intent may predate LoginAsync, which normally registers these seeded credentials.
         // Register only after the restart setting and its directory entry are durable: failure cleanup erases registrations.
-        Register(target, target.RuntimeRoot + "/config/private/owner-password");
         Register(target, target.RuntimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile");
+        await ReconcileAsync(token).ConfigureAwait(false);
+        // Retire the password reference durably before its target, including across interrupted cleanup.
+        using (var files = host.Open(target, token)) { Components(files, directory); files.Call("sync", directory); }
+        await CorrelateAsync(target, token).ConfigureAwait(false);
+        Register(target, target.RuntimeRoot + "/config/private/owner-password");
         await ReconcileAsync(token).ConfigureAwait(false);
     }
     private static string OpenRestartSetting(IDeploymentFiles files, string path, DeploymentNode node)
