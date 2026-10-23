@@ -60,8 +60,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 13294 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
-| **Integration Tests** | 934 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 13327 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Integration Tests** | 938 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -485,7 +485,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=13294`, `Integration=934`, `Manual=274`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=13327`, `Integration=938`, `Manual=277`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -1077,3 +1077,34 @@ are outside the observation; this is bounded-read evidence, with no percentile,
 speedup, full-history snapshot or production qualification claim. Raw SQL plan
 XML and observed values are retained in TRX output with the exact source/DLL/PDB
 provenance in the issue/PR evidence archive.
+
+
+### Exact central workspace event disclosure (#1241)
+
+`CentralOperationsWorkspaceServiceTests` and `CentralOperationsWorkspaceTests`
+cover a canonical-valid event with 1,000 superseding reviews, 1,000 notifications,
+and oversized nested reason and geometry collections. The workspace retains a
+separate display projection: every child collection has at most 25 items and an
+explicit `Truncated` flag. Histories show newest items first; observation,
+geometry and lineage order is preserved. Current assessment identity, scalar
+values and the strong ETag come from the exact authorized read, independently of
+history truncation. The projection does not claim canonical-event schema or
+completeness. Review actions keep their original preconditions and all-contributor
+authority checks. The durable event remains unchanged.
+
+`CentralWorkspace_ExactEventChildHistoryQueryResponseDisclosureRenderAndHeapStayBounded`
+adds real SQL/Kestrel/Chromium evidence for 100 and 1,000 review/notification
+children, seeded through the immutable version appender outside measurement.
+It records query plans/actual rows, canonical document bytes/checksum, bounded
+snapshot bytes, five measured exact-event renders after one warmup, expanded
+DOM disclosure size, browser memory and four viewport overflow checks. The
+canonical read still parses the exact immutable document; these measurements
+bound retained UI evidence and rendering, not canonical parse cost. The existing
+W3M list/execution harness retains its 1K/10K workloads; execution fixture sealing
+uses 250-row batches outside the measured interval.
+
+Run these Manual acceptance cases with `HVO_EVIDENCE_REVISION=$(git rev-parse HEAD)`
+and `HVO_ISSUE1241_EVIDENCE` pointing at the issue scratch evidence directory.
+`exact-event-child-costs.json`, `w3m-costs.json`, screenshots and the acceptance
+report bind source cleanliness, revision and assembly identities. These are
+candidate integration observations, not production qualification.
