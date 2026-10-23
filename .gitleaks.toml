@@ -94,3 +94,12 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 commits = ["b246422f38bcb39058b0b4fecd3991f83a06f2e8"]
 paths = ['''^docs/validation/satellite-nominal-evaluation-v1/replay-summary\.json$''']
+
+[[allowlists]]
+description = """Not key material. The #1615 disposable recovery probe records a SHA-256 content digest under the \
+fixture file name 'key'. The file contains exactly 32768 synthetic repeated ASCII k bytes, generated in unit-probe.py; \
+the digest verifies restored bytes and grants no access. Only this immutable introducing commit/path/rule is covered."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = ["dab79c9fd513b9e10b562dd4eb83b861151ecc6c"]
+paths = ['''^docs/validation/evidence/issue-1615/unit-probe-result\.json$''']
