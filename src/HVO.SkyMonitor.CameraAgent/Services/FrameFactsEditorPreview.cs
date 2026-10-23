@@ -27,6 +27,8 @@ internal static class FrameFactsEditorPreview
     {
         if (bytes.Length > MaximumInputBytes) throw new ArgumentException("Retained facts JSON exceeds 1 MiB.", nameof(bytes));
         using var document = JsonDocument.Parse(bytes);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("Retained facts JSON must be a JSON object.", nameof(bytes));
         var snapshot = document.RootElement.TryGetProperty("schemaVersion", out _)
             ? PresentationProcessingProducts.ParseMetadataFacts(bytes).FrameFacts
             : JsonSerializer.Deserialize<FrameFactsSnapshotV1>(bytes.Span, JsonOptions);

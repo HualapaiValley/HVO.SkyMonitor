@@ -183,6 +183,62 @@ public sealed class FrameFactsOptionsEditorTests
     }
 
     [TestMethod]
+    [DataRow("[]")]
+    [DataRow("null")]
+    [DataRow("1")]
+    [DataRow("true")]
+    [DataRow("false")]
+    [DataRow("\"text\"")]
+    public void NonObjectFrozenInputIsRejectedAsAValidationError(string json)
+    {
+        var exception = Assert.ThrowsExactly<ArgumentException>(() =>
+            FrameFactsEditorPreview.ReadSnapshot(System.Text.Encoding.UTF8.GetBytes(json)));
+        StringAssert.Contains(exception.Message, "JSON object", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("[]")]
+    [DataRow("null")]
+    [DataRow("1")]
+    [DataRow("true")]
+    [DataRow("false")]
+    [DataRow("\"text\"")]
+    public async Task NonObjectUploadClearsAValidPreviewAndLeavesTheDraftEditable(string json)
+    {
+        using var context = Context();
+        var form = Form();
+        form.Set("topLeftTemplate", "{{capture.sequence}}");
+        var cut = context.Render<FrameFactsOptionsEditor>(parameters => parameters
+            .Add(editor => editor.Form, form).Add(editor => editor.IdPrefix, "facts"));
+        var validBytes = JsonSerializer.SerializeToUtf8Bytes(Snapshot(), SnapshotJson);
+        await UploadAsync(validBytes).ConfigureAwait(false);
+        await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".preview-text").TextContent, "42", StringComparison.Ordinal);
+
+        await UploadAsync(System.Text.Encoding.UTF8.GetBytes(json)).ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".preview-image"));
+        StringAssert.Contains(cut.Find(".frozen-preview [role='alert']").TextContent, "Retained facts rejected", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".frozen-preview").TextContent, "every scalar is MISSING", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("button").HasAttribute("disabled"));
+
+        cut.Find("#facts-topLeftTemplate").Change("AFTER {{capture.sequence}}");
+        await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".preview-text").TextContent, "AFTER UNAVAILABLE", StringComparison.Ordinal);
+        await UploadAsync(validBytes).ConfigureAwait(false);
+        await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".preview-text").TextContent, "AFTER 42", StringComparison.Ordinal);
+
+        Task UploadAsync(byte[] bytes)
+        {
+            var file = new Mock<IBrowserFile>();
+            file.Setup(value => value.OpenReadStream(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+                .Returns(() => new MemoryStream(bytes));
+            return cut.InvokeAsync(() => cut.FindComponent<InputFile>().Instance.OnChange
+                .InvokeAsync(new InputFileChangeEventArgs([file.Object])));
+        }
+    }
+
+    [TestMethod]
     public void EveryCatalogueTokenAndClosedFormatWorksInEveryCorner()
     {
         var context = Snapshot().ToContext();

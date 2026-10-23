@@ -159,3 +159,16 @@ both owned browser tabs were closed, and no issue-owned container, test database
 or host process remains. The shared heavy-gate lock file, build caches and all
 evidence artifacts are retained. No claim, PR, deployment or promotion action
 was performed by the implementation task.
+
+## Independent review correction F1
+
+The initial deep review found that valid JSON with a non-object root escaped
+the upload handler's validation errors. Twelve helper/component cases first
+failed on the reviewed code for arrays, null, numbers, booleans and strings.
+The reader now rejects those roots before accessing object properties. The
+component cases replace a valid preview, verify inline rejection and missing
+evidence, edit the draft, render again and successfully load another valid file.
+The affected editor/service selection passes 92 cases, including all twelve
+reproductions, with zero failures/skips. Valid snapshot rendering and retained
+product semantics are unchanged; the original browser/output receipts remain
+applicable. The correction adds twelve Unit cases to the declared inventory.
