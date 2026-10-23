@@ -66,7 +66,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
-| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 9 slots. |
+| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
 | **LogicHost Component** | Component lane. Project-root restore/build of the LogicHost host and test project roots, the LogicHost Unit and Integration selections, the LogicHost publish with checksum manifest and an opposite-host assembly check, and the LogicHost component coverage baseline over 2 slots. |
 | **Combined Protocol & Integration** | Component lane. Project-root restore/build and execution of the only suites allowed to compose both hosts, covering registration, identity, artifact transfer, fleet contracts, and other cross-host behavior, plus the combined component coverage baseline over 2 slots. |
@@ -596,6 +596,7 @@ patterns=(
   'TestResults/unit/imaging/*/coverage.cobertura.xml'
   'TestResults/unit/processing/*/coverage.cobertura.xml'
   'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
+  'TestResults/unit/storage-filesystem/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-cli/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-distribution/*/coverage.cobertura.xml'
   'TestResults/unit/agent-core/*/coverage.cobertura.xml'
