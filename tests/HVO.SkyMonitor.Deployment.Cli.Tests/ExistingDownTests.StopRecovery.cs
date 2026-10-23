@@ -5,6 +5,36 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class ExistingDownTests
 {
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RetainedIntentBeforeLogin_StoppedCameraStillErasesSeededCredentials(bool present)
+    {
+        using var fixture = new ExistingDownFixture { KeepStoppedContainers = present };
+        await fixture.StageAsync();
+        var east = fixture.Host.Contract.Targets.Single(t => t.Name == "east");
+        var seeded = new[] { east.RuntimeRoot + "/config/private/owner-password", east.RuntimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile" };
+        foreach (var path in seeded) DeploymentFakeHost.Write(fixture.Host.Physical(path), "seeded-credential");
+        await Assert.ThrowsAsync<PartialPrepareCrashException>(() => fixture.RunAsync(point =>
+        {
+            if (point != "abrupt-after-down-commit") return;
+            var ledger = Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/down-ledger.json"));
+            if (ledger.Array("resources").Any(n => n!.Text("resource") == "cameraagent:east")) throw new PartialPrepareCrashException();
+        }));
+        Assert.AreEqual(0, fixture.Stops);
+        Assert.AreEqual(0, fixture.Queries.Count);
+        fixture.StopCameraExternally("east");
+
+        var result = await fixture.RunAsync();
+
+        Assert.AreEqual("passed", result.Text("phaseStatus"));
+        foreach (var path in seeded) Assert.IsFalse(File.Exists(fixture.Host.Physical(path)), path);
+        Assert.AreEqual(2, fixture.Stops);
+        Assert.AreEqual(0, fixture.StoppedHttpAttempts);
+        AssertPrivateAbsent(fixture);
+        AssertPreserved(fixture);
+    }
+
+    [TestMethod]
     [DataRow("east", true, false)]
     [DataRow("east", false, false)]
     [DataRow("west", true, false)]

@@ -111,7 +111,12 @@ internal sealed class ExistingDown(IDeploymentHost host, IProcessInputRunner run
                     // An intent can precede the drain or outlive a successful stop. Only live,
                     // correlated Docker evidence permits recovery without the stopped application's HTTP.
                     var alreadyStopped = retainedCameraIntent && await ComposeAsync(remote, inventory, request, target, true, token, allowRunning: true).ConfigureAwait(false);
-                    if (!alreadyStopped)
+                    if (alreadyStopped)
+                    {
+                        await remote.ReconcileStoppedCameraAsync(target, token).ConfigureAwait(false);
+                        await ComposeAsync(remote, inventory, request, target, true, token).ConfigureAwait(false);
+                    }
+                    else
                     {
                         if (target.Component == "cameraAgent") await PauseAndDrainAsync(remote, inventory, request, target, ledger["publicationGeneration"]!.GetValue<int>(), token).ConfigureAwait(false);
                         await ComposeAsync(remote, inventory, request, target, false, token).ConfigureAwait(false);

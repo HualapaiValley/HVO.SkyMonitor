@@ -109,6 +109,13 @@ internal sealed class ExistingDownHost(IDeploymentHost host, SplitHostInventory 
         token.ThrowIfCancellationRequested();
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
+    public Task ReconcileStoppedCameraAsync(DeploymentTarget target, CancellationToken token)
+    {
+        // An intent may predate LoginAsync, which normally registers these seeded credentials.
+        Register(target, target.RuntimeRoot + "/config/private/owner-password");
+        Register(target, target.RuntimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile");
+        return ReconcileAsync(token);
+    }
     private static string ReadSecretSource(string path)
     {
         var identity = NativeLinux.GetNodeIdentity(path);

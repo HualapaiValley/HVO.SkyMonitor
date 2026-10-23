@@ -18,6 +18,7 @@ internal sealed class ExistingDownFixture : IDisposable
     public int StoppedHttpAttempts { get; private set; }
     private readonly Dictionary<string, int> reads = new(StringComparer.Ordinal);
     private readonly HashSet<string> stopped = new(StringComparer.Ordinal);
+    public void StopCameraExternally(string name) => stopped.Add(Host.Contract.Project(Host.Contract.Targets.Single(t => t.Name == name)));
     public void RestartCamera(string name) => stopped.Remove(Host.Contract.Project(Host.Contract.Targets.Single(t => t.Name == name)));
     public ExistingDownRequest Request => new(Host.InventoryPath, Host.Mode, Host.RunId, Host.StateRoot, Host.EvidenceRoot, "preserve", null);
     public async Task StageAsync()
