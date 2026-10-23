@@ -33,6 +33,8 @@ internal sealed class DeploymentFakeFiles : IDeploymentFiles
             case "unlink":
             case "rmdir":
                 using (var parent = NativeLinux.OpenDirectoryNoFollow(Path.GetDirectoryName(path)! + "/.")) NativeLinux.UnlinkNodeAt(parent, Path.GetFileName(path), operation == "rmdir"); return "removed";
+            case "mkdir": Directory.CreateDirectory(path, SafeFileSystem.OwnerDirectoryMode); return "created";
+            case "write": DeploymentFakeHost.Write(path, args[1]); return "written";
             case "sync": NativeLinux.FlushDirectory(path + "/."); return "synced";
             default: throw new InvalidOperationException("Unexpected host primitive " + operation);
         }

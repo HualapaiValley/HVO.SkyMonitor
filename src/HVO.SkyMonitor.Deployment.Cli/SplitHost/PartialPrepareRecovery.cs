@@ -149,11 +149,11 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessInput
             var value = new JsonObject(); foreach (var field in PrepareTargetKeys) value[field] = entry![field]!.DeepClone(); return (JsonNode)value;
         }).ToArray()); return evidence;
     }
-    private static List<PreparedTarget> ValidatePrepare(SplitHostInventory inventory, string run, JsonObject prepare)
+    internal static List<PreparedTarget> ValidatePrepare(SplitHostInventory inventory, string run, JsonObject prepare, bool passed = false)
     {
         Keys(prepare, "schemaVersion runId mode inventorySha256 sourceRevision phaseStatus startedAt updatedAt targets", "completedAt");
         Require(prepare["schemaVersion"]?.GetValue<int>() == 1 && prepare.Text("runId") == run && prepare.Text("mode") == inventory.Mode && prepare.Text("inventorySha256") == inventory.Sha256 && prepare.Text("sourceRevision") == inventory.Revision, "prepare-ledger-invalid");
-        Require(prepare.Text("phaseStatus") == "failed" && !prepare.ContainsKey("completedAt"), "failed-state-required");
+        Require(passed ? prepare.Text("phaseStatus") == "passed" && prepare.ContainsKey("completedAt") : prepare.Text("phaseStatus") == "failed" && !prepare.ContainsKey("completedAt"), passed ? "mismatch-or-not-passed" : "failed-state-required");
         Require(prepare.Text("startedAt").Length > 0 && prepare.Text("updatedAt").Length > 0, "prepare-ledger-invalid");
         var entries = new List<PreparedTarget>();
         foreach (var entry in prepare.Array("targets"))

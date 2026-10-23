@@ -120,6 +120,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Existing-services split-host teardown runs through the typed installer CLI, retaining authenticated drain checks, resumable evidence and private-file cleanup while preserving runtime data and shared services. (#1589)
+
 - CameraAgent configuration reads reuse annual schedule validation within a load when the schedule, rig compatibility inputs and complete effective observer are unchanged, reducing duplicate work while retaining protected-state validation. (#1591)
 
 - Documented explicit rebuilding and validation of saved v12 scene-overlay drafts for the current producer, whose retained outputs identify v13 and suppress unmeasured star labels. (#1541)
