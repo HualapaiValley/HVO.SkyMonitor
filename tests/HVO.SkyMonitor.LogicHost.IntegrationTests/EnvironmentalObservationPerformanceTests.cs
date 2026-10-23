@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
 [DoNotParallelize]
-public sealed class EnvironmentalObservationPerformanceTests
+public sealed partial class EnvironmentalObservationPerformanceTests
 {
     private const int IngestCount = 10_000;
     private static readonly DateTimeOffset Epoch = DateTimeOffset.Parse(
