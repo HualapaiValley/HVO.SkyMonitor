@@ -129,8 +129,22 @@ public static class ProcessingNodeOptionsCodec
             }
             decoded.Add(new(option, value, isExplicit));
         }
+        if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
+            descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
+        {
+            try
+            {
+                FrameFactsPresentation.ValidateTemplates(options.Deserialize<FrameFactsPresentationOptions>(FrameFactsOptionsJson)!);
+            }
+            catch (Exception exception) when (exception is JsonException or ArgumentException)
+            {
+                diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, path, exception.Message));
+            }
+        }
         return diagnostics.Count == 0 ? new(decoded.ToImmutable(), []) : new([], diagnostics.ToImmutable());
     }
+
+    private static readonly JsonSerializerOptions FrameFactsOptionsJson = new(JsonSerializerDefaults.Web);
 
     /// <summary>
     /// Applies typed edits to <paramref name="source"/>. An edit that leaves an option's effective value unchanged,

@@ -473,5 +473,5 @@ public static class ProcessingNodeOptionsDescriptors
         ScenePresentationLayerV12.Options);
 
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
-        [ScenePresentationLayerV12, ScenePresentationLayer];
+        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor];
 }

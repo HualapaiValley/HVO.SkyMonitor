@@ -30,6 +30,7 @@ public static class GroupedSvgPresentationRenderer
     public const int MaximumSvgElements = 20_000;
     public const string SemanticRendererVersion = "cameraagent-grouped-svg-v4-semantic";
     public const string RendererVersion = "cameraagent-grouped-svg-v5-pinned-appearance";
+    public const string RichTextRendererVersion = "cameraagent-grouped-svg-v6-rich-text";
 
     public static GroupedSvgPresentation Render(
         OverlayManifestV1 manifest,
@@ -115,6 +116,7 @@ public static class GroupedSvgPresentationRenderer
             {
                 PresentationLayerCompositor.PreviousAlgorithmVersion => "cameraagent-grouped-svg-v3-plex",
                 PresentationLayerCompositor.SemanticAlgorithmVersion => SemanticRendererVersion,
+                PresentationLayerCompositor.RichTextAlgorithmVersion => RichTextRendererVersion,
                 _ => RendererVersion
             },
             manifest.ManifestIdentitySha256,
@@ -199,6 +201,24 @@ public static class GroupedSvgPresentationRenderer
             }
             writer.WriteEndElement();
         }
+        if (payload.RichText is { } rich)
+            foreach (var corner in rich.Corners)
+            {
+                using var layout = PresentationRichText.Layout(corner, payload.WidthPixels, payload.HeightPixels);
+                if (layout.Panel.IsEmpty) continue;
+                writer.WriteStartElement("rect");
+                Coordinate(writer, "x", layout.Panel.Left); Coordinate(writer, "y", layout.Panel.Top);
+                Coordinate(writer, "width", layout.Panel.Width); Coordinate(writer, "height", layout.Panel.Height);
+                writer.WriteAttributeString("fill", Color(PresentationRichText.PanelColor));
+                Coordinate(writer, "fill-opacity", PresentationRichText.PanelOpacityMillionths / 1_000_000d);
+                writer.WriteEndElement();
+                var path = layout.Path.ToSvgPathData();
+                if (path.Length > MaximumSvgBytes) throw new InvalidDataException("Rich text SVG exceeds its bound.");
+                writer.WriteStartElement("path");
+                writer.WriteAttributeString("d", path);
+                writer.WriteAttributeString("fill", Color(corner.Color));
+                writer.WriteEndElement();
+            }
         foreach (var block in payload.TextBlocks)
         {
             if (block.Backplate is { } plate && block.Lines.Count > 0)
@@ -307,6 +327,7 @@ public static class GroupedSvgPresentationRenderer
 
     private static int ElementCount(PresentationLayerPayloadV1 payload) => checked(
         payload.Markers.Sum(marker => marker.Crosshair ? 2 : 1) + payload.Segments.Count + payload.Ellipses.Count +
+        (payload.RichText?.Corners.Count(corner => corner.Lines.Count > 0) * 2 ?? 0) +
         payload.TextBlocks.Sum(static block => block.Lines.Count + (block.Backplate is null ? 0 : 2) + (block.Backplate?.Style?.HeadingRule == true && block.Lines.Count > 1 ? 1 : 0)) + (payload.TileMask is null ? 0 : 1));
 
     private static void WriteStroke(XmlWriter writer, PresentationStrokeV2? stroke)
