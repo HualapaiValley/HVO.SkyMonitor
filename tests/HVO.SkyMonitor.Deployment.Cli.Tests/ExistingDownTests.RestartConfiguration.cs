@@ -12,6 +12,8 @@ public sealed partial class ExistingDownTests
     [DataRow("file-sync", true, "cancel")]
     [DataRow("directory-sync", false, "error")]
     [DataRow("directory-sync", true, "crash")]
+    [DataRow("reference-sync", false, "error")]
+    [DataRow("reference-sync", true, "cancel")]
     [DataRow("cleanup", false, "cancel")]
     [DataRow("cleanup", true, "crash")]
     [DataRow("cleanup", true, "cancel")]
@@ -27,6 +29,7 @@ public sealed partial class ExistingDownTests
             "write" => operation == "write" && args[0] == setting,
             "file-sync" => operation == "sync" && args[0].StartsWith("/proc/", StringComparison.Ordinal),
             "directory-sync" => operation == "sync" && args[0] == Path.GetDirectoryName(setting),
+            "reference-sync" => operation == "sync" && args[0] == Path.GetDirectoryName(setting) && referenceRemoved,
             _ => operation == "unlink" && args[0] == seeded[1]
         };
         void Interrupt(string operation, string[] args)
@@ -64,7 +67,12 @@ public sealed partial class ExistingDownTests
         Assert.AreEqual(0, fixture.Stops);
         Assert.AreEqual(0, fixture.StoppedHttpAttempts);
         Assert.AreEqual("intent", Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/down-ledger.json")).Array("resources").Single(n => n!.Text("resource") == "cameraagent:east")!.Text("status"));
-        if (point != "cleanup")
+        if (point == "reference-sync")
+        {
+            Assert.IsTrue(File.Exists(fixture.Host.Physical(seeded[0])));
+            AssertCameraStartupConfiguration(fixture, "east");
+        }
+        else if (point != "cleanup")
         {
             foreach (var path in seeded) Assert.IsTrue(File.Exists(fixture.Host.Physical(path)), path);
             var registry = System.Text.Json.Nodes.JsonNode.Parse(DeploymentFakeHost.Read(fixture.Host.StateRoot + "/private-upload-registry.json"));
