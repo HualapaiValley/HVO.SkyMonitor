@@ -191,29 +191,41 @@ public sealed class FileCameraAgentScheduleReuseTests
         Assert.IsFalse(original.Matches(Capture(copy, observer, TimeZoneInfo.Utc)));
 
         var exceptionWindows = new[] { new CaptureDateScheduleWindow("exception", windows[0].Start, windows[0].End, profiles[0].Id) };
-        copy = config with { Schedule = schedule with
+        copy = config with
         {
-            DateExceptions = [new("date-rule", new DateOnly(2027, 1, 1), false, exceptionWindows)],
-            Blackouts = [new("blackout", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddHours(1))]
-        } };
+            Schedule = schedule with
+            {
+                DateExceptions = [new("date-rule", new DateOnly(2027, 1, 1), false, exceptionWindows)],
+                Blackouts = [new("blackout", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddHours(1))]
+            }
+        };
         var beforeExceptionEdit = Capture(copy, observer, TimeZoneInfo.Utc);
         exceptionWindows[0] = exceptionWindows[0] with { End = exceptionWindows[0].End with { Offset = TimeSpan.FromMinutes(1) } };
         Assert.IsFalse(beforeExceptionEdit.Matches(Capture(copy, observer, TimeZoneInfo.Utc)));
-        Assert.IsFalse(original.Matches(Capture(config with { Rig = config.Rig with
+        Assert.IsFalse(original.Matches(Capture(config with
         {
-            Pipeline = config.Rig.Pipeline with { Envelope = config.Rig.Pipeline.Envelope! with { MaxGain = 300 } }
-        } }, observer, TimeZoneInfo.Utc)));
-        Assert.IsFalse(original.Matches(Capture(config with { Rig = config.Rig with
+            Rig = config.Rig with
+            {
+                Pipeline = config.Rig.Pipeline with { Envelope = config.Rig.Pipeline.Envelope! with { MaxGain = 300 } }
+            }
+        }, observer, TimeZoneInfo.Utc)));
+        Assert.IsFalse(original.Matches(Capture(config with
         {
-            ControlPolicy = config.Rig.ControlPolicy! with { GainControl = AutomaticControlOwnership.Disabled }
-        } }, observer, TimeZoneInfo.Utc)));
+            Rig = config.Rig with
+            {
+                ControlPolicy = config.Rig.ControlPolicy! with { GainControl = AutomaticControlOwnership.CameraNative }
+            }
+        }, observer, TimeZoneInfo.Utc)));
         var response = new ConfiguredSensorResponseProfile("test", 16, 0, 400, 1, 1, 10000, [], 0, "gain", "test");
         copy = config with { Rig = config.Rig with { Sensor = config.Rig.Sensor with { SimulationResponse = response } } };
         var beforeRangeEdit = Capture(copy, observer, TimeZoneInfo.Utc);
-        Assert.IsFalse(beforeRangeEdit.Matches(Capture(copy with { Rig = copy.Rig with
+        Assert.IsFalse(beforeRangeEdit.Matches(Capture(copy with
         {
-            Sensor = copy.Rig.Sensor with { SimulationResponse = response with { MaximumGainControl = 300 } }
-        } }, observer, TimeZoneInfo.Utc)));
+            Rig = copy.Rig with
+            {
+                Sensor = copy.Rig.Sensor with { SimulationResponse = response with { MaximumGainControl = 300 } }
+            }
+        }, observer, TimeZoneInfo.Utc)));
         var differentRules = TimeZoneInfo.CreateCustomTimeZone("UTC", TimeSpan.FromHours(1), "UTC", "UTC");
         Assert.IsFalse(original.Matches(Capture(config, observer, differentRules)),
             "The same time-zone identifier with different resolved rules cannot reuse validation.");
