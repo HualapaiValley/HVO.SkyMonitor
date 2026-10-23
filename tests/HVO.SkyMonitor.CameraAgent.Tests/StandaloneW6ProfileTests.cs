@@ -74,7 +74,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "2EB6E76393B69DDF3BC090488931B6179CB34FC7A4F60C1D75F0AA3E4C7B0729",
+            "9F0027BCF1BE3A8818578139D6665B74C9B0692DACC87CB7CE970879B8C7EEA1",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -205,7 +205,9 @@ public sealed class StandaloneW6ProfileTests
         // adds an optional association requirement; Annotation replaces its old role groups with typed requirements.
         // These effective contracts change even when the unchanged profile wires no association producer.
         var scene = preview.EffectiveNodes.Single(node => node.Id == consumerId);
-        Assert.IsFalse(scene.Options!.Value.GetProperty("expectedPositionDiagnostics").GetBoolean());
+        Assert.AreEqual(consumerId == "scene-presentation",
+            scene.Options!.Value.GetProperty("expectedPositionDiagnostics").GetBoolean(),
+            "Expected sky context keeps catalog names; measured annotation remains strict.");
         var step = (IRequiredCaptureProcessingDependencies)graph.Nodes.Single(node => node.Id == consumerId).Step;
         Assert.HasCount(requirementCount, step.DependencyRequirements);
         Assert.IsTrue(step.DependencyRequirements.Single(static requirement =>
@@ -455,7 +457,7 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("7DD0899B6349AE0EDC8825C5DF03EA5AEFBBD5E0DA3A50DFD9E5E06579334229", Aggregate(removeV3: true),
+        Assert.AreEqual("6B4D0E1159E394C5FF974AEE02A45CE6D046024B0D724C0A5BE91C39D2E3F1C0", Aggregate(removeV3: true),
             "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 
