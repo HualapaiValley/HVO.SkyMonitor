@@ -23,6 +23,13 @@ internal sealed class ProcessingGraphDraftModel
     public bool HasGraphChanges(CapturePipelineConfig pipeline)
         => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
 
+    public ProcessingGraphDraftModel WithConvertedPipeline(CapturePipelineConfig pipeline)
+    {
+        var converted = FromPipeline(pipeline, SourceRevisionId, Name, Revision);
+        converted._initialDefinition = _initialDefinition;
+        return converted;
+    }
+
     /// <summary>Carried from the source revision and shown read-only; a new draft uses the current explicit schema.</summary>
     public string SchemaVersion { get; private set; } = CapturePipelineSchemaVersions.ExplicitV2;
 
@@ -199,7 +206,16 @@ internal sealed class ProcessingGraphDraftModel
     internal sealed class NodeRow
     {
         public string Id { get; set; } = string.Empty;
-        public string Type { get; set; } = string.Empty;
+        private string _type = string.Empty;
+        public string Type
+        {
+            get => _type;
+            set
+            {
+                if (_type != value) _optionsForm = null;
+                _type = value;
+            }
+        }
         public bool Required { get; set; } = true;
         public bool Enabled { get; set; } = true;
         public HashSet<string> DependsOn { get; set; } = new(StringComparer.Ordinal);
