@@ -502,19 +502,21 @@ public static class ProcessingNodeOptionsDescriptors
                 "The existing cardinal-direction size multiplier.", 2, 1, 8, "×")
         ]);
 
-    /// <summary>The measured-label producer keeps the same scalar controls at its own exact version.</summary>
+    /// <summary>The current sky-context producer also exposes its explicitly qualified catalog-position labels.</summary>
     public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
         "scene-presentation-layer-options-v2",
         ScenePresentationLayerStepAlias,
         "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
         ScenePresentationLayerV12.Title,
         ScenePresentationLayerV12.Help,
-        ScenePresentationLayerV12.Options);
+        ScenePresentationLayerV12.Options.Add(ProcessingOptionDescriptor.Toggle(
+            "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
+            "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star labels.", true)));
 
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
         [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
             CloudAssessmentOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
-            CalibrationOptionDescriptors.References];
+            CalibrationOptionDescriptors.References, .. PreviewOptionDescriptors.All];
 }

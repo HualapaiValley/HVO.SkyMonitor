@@ -469,7 +469,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         Assert.StartsWith("Refresh queued.", queued.Message!);
         Assert.AreEqual(OperatorUiResultKind.Success, replayed.Kind);
         Assert.AreEqual(OrbitalElementsCommandStatus.Replayed, replayed.Value?.Status);
-        Assert.StartsWith("Already queued.", replayed.Message!);
+        Assert.StartsWith("Request already recorded.", replayed.Message!);
         Assert.AreEqual(OperatorUiResultKind.Conflict, pending.Kind);
         Assert.AreEqual(LocalAutomationContract.RunNowPendingReasonCode, pending.Value?.ReasonCode);
         Assert.IsTrue(whileQueued.Schedule?.ActiveRun);

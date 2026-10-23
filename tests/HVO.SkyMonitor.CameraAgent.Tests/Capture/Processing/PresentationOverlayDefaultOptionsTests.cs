@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.ComponentModel.DataAnnotations;
@@ -14,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class PresentationOverlayDefaultOptionsTests
 {
     [TestMethod]
-    public void LayerStepsDefaultToTheOriginalConstellationColourWidthAndOpacity()
+    public async Task LayerStepsRestoreOverlayDefaultsAndExpectedStarNames()
     {
         var scene = new ScenePresentationLayerProcessingStepOptions();
         Assert.AreEqual((byte)96, scene.ConstellationLineRed);
@@ -28,6 +30,34 @@ public sealed class PresentationOverlayDefaultOptionsTests
         Assert.IsNull(scene.CardinalValue);
         Assert.IsNull(new EnvironmentPresentationLayerProcessingStepOptions().Value);
         Assert.AreEqual(800_000, new OverlayManifestProcessingStepOptions().ConstellationOpacityMillionths);
+        var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
+        var position = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(90, 0), utc, 0, 0), utc);
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog(
+            [new CelestialCatalogObject("star:vega", "Vega", position.RightAscensionHours, position.DeclinationDegrees, 1)]))
+            .BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+                new ProjectionContext(ProjectionModel.Perspective, 300, 200, 400, 400, 800, 600,
+                    ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
+                new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
+                    new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        var projected = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(800, 600),
+            new ProjectedSceneSource(Guid.Parse("00000000-0000-0000-0000-000000000001"),
+                Guid.Parse("00000000-0000-0000-0000-000000000002"), new string('D', 64)), "calibration-v1", "perspective-v1");
+        var style = new PresentationAnnotationStyleV1(LabelScale: scene.LabelScale);
+        var expected = PresentationLayerProducers.FromProjectedSceneGroupsV2(projected, style,
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false,
+            expectedPositionDiagnostics: scene.ExpectedPositionDiagnostics).StarAnnotations;
+        Assert.HasCount(1, expected.Markers);
+        Assert.AreEqual("Vega (expected)", expected.TextBlocks.Single().Lines.Single());
+        var explicitOff = JsonSerializer.Deserialize<ScenePresentationLayerProcessingStepOptions>(
+            """{"expectedPositionDiagnostics":false}""", JsonSerializerOptions.Web)!;
+        Assert.IsEmpty(PresentationLayerProducers.FromProjectedSceneGroupsV2(projected, style,
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false,
+            expectedPositionDiagnostics: explicitOff.ExpectedPositionDiagnostics).StarAnnotations.TextBlocks);
+        Assert.IsEmpty(PresentationLayerProducers.FromProjectedSceneGroupsV2(projected, style).StarAnnotations.TextBlocks,
+            "The shared measured-source producer remains strict unless its caller explicitly requests expected labels.");
+        Assert.IsFalse(new AnnotationProcessingStepOptions().ExpectedPositionDiagnostics);
     }
 
     [TestMethod]
