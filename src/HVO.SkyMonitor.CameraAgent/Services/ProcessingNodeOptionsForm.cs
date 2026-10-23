@@ -43,6 +43,7 @@ public sealed class ProcessingNodeOptionsForm
             "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
+            "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
                 ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
         };

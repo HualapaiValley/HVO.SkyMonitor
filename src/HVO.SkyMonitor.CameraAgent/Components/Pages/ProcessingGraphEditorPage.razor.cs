@@ -47,7 +47,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -179,6 +179,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "VirtualSkyCloudObservation" => "simulated-cloud-observations",
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
+            "Calibration" => "calibration",
             _ => "constellations"
         };
         var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
