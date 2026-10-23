@@ -106,3 +106,52 @@ full-qualification gates. The protected v1 profile does not claim those gates.
 browser version and each section's accessibility tree for all four viewports;
 PNG screenshots and Playwright diagnostic attachments accompany its TRX.
 Results and review/protected-CI evidence are appended to the PR ledger.
+
+## Local integration results (2026-10-23)
+
+The functional candidate was committed clean at
+`4b7fc4135ce142699d90354d1218028515a2a02c`. The selector was
+`scripts/ci:classify pull_request 523d43d9a36fbf7f3d7bfff47d29a74909061fd7 HEAD`:
+`mode=full complete=false logichost=true`, with every other component and
+deployment flag false. This selected affected LogicHost evidence under the
+Development v1 protected profile; no full workflow was dispatched.
+
+| Local gate | Result |
+| --- | --- |
+| Release builds of LogicHost.Tests and LogicHost.IntegrationTests, `-warnaserror -nodeReuse:false -p:UseSharedCompilation=false` | Both passed, zero warnings/errors. |
+| LogicHost.Tests, `TestCategory=Unit`, invalid Docker endpoint | 937 passed; one existing provider-specific skip (`AmbiguousDelete_IsNotAReachableStateForThisProvider`). |
+| SQL filter: `LogicalCameraArchiveIntegrationTests`, all `ExecutionEvidenceIntegrationTests`, `CameraOperationsReadTests`, `CentralOperationsWorkspaceAuthorityTests`, `ProcessingGraphProposalReadTests`, `ArtifactRetrievalTests` | 69 passed. |
+| New `ProtectedWorkspaceJourneyTests` | One passed; 16 screenshots, four viewport accessibility trees, exact image identity, three unchanged imported units and exact release/withdrawal audit records retained. |
+| Fresh-process Current Sky, archive (including 1k/10k cost case), scope, imported functional and central functional browser selections | Six passed. Imported/central large-history cost reruns were unnecessary because their cited source remained unchanged. |
+| Affected IntegrationTests Manual discovery | 53 actual cases, matching the project inventory; aggregate declared Manual inventory is 278. |
+| Four CI-control guards, operations documentation audit, source/test crosswalk and `git diff --check` | Passed. All 17 named test classes and explicit methods exist. |
+
+Every test invocation used Release `--no-build --no-restore`, an explicit filter,
+TRX output and `env -u HVO_PRODUCTION_CATALOG_BUNDLE`. The Unit invocation also
+set `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock`. Heavy work ran sequentially
+inside `flock -o /tmp/hvo-heavy-gate.lock timeout 9000 python3 .../candidate-gates.py`;
+the retained `results.json` records each exact command, environment selection,
+exit code, source commit and elapsed time. Each browser selection started a
+fresh test process and disposable fixture.
+
+The initial build on `d459e5c6` failed CA1869 for uncached serializer options;
+`4b7fc413` caches them and the rebuild passed. Affected format verification then
+reported ten whitespace diagnostics in the new JSON initializer. The final
+correction changes only those line breaks and this results record; affected
+formatting, clean-commit rebuilds and the journey are revalidated after that
+commit. Their exact final source/assembly identities and results belong to the
+retained final gate ledger. Unchanged Unit, SQL and section-browser results above
+remain attributed to `4b7fc413`, rather than being relabeled as final-head runs.
+
+Artifacts are retained outside the disposable checkout at
+`/home/roys/.t3/evidence/HVO.SkyMonitor/issue-539`, including failed attempts,
+TRX, screenshots, accessibility trees, source/assembly fingerprints, child-source
+applicability checks and `SHA256SUMS`. The older archive cost JSON has a null
+legacy `Source` field; `section-command-source.json` and the exact command/TRX
+ledger bind that run to the clean candidate and binary SHA-256 identities.
+Archive costs describe a bounded 25-item page and exact 1936×1216 Preview; they
+do not claim constant SQL work or a timing improvement against an equivalent
+baseline. Imported/central costs remain the source-pinned child evidence above.
+This is software integration evidence, without production/release qualification
+or an OS screen-reader claim. Parent-owned independent review and protected CI
+remain separate gates.
