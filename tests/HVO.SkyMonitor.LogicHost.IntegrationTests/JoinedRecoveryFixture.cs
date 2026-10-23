@@ -3,7 +3,9 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using DotNet.Testcontainers.Containers;
+using Docker.DotNet;
+using Docker.DotNet.Models;
+using DotNet.Testcontainers.Configurations;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -84,10 +86,15 @@ internal sealed partial class JoinedRecoveryFixture
         // Only this disposable container and this exact run directory are owned by this fixture.
         // WithCleanUp(false) preserves failed runs from the reaper, and DisposeAsync alone
         // only stops such a container. Explicit deletion is reserved for successful runs.
-        await ((DotNet.Testcontainers.IFutureResource)container).DeleteAsync(CancellationToken.None);
-        Require(container.State == TestcontainersStates.Undefined, "container-cleanup");
-        containerRemoved = true;
+        var ownedContainerId = container.Id;
         await container.DisposeAsync();
+        using (var docker = TestcontainersSettings.OS.DockerEndpointAuthConfig.GetDockerClientBuilder(Guid.Empty).Build())
+        {
+            await docker.Containers.RemoveContainerAsync(ownedContainerId, new ContainerRemoveParameters { Force = true, RemoveVolumes = true });
+            try { _ = await docker.Containers.InspectContainerAsync(ownedContainerId); }
+            catch (DockerContainerNotFoundException) { containerRemoved = true; }
+            Require(containerRemoved, "container-cleanup");
+        }
         Directory.Delete(root, recursive: true);
         filesRemoved = true;
         await identityServices.DisposeAsync();
