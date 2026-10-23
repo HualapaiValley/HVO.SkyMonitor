@@ -269,12 +269,15 @@ attachments were checked against their retained report paths and checksums.
 The target subsequently advanced to
 `75ad7d9de596585da4a35451a04d4b7806f60bdf` (#1632 preview/JPEG editing).
 The merge conflicts concern only three test-count inventories and the runbook
-totals. Their resolution preserves the prior real-discovery corrections and
-adds the target's new cases: Processing 922 Unit, combined-host 87, CameraAgent
-7,218 and LogicHost 959, for repository Unit 14,191; Integration 955 and Manual
-285 remain unchanged. `candidate/count-merge-resolution.json` records all three
-Git stages and the arithmetic. Fresh focused discovery, target interaction
-tests, warning-clean builds, format and the four control guards are recorded
-in the PR ledger before independent review. The accepted preflight production
-sources and their dependency inputs are unchanged by this synchronization,
-so its exact comparison and resource evidence remain applicable.
+totals. Fresh complete, disjoint discovery proves Processing 905 Unit,
+combined-host 82, CameraAgent 7,195 and LogicHost 959, for repository Unit
+14,146; Integration 955 and Manual 285 remain unchanged. The target already
+included the older real-discovery corrections. An initial arithmetic merge
+resolution counted those 45 cases twice; the failing discovery and full
+diagnosis reports are retained in `candidate-nonroot/category-synced{,-diagnosis}`
+logs. The corrected inventories use observed IDs and match the target's counts.
+All 448 focused preview/JPEG interaction cases passed with coverage. Fresh
+warning-clean builds, format, category verification and the four control guards
+are recorded in the PR ledger before independent review. The accepted preflight
+production sources and their dependency inputs are unchanged by this
+synchronization, so its exact comparison and resource evidence remain applicable.
