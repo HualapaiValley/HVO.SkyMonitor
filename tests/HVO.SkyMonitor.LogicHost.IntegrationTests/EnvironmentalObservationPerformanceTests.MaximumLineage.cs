@@ -89,7 +89,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     var before = await ReadLineageStorageAsync(connection.ConnectionString).ConfigureAwait(false);
                     var probes = new LineageProbe[30];
                     var latency = new double[30];
-                    var receipts = new EnvironmentalObservationIngestResult[30];
+                    var receipts = new EnvironmentalObservationIngestResult?[30];
+                    var deadlocks = new bool[30];
                     using var process = Process.GetCurrentProcess();
                     var cpuBefore = process.TotalProcessorTime;
                     var allocations = GC.GetTotalAllocatedBytes(true);
@@ -106,8 +107,17 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                                 probes[index] = probe;
                                 var options = LineageOptions(connection.ConnectionString, probe);
                                 var operation = Stopwatch.GetTimestamp();
-                                receipts[index] = await IngestLineageAsync(options, telemetry, facts[index], BenchmarkNow, cancellationToken)
-                                    .ConfigureAwait(false);
+                                try
+                                {
+                                    receipts[index] = await IngestLineageAsync(options, telemetry, facts[index], BenchmarkNow, cancellationToken)
+                                        .ConfigureAwait(false);
+                                }
+                                catch (Exception exception) when (IsLineageDeadlock(exception))
+                                {
+                                    // A baseline records production failures; it never retries or silently replaces a victim.
+                                    deadlocks[index] = true;
+                                    probe.Finish();
+                                }
                                 latency[index] = Stopwatch.GetElapsedTime(operation).TotalMilliseconds;
                             }).ConfigureAwait(false);
                     }
@@ -122,37 +132,54 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     var after = await ReadLineageStorageAsync(connection.ConnectionString).ConfigureAwait(false);
                     for (var index = 0; index < facts.Length; index++)
                     {
-                        Assert.AreEqual(EnvironmentalObservationIngestDisposition.Accepted, receipts[index].Disposition);
-                        accepted.Add((facts[index], receipts[index]));
+                        if (receipts[index] is { } receipt)
+                        {
+                            Assert.AreEqual(EnvironmentalObservationIngestDisposition.Accepted, receipt.Disposition);
+                            accepted.Add((facts[index], receipt));
+                        }
+                        else
+                        {
+                            Assert.IsTrue(deadlocks[index]);
+                            var identity = EnvironmentalObservationJson.ComputeSourceIdentitySha256(facts[index]);
+                            Assert.IsFalse(await setup.EnvironmentalObservations.AnyAsync(row =>
+                                row.SourceIdentitySha256 == identity && row.ObservationId == facts[index].ObservationId).ConfigureAwait(false),
+                                "A deadlock victim must leave no durable observation or its cascading lineage rows.");
+                        }
                     }
-                    Assert.IsTrue(probes.All(probe => probe.SourceLookups == count + 1 && probe.ObservationLookups == count + 1),
+                    Assert.IsTrue(probes.Where((_, index) => !deadlocks[index]).All(probe => probe.SourceLookups == count + 1 && probe.ObservationLookups == count + 1),
                         "Baseline attribution changed: inspect commands before selecting slice B's implementation.");
-                    Assert.IsTrue(probes.All(probe => probe.TransactionMilliseconds > 0 && probe.RetentionHeldMilliseconds > 0),
+                    Assert.IsTrue(probes.Where((_, index) => !deadlocks[index]).All(probe => probe.TransactionMilliseconds > 0 && probe.RetentionHeldMilliseconds > 0),
                         "Every derived operation must expose its transaction and retention lock timing.");
                     scenarios.Add(new
                     {
                         References = count,
                         Concurrency = concurrency,
                         Warmups = 5,
-                        Measurements = 30,
+                        MeasuredAttempts = 30,
+                        Accepted = receipts.Count(receipt => receipt is not null),
+                        DeadlockVictims = deadlocks.Count(victim => victim),
+                        Outcomes = deadlocks.Select(victim => victim ? "sql-deadlock-1205" : "accepted").ToArray(),
                         ElapsedMilliseconds = elapsed.TotalMilliseconds,
-                        IngestsPerSecond = 30 / elapsed.TotalSeconds,
-                        LatencyMilliseconds = LineageDistribution(latency),
+                        AcceptedIngestsPerSecond = receipts.Count(receipt => receipt is not null) / elapsed.TotalSeconds,
+                        AttemptsPerSecond = 30 / elapsed.TotalSeconds,
+                        AllAttemptLatencyMilliseconds = LineageDistribution(latency),
                         TransactionMilliseconds = LineageDistribution(probes.Select(probe => probe.TransactionMilliseconds)),
                         RetentionLockHeldMilliseconds = LineageDistribution(probes.Select(probe => probe.RetentionHeldMilliseconds)),
                         SourceLockAcquireMilliseconds = LineageDistribution(probes.Select(probe => probe.SourceLockMilliseconds)),
                         RetentionLockAcquireMilliseconds = LineageDistribution(probes.Select(probe => probe.RetentionAcquireMilliseconds)),
                         SqlCommands = probes.Select(probe => probe.CommandCount).ToArray(),
-                        SourceLookupsPerIngest = count + 1,
-                        ObservationLookupsPerIngest = count + 1,
-                        LineageOnlyLookupsPerIngest = 2 * count,
+                        SourceLookups = probes.Select(probe => probe.SourceLookups).ToArray(),
+                        ObservationLookups = probes.Select(probe => probe.ObservationLookups).ToArray(),
+                        LineageOnlyLookupsPerAcceptedIngest = 2 * count,
                         ClientCpuMilliseconds = cpu.TotalMilliseconds,
                         ClientAllocatedBytes = allocated,
                         ClientPeakSampledRssBytes = peakRss,
                         StorageDelta = after.Delta(before)
                     });
-                    TestContext.WriteLine("issue1557 refs={0} c={1} p95_ms={2:F3} commands={3}",
-                        count, concurrency, Percentile(latency, 0.95), probes[0].CommandCount);
+                    await File.WriteAllTextAsync(Path.Combine(output, "progress.json"),
+                        System.Text.Json.JsonSerializer.Serialize(new { Source = source, Scenarios = scenarios }, EvidenceJsonOptions)).ConfigureAwait(false);
+                    TestContext.WriteLine("issue1557 refs={0} c={1} p95_ms={2:F3} commands={3} deadlocks={4}",
+                        count, concurrency, Percentile(latency, 0.95), probes[0].CommandCount, deadlocks.Count(victim => victim));
                 }
             }
 
@@ -177,6 +204,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             Assert.AreEqual(0, await setup.EnvironmentalObservations.CountAsync(row => row.Id == diagnosticReceipt.RecordId).ConfigureAwait(false),
                 "The actual-plan replay must roll back all diagnostic writes.");
             var retention = await VerifyLineageRetentionAsync(connection.ConnectionString, telemetry, inputs).ConfigureAwait(false);
+            var deadlockGraphs = await ReadLineageDeadlocksAsync(connection.ConnectionString, output).ConfigureAwait(false);
             var evidence = new
             {
                 Schema = "hvo-issue-1557-maximum-lineage-baseline-v1",
@@ -217,6 +245,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     Writes = "SQL Server STATISTICS IO has no logical-write counter; leaf insert/update/delete DMV deltas and actual plan write-row counts are explicit proxies. Log physical bytes may be buffered."
                 },
                 Scenarios = scenarios,
+                DeadlockGraphs = deadlockGraphs,
                 SqlReplay = sql,
                 Controls = controls,
                 Retention = retention,
@@ -228,7 +257,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     ReplayPreservesRecordIdHashAndReceiptTime = true,
                     DiagnosticReplayRolledBack = true
                 },
-                Handoff = "Amplification confirmed if baseline assertions pass: 256 source + 256 observation lineage lookups, beyond two own-identity lookups. Slice B should project distinct source hashes to IDs and qualified (SourceRecordId, ObservationId) pairs to IDs with at most two bounded EF queries; retain ordinal reconstruction and atomic negative controls. No TVP/procedure is justified by this baseline alone."
+                Handoff = "Amplification confirmed if baseline assertions pass: 256 source + 256 observation lineage lookups, beyond two own-identity lookups. Deadlock victims are reported as failed attempts, never retried or counted as accepted throughput; their atomic rollback is checked. Slice B owns the production deadlock/retry disposition and must not claim a green concurrent-ingest baseline from these timings. It should project distinct source hashes to IDs and qualified (SourceRecordId, ObservationId) pairs to IDs with at most two bounded EF queries; retain ordinal reconstruction and atomic negative controls. No TVP/procedure is justified by this baseline alone."
             };
             var evidencePath = Path.Combine(output, "maximum-lineage-baseline.json");
             await EvidenceSourceIdentity.WriteJsonAsync(evidencePath, evidence, EvidenceJsonOptions).ConfigureAwait(false);
@@ -239,6 +268,13 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         {
             await setup.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
+    }
+
+    private static bool IsLineageDeadlock(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+            if (current is SqlException sql && sql.Number == 1205) return true;
+        return false;
     }
 
     private static DbContextOptions<ApplicationDbContext> LineageOptions(string connection, LineageProbe? probe = null)

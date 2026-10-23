@@ -30,6 +30,13 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         internal double RetentionAcquireMilliseconds { get; private set; }
         internal LineageTransactions Transactions { get; } = new();
 
+        internal void Finish()
+        {
+            TransactionMilliseconds = Stopwatch.GetElapsedTime(TransactionStarted).TotalMilliseconds;
+            if (RetentionAcquired != 0)
+                RetentionHeldMilliseconds = Stopwatch.GetElapsedTime(RetentionAcquired).TotalMilliseconds;
+        }
+
         private void Record(DbCommand command)
         {
             CommandCount++;
@@ -38,8 +45,15 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             if (capture) Commands.Add(new(command.CommandText, command.Parameters.Cast<SqlParameter>().Select(CopyLineageParameter).ToArray()));
         }
 
-        public override ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
-            DbDataReader result, CancellationToken cancellationToken = default)
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Record(command);
+            return ValueTask.FromResult(result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
         {
             Record(command);
             return ValueTask.FromResult(result);
@@ -48,7 +62,6 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         public override ValueTask<int> NonQueryExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
             int result, CancellationToken cancellationToken = default)
         {
-            Record(command);
             if (command.CommandText.Contains("sp_getapplock", StringComparison.Ordinal))
             {
                 if (command.Parameters.Cast<SqlParameter>().Any(parameter =>
@@ -82,6 +95,32 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                 return Task.CompletedTask;
             }
         }
+    }
+
+    private static async Task<object> ReadLineageDeadlocksAsync(string connectionString, string output)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT CONVERT(nvarchar(max), CAST(target.target_data AS xml).query('RingBufferTarget/event[@name="xml_deadlock_report"]'))
+            FROM sys.dm_xe_session_targets AS target
+            JOIN sys.dm_xe_sessions AS session ON session.address=target.event_session_address
+            WHERE session.name=N'system_health' AND target.target_name=N'ring_buffer';
+            """;
+        var xml = (string?)await command.ExecuteScalarAsync().ConfigureAwait(false) ?? string.Empty;
+        var document = XDocument.Parse("<events>" + xml + "</events>");
+        // The disposable server contains synthetic inputs, but XE also includes the physical client identity.
+        foreach (var attribute in document.Descendants().Attributes().Where(attribute =>
+            attribute.Name.LocalName is "hostname" or "hostpid" or "loginname")) attribute.Value = "redacted";
+        await File.WriteAllTextAsync(Path.Combine(output, "deadlocks.xml"), document.ToString()).ConfigureAwait(false);
+        return new
+        {
+            Reports = document.Descendants("deadlock").Count(),
+            Artifact = "deadlocks.xml",
+            Source = "Disposable fixture server system_health ring_buffer; asynchronous/bounded event retention may omit a graph",
+            SanitizedAttributes = new[] { "hostname", "hostpid", "loginname" }
+        };
     }
 
     private static SqlParameter CopyLineageParameter(SqlParameter parameter) => new(parameter.ParameterName, parameter.SqlDbType, parameter.Size)

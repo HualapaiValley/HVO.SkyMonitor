@@ -53,14 +53,23 @@ The test checks rollback of diagnostic writes before deleting its database.
 The fixture ingests 256 raw observations across eight source identities through
 production ingest. Ordered derived lineage uses permutation `i*73%256`, making
 an accidental reorder visible. Each arm primes its derived sources, performs
-five untimed warm-ups and 30 timed ingests. Concurrency is 1, 4 or 8; derived
+five untimed warm-ups and 30 timed ingest attempts. Concurrency is 1, 4 or 8; derived
 source identities are assigned round-robin across that many lanes. The setup
-avoids imposing one exclusive source lock on every concurrent request.
+avoids imposing one exclusive source lock on every concurrent request. SQL 1205
+deadlock victims are recorded as failed attempts with their observed latency
+and command/resource cost; they are never retried or counted as accepted
+throughput. Accepted counts and all 30 outcomes accompany each arm. Other
+exceptions still abort. This measurement does not qualify a failing production
+path; slice B must resolve its deadlock/retry acceptance. Each completed arm is
+flushed to `progress.json` so a later failure cannot erase it. Sanitized
+`deadlocks.xml` retains available system-health deadlock graphs.
 
-Wall time includes context construction/disposal; transaction time runs from
+Wall time includes context construction/disposal; successful transaction time runs from
 EF's transaction-start callback through its commit callback. Retention hold time
 runs from successful shared `sp_getapplock` completion through that commit
-callback. Those are client timestamps and include return-path overhead. Lock
+callback. For a victim, the interval ends when the call reports failure after
+disposal; it is an upper bound on server lock ownership, not a successful commit.
+Those are client timestamps and include return-path overhead. Lock
 acquisition duration includes wait and round trip. RSS is sampled every 10 ms;
 CPU/allocations are process-wide and include instrumentation. SQL Server runs
 in a separate process and is excluded from those client resource figures.
