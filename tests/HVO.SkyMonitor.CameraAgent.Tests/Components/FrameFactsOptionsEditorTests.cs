@@ -7,7 +7,9 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -113,6 +115,52 @@ public sealed class FrameFactsOptionsEditorTests
         Assert.IsEmpty(preview.Payload.RichText!.Corners[1].Lines);
         Assert.AreEqual("UNAVAILABLE MISSING", string.Concat(preview.Payload.RichText.Corners[2].Lines[0].Runs.Select(run => run.Text)));
         StringAssert.StartsWith(preview.Image, "data:image/jpeg;base64,", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task PendingFactsUploadCannotRelabelAMissingPreviewAsLoadedFacts()
+    {
+        using var context = Context();
+        var form = Form();
+        form.Set("topLeftTemplate", "{{capture.sequence}}");
+        var cut = context.Render<FrameFactsOptionsEditor>(parameters => parameters.Add(editor => editor.Form, form));
+        var pending = PendingFile(Snapshot());
+        var upload = cut.InvokeAsync(() => cut.FindComponent<InputFile>().Instance.OnChange.InvokeAsync(new InputFileChangeEventArgs([pending.File])));
+        try
+        {
+            await pending.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        }
+        finally { pending.Release.TrySetResult(); }
+        await upload.ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".preview-image"), "An in-flight upload must never label an earlier missing-fact image with the new snapshot identity.");
+        await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".preview-text").TextContent, "42", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task NewerFrozenFileWinsWhenAnOlderQueuedUploadCompletesLast()
+    {
+        using var context = Context();
+        var form = Form();
+        form.Set("topLeftTemplate", "{{capture.sequence}}");
+        var cut = context.Render<FrameFactsOptionsEditor>(parameters => parameters.Add(editor => editor.Form, form));
+        var older = PendingFile(FrameFactsEditorPreview.MissingSnapshot());
+        var newer = PendingFile(Snapshot());
+        var first = cut.InvokeAsync(() => cut.FindComponent<InputFile>().Instance.OnChange.InvokeAsync(new InputFileChangeEventArgs([older.File])));
+        await older.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var second = cut.InvokeAsync(() => cut.FindComponent<InputFile>().Instance.OnChange.InvokeAsync(new InputFileChangeEventArgs([newer.File])));
+        try
+        {
+            await newer.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            newer.Release.TrySetResult();
+            await second.ConfigureAwait(false);
+        }
+        finally { older.Release.TrySetResult(); newer.Release.TrySetResult(); }
+        await first.ConfigureAwait(false);
+        await cut.Find("button").ClickAsync(new()).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".preview-text").TextContent, "42", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".snapshot-identity").TextContent, Snapshot().IdentitySha256, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -235,6 +283,27 @@ public sealed class FrameFactsOptionsEditorTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InFlightCompilationCannotRestoreAPlanOrConversionAfterTheDraftChanges(bool conversion)
+    {
+        using var context = Context();
+        var service = Configure(context, LegacyPipeline());
+        var completion = new TaskCompletionSource<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingPlanPreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PendingPreview = completion.Task;
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var pending = conversion ? cut.Find("#frame-facts button").ClickAsync(new())
+            : cut.Find("form").TriggerEventAsync("onsubmit", EventArgs.Empty);
+        await cut.Find("input[aria-label='Node identifier']").ChangeAsync(new() { Value = "new-id" }).ConfigureAwait(false);
+        completion.SetResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingPlanPreview>.Success(
+            new(service.RevisionDetail!.Pipeline.SchemaVersion, service.RevisionDetail.Pipeline.DependencyPolicy, new string('A', 64), new string('B', 64), [], [])));
+        await pending.ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(conversion ? ".conversion-review" : ".editor-preview"));
+        Assert.AreEqual("new-id", cut.Find("input[aria-label='Node identifier']").GetAttribute("value"));
+        Assert.IsEmpty(service.Created);
+    }
+
+    [TestMethod]
     public void DeepLinkLoadsActiveRevision()
     {
         using var context = Context();
@@ -274,6 +343,26 @@ public sealed class FrameFactsOptionsEditorTests
         new CaptureProcessingStepConfig("OverlayManifest", "manifest", 80, DependsOn: ["facts"]),
         new CaptureProcessingStepConfig("PresentationMaterializer", "materialized", 90, DependsOn: ["facts"])
     ]);
+
+    private sealed record PendingUpload(IBrowserFile File, TaskCompletionSource Started, TaskCompletionSource Release);
+
+    private static PendingUpload PendingFile(FrameFactsSnapshotV1 snapshot)
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(snapshot, SnapshotJson);
+        var stream = new Mock<Stream>();
+        stream.Setup(value => value.CopyToAsync(It.IsAny<Stream>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Stream destination, int _, CancellationToken cancellationToken) =>
+            {
+                started.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+                await destination.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            });
+        var file = new Mock<IBrowserFile>();
+        file.Setup(value => value.OpenReadStream(It.IsAny<long>(), It.IsAny<CancellationToken>())).Returns(stream.Object);
+        return new(file.Object, started, release);
+    }
 
     private static BunitContext Context()
     {

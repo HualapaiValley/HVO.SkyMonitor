@@ -14,6 +14,8 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
     private static readonly string[] LayoutKeys = ["widthPixels", "heightPixels", "inset", "lineSpacing"];
     private FrameFactsSnapshotV1 _snapshot = FrameFactsEditorPreview.MissingSnapshot();
     private bool _loaded;
+    private bool _loadingFacts;
+    private long _factsLoadGeneration;
     private string? _image;
     private string? _error;
     private PresentationLayerPayloadV1? _payload;
@@ -33,7 +35,9 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
 
     private async Task LoadFactsAsync(InputFileChangeEventArgs args)
     {
+        var generation = ++_factsLoadGeneration;
         ClearPreview();
+        _loadingFacts = true;
         // A rejected replacement must not leave an older snapshot looking like the newly selected file.
         _snapshot = FrameFactsEditorPreview.MissingSnapshot();
         _loaded = false;
@@ -41,18 +45,31 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
         {
             await using var input = args.File.OpenReadStream(FrameFactsEditorPreview.MaximumInputBytes);
             using var buffer = new MemoryStream();
-            await input.CopyToAsync(buffer).ConfigureAwait(false);
-            _snapshot = FrameFactsEditorPreview.ReadSnapshot(buffer.ToArray());
+            // Publish the snapshot and loading state together on the renderer's serialized context.
+            await input.CopyToAsync(buffer).ConfigureAwait(true);
+            var snapshot = FrameFactsEditorPreview.ReadSnapshot(buffer.ToArray());
+            if (generation != _factsLoadGeneration) return;
+            _snapshot = snapshot;
             _loaded = true;
         }
         catch (Exception exception) when (exception is ArgumentException or System.Text.Json.JsonException or InvalidDataException or IOException)
         {
-            _error = "Retained facts rejected: " + exception.Message;
+            if (generation == _factsLoadGeneration) _error = "Retained facts rejected: " + exception.Message;
+        }
+        finally
+        {
+            if (generation == _factsLoadGeneration)
+            {
+                _loadingFacts = false;
+                _image = null;
+                _payload = null;
+            }
         }
     }
 
     private void Preview()
     {
+        if (_loadingFacts) return;
         ClearPreview();
         try { (_image, _payload) = FrameFactsEditorPreview.Render(Form, _snapshot); }
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException or InvalidOperationException)

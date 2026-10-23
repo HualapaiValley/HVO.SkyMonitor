@@ -78,8 +78,8 @@ capture or a live image. Before a facts file is loaded, every scalar is explicit
 Optionally load a retained `presentation-metadata-facts-v3` JSON product or a
 `frame-facts-snapshot-v1` JSON snapshot (at most 1 MiB). Obtain retained products
 from the existing artifact download/read path. The catalogue and content
-identity are validated. The displayed snapshot identity stays fixed while you
-edit. Invalid files clear the old preview and return to missing evidence;
+identity are validated. Preview becomes available after the file finishes validation. The displayed
+snapshot identity stays fixed while you edit. Invalid files clear the old preview and return to missing evidence;
 legacy facts v2 have no rich snapshot and are rejected with that explanation.
 The input exists only in the current form; it is not saved in the pipeline or a
 separate settings store. Editing a rendering option clears the former preview.

@@ -24,6 +24,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private string? _savePayload;
     private IJSObjectReference? _module;
     private bool _graphChanged;
+    private long _draftGeneration;
     private CapturePipelineConfig? _conversion;
     private string? _conversionBefore;
     private ElementReference _conversionReview;
@@ -88,6 +89,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private void FormChanged()
     {
+        _draftGeneration++;
         _plan = null;
         _previewedPipeline = null;
         _message = null;
@@ -106,15 +108,17 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             return;
         }
         _busy = true;
+        var generation = _draftGeneration;
         try
         {
             var converted = FrameFactsDraftConversion.Convert(pipeline);
-            var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(false);
+            var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(true);
             if (preview.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
+            if (generation != _draftGeneration) return;
             if (!preview.IsSuccess)
             {
                 SetMessage(preview.Message ?? "The converted draft could not compile.", true);
@@ -209,14 +213,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             return;
         }
         _busy = true;
+        var generation = _draftGeneration;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(true);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
+            if (generation != _draftGeneration) return;
             if (result.IsSuccess && result.Value is not null)
             {
                 _plan = result.Value;

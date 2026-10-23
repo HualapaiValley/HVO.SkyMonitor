@@ -71,10 +71,10 @@
     }
     <section class="frozen-preview" aria-label="Frozen Frame Facts preview">
         <h4>Frozen-fact preview</h4>
-        <p>@(_loaded ? "Using the loaded retained snapshot. It stays fixed while you edit." : "No retained facts loaded: every scalar is MISSING. This is not a live capture preview.")</p>
+        <p>@(_loadingFacts ? "Loading retained facts. Preview is available after validation finishes." : _loaded ? "Using the loaded retained snapshot. It stays fixed while you edit." : "No retained facts loaded: every scalar is MISSING. This is not a live capture preview.")</p>
         <p class="snapshot-identity">Snapshot: <code>@_snapshot.IdentitySha256</code></p>
-        <label>Retained facts JSON (optional, at most 1 MiB)<InputFile OnChange="LoadFactsAsync" accept=".json,application/json" /></label>
-        <button type="button" class="btn btn-outline-light" @onclick="Preview">Render frozen preview</button>
+        <label>Retained facts JSON (optional, at most 1 MiB)<InputFile OnChange="LoadFactsAsync" accept=".json,application/json" disabled="@_loadingFacts" /></label>
+        <button type="button" class="btn btn-outline-light" disabled="@_loadingFacts" @onclick="Preview">Render frozen preview</button>
         @if (_error is not null) { <p class="option-errors" role="alert">@_error</p> }
         @if (_image is not null && _payload is not null)
         {
