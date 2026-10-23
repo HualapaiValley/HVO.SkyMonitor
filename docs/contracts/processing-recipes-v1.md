@@ -60,6 +60,7 @@ filesystem, logging, stream, or disposable Skia types.
 | `reference-calibration` | Transform | Raw plus named bias, dark, flat, defect, and profile inputs | Packed calibrated linear frame | O(pixels), five borrowed frames plus one output |
 | `encoded-preview` | Transform | Raw or calibrated | JPEG by default; packed compatibility projection | O(pixels), Mono16 input/histogram/display/output or CFA input/mosaic/RGB/output; JPEG may add one RGBA/native codec copy |
 | `annotation` | Transform | Raw, calibrated, combined, or exact preview result | JPEG by default; packed compatibility projection | O(pixels + rendered geometry), input/display/mask/output; hosts supply projected geometry |
+| `mixed-gain-normalized-mean` | Window, opt-in | Frozen ordered raw inputs, per-gain family masters and normalization plan | Packed combined frame, bounded diagnostic JSON and two UInt8 support rasters | O(pixels x sources), bounded row bands/distinct master tuples plus combined/count/mask outputs (4 bytes per photosite total) |
 | `rolling-mean` | Window | Explicit ordered compatible linear sources | Packed combined linear frame | O(pixels x sources), sources plus UInt64 accumulator and one output; no source is retained |
 | `image-quality` | Analyzer | Any supported unpacked image | Canonical JSON integer statistics | O(samples), no full-frame output |
 | `no-op-analyzer` | Analyzer | Any explicit input | Canonical JSON acknowledgement | O(1), no full-frame allocation |
@@ -86,6 +87,93 @@ versioned orientation profile is introduced. An orientation change still changes
 axes and resets the window.
 The arithmetic is a linear integer mean using UInt64 accumulation. Registration,
 sigma clipping, dark subtraction, and motion compensation are not implicit.
+
+## Mixed-Gain Normalized Mean
+
+CameraAgent's `RollingCombination` step opts in with `options.recipe` set to
+`mixed-gain-normalized-mean`; the default remains `rolling-mean`. It requires raw
+inputs, a durable execution, an explicitly activated calibration family and an
+available virtual gain response. A minimal configured step is:
+
+```json
+{
+  "id": "night-stack",
+  "type": "RollingCombination",
+  "dependsOn": ["$raw"],
+  "options": {
+    "recipe": "mixed-gain-normalized-mean",
+    "windowSize": 3,
+    "windowKind": "Trailing",
+    "outputVariant": "mixed-gain"
+  }
+}
+```
+
+The plan freezes every candidate's gain, exposure, descriptor and payload hashes,
+selection or exclusion, exact bias/dark/flat/defect masters and hashes, response,
+fixed-point coefficients and arithmetic policy. Raw inputs are calibrated at their
+own gain in signed electron space, then averaged with equal weights per valid
+photosite. Bias and dark are subtracted before normalization; RGGB lanes stay at
+their original photosites. There is no raw, nearest-gain or guessed fallback.
+
+The UInt16 output is **reference gain 0, ×16**: one output code is 1/16 of a
+reference-gain stored code. It is neither a native camera code nor an electron
+count. Signed signals survive until the final mean, which rounds ties to even
+and clips to [0, 65535]. A stack admits only coefficients within validated response
+coverage with `max(k)/min(k) <= 4`; exposure, offset, temperature setpoint, layout,
+rig/orientation, sensor, mask, location, processing profile and calibration family
+remain compatibility boundaries. A trailing window stops at a bound; a centered
+window must retain every required position after exclusions.
+
+Stored-light saturation is tested before correction. Saturated, defective and
+invalid-flat samples contribute neither signal nor weight. A photosite without
+any valid sample is encoded as zero, **meaning no measurement**, and is counted
+separately from output clipping. Zero output alone does not establish zero flux.
+The companion `mixed-gain-diagnostics-v1` JSON metadata product records per-input
+saturated and other invalid sample counts, product clipped-low/clipped-high and
+no-coverage counts, and the plan identity plus combined output identity/checksum.
+Counts aggregate all row bands and refer to original photosites. The metadata
+product and the support maps cannot enter a rolling pixel window: they have
+`Metadata` role, whereas rolling image inputs require Raw, Calibrated or Combined.
+Two retained raster companions preserve exact per-photosite support:
+
+- `valid-counts-u8-row-major-v1`: one UInt8 contributor count (0–128) per original
+  photosite, in row-major order with stride equal to width.
+- `no-coverage-u8-row-major-v1`: one UInt8 flag per original photosite, 1 when
+  contributor count is zero, otherwise 0. This is a byte raster, not a bitset.
+
+Both use a Mono8 layout carrying the original width/height, no CFA, and exactly
+`width * height` bytes. Their media type is `application/vnd.hvo.mixed-gain-support`;
+the encoding version is an explicit `support-encoding` algorithm. Each map is at
+most 1,073,741,823 bytes (the combined UInt16 output must also fit a checked Int32
+byte array); actual supported capture geometry and storage constraints still
+apply. They use the existing reconstructable raster publication path, so the
+4 MiB structured-metadata upload limit is unchanged. The companion JSON uses
+CameraAgent's local metadata manifest; this feature does not add central structured
+metadata ingestion or automatic upload policies. Extra result memory is two
+bytes per photosite, plus bounded band buffers and the combined UInt16 result.
+The small JSON companion binds both map output identities, checksums, byte lengths
+and geometry to the plan and combined image. All four products retain exact
+ordered raw/master lineage. Variants include a hash of the configured output
+variant so multiple stack nodes have distinct companion variants. Execution
+detail reads at most 32 KiB of diagnostic JSON and never loads support rasters.
+A retention hold on the Combined payload or its sidecar also retains its exact
+diagnostic/count/mask companions. Other windows and unrelated metadata do not
+inherit the hold; companions expire normally after it is released.
+A zero image code with count 1/mask 0 is a measured zero; count 0/mask 1 means no
+measurement. Both maps are reproduced byte for byte in archived replay.
+Execution detail's Stage summary
+shows these counts and frozen frame exclusions (including missing masters,
+coefficient ratio and identity mismatches); failures before a plan is frozen
+remain visible as the recorded stage reason. Missing or corrupt diagnostic
+payloads show unavailable counts, never fabricated zeros. Older executions can
+have a plan without a diagnostic companion.
+
+Archived replay uses the original plan and retained payloads, never today's
+family, masters, configuration or gain controller. Combined bytes are reproduced
+exactly; new diagnostics are additional evidence. See
+[Reference Calibration v1](reference-calibration-v1.md#mixed-gain-calibration-families)
+and [the phase-2 acceptance audit](../validation/mixed-gain-1475.md).
 
 ## Reference Calibration
 

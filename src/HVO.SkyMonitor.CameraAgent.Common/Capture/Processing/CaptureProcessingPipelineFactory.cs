@@ -822,9 +822,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             : GetOutputs(graphStep).Select(output => new ProcessingGraphProductContract(
                 output.Role,
                 output.Variant,
-                output.Role == FrameArtifactRole.Metadata
+                output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata
                     ? ProcessingProductKind.Metadata
-                    : ProcessingProductKind.PixelData,
+                    : ProcessingProductKind.PixelData),
                 ResolveRecipeDefinition(output, item.Config.Type, operationKind),
                 output.SchemaVersion,
                 output.SharedAlgorithms?.ToImmutableArray() ?? [],
@@ -911,7 +911,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         ? GetOutputs(producerStep).Select(output => new ProcessingGraphProductContract(
                             output.Role,
                             output.Variant,
-                            output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData,
+                            output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData),
                             ResolveRecipeDefinition(
                                 output,
                                 producer.Config.Type,
