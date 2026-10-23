@@ -114,7 +114,9 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
         }
         catch (Exception exception) when (exception is not (PartialPrepareCrashException or OutOfMemoryException))
         {
-            if (ledger is not null)
+            // A failed mirror write leaves one recoverable generation. Publishing another failure generation
+            // before its commit exists would create a gap and destroy the resume proof.
+            if (ledger is not null && !state.PublicationInProgress)
             {
                 ledger["phaseStatus"] = "failed"; ledger.Remove("completedAt");
                 try { state.Publish(ledger); } catch (Exception publication) when (publication is InstallerException or IOException or UnauthorizedAccessException) { /* Preserve the original failure; ledger publication is resumable. */ }

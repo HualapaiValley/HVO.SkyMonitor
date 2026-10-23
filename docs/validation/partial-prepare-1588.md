@@ -49,7 +49,7 @@ in C#, using `DeploymentTarget`, `PreparedTarget` and `PrepareCreation` contract
 Additional focused cases cover committed-publication tampering, orphan files,
 next-generation recovery at all four publication boundaries, interrupted quarantine renames for all five objects, run/remote flock,
 symlinks/hardlinks/modes, private-upload registry links, later-phase refusal and
-cancellation after intent. `ExitCodeContractTests` includes this command in its
+cancellation after intent. A mirror-publication failure retains one recoverable generation instead of stacking a second uncommitted failure generation. `ExitCodeContractTests` includes this command in its
 complete 0/1/2/3/130 matrix and preserves the existing host-policy refusal gate.
 The explicit abrupt-publication failpoint returns 75, as the shell publisher did.
 

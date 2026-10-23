@@ -318,6 +318,18 @@ public sealed class PartialPrepareRecoveryTests
         await Assert.ThrowsExactlyAsync<PartialPrepareCrashException>(() => host.RunAsync()); Assert.IsTrue(fired); host.BeforePrimitive = null;
         await host.RunAsync(); Assert.IsFalse(Directory.Exists(host.Physical(host.Prepared[0].RuntimeRoot)));
     }
+    [TestMethod]
+    [DataRow("ledger")]
+    [DataRow("manifest")]
+    [DataRow("evidence")]
+    public async Task PublicationError_DoesNotStackUncommittedGenerations(string point)
+    {
+        using var host = new DeploymentFakeHost(); await host.StageAsync();
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => host.RunAsync(boundary: name => { if (name == "abrupt-after-partial-prepare-cleanup-" + point) throw Error("publication-failed"); }));
+        var ledger = Parse(DeploymentFakeHost.Read(host.StateRoot + "/partial-prepare-cleanup-ledger.json"));
+        Assert.AreEqual(1, ledger["publicationGeneration"]!.GetValue<int>());
+        await host.RunAsync();
+    }
     private sealed class MissingTempRunner : IProcessRunner
     {
         public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken token) =>

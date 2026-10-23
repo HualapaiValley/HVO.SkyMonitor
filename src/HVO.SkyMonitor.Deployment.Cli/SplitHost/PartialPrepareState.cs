@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal sealed class PartialPrepareState : IDisposable
 {
+    public bool PublicationInProgress { get; private set; }
     private readonly SafeFileHandle runLock;
     private readonly string state;
     private readonly string evidence;
@@ -95,11 +96,12 @@ internal sealed class PartialPrepareState : IDisposable
     public void Publish(JsonObject ledger)
     {
         if (ledger.Text("phaseStatus") == "passed") RequireNoLaterPhase();
+        PublicationInProgress = true;
         ledger["updatedAt"] = Now(); ledger["publicationGeneration"] = ledger["publicationGeneration"]!.GetValue<int>() + 1;
         Write(Ledger, ledger); boundary("abrupt-after-" + prefix + "-ledger");
         Write(Manifest, ledger); boundary("abrupt-after-" + prefix + "-manifest");
         Write(Evidence, ledger); boundary("abrupt-after-" + prefix + "-evidence");
-        Write(Commit, CommitFor(ledger)); boundary("abrupt-after-" + prefix + "-commit");
+        Write(Commit, CommitFor(ledger)); PublicationInProgress = false; boundary("abrupt-after-" + prefix + "-commit");
     }
     public void Dispose() => runLock.Dispose();
 }
