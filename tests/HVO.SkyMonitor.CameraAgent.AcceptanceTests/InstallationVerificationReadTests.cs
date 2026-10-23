@@ -50,7 +50,7 @@ public sealed class InstallationVerificationReadTests
             using var trace = StartTrace("repeat")!;
             var repeated = await fixture.ReadAsync(client).ConfigureAwait(false);
             Assert.AreEqual(first.GetRawText(), repeated.GetRawText());
-            Assert.AreEqual(2, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
+            Assert.AreEqual(1, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
             Assert.AreEqual(1, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "deployment-location.validate-retained-journal"));
         }
         fixture.Loader.DelayNextRead();
@@ -83,7 +83,9 @@ public sealed class InstallationVerificationReadTests
             35.6, -113.9, 600, "America/Phoenix", manual.KnownVersion, manual.ManualSequence,
             "issue-1559-change", "disposable-test", "Actual retained location edit"), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(ManualDeploymentLocationStatus.Applied, locationChange.Status);
+        using var relocatedTrace = StartTrace("manual-location-change")!;
         var relocated = await fixture.ReadAsync(client).ConfigureAwait(false);
+        Assert.AreEqual(2, stages.ForTrace(relocatedTrace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
         Assert.IsGreaterThan(changed.GetProperty("deploymentLocationVersion").GetInt64(), relocated.GetProperty("deploymentLocationVersion").GetInt64());
         Assert.AreNotEqual(changed.GetProperty("deploymentLocationSha256").GetString(), relocated.GetProperty("deploymentLocationSha256").GetString());
         Assert.AreEqual(changed.GetProperty("configurationSha256").GetString(), relocated.GetProperty("configurationSha256").GetString());

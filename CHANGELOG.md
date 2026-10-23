@@ -115,6 +115,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- CameraAgent configuration reads reuse annual schedule validation within a load when the schedule, rig compatibility inputs and complete effective observer are unchanged, reducing duplicate work while retaining protected-state validation. (#1591)
+
 - Star labels require an eligible measured stellar association; optional expected-position diagnostics label unmeasured stars explicitly as expected. The opt-in measured-association recipe preserves capture, scene and catalog lineage through durable edge publication and authorized central processing. (#1540)
 
 - A space-weather refresh uses less CPU and memory. Measured on a stress tick with a 1 MiB alerts body, it allocates

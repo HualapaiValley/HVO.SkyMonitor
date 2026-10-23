@@ -136,6 +136,93 @@ public sealed class FileCameraAgentScheduleReuseTests
         Assert.AreEqual(4, fixture.Store.Calls);
     }
 
+    [TestMethod]
+    public async Task CallerCancellationDuringRetainedInitializationRemainsEffective()
+    {
+        using var fixture = new LoaderFixture(solar: false);
+        fixture.Store.Delay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var expansions = new ExpansionCounter();
+        using var cancellation = new CancellationTokenSource();
+        var loader = fixture.CreateLoader();
+        var pending = loader.LoadAsync(cancellation.Token);
+        await fixture.Store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
+        Assert.AreEqual(1, expansions.Count);
+        fixture.Store.Delay.SetResult();
+        _ = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, expansions.Count);
+    }
+
+    [TestMethod]
+    public async Task FutureDateExceptionsAreExpandedBeforeRetainedInitialization()
+    {
+        using var fixture = new LoaderFixture(solar: false);
+        await fixture.EditAsync(node => node["schedule"]!["dateExceptions"] = JsonNode.Parse("""
+            [{"id":"future","date":"2027-01-01","forceClosed":false,"windows":[
+              {"id":"negative","start":{"kind":"FixedLocalTime","localTime":"12:00:00"},
+               "end":{"kind":"FixedLocalTime","localTime":"11:00:00"},"setpointProfileId":"continuous"}]}]
+            """)).ConfigureAwait(false);
+        using var expansions = new ExpansionCounter();
+        var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            fixture.CreateLoader().LoadAsync(CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual("Capture schedule expansion is invalid.", error.Message);
+        Assert.AreEqual(1, expansions.Count, "The annual pass succeeds; the separate future-date pass must still reject the exception.");
+        Assert.AreEqual(0, fixture.Store.Calls);
+    }
+
+    [TestMethod]
+    public async Task SemanticComparisonIncludesNestedScheduleRigControlsAndTimeZoneRules()
+    {
+        using var fixture = new LoaderFixture(solar: false);
+        var config = await fixture.CreateLoader().LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        var observer = config.ResolveObservatory();
+        var original = Capture(config, observer, TimeZoneInfo.Utc);
+        var profiles = config.Schedule!.SetpointProfiles.ToArray();
+        var windows = config.Schedule.WeeklyWindows.ToArray();
+        var schedule = config.Schedule with { SetpointProfiles = profiles, WeeklyWindows = windows };
+        var copy = config with { Schedule = schedule };
+        Assert.IsTrue(original.Matches(Capture(copy, observer with { }, TimeZoneInfo.Utc)),
+            "Equal values in different records/collections must compare equal.");
+        profiles[0] = profiles[0] with { Gain = profiles[0].Gain + 1 };
+        Assert.IsFalse(original.Matches(Capture(copy, observer, TimeZoneInfo.Utc)));
+        profiles[0] = config.Schedule.SetpointProfiles[0];
+        windows[0] = windows[0] with { Start = windows[0].Start with { Offset = TimeSpan.FromMinutes(1) } };
+        Assert.IsFalse(original.Matches(Capture(copy, observer, TimeZoneInfo.Utc)));
+
+        var exceptionWindows = new[] { new CaptureDateScheduleWindow("exception", windows[0].Start, windows[0].End, profiles[0].Id) };
+        copy = config with { Schedule = schedule with
+        {
+            DateExceptions = [new("date-rule", new DateOnly(2027, 1, 1), false, exceptionWindows)],
+            Blackouts = [new("blackout", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddHours(1))]
+        } };
+        var beforeExceptionEdit = Capture(copy, observer, TimeZoneInfo.Utc);
+        exceptionWindows[0] = exceptionWindows[0] with { End = exceptionWindows[0].End with { Offset = TimeSpan.FromMinutes(1) } };
+        Assert.IsFalse(beforeExceptionEdit.Matches(Capture(copy, observer, TimeZoneInfo.Utc)));
+        Assert.IsFalse(original.Matches(Capture(config with { Rig = config.Rig with
+        {
+            Pipeline = config.Rig.Pipeline with { Envelope = config.Rig.Pipeline.Envelope! with { MaxGain = 300 } }
+        } }, observer, TimeZoneInfo.Utc)));
+        Assert.IsFalse(original.Matches(Capture(config with { Rig = config.Rig with
+        {
+            ControlPolicy = config.Rig.ControlPolicy! with { GainControl = AutomaticControlOwnership.Disabled }
+        } }, observer, TimeZoneInfo.Utc)));
+        var response = new ConfiguredSensorResponseProfile("test", 16, 0, 400, 1, 1, 10000, [], 0, "gain", "test");
+        copy = config with { Rig = config.Rig with { Sensor = config.Rig.Sensor with { SimulationResponse = response } } };
+        var beforeRangeEdit = Capture(copy, observer, TimeZoneInfo.Utc);
+        Assert.IsFalse(beforeRangeEdit.Matches(Capture(copy with { Rig = copy.Rig with
+        {
+            Sensor = copy.Rig.Sensor with { SimulationResponse = response with { MaximumGainControl = 300 } }
+        } }, observer, TimeZoneInfo.Utc)));
+        var differentRules = TimeZoneInfo.CreateCustomTimeZone("UTC", TimeSpan.FromHours(1), "UTC", "UTC");
+        Assert.IsFalse(original.Matches(Capture(config, observer, differentRules)),
+            "The same time-zone identifier with different resolved rules cannot reuse validation.");
+    }
+
+    private static FileCameraAgentConfigurationLoader.ScheduleCompatibilityInputs Capture(
+        CameraModuleConfig config, ObservatoryLocation observer, TimeZoneInfo timeZone)
+        => FileCameraAgentConfigurationLoader.ScheduleCompatibilityInputs.Capture(config, observer, timeZone);
+
     private sealed class ExpansionCounter : IDisposable
     {
         private readonly ActivityListener _listener;
@@ -200,11 +287,13 @@ public sealed class FileCameraAgentScheduleReuseTests
         internal ObservatoryLocation Observer { get; set; } = LoaderFixture.Observer;
         internal bool Cancel { get; set; }
         internal TaskCompletionSource? Delay { get; set; }
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource AllEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public DeploymentLocationSnapshot? Active => null;
         public async ValueTask<DeploymentLocationSnapshot> InitializeAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref _calls) == 4) AllEntered.TrySetResult();
+            Entered.TrySetResult();
             if (Cancel) throw new OperationCanceledException(cancellationToken);
             if (Delay is not null) await Delay.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return DeploymentLocationSnapshot.Create(seed.LocationId, 2, seed.Source, seed.HorizontalAccuracyMeters,
