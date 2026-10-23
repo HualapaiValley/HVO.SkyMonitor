@@ -379,6 +379,15 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
+BuildKit shell-form `RUN`, `COPY`, `ADD` and their `ONBUILD` forms consume
+heredoc bodies in declaration order. Quoted/escaped delimiters, file descriptors,
+whitespace after `<<`, `<<-` tab stripping and exact LF/CRLF terminators are
+recognized; payload text never becomes an instruction. JSON forms and quoted
+literal `<<` words do not introduce bodies. Unterminated bodies report the
+opener's source line. Unsupported shell expansion in heredoc headers and malformed heredoc
+forms fail explicitly. The offline contracts retain representative inputs also
+checked independently against the real BuildKit parser; see
+[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
