@@ -290,6 +290,8 @@ public sealed class PartialPrepareRecoveryTests
         Assert.IsNotNull(repository);
         var runner = new ProcessRunner(); var revision = await runner.RunAsync("git", ["-C", repository.FullName, "rev-parse", "HEAD"], CancellationToken.None);
         host.Inventory["source"]!["revision"] = revision.StandardOutput.Trim(); host.Inventory["images"]!["tag"] = "rev-" + revision.StandardOutput.Trim();
+        host.Inventory["secretSource"]!["path"] = host.Directory + "/deploy.env";
+        DeploymentFakeHost.Write(host.Directory + "/deploy.env", string.Concat(host.Inventory["secretSource"]!.Array("requiredReferences").Select(n => n!.GetValue<string>() + "=fixture-only\n")));
         await host.StageAsync();
         var gitState = await runner.RunAsync("git", ["-C", repository.FullName, "status", "--porcelain"], CancellationToken.None);
         foreach (var path in new[] { host.StateRoot + "/manifest.json", host.EvidenceRoot + "/preflight.json" })
