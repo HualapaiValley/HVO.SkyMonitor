@@ -53,6 +53,7 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
+    [DataRow("WeatherCloudOverlay")]
     public void TogglePanelSavesOnlyTheEditedMemberWithAccessibleLabels(string alias)
     {
         using var context = new BunitContext();
@@ -79,6 +80,7 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
+    [DataRow("WeatherCloudOverlay")]
     public void UnchangedSaveAndRestoredToggleDoNotMaterializeDefaults(string alias)
     {
         using var context = new BunitContext();
@@ -123,6 +125,7 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
+    [DataRow("WeatherCloudOverlay")]
     public void DeniedRevisionShowsNoOptionsOrSave(string alias)
     {
         using var context = new BunitContext();
@@ -131,6 +134,66 @@ public sealed class CaptureScalarOptionsEditorTests
         var cut = context.Render<ProcessingGraphEditorPage>();
         StringAssert.EndsWith(context.Services.GetRequiredService<NavigationManager>().Uri, "/Account/AccessDenied", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll(".node-options"));
+        Assert.IsEmpty(service.Created);
+    }
+
+    [TestMethod]
+    public void WeatherOverlayDeepLinkEditsVisualFieldsAndRetainsAccessibleBrowserFixture()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "WeatherCloudOverlay", """{ "LineThickness":1, "future":[1e+02], "outputEncoding":"Packed" }""");
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay");
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        Assert.IsNotNull(cut.Find("#weather-cloud-overlay[aria-label='Weather and cloud overlay']"));
+        foreach (var field in new[] { "enabled", "recipeVersion", "outputVariant", "lineThickness", "drawLabels", "maximumLabelCharacters" })
+        {
+            var id = "node-options-0-" + field;
+            Assert.IsNotEmpty(cut.Find("label[for='" + id + "']").TextContent);
+            Assert.AreEqual(id + "-help", cut.Find("#" + id).GetAttribute("aria-describedby"));
+        }
+        StringAssert.Contains(cut.Find("#node-options-0-lineThickness-help").TextContent, "1–8 px", StringComparison.Ordinal);
+        var path = Path.Combine(TestContext.TestResultsDirectory!, "weather-cloud-options.html");
+        File.WriteAllText(path, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><title>Weather overlay options fixture</title><body data-theme='hvo-dark'>" + cut.Markup + "</body></html>");
+        TestContext.AddResultFile(path);
+        cut.Find("#node-options-0-lineThickness").Change("4");
+        cut.Find("#node-options-0-drawLabels").Change(false);
+        cut.Find("#node-options-0-maximumLabelCharacters").Change("12");
+        cut.Find("#node-options-0-outputVariant").Change("weather-custom");
+        cut.Find("#node-options-0-recipeVersion").Change("retained-label");
+        cut.Find("form").Submit();
+        cut.Find("button.btn-primary").Click();
+        var options = service.Created.Single().Pipeline.Steps[0].Options!.Value;
+        Assert.AreEqual(4, options.GetProperty("LineThickness").GetInt32());
+        Assert.IsFalse(options.GetProperty("drawLabels").GetBoolean());
+        Assert.AreEqual(12, options.GetProperty("maximumLabelCharacters").GetInt32());
+        Assert.AreEqual("weather-custom", options.GetProperty("outputVariant").GetString());
+        Assert.AreEqual("retained-label", options.GetProperty("recipeVersion").GetString());
+        Assert.AreEqual("[1e+02]", options.GetProperty("future").GetRawText());
+        Assert.AreEqual("Packed", options.GetProperty("outputEncoding").GetString());
+        Assert.IsFalse(options.TryGetProperty("enabled", out _));
+        Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
+    [DataRow("lineThickness", "0")]
+    [DataRow("lineThickness", "9")]
+    [DataRow("lineThickness", "2.5")]
+    [DataRow("maximumLabelCharacters", "129")]
+    [DataRow("maximumLabelCharacters", "-1")]
+    [DataRow("recipeVersion", " ")]
+    [DataRow("outputVariant", " ")]
+    public void InvalidWeatherOverlayFieldInvalidatesPreview(string field, string value)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "WeatherCloudOverlay", null);
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        cut.Find("#node-options-0-lineThickness").Change("4");
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("#node-options-0-" + field).Change(value);
+        cut.Find("form").Submit();
+        Assert.IsNotEmpty(cut.FindAll(".option-errors li"));
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
         Assert.IsEmpty(service.Created);
     }
 
