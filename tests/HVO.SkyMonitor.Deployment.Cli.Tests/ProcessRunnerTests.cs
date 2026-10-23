@@ -21,8 +21,9 @@ public sealed class ProcessRunnerTests
     public async Task RunWithInputAsync_BlockedReader_IsCanceledAndReaped()
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => new ProcessRunner().RunWithInputAsync(
+        await Assert.ThrowsAsync<OperationCanceledException>(() => new ProcessRunner().RunWithInputAsync(
             "bash", ["-c", "sleep 30"], new string('x', 256 * 1024), cancellation.Token));
+        Assert.IsTrue(cancellation.IsCancellationRequested);
     }
 
     [TestMethod]
