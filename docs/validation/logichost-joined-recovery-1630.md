@@ -41,9 +41,11 @@ published, including their private preservation fingerprints.
 The harness executes `deploy/sql/backup-restore-checkdb.sql` through the existing
 SQL harness: real COPY_ONLY with CHECKSUM, metadata verification, VERIFYONLY,
 FILELISTONLY-derived MOVE, actual separate restore, full CHECKDB and canonical
-claim-row invariants. A guarded test-only substitution omits only the normal
-success-path verification-database drop, so C# can query the restored target;
-the shipped script and its error handling are unchanged. The final owner cleanup
+claim-row invariants. A guarded test-only substitution retains the verification database on both
+success and failure, so C# can query or attribute the restored target. It also
+omits the toolkit cleanup-failure check for that deliberately retained target,
+preserving the sanitized stage error. The shipped script and its standalone
+cleanup behavior are unchanged. The final owner cleanup
 removes that dedicated container, including its source/target databases and backup.
 
 Existing `FilesystemObjectBackup.BackupAsync`, `RestoreAsync` and `VerifyAsync`
@@ -212,6 +214,29 @@ remain for parent review and later lifecycle cleanup.
 
 No production code, provider implementation, migration, dependency or other test
 assembly changed.
+
+## Post-restore failure preservation correction (F1)
+
+Independent review identified that the initial hook retained only the normal
+verification target; the toolkit CATCH still deleted it on a verification
+failure. Native reproduction on `1be29948` returned sanitized error 51266 after
+actual restore, with source and backup present but the target absent. The
+permanent canonical regression
+`SqlFailure_AfterRestorePreservesSourceTargetBackupAndAttribution` was committed
+at `489e5e87` and failed specifically with `postrestore-target-preserved` before
+the hook was corrected. Its Release build was warning-clean. Failed resources
+were retained until their attribution/ownership was checked, then the exact
+label-matched container and run tree were removed; the private receipt and
+failure logs remain in registered evidence scratch.
+
+The correction extends only the test hook to retain the CATCH target and skip
+its intentional-retention cleanup-failure guard. The standalone SQL script is
+byte-identical. The new control uses the canonical corpus and semantic facts,
+verifies the original safe error, both database contents, backup bytes,
+object/host files and the private attribution receipt before exact owned cleanup.
+It supplements the 32 admission refusal cases; it does not add production
+interrupted-restore behavior. Declared Integration inventory becomes 957,
+including 584 in the LogicHost assembly.
 
 ## Limits and parent acceptance
 

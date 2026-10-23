@@ -294,11 +294,21 @@ internal sealed partial class JoinedRecoveryFixture
 
     private static string RetainTarget(string script)
     {
-        // The shipped primitive drops its verification database after CHECKDB/invariants. Replace only
-        // that normal-path drop, leaving backup, FILELISTONLY/MOVE, CHECKDB and failure handling intact.
-        const string drop = "    EXEC sys.sp_executesql @dropSql;";
-        Require(script.Split(drop, StringSplitOptions.None).Length == 2, "toolkit-retain-anchor");
-        return script.Replace(drop, "    PRINT N'Test-only joined validation retains its disposable target.';", StringComparison.Ordinal);
+        // The standalone toolkit owns verification-database cleanup on success and error. This
+        // joined test retains both paths for attribution; only its exact container cleanup deletes
+        // the target. Keep the toolkit's safe stage error instead of its cleanup-failure diagnostic.
+        var replacements = new (string Anchor, string Replacement)[]
+        {
+            ("    EXEC sys.sp_executesql @dropSql;", "    PRINT N'Test-only joined validation retains its disposable target.';"),
+            ("            EXEC sys.sp_executesql @cleanupSql;", "            PRINT N'Test-only joined validation retains its failed target.';"),
+            ("    IF DB_ID(@restoredDatabase) IS NOT NULL SET @cleanupFailed = 1;", "    -- Test-only target retention is intentional, not a cleanup failure.")
+        };
+        foreach (var (anchor, replacement) in replacements)
+        {
+            Require(script.Split(anchor, StringSplitOptions.None).Length == 2, "toolkit-retain-anchor");
+            script = script.Replace(anchor, replacement, StringComparison.Ordinal);
+        }
+        return script;
     }
 
     internal async Task<RestoredFiles> RestoreFilesAsync(string label)
