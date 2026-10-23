@@ -45,3 +45,6 @@ key it finds around a value the first stage hid can never show that value again.
 
 Nested matching accepts the temporary removed-decoration boundary before or inside
 an inner credential key. The boundary is removed only after the value is hidden.
+The outer key may also use whitespace alone (`token db_password\t"a b"`);
+the complete quoted value is hidden before the outer key can consume the inner
+key, and the existing truncation marker keeps later composed reasons hidden.
