@@ -1,0 +1,89 @@
+{
+  "version": "frame-facts-editor-acceptance-v1",
+  "dateUtc": "2026-10-23",
+  "base": "3686e19a57b4c9c9ea0d4324755278c288827661",
+  "browser": "T3 collaborative Chromium",
+  "fixture": {
+    "seed": 106,
+    "width": 1936,
+    "height": 1216,
+    "pixelFormat": "Mono16",
+    "exposureSeconds": 0.005,
+    "gain": 1,
+    "intervalSeconds": 3,
+    "window": 1,
+    "catalogRows": 9
+  },
+  "cancel": {
+    "canceled": true,
+    "focus": "Review whole-draft Frame Facts conversion",
+    "corners": 0
+  },
+  "saved": {
+    "saved": "/operations/pipeline/graphs/ECADC547F43EEAFBB95077564C818AAA3B644DDA1984BDC4402D92A53CA6692F",
+    "disabled": true,
+    "source": "Started from revision 81626DC025A6BDF78365EBF082899D0EFDF9B0BE797BEE6BB4C82F34D88E1CBA. Only edited options change; unknown options and step aliases are preserved. Saving creates a new revision."
+  },
+  "parity": {
+    "hash": "b1e048662dc1ab342bfdce01ad896bd580d9c7e2016a9794106b5a33e8652c53",
+    "snapshot": "Snapshot: 30D11ACA5B32E93DCFD6A1632783F66AB9AA75668DD453A44A14B86750AC904C",
+    "text": "TopLeft\nUTC 15:16:47\nGAIN 1.0\nTopRight\nFRAME 37\nBottomLeft\nEXPOSURE 0.005 S\nUNAVAILABLE MISSING\nBottomRight\n1936 x 1216\n2026-10-23",
+    "dimensions": [
+      1936,
+      1216
+    ]
+  },
+  "deepLink": {
+    "link": "/operations/pipeline/graphs/new?section=frame-facts#frame-facts",
+    "title": "Current sky"
+  },
+  "dialog": {
+    "focusInDialog": true,
+    "text": "REGISTRY-VERSION CONFIRMATION\n\nValidate this draft?\n\nValidation compiles the immutable definition against this CameraAgent and records the result. No live behaviour changes.\n\nREVISION\nECADC547F43EEAFBB95077564C818AAA3B644DDA1984BDC4402D92A53CA6692F\nEXPECTED REGISTRY VERSION\n1\nReason\nConfirm validate\nCancel"
+  },
+  "viewer": {
+    "url": "/Account/AccessDenied",
+    "title": "Access denied",
+    "text": "LOCAL OWNER\n\nAccess denied\nYou do not have access to this resource.\nReturn to login"
+  },
+  "narrow390": {
+    "width": 390,
+    "documentWidth": 390,
+    "diagramWidth": 348.40625,
+    "fileInputWidth": 267.21875,
+    "cornerColumns": "290.016px",
+    "labels": [
+      "Top left template",
+      "Top right template",
+      "Bottom left template",
+      "Bottom right template"
+    ]
+  },
+  "narrow320": {
+    "width": 320,
+    "documentWidth": 320,
+    "diagramWidth": 278.40625,
+    "fileInputWidth": 197.21875,
+    "cornerColumns": "220.016px",
+    "labels": [
+      "Top left template",
+      "Top right template",
+      "Bottom left template",
+      "Bottom right template"
+    ]
+  },
+  "errors": {
+    "errors": [
+      "processing.options.not-allowed effectiveOptions: TopLeft: frame-facts.line-too-long at 64. (Parameter 'corner')"
+    ],
+    "staleImage": false,
+    "saveDisabled": true
+  },
+  "console": [],
+  "rollback": {
+    "text": "IMMUTABLE GRAPH REGISTRY\n\nNamed graphs\n\nEvery processing graph revision this CameraAgent knows, its lifecycle, and its immutable identities. Exactly one revision is live at a time; activation, rollback, and retirement are confirmed against the registry version you saw.\n\nRefresh\nPipeline\nProcessing executions\nNew draft graph\nRollback applied to configured-basic 9A92F34A3E526D9A.\nMODE\nNamed\nACTIVE REVISION\n81626DC025A6BDF78365EBF082899D0EFDF9B0BE797BEE6BB4C82F34D88E1CBA\nCONFIGURED BASIC REVISION\n81626DC025A6BDF78365EBF082899D0EFDF9B0BE797BEE6BB4C82F34D88E1CBA\nREGISTRY VERSION\n3\nREVISIONS\n2\nRevisions\nGraph revisions, newest first\nGRAPH\tLIFECYCLE\tDEFINITION SHA-256\tCREATED\tVALIDATED\tACTIVATED\tRETIRED\tACTIONS\nconfigured-basic 9A92F34A3E526D9A-next\nECADC547F43EEAFBB95077564C818AAA3B644DDA1984BDC4402D92A53CA6692F\tVALIDATED\t0BCF8F67CD60\t23 Oct 2026 08:16:30 -07:00 (America/Phoenix)\t23 Oct 2026 08:16:44 -07:00 (America/Phoenix)\t23 Oct 2026 08:16:45 -07:00 (America/Phoenix)\t-\t\nReview activate\nReview rollback\nRetire\n\nconfigured-basic 9A92F34A3E526D9A\n81626DC025A6BDF78365EBF082899D0EFDF9B0BE797B",
+    "buttons": [
+      "graph-ROLLBACK-ECADC547F43EEAFBB95077564C818AAA3B644DDA1984BDC4402D92A53CA6692F"
+    ]
+  }
+}

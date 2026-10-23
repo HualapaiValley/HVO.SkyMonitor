@@ -165,12 +165,17 @@ public sealed class ConstellationOptionsEditorTests
     {
         using var context = new BunitContext();
         var service = Configure(context, null);
+        service.Registry = service.Registry! with
+        {
+            Revisions = service.Registry.Revisions.Select(revision => revision.RevisionId == "rev-retired"
+                ? revision with { RevisionId = "rev-prior", Lifecycle = ProcessingGraphRevisionLifecycle.Validated, RetiredUtc = null } : revision).ToArray()
+        };
         var cut = context.Render<ProcessingGraphsPage>();
-        cut.Find("#graph-ROLLBACK-rev-retired").Click();
+        cut.Find("#graph-ROLLBACK-rev-prior").Click();
         cut.Find("dialog .btn-primary").Click();
         var command = service.Commands.Single();
         Assert.AreEqual("rollback", command.Action);
-        Assert.AreEqual("rev-retired", command.RevisionId);
+        Assert.AreEqual("rev-prior", command.RevisionId);
         Assert.AreEqual(7L, command.ExpectedVersion);
     }
 

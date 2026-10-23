@@ -211,7 +211,7 @@ public sealed partial class ProcessingGraphsPage : SiteTimeComponent, IAsyncDisp
         {
             GraphAction.Validate => "Validation compiles the immutable definition against this CameraAgent and records the result. No live behaviour changes.",
             GraphAction.Activate => "The current live capture finishes before this revision becomes the single active graph. Retained evidence is never rewritten.",
-            GraphAction.Rollback => "The previously retired revision becomes the single active graph again at the next capture boundary.",
+            GraphAction.Rollback => "The configured basic graph or previously activated revision becomes the single active graph again at the next capture boundary. Retained evidence is never rewritten.",
             _ => "A retired revision can no longer be activated. Executions that already used it keep their lineage."
         };
 

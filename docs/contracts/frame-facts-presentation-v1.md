@@ -4,8 +4,8 @@ Issue #1552 integrates the [template](frame-facts-template-v1.md) and
 [retained-context](frame-facts-retained-v1.md) contracts. Select the new
 `FrameFactsPresentationLayerV1` graph alias explicitly. It is never auto-included;
 the `EnvironmentPresentationLayer` alias, its producer version, default graph,
-saved options and historical products remain unchanged. The four-corner editor
-and explicit before/after draft conversion remain #1553.
+saved options and historical products remain unchanged. The four-corner editor and explicit before/after whole-draft conversion are
+delivered in #1553; see [the operator workflow](../runbooks/frame-facts-corner-templates.md).
 
 ## Versions and retained evidence
 
