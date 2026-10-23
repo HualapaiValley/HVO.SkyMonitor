@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -17,6 +18,57 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class CameraAgentProcessingGraphUiServiceTests
 {
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+
+    [TestMethod]
+    [DataRow("Preview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("CalibratedPreview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("CombinedPreview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("Preview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    [DataRow("CalibratedPreview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    [DataRow("CombinedPreview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    public async Task FixedPreviewScalarEditsPreserveInactiveMembersThroughPreviewAndCreate(string alias, string inactive)
+    {
+        var sourceText = "{ \"FixedTransfer\":{\"BlackLevel\":0,\"WhiteLevel\":65535,\"Gamma\":1}, " + inactive + ", \"future\":[1e+02] }";
+        var source = JsonDocument.Parse(sourceText).RootElement.Clone();
+        var descriptor = ProcessingNodeOptionsForm.DescriptorFor(alias, source)!;
+        Assert.AreEqual("fixed-preview-v1", descriptor.StepVersion);
+        var form = new ProcessingNodeOptionsForm(descriptor, source);
+        form.Set("outputVariant", "fixed-custom");
+        Assert.IsTrue(form.TryBuild(out var edited, out var errors), string.Join(' ', errors));
+        var expected = sourceText[..^2] + ",\"outputVariant\":\"fixed-custom\" }";
+        Assert.AreEqual(expected, edited!.Value.GetRawText());
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        PreviewProcessingStepOptions runtime = alias switch
+        {
+            "CalibratedPreview" => edited.Value.Deserialize<CalibratedPreviewProcessingStepOptions>(jsonOptions)!,
+            "CombinedPreview" => edited.Value.Deserialize<CombinedPreviewProcessingStepOptions>(jsonOptions)!,
+            _ => edited.Value.Deserialize<PreviewProcessingStepOptions>(jsonOptions)!
+        };
+        var validation = new List<ValidationResult>();
+        Assert.IsTrue(Validator.TryValidateObject(runtime, new ValidationContext(runtime), validation, true));
+
+        var pipeline = new CapturePipelineConfig([new(alias, "fixed", Options: edited, DependsOn: ["$raw"])]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.CreateRevisionAsync("fixed", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphRevisionState("rev-new", "fixed", "2", ProcessingGraphRevisionLifecycle.Draft,
+                new string('A', 64), new string('B', 64), new string('C', 64), Now, null, null, null));
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        factory.Setup(value => value.PreviewPlan(It.Is<CameraModuleConfig>(config => config.Pipeline == pipeline)))
+            .Returns(new CaptureProcessingPlanPreview(pipeline.SchemaVersion, pipeline.DependencyPolicy, new string('D', 64), new string('E', 64), [], []));
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var created = await service.CreateRevisionAsync("fixed", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(preview.IsSuccess, preview.Message);
+        Assert.IsTrue(created.IsSuccess, created.Message);
+        Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, created.Value!.Lifecycle);
+        Assert.AreEqual(expected, pipeline.Steps[0].Options!.Value.GetRawText());
+        Assert.AreEqual(sourceText, source.GetRawText());
+        factory.Verify(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>()), Times.Once);
+        operations.Verify(value => value.CreateRevisionAsync("fixed", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()), Times.Once);
+        operations.VerifyNoOtherCalls();
+    }
 
     [TestMethod]
     [DataRow("ImageQuality")]
