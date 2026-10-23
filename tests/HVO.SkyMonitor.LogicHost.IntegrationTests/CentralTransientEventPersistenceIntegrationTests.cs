@@ -1890,7 +1890,9 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         bool mismatchFirstObservation = false,
         Guid? provisionalJobId = null,
         Guid? registrationId = null,
-        IReadOnlyList<Guid>? registrationIds = null)
+        IReadOnlyList<Guid>? registrationIds = null,
+        Guid? logicalCameraInstallationId = null,
+        IReadOnlyList<Guid>? logicalCameraInstallationIds = null)
     {
         var artifacts = new List<CentralArtifact>();
         var sourceOrdinal = 0;
@@ -1910,6 +1912,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var frame = new CentralFrame
             {
                 RegistrationId = sourceRegistrationId,
+                LogicalCameraInstallationId = logicalCameraInstallationIds is not null ? logicalCameraInstallationIds[sourceOrdinal] : logicalCameraInstallationId,
                 DevicePublicId = Guid.NewGuid(),
                 ObservatoryId = observatoriesByRegistration.GetValueOrDefault(sourceRegistrationId, Guid.NewGuid()),
                 AgentId = fixture.AgentId,
