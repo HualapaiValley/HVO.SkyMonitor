@@ -164,12 +164,18 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "unexpected-deployment-resource"); host.Resource = null; var result = await host.RunAsync(inspect: true); Assert.AreEqual(host.Contract.Sha256, result.Text("inventorySha256"));
     }
     [TestMethod]
-    [DataRow("v8-field")][DataRow("collision")][DataRow("historical-path")][DataRow("missing-tmp")]
+    [DataRow("v8-field")][DataRow("collision")][DataRow("historical-path")][DataRow("missing-tmp")][DataRow("root-collision")]
     public async Task Schema7Validation_PreservesHistoricalShapeAndPath(string mutation)
     {
         using var host = new DeploymentFakeHost(); host.Legacy();
         if (mutation == "v8-field") host.Inventory["logicHost"]!["instanceId"] = "00000000-0000-4000-8000-000000000001";
         if (mutation == "collision") host.Inventory["cameraAgents"]![0]!["sshHost"] = host.Inventory["logicHost"]!["sshHost"]!.DeepClone();
+        if (mutation == "root-collision")
+        {
+            var logic = host.Inventory["logicHost"]!; var shared = new JsonObject();
+            foreach (var key in new[] { "name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner" }) shared[key] = logic[key]!.DeepClone();
+            shared["name"] = "shared"; shared["sshHost"] = "shared@example"; shared["dockerContext"] = "shared-context"; shared["ports"] = new JsonArray(4444); host.Inventory["sharedServices"] = shared;
+        }
         if (mutation == "historical-path") host.Inventory["deployment"]!["catalog"]!["installRoot"] = host.Inventory["deployment"]!["catalog"]!.Text("installRoot") + ",retained";
         DeploymentFakeHost.WriteJson(host.InventoryPath, host.Inventory);
         if (mutation is "historical-path" or "missing-tmp") _ = await SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", mutation == "missing-tmp" ? new MissingTempRunner() : new ProcessRunner(), CancellationToken.None);

@@ -86,6 +86,9 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
     private static void ValidateLegacyCollisions(JsonObject doc)
     {
         var targets = new[] { doc["logicHost"]! }.Concat(doc.Array("cameraAgents").Select(n => n!)).Concat(doc["sharedServices"] is { } shared ? [shared] : []).ToArray();
+        Require(targets.Select(t => (t.Text("expectedHostIdentity"), t.Text("runtimeRoot"))).Distinct().Count() == targets.Length, "target-resource-collision");
+        var ports = new[] { doc["logicHost"]! }.Concat(doc.Array("cameraAgents").Select(n => n!)).SelectMany(t => t.Array("ports").Select(p => (t.Text("expectedHostIdentity"), p!.GetValue<int>()))).ToArray();
+        Require(ports.Distinct().Count() == ports.Length, "target-resource-collision");
         foreach (var key in new[] { "sshHost", "dockerContext", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity" })
             foreach (var group in targets.GroupBy(t => t.Text(key), StringComparer.Ordinal).Where(g => g.Count() > 1))
                 Require(key is not ("sshHost" or "dockerContext") && group.Count() == 2 && group.Contains(doc["logicHost"]!) && doc["sharedServices"] is { } infra && group.Contains(infra), "target-identity-collision");
