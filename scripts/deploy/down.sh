@@ -310,6 +310,7 @@ deploy_run_down() {
     local state_dir evidence_dir prepare prepare_ledger prepare_evidence up now target name context env_file logic shared volume entry root marker helper_key
     local state_project render_root private_root remote_root result prior_status project network ssh
     local volume_identity retained_status lock_name root_new control_new marker_new lock_status
+    [[ "$(jq -r '.deployment.services.mode' "$inventory")" == deploy ]] || { deploy_fail down authority existing-services-requires-typed-cli; return 1; }
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     prepare="$state_dir/prepare-manifest.json"; prepare_ledger="$state_dir/prepare-ledger.json"; prepare_evidence="$evidence_dir/prepare.json"; up="$state_dir/up-manifest.json"
     deploy_require_passed_phase "$prepare" down "$run_id" "$mode" "$hash" "$revision" || return 1
@@ -392,9 +393,6 @@ deploy_run_down() {
         else result=$?; [[ "$result" == 2 ]] || return 1
             deploy_down_require_shared_services stopped "$shared" "$context" "$state_project-services" "$env_file" || return 1
         fi
-    else
-        if deploy_down_begin_action existing-services preserve; then deploy_down_complete_action existing-services preserve || return 1
-        else result=$?; [[ "$result" == 2 ]] || return 1; fi
     fi
 
     if [[ "$policy" == delete ]]; then

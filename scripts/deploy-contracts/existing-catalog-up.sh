@@ -1034,3 +1034,23 @@ rm -rf "$FAKE_HTTP_STATE"; cp -a "$TEMP_DIR/deploy-up-http-state" "$FAKE_HTTP_ST
 set_lifecycle_paths
 fi
 set_lifecycle_paths
+
+# Catalog/up ownership retained when existing-down moved to MSTest (#1589).
+# Production startup selects the production resolver contract; fixture staging above covers both hosts and the complete root mount.
+production_inventory="$TEMP_DIR/production-startup-inventory.json"
+jq '.catalogs[0].kind="production"' "$INVENTORY" > "$production_inventory"
+(
+  # shellcheck source=scripts/deploy/product-layout.sh
+  source "$REPO_ROOT/scripts/deploy/product-layout.sh"
+  # shellcheck source=scripts/deploy/up.sh
+  source "$REPO_ROOT/scripts/deploy/up.sh"
+  test "$(deploy_up_catalog_required_kind "$production_inventory" "$(jq -c '.logicHost' "$production_inventory")")" = Production
+)
+
+# Corrupt image evidence and mutable references are rejected before startup state changes.
+cp "$TEMP_DIR/output/$deploy_case-evidence/images.json" "$TEMP_DIR/images.valid.json"
+jq '.images[0].reference="registry.example/logichost:latest"' "$TEMP_DIR/images.valid.json" > "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Corrupt image evidence passed up.'; fi
+grep -Fq 'images-authority' "$TEMP_DIR/up-failure.log"
+cp "$TEMP_DIR/images.valid.json" "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null

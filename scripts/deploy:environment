@@ -15,6 +15,26 @@ if [[ "${1:-}" == partial-prepare-cleanup ]]; then
       --configuration Release --no-launch-profile -- "$@"
 fi
 
+# Existing-service teardown has one typed authority (#1589); deploy-owned deletion
+# stays with its later phase port. This selector never performs lifecycle work.
+if [[ "${1:-}" == down ]]; then
+    down_forward=("$@"); down_inventory_argument=''
+    for ((down_argument_index=1; down_argument_index<${#down_forward[@]}; down_argument_index++)); do
+        if [[ "${down_forward[$down_argument_index]}" == --inventory && $((down_argument_index + 1)) -lt ${#down_forward[@]} ]]; then
+            down_inventory_argument="$(realpath -m -- "${down_forward[$((down_argument_index + 1))]}")"
+            down_forward[$((down_argument_index + 1))]="$down_inventory_argument"
+            break
+        fi
+    done
+    if [[ -n "$down_inventory_argument" ]] && jq -e '.deployment.services.mode == "existing"' "$down_inventory_argument" >/dev/null 2>&1; then
+        cd "$REPO_ROOT"
+        exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
+          --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
+          --configuration Release --no-launch-profile -- existing-down "${down_forward[@]:1}"
+    fi
+    unset down_forward down_inventory_argument down_argument_index
+fi
+
 # shellcheck source=scripts/deploy/common.sh
 . "$SCRIPT_DIR/deploy/common.sh"
 # shellcheck source=scripts/deploy/product-layout.sh
@@ -56,7 +76,7 @@ fi
 
 usage() {
     printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--dry-run | --confirm <run-id>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
-    printf '       partial-prepare-cleanup is provided by hvo-sky-install; this script forwards that command to the typed CLI.\n' >&2
+    printf '       partial-prepare-cleanup is provided by hvo-sky-install; this script forwards that command to the typed CLI. Existing-services down forwards to existing-down.\n' >&2
     printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario; acceptance-component requires the fixed --component.\n' >&2
     exit 2
 }

@@ -28,6 +28,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+- Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
 - Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
 
 - LogicHost reduces database round trips for derived environmental observations with up to 256 inputs, preserving ordered lineage and atomic rejection of invalid references. (#1558)
@@ -58,6 +59,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
 
 - CameraAgent graph drafts expose the existing cloud-assessment output route, grid, transmission/support/saturation thresholds and tile mask, with validation and explicit activation or rollback while retaining opaque clear-reference provisioning. (#1565)
 
@@ -135,6 +138,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed
+
+- Existing-services split-host teardown runs through the typed installer CLI, retaining authenticated drain checks, resumable evidence and private-file cleanup while preserving runtime data and shared services. (#1589)
 
 - CameraAgent configuration reads reuse annual schedule validation within a load when the schedule, rig compatibility inputs and complete effective observer are unchanged, reducing duplicate work while retaining protected-state validation. (#1591)
 

@@ -19,6 +19,16 @@
                       LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.ReleaseToolOutput.json" />
   </ItemGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- Exercise CameraAgent's actual startup validator without referencing the host or combining CI lanes. -->
+    <Compile Include="..\..\src\HVO.SkyMonitor.CameraAgent\Configuration\LocalIdentityOptions.cs" Link="Shared/LocalIdentityOptions.cs" />
+    <Compile Include="..\..\src\HVO.SkyMonitor.CameraAgent\Data\CameraAgentIdentityPolicy.cs" Link="Shared/CameraAgentIdentityPolicy.cs" />
+    <Compile Include="..\..\src\HVO.SkyMonitor.CameraAgent\Data\ApplicationUser.cs" Link="Shared/ApplicationUser.cs" />
+    <Using Include="Microsoft.Extensions.DependencyInjection" />
+    <EmbeddedResource Include="..\..\src\HVO.SkyMonitor.CameraAgent\appsettings.json"
+                      LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentAppsettings.json" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

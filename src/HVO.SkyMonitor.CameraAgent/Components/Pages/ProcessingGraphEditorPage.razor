@@ -140,6 +140,10 @@
             <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
         }
 
+        @if (Section == "calibration" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Calibration"))
+        {
+            <p role="note">This graph has no calibration node. Add Calibration with an explicit raw dependency to configure it. Existing models and master provisioning stay unchanged; saving, validation and activation remain separate.</p>
+        }
         @if (Section == "cloud-assessment" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudAssessment"))
         {
             <p role="note">This graph has no cloud assessment node. Add CloudAssessment with an explicit raw or calibrated image dependency to configure it. Clear-reference provisioning stays unchanged; saving, validation and activation remain separate.</p>
