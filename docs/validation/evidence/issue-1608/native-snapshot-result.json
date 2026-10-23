@@ -1,0 +1,79 @@
+{
+  "date_utc": "2026-10-23",
+  "source_revision": "a20d606ea764b2001409984980708f410a001d23",
+  "image": "mcr.microsoft.com/mssql/server:2022-CU26-ubuntu-22.04@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89",
+  "engine": "16.0.4265.3 RTM Developer Edition (64-bit)\nLinux Ubuntu 22.04",
+  "host_kernel": "Linux 6.8.0-142-generic x86_64",
+  "docker_version": "29.8.0",
+  "docker_storage_driver": "overlayfs",
+  "container_limits": {
+    "cpu": 2,
+    "memory_gib": 3,
+    "network": "none",
+    "published_ports": 0
+  },
+  "dataset": {
+    "rows": 4096,
+    "payload_bytes_per_row": 1024,
+    "repetitions": 3
+  },
+  "method": "sequential trials on one warm database; wall time includes docker exec and sqlcmd; each trial starts with a successful full backup and log backup",
+  "trials": [
+    {
+      "trial": 1,
+      "snapshot_ms": 101.2,
+      "mutation_ms": 620.93,
+      "revert_ms": 321.09,
+      "checkdb_and_semantic_verification_ms": 216.68,
+      "snapshot_allocated_bytes_before": 16384,
+      "snapshot_allocated_bytes_after": 5173248,
+      "checkdb_passed": true,
+      "predecessor_rows_and_schema_restored": true,
+      "neighbor_rows_unchanged": true,
+      "post_revert_log_backup_exit_code": 1,
+      "post_revert_log_backup_error_numbers": [
+        4214,
+        3013
+      ]
+    },
+    {
+      "trial": 2,
+      "snapshot_ms": 103.64,
+      "mutation_ms": 710.38,
+      "revert_ms": 358.82,
+      "checkdb_and_semantic_verification_ms": 191.73,
+      "snapshot_allocated_bytes_before": 16384,
+      "snapshot_allocated_bytes_after": 5181440,
+      "checkdb_passed": true,
+      "predecessor_rows_and_schema_restored": true,
+      "neighbor_rows_unchanged": true,
+      "post_revert_log_backup_exit_code": 1,
+      "post_revert_log_backup_error_numbers": [
+        4214,
+        3013
+      ]
+    },
+    {
+      "trial": 3,
+      "snapshot_ms": 121.83,
+      "mutation_ms": 681.47,
+      "revert_ms": 308.12,
+      "checkdb_and_semantic_verification_ms": 168.15,
+      "snapshot_allocated_bytes_before": 16384,
+      "snapshot_allocated_bytes_after": 5181440,
+      "checkdb_passed": true,
+      "predecessor_rows_and_schema_restored": true,
+      "neighbor_rows_unchanged": true,
+      "post_revert_log_backup_exit_code": 1,
+      "post_revert_log_backup_error_numbers": [
+        4214,
+        3013
+      ]
+    }
+  ],
+  "cleanup": {
+    "container_removed": true,
+    "volume_removed": true
+  },
+  "scope": "SQL-only feasibility and log-chain probe; not coherent application recovery or production qualification"
+}
