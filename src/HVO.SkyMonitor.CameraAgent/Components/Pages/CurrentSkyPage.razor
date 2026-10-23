@@ -284,6 +284,7 @@
                         @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }
                     </div>
                     <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay">Edit weather and cloud overlay</a>
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
                         @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))

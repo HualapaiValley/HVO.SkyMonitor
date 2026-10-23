@@ -19,11 +19,13 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
-    public async Task QualityDraftAuthorizationAndIdentifierValidationPrecedePersistence()
+    [DataRow("ImageQuality")]
+    [DataRow("WeatherCloudOverlay")]
+    public async Task ScalarDraftAuthorizationAndIdentifierValidationPrecedePersistence(string alias)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         var pipeline = new CapturePipelineConfig([
-            new("ImageQuality", "quality", 17, JsonSerializer.SerializeToElement(new { outputVariant = " " }), ["$raw"])
+            new(alias, "quality", 17, JsonSerializer.SerializeToElement(new { outputVariant = " " }), ["$raw"])
         ]);
         var denied = await CreateService(operations.Object, authorized: false)
             .CreateRevisionAsync("quality", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);

@@ -37,7 +37,7 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
         ProcessingOptionKind.WholeNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumWholeNumber}–{option.MaximumWholeNumber} {option.Unit}."),
         ProcessingOptionKind.RealNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumRealNumber}–{option.MaximumRealNumber} {option.Unit}."),
         ProcessingOptionKind.Color => "Use #RRGGBB or the colour picker.",
-        ProcessingOptionKind.Text => $"Maximum {option.MaximumLength} characters.",
+        ProcessingOptionKind.Text when option.MaximumLength.HasValue => $"Maximum {option.MaximumLength} characters.",
         _ => null
     };
 }

@@ -28,6 +28,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+- Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
+
 - LogicHost reduces database round trips for derived environmental observations with up to 256 inputs, preserving ordered lineage and atomic rejection of invalid references. (#1558)
 
 - Capture headings in LogicHost Current Sky and camera archive detail now nest coherently for screen-reader navigation, while standalone capture detail retains its page heading. (#1548)
@@ -56,6 +58,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- Current Sky links to weather and cloud overlay settings in graph drafts: enablement, artifact/output labels, boundary thickness and label visibility/length, with validation and explicit activation or rollback. (#1564)
 
 - CameraAgent graph drafts expose image-quality routing and enable switches for image quality, capture telemetry and explicitly simulated VirtualSky cloud observations, using the existing validate, activate and rollback flow. (#1563)
 - The scene overlay node panel now edits existing marker/label visibility, sizes and limits, constellation/image-circle visibility, and cardinal visibility/scale through immutable graph drafts, validation, activation and rollback. Current Sky links directly to the panel; legacy and unknown options remain intact. (#1562)
