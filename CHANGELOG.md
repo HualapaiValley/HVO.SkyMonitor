@@ -56,6 +56,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+- The scene overlay node panel now edits existing marker/label visibility, sizes and limits, constellation/image-circle visibility, and cardinal visibility/scale through immutable graph drafts, validation, activation and rollback. Current Sky links directly to the panel; legacy and unknown options remain intact. (#1562)
 
 - Edit four independent Frame Facts corner templates, packaged fonts, colours, sizes and missing-fact policies; preview frozen retained facts and explicitly convert legacy presets into a new draft before validation and activation. #1553
 
