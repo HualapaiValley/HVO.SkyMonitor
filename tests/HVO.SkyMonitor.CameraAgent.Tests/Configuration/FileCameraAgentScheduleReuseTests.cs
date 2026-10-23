@@ -77,7 +77,7 @@ public sealed class FileCameraAgentScheduleReuseTests
         _ = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(2, expansions.Count);
         using var alreadyCanceled = new CancellationTokenSource();
-        alreadyCanceled.Cancel();
+        await alreadyCanceled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => loader.LoadAsync(alreadyCanceled.Token)).ConfigureAwait(false);
         Assert.AreEqual(2, expansions.Count);
         await fixture.EditAsync(node => node["schedule"]!["setpointProfiles"]![0]!["exposure"] = "00:00:00").ConfigureAwait(false);
