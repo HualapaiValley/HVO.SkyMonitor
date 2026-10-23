@@ -83,7 +83,17 @@ internal sealed class ExistingDown(IDeploymentHost host, IProcessInputRunner run
             await remote.ReconcileAsync(token).ConfigureAwait(false);
             ledger = state.Recover(value => ValidateLedger(value, inventory, request)) ?? new JsonObject
             {
-                ["schemaVersion"] = 2, ["publicationGeneration"] = 0, ["runId"] = request.RunId, ["mode"] = request.Mode, ["inventorySha256"] = inventory.Sha256, ["sourceRevision"] = inventory.Revision, ["policy"] = "preserve", ["phaseStatus"] = "running", ["startedAt"] = Now(), ["updatedAt"] = Now(), ["resources"] = new JsonArray()
+                ["schemaVersion"] = 2,
+                ["publicationGeneration"] = 0,
+                ["runId"] = request.RunId,
+                ["mode"] = request.Mode,
+                ["inventorySha256"] = inventory.Sha256,
+                ["sourceRevision"] = inventory.Revision,
+                ["policy"] = "preserve",
+                ["phaseStatus"] = "running",
+                ["startedAt"] = Now(),
+                ["updatedAt"] = Now(),
+                ["resources"] = new JsonArray()
             };
             ledger["phaseStatus"] = "running"; ledger.Remove("completedAt");
             state.PreparePrivateDirectories("down-rendered", "down-private");

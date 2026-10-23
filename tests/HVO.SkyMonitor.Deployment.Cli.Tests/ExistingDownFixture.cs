@@ -91,7 +91,8 @@ internal sealed class ExistingDownFixture : IDisposable
                 JsonNode? Pascal(JsonNode? value) => value switch
                 {
                     JsonObject obj => new JsonObject(obj.Select(pair => KeyValuePair.Create(new[] { "deviceId", "configuredAgentId", "isProvisioned", "activeConfigurationSha256", "state", "version", "replayed", "captureControl", "value" }.Contains(pair.Key, StringComparer.Ordinal) ? char.ToUpperInvariant(pair.Key[0]) + pair.Key[1..] : pair.Key, Pascal(pair.Value)))),
-                    JsonArray array => new JsonArray(array.Select(Pascal).ToArray()), _ => value?.DeepClone()
+                    JsonArray array => new JsonArray(array.Select(Pascal).ToArray()),
+                    _ => value?.DeepClone()
                 };
                 content = Pascal(Parse(content))!.ToJsonString();
             }
