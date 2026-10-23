@@ -136,7 +136,8 @@ public sealed class InstallationVerificationReadTests
     public async Task ConstrainedDisposableReadsRecordStageAttribution()
     {
         var output = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR");
-        Assert.IsFalse(string.IsNullOrWhiteSpace(output), "Set HVO_INSTALLATION_READ_EVIDENCE_DIR to registered scratch or retained TestResults.");
+        Assert.IsFalse(string.IsNullOrWhiteSpace(output), InstallationReadAttributionFixture.EvidenceRootGuidance);
+        InstallationReadAttributionFixture.ValidateEvidenceRoot(output);
         Directory.CreateDirectory(output);
         var workloads = new List<object>();
         foreach (var solar in new[] { false, true })
