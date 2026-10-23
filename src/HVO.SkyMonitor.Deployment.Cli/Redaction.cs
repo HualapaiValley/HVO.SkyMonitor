@@ -36,8 +36,9 @@ internal static class Redaction
 
     // The same chain with the #1509 spellings and a configuration key's double underscore, for the #1523 pass only, so
     // api_key=SecretKey and api_key=db__password consume their inner key as api_key=db_password does (PR-1528-R0 F3).
+    // A space-only outer key can consume the same inner key before its quoted value is hidden (#1569).
     private const string SecondNestedKeys =
-        $"""(?:{SecondCredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w\x9C-]*{SecondCredentialWord}["']?\s*[=:]\s*|\x9C*(?:{SecondSpacedKey}|{ConfigurationSpacedKey})\s+)+""";
+        $"""(?:{SecondCredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+|(?:{SecondSpacedKey}|{ConfigurationSpacedKey})\s+)(?:[\w\x9C-]*{SecondCredentialWord}["']?\s*[=:]\s*|\x9C*(?:{SecondSpacedKey}|{ConfigurationSpacedKey})\s+)+""";
 
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
