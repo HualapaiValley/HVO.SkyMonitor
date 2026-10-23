@@ -156,8 +156,10 @@ public sealed class InstallationVerificationReadTests
                 samples.Add(await MeasureAsync("repeat-no-listener", fixture, client, null).ConfigureAwait(false));
             using var stages = new InstallationReadStageCollector();
             samples.Add(await MeasureAsync("first-instrumented", fixture, client, stages).ConfigureAwait(false));
-            for (var index = 0; index < 5; index++) _ = await fixture.ReadAsync(client).ConfigureAwait(false);
-            for (var index = 0; index < 10; index++)
+            // Retain settling samples separately so tiered-JIT phase changes cannot be credited to reuse (#1591).
+            for (var index = 0; index < 40; index++)
+                samples.Add(await MeasureAsync("settling", fixture, client, stages).ConfigureAwait(false));
+            for (var index = 0; index < 30; index++)
                 samples.Add(await MeasureAsync("repeat", fixture, client, stages).ConfigureAwait(false));
             for (var batch = 0; batch < 2; batch++)
             {
