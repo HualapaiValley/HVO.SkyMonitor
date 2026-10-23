@@ -211,3 +211,212 @@ resource was manually deleted. Retained fake-host trees, receipts and source
 archives are evidence, and remain in the recorded scratch root and referenced
 fixture directories. There was no nested delegation, live deployment, release,
 promotion, publication, push, PR mutation or claim release by this child.
+
+## Initial-review correction F1
+
+The initial deep review of `4df5193e..56e05f59` found that an interrupted
+CameraAgent stop could retain an intent after Docker had stopped the application.
+Recovery unconditionally required HTTP from that application before inspecting
+Docker. The original fake HTTP handler continued to answer after a stop, masking
+this durability failure. This section supplements the historical evidence above;
+it does not replace or rewrite any original receipt or failed attempt.
+
+Correction production commit: `2413a781b673dbd4984bf65c19a4668f2a1aef7f`.
+The initial test-only async diagnostic-read correction is
+`87196a92345b69e91b0a39af0a8bf6b47bbab291`. Seeded-credential cleanup and the
+final tested production source are `cc558a296c100ac0e99a8bab8a8607e859056682`.
+Final test-only transport-unavailability coverage is
+`b3714de75a3e19fd9d0166d794df9884e4cb9ad1`. Evidence is retained under
+`/tmp/hvo-skymonitor-1589-correction-f1.LCfzDF`.
+
+### Red before production changes
+
+`InterruptedStop_RecoversWithoutHttpToStoppedCameras` was added and run through
+`dotnet test` against unchanged reviewed production code. Its eight rows cover
+east and west, present correctly labelled stopped containers and verified
+absence, and crash and cancellation immediately after Docker stop/verification
+but before completion publication. Every camera rejects all HTTP after its
+successful stop. All eight rows failed with
+`System.IO.IOException: simulated curl: connection refused (application container stopped)`.
+
+`red-before-fix.command`, `.log` and `red-before-fix/red-before-fix.trx` retain the
+exact command and failures (8 failed / 0 passed / 0 skipped). `red-head.txt`,
+`red-production.cs`, the empty `red-production-diff.patch` and
+`red-production.sha256` bind that execution to reviewed production source:
+`09ae8e7ec6bbb9a4a5dc65ae803f08d73bf0fe6d0d16db082603c929c1ec6ee6`.
+The first attempt failed to compile the test fixture because its new contract
+namespace import was missing; `red-compile-attempt.log` is retained separately
+and is not the behavioral reproduction.
+
+### Recovery behavior and regression ownership
+
+A camera's retained intent now triggers a live Compose `ps --all -q` check against
+the pinned endpoint. SSH authentication, retained preflight host/architecture/
+daemon correlation, context binding and live Docker identity are verified before
+and after that check. A present container must have one valid ID and the exact
+project/service labels; its running state is read from Docker. Only verified
+absence or stopped state permits completion without HTTP or another stop. A
+still-running camera must authenticate again and complete the normal fresh
+pause/drain/final-reassertion protocol. Fresh execution still drains before its
+first stop; completed entries still require strict stopped/absent verification.
+The stopped-camera branch also registers and erases the two known seeded owner
+credential paths, which might not have reached login registration, then strictly
+rechecks Docker state before completing the action. No HTTP failure is treated
+as proof of a stop. Public journal/evidence schemas,
+publication generations and strict identity/authority validation are unchanged.
+
+The original 90 cases remain intact. Twenty new Unit rows are owned by:
+
+- `InterruptedStop_RecoversWithoutHttpToStoppedCameras` (8): identical-input retry
+  completes, never contacts either stopped camera, preserves every prior private
+  diagnostic byte and unrelated runtime file, erases remote private files and
+  registrations, and verifies ledger/manifest/evidence/digest agreement.
+- `RetainedStopIntent_RequiresFreshDrainWhenCameraIsStillRunning` (2): an intent
+  before any drain and a camera restarted after an interrupted stop both require
+  a fresh control key and drain; unsafe leases refuse any new stop before a later
+  healthy retry succeeds.
+- `RetainedStopIntent_RejectsUnverifiedDockerAbsenceOrIdentity` (8): unreachable
+  SSH/daemon, failed Compose/inspect, incorrect project/service labels, invalid
+  IDs and multiple IDs retain the intent and refuse progress before stopped HTTP.
+- `RetainedIntentBeforeLogin_StoppedCameraStillErasesSeededCredentials` (2): an
+  intent interrupted before any HTTP, followed by a stopped or absent camera,
+  still erases seeded owner credentials without contacting the stopped camera.
+  These rows were first run against `87196a92` and failed because teardown passed
+  while the seeded password remained. `seeded-red.log` and
+  `seeded-red/seeded-red.trx` preserve both failures; the fix is `cc558a29`.
+
+`green-focus.log` and `green-focus/green-focus.trx` pass all 108 teardown cases
+without skips. That first green build reported a synchronous-read analyzer
+warning in a diagnostic assertion; the subsequent async-read-only commit fixes
+it. The final Debug and Release builds have zero warnings/errors.
+`final/focus/` passes all 20 new rows and `final/red-green-audit.json`
+individually matches all ten behavioral failures (eight original F1 rows plus
+two credential rows) to passing final focused and complete-project Unit results.
+The final test-only change replaces the SSH/daemon identity-fault fakes in two
+rows with actual transport failure signals; the original identity tests remain
+intact. Its affected Release build, eight-case reread and test-file format
+verification pass in `final/transport-{build,focus,format}.*`. The complete
+project result below is at `cc558a29`, supplemented by those eight passing
+current-test-source results, rather than another unchanged whole-project run.
+
+### Classifier and enumerated affected local gates
+
+The selector is `scripts/ci:classify pull_request` on immutable correction range
+`56e05f59f4d4118741ce8462f2fee0a27eb4d6aa..b3714de75a3e19fd9d0166d794df9884e4cb9ad1`;
+`classifier-tested-code.log` records:
+
+```text
+mode=full deployment=true deployment_catalog=false deployment_shards=false
+ deployment_installer=true complete=true shared=true cameraagent=true
+ logichost=true combined=true delivery=true secret_scan_contract=false
+ release_scripts=false
+```
+
+Target profile remains **Development v1 / Preflight** and **Development v1 /
+Build and Unit**. No protected workflow was dispatched. The classifier's full
+qualification flags do not override that profile. Under the review-correction
+rule in `docs/planning/agent-execution.md`, this bounded CLI recovery/test-fixture
+and inventory correction uses the following explicit affected gate set, retaining
+the complete Tier C baseline above. It changes no shared transport contract,
+persistence implementation, host project, migration, dependency, coverage policy,
+shell behavior or test-category selection logic.
+
+| Affected gate | Result / evidence relative to correction scratch; final gates use `final/` |
+| --- | --- |
+| Deployment.Cli test project and dependency closure, Debug and Release, warnings as errors | Both passed, zero warnings/errors; `final/debug.*`, `final/release.*` |
+| Solution format verification restricted to all five changed C# files | Passed; `final/format.*` |
+| Complete Deployment.Cli Unit selection with coverage, invalid Docker, production catalog unset | 2,634 passed / 121 skipped / 0 failed, 2,755 total; `final/cli-unit.*`, `final/cli-unit/cli-unit.trx`. Every skip explicitly requires an unavailable approved catalog bundle. All 110 teardown cases passed. |
+| Changed-project category discovery and disjoint/complete audit | 2,755 Unit / 0 Integration / 7 Manual = 2,762 total; `final/category-{Unit,Integration,Manual,all}.*`, `final/category-audit.json` |
+| Existing full 56-receipt Manual parity audit | Passed, no skips; `parity.*`, `parity/parity.trx`. This audits retained historical receipts, not 56 new binary executions. |
+| Four CI-control guards | All passed; `final/{shell-syntax,classification-guard,coordination-guard,review-tools}.log` and `.exit` |
+| development/v1 workflow contract and operations documentation audit | Both passed; `final/v1-profile.*`, `final/docs-inventory.*` |
+| Installer qualification guard with fake Docker; deployment CLI/coordinator boundary | Both passed; `installer-boundary.*`, `deployment-cli.*`. No real installer campaign. |
+| Affected exact-input recovery-path replay and phase measurement | See the retained-input assessment below. |
+| Final patch whitespace check | Passed; no source whitespace errors. |
+
+All 20 added rows retain the class's Linux-only condition. The CLI category
+inventory rises from 2,735 to 2,755 Unit cases, the current repository inventory
+from 13,598 to 13,618, and the existing M5 CLI skip pin from 322 to 342. Focused
+actual discovery proves the changed project counts; exhaustive repository
+discovery and execution on macOS remain their owning CI checks. The known upstream
+count-only conflict remains for the parent to synchronize after correction review.
+Current coverage records 163/181 instrumented line entries for `ExistingDown`,
+154/156 for `ExistingDownHost` and 64/64 for `DownObservation`, including compiler
+generated methods. All eight additional `ExistingDown` and three additional `ExistingDownHost`
+entries are covered; `final/affected-coverage.json` records the counts.
+
+The source/binary behavior correction is confined to `Deployment.Cli`; its full
+Unit selection includes adjacent publication, authority, cancellation, primitive
+adapter and cleanup contracts. The changed project owns zero Integration cases.
+No new cross-project failure or dependency invalidated the prior complete Unit,
+Integration, architecture/publish, package, unrelated shell/shard or full-lane
+baseline, so those unchanged long suites are not repeated. The classifier excludes
+catalog and exhaustive shards for this correction. No acceptance case is deferred.
+
+### Retained-input assessment and affected measurement
+
+`vector-selection.json` assesses all 56 immutable original inputs: 39 retain a
+camera intent and enter the new live-state probe; the other 17 keep their prior
+path. All 39 were executed again with the corrected `87196a92` binary. Every exit
+and every state/evidence/remote path, type, mode and byte matches the original
+receipt, including independent journal digests; only phase timestamps are
+normalized. `affected-replay/{case-003..case-041}/receipt.json`, complete resulting
+trees and `results.json` retain the proof. The original receipt directory and
+fixture roots were never modified.
+
+Those 39 historical phase receipts (including the prior auth-registration delta)
+sum to 664.24 s wall, 440.48/321.29 s user/system CPU, 125,512 KiB maximum per-command
+RSS and 296/1,858,080 filesystem input/output blocks. The current isolated replay
+sums to 734.54 s wall, 469.56/372.00 s CPU, 125,404 KiB maximum RSS and
+248/1,858,440 blocks. Fixture copies and namespace setup are outside phase timing.
+This 10.6% historical/current wall increase is disclosed; the wrapper/environment
+is different, so it cannot be assigned entirely to the recovery probe.
+`affected-resource-summary.json` retains both the original and auth-adjusted pins.
+
+To check the correction under the same current envelope, a scratch Git archive
+of exactly reviewed head `56e05f59` was built with SDK 10.0.402 and that explicit
+source revision, then compared with final production source `cc558a29` on the
+same pinned continuously-changing (`case-033`) and ordinary successful
+(`case-041`) inputs. Both binaries matched all expected exits and complete
+snapshots. `build-reviewed.*`, `reviewed-source/`, `paired-{reviewed,corrected}/`
+and `paired-resource-summary.json` retain sources, binary hashes, full receipts
+and GNU time records.
+
+| Current controlled single-pass measurement | Reviewed / corrected case-033 | Reviewed / corrected case-041 |
+| --- | --- | --- |
+| Wall seconds | 22.47 / 22.16 | 9.16 / 8.37 |
+| User / system CPU seconds | 14.84/10.62 / 14.44/10.87 | 6.51/4.41 / 6.06/4.12 |
+| Peak RSS KiB | 125,776 / 119,260 | 87,360 / 85,496 |
+| Filesystem input / output blocks | 8/65,432 / 8/65,440 | 0/7,000 / 0/7,000 |
+
+Both sides use the same private namespace, UID/GID 1000, one worker, 60 attempts,
+zero poll delay and no warmup. These two samples show no correction regression
+in their current envelope; they do not establish a statistical speedup or a
+current complete-lane comparison. The older 56-command timing above remains a
+historical source/binary pin, not a measurement of this final correction.
+
+The later credential cleanup executes only after verified stopped/absent state.
+`vector-live-states.json` proves all 39 original retained-intent inputs instead
+have running cameras, so that added cleanup branch is outside those 39 measured
+paths. Its final-head behavior is covered by the native crash/cancellation and
+seeded-credential cases; the two representative measurements also use the final
+production source. The final transport-test-only delta changes no production
+source. No real-target latency/throughput/backlog, remote-host qualification,
+managed-allocation totals or successful old-versus-new stopped-retry timing is
+claimed; the old stopped retry cannot finish without an external restart.
+
+Every build/test/measurement uses the host heavy-gate lock and timeout. Builds
+and tests disable node reuse/shared compilation; Unit runs leave production
+catalogs unset and use an invalid Docker endpoint. Fake-Docker boundary scripts
+supply only their own disposable fakes. There are no real Docker resources or
+remote target operations. The isolated replay uses a private mount/network
+namespace, read-only host root and writable binds only for correction scratch and
+a cloned fixture; the command runs as the original UID/GID 1000. An unprivileged
+namespace initially mapped root ownership to UID 65534, correctly causing an
+installer refusal before teardown; that failed attempt, its source, output and
+time remain in `affected-replay-unprivileged-failed*`. `replay-wrapper-probes.txt`
+records the wrapper probes and corrected identity mapping. Namespace mounts
+release automatically. Disposable fixture copies and receipts are retained as
+evidence. Baseline and parent review files are unchanged. No push, PR/issue
+mutation, base synchronization, delegation, watcher, claim release or lifecycle
+cleanup was performed by this implementation child.
