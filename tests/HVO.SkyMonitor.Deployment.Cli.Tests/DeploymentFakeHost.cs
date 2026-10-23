@@ -31,6 +31,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
     public string? Resource { get; set; }
     public string ResourceOutput { get; set; } = "unexpected-resource\n";
     public Func<IReadOnlyList<string>, ProcessResult?>? DockerResponse { get; set; }
+    public Func<string, string[], string?>? PrimitiveHandler { get; set; }
     public Func<string, string[], string, string>? PrimitiveResponse { get; set; }
     public int ResourceAfter { get; set; } = 1;
     public int ResourceProbes { get; private set; }
@@ -154,6 +155,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
         {
             token.ThrowIfCancellationRequested(); host.BeforePrimitive?.Invoke(operation, args);
             if (operation == "probe") return $"{(host.BadHost == target.Name ? "changed-machine" : target.HostIdentity)} {target.HostName} {NativeLinux.getuid()} {NativeLinux.getuid()} {target.Architecture}";
+            if (host.PrimitiveHandler?.Invoke(operation, args) is { } handled) { host.AfterPrimitive?.Invoke(operation, args); return handled; }
             var result = files.Call(operation, args.Select(host.Physical).ToArray()); host.AfterPrimitive?.Invoke(operation, args); return host.PrimitiveResponse?.Invoke(operation, args, result) ?? result;
         }
         public void Dispose() => files.Dispose();

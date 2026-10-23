@@ -140,3 +140,17 @@ all other phases keep their existing ownership; shared v8 inventory predicates
 are kept identical by a test. The next `existing-down` phase reuses the typed
 host fixture and command conventions. #893 remains open for the remaining ports;
 this is neither whole-lane migration nor production qualification.
+
+## 6. Existing-services teardown cutover (#1589)
+
+`Deployment.Cli` now owns existing-services down, reusing the typed host and
+publication seams from #1588. `ExistingDownTests` owns lifecycle state, drain,
+private-artifact absence, recovery, cancellation and preservation assertions.
+The retained `teardown-context.sh` tests the Docker CLI boundary. The shell command
+forwards existing-services inventories to the CLI, and its old implementation
+refuses that mode; deploy-owned teardown remains with the later deploy-services
+port. Catalog/up assertions formerly at the end of the down shard remain with
+`existing-catalog-up`. The complete comparison, exact source/input pins, current
+wall/RSS evidence and assertion trace are in
+[existing-down evidence](../validation/existing-down-1589.md). No current whole-lane
+improvement or completion of #893 is claimed.

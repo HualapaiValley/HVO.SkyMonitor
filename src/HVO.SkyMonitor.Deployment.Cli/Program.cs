@@ -109,7 +109,16 @@ internal static class Program
                     await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
-            if (command is PartialPrepareRequest partial)
+            if (command is ExistingDownRequest down)
+            {
+                try
+                {
+                    var result = await services.ExistingDown(down, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(down.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=down check=complete status=passed reason=preserve").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is PartialPrepareRequest partial)
             {
                 try
                 {
@@ -433,6 +442,7 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
     public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;
     /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>
     public InstallTerminal Terminal { get; init; } = InstallTerminal.Current();

@@ -1093,11 +1093,23 @@ without service containers with:
 Preserve all state:
 
 ```bash
-./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \
+hvo-sky-install existing-down --inventory /absolute/path/inventory.yml \
   --mode persistent --run-id observatory-preflight-01 --preserve-state
 ```
 
-Delete a fully isolated, orchestrator-owned stack:
+`existing-down` owns existing-services teardown. Run it from the retained source
+checkout, whose revision and worktree disposition must match the passed preflight.
+It preserves the schema-2 `down-ledger.json`, `down-manifest.json`, `down-commit.json`
+and `down.json` evidence layout, private diagnostics, local run lock, and resumable
+intent/completion semantics. The old `scripts/deploy:environment down` spelling
+forwards existing-services inventories to this command. Its deliberate Docker CLI
+boundary is `scripts/deploy/teardown-context.sh`; endpoint and lifecycle policy are
+in the typed phase. `--delete-state` is refused before target mutation or creation
+of down artifacts. Existing shared services remain running. See the
+[comparison and assertion trace](../validation/existing-down-1589.md).
+
+Delete a fully isolated, orchestrator-owned stack (the deploy-services shell owner
+remains until that later #893 port):
 
 ```bash
 ./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \

@@ -526,6 +526,9 @@ if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null;
 if (( $# == 1 )); then
   remote_command=$1
   eval "set -- $remote_command"
+  if [[ "$1" == timeout ]]; then
+    exec env FAKE_TYPED_HTTP_TRACE=true FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE=false PATH="${FAKE_REMOTE_BIN:?}" "$@"
+  fi
   [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
   shift 3
 else
@@ -737,7 +740,7 @@ if [[ "$1" == buildx && "$2" == imagetools && "$3" == inspect ]]; then
   exit 0
 fi
 if [[ "$1" == context && "$2" == inspect ]]; then
-  context="${*: -1}"
+  if [[ "$3" == --format ]]; then context="${*: -1}"; else context=$3; fi
   case "$context" in
     logic-context) endpoint=ssh://logic@example ;;
     east-context) endpoint=ssh://east@example ;;
@@ -1178,6 +1181,9 @@ for ((i=0; i<${#args[@]}; i++)); do
     --location) location=true ;;
   esac
 done
+# The typed SSH seam carries request arguments over stdin, so record the same
+# observable URL/output boundary that legacy SSH arguments exposed to assertions.
+if [[ "${FAKE_TYPED_HTTP_TRACE:-false}" == true ]]; then printf 'typed-http\t%s\t%s\n' "$url" "$output" >> "${FAKE_LOG:?}"; fi
 if [[ -n "$cookie_jar" ]]; then [[ -e "$cookie_jar" ]] || : > "$cookie_jar"; chmod 600 "$cookie_jar"; fi
 if [[ "$url" == */Account/Login && "$method" == GET ]]; then
   printf '<input name="__RequestVerificationToken" type="hidden" value="fixture-antiforgery" />\n' > "$output"
@@ -1706,7 +1712,7 @@ fi
 exec /usr/bin/find "$@"
 EOF
 chmod +x "$REMOTE_BIN/find"
-for tool in bash basename cmp date df dirname grep timeout chmod flock mkdir cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for tool in base64 head bash basename cmp date df dirname grep timeout chmod flock mkdir cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
 for entry in "$REMOTE_BIN/"*; do
     [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
     [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
