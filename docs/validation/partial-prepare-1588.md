@@ -49,7 +49,9 @@ in C#, using `DeploymentTarget`, `PreparedTarget` and `PrepareCreation` contract
 Additional focused cases cover committed-publication tampering, orphan files,
 next-generation recovery at all four publication boundaries, interrupted quarantine renames for all five objects, run/remote flock,
 symlinks/hardlinks/modes, private-upload registry links, later-phase refusal and
-cancellation after intent. A mirror-publication failure retains one recoverable generation instead of stacking a second uncommitted failure generation. `ExitCodeContractTests` includes this command in its
+cancellation after intent. A retained schema 7 inventory with more than 128 KiB of
+valid endpoint data passes through bounded standard input, avoiding the Linux
+per-argument limit and ambient temporary files. A mirror-publication failure retains one recoverable generation instead of stacking a second uncommitted failure generation. `ExitCodeContractTests` includes this command in its
 complete 0/1/2/3/130 matrix and preserves the existing host-policy refusal gate.
 The explicit abrupt-publication failpoint returns 75, as the shell publisher did.
 
@@ -129,10 +131,10 @@ wrapper, environment manifest, raw per-vector timings and result JSON make both
 sides reproducible without live hosts. Use the shared heavy-gate flock and the
 repository's build flags when rerunning.
 
-The expanded migrated shard has 78 native Unit cases. Like the existing installer
+The expanded migrated shard has 79 native Unit cases. Like the existing installer
 contracts, those cases and the Manual replay declare their Linux-only descriptor
 semantics explicitly. The macOS inventory retains their discovered cases and adds
-the 78 new recovery cases plus seven Linux-only exit rows to its skip pin; no
+the 79 new recovery cases plus seven Linux-only exit rows to its skip pin; no
 Linux case is skipped. The migrated shard is a superset, so its
 wall time is not an identical-workload comparison. This slice makes no whole-lane
 speed, production-network, ARM64, physical-device or release-qualification claim.

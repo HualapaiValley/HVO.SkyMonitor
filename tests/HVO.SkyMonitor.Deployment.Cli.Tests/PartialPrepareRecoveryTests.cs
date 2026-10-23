@@ -192,6 +192,7 @@ public sealed class PartialPrepareRecoveryTests
     [DataRow("historical-path")]
     [DataRow("missing-tmp")]
     [DataRow("root-collision")]
+    [DataRow("large-projection")]
     public async Task Schema7Validation_PreservesHistoricalShapeAndPath(string mutation)
     {
         using var host = new DeploymentFakeHost(); host.Legacy();
@@ -204,8 +205,17 @@ public sealed class PartialPrepareRecoveryTests
             shared["name"] = "shared"; shared["sshHost"] = "shared@example"; shared["dockerContext"] = "shared-context"; shared["ports"] = new JsonArray(4444); host.Inventory["sharedServices"] = shared;
         }
         if (mutation == "historical-path") host.Inventory["deployment"]!["catalog"]!["installRoot"] = host.Inventory["deployment"]!["catalog"]!.Text("installRoot") + ",retained";
+        if (mutation == "large-projection")
+        {
+            var endpoint = host.Inventory.Array("serviceEndpoints")[0]!;
+            host.Inventory["serviceEndpoints"] = new JsonArray(Enumerable.Range(0, 2048).Select(i =>
+            {
+                var item = endpoint.DeepClone(); item["name"] = "route-" + i; return item;
+            }).ToArray());
+            Assert.IsTrue(Canonical(host.Inventory).Length > 128 * 1024);
+        }
         DeploymentFakeHost.WriteJson(host.InventoryPath, host.Inventory);
-        if (mutation is "historical-path" or "missing-tmp") _ = await SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", mutation == "missing-tmp" ? new MissingTempRunner() : new ProcessRunner(), CancellationToken.None);
+        if (mutation is "historical-path" or "missing-tmp" or "large-projection") _ = await SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", mutation == "missing-tmp" ? new MissingTempRunner() : new ProcessRunner(), CancellationToken.None);
         else await Assert.ThrowsExactlyAsync<InstallerException>(() => SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", new ProcessRunner(), CancellationToken.None));
     }
     [TestMethod]
@@ -394,10 +404,12 @@ public sealed class PartialPrepareRecoveryTests
         Assert.AreEqual(1, ledger["publicationGeneration"]!.GetValue<int>());
         await host.RunAsync();
     }
-    private sealed class MissingTempRunner : IProcessRunner
+    private sealed class MissingTempRunner : IProcessInputRunner
     {
         public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken token) =>
             new ProcessRunner().RunAsync("env", ["TMPDIR=/untrusted-missing-tmp", fileName, .. arguments], token);
+        public Task<ProcessResult> RunWithInputAsync(string fileName, IReadOnlyList<string> arguments, string standardInput, CancellationToken token) =>
+            new ProcessRunner().RunWithInputAsync("env", ["TMPDIR=/untrusted-missing-tmp", fileName, .. arguments], standardInput, token);
     }
     private static async Task Reject(DeploymentFakeHost host, string code, bool inspect = true)
     {

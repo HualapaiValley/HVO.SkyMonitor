@@ -24,7 +24,7 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
         : $"v1\nmode={Mode}\ninstallation={Installation}\ntarget={target.Name}\nroot={target.RuntimeRoot}\nowner={target.RuntimeOwner}\n");
     public static string LockName(DeploymentTarget target) => ".hvo-deploy-prepare-" + Hash($"v1\ntarget={target.Name}\nroot={target.RuntimeRoot}\n")[..32] + ".lock";
 
-    public static async Task<SplitHostInventory> ReadAsync(string path, string mode, IProcessRunner runner, CancellationToken token)
+    public static async Task<SplitHostInventory> ReadAsync(string path, string mode, IProcessInputRunner runner, CancellationToken token)
     {
         Require(mode is "isolated" or "persistent", "invalid-mode");
         Require(new FileInfo(path).LinkTarget is null && File.Exists(path), "inventory-missing-or-symlink");
@@ -75,8 +75,9 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
             }
             if (projected["sharedServices"] is { } shared)
                 foreach (var field in new[] { "sshHost", "dockerContext", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity" }) shared[field] = "schema7-shared";
-            // Validate the projection in memory through jq without writing a recovery file to an ambient TMPDIR.
-            result = await runner.RunAsync("jq", ["-ne", "--arg", "mode", mode, "--argjson", "inventory", Canonical(projected), "$inventory | (" + Resource("InventoryV8.jq") + ")"], token).ConfigureAwait(false);
+            // Standard input preserves larger retained inventories without the OS per-argument limit
+            // or a recovery file under an ambient TMPDIR. The process runner bounds and cancels the pipe.
+            result = await runner.RunWithInputAsync("jq", ["-e", "--arg", "mode", mode, Resource("InventoryV8.jq")], Canonical(projected), token).ConfigureAwait(false);
             Require(result.ExitCode == 0 && result.StandardOutput.Trim() == "true", "schema-or-value-invalid");
         }
         ValidateCrossFields(projected, mode, schema == 8);

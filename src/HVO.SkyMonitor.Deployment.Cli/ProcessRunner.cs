@@ -9,11 +9,27 @@ internal interface IProcessRunner
     Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken);
 }
 
-internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProcessRunner
+internal interface IProcessInputRunner : IProcessRunner
 {
-    public async Task<ProcessResult> RunAsync(
+    Task<ProcessResult> RunWithInputAsync(string fileName, IReadOnlyList<string> arguments, string standardInput, CancellationToken cancellationToken);
+}
+
+internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProcessInputRunner
+{
+    public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken) =>
+        RunCoreAsync(fileName, arguments, null, cancellationToken);
+
+    public Task<ProcessResult> RunWithInputAsync(string fileName, IReadOnlyList<string> arguments, string standardInput, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(standardInput);
+        if (standardInput.Length > 32 * 1024 * 1024) throw new InstallerException("Required command input exceeded its configured limit.");
+        return RunCoreAsync(fileName, arguments, standardInput, cancellationToken);
+    }
+
+    private async Task<ProcessResult> RunCoreAsync(
         string fileName,
         IReadOnlyList<string> arguments,
+        string? standardInput,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -25,6 +41,7 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
                 FileName = fileName,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                RedirectStandardInput = standardInput is not null,
                 UseShellExecute = false
             }
         };
@@ -53,6 +70,11 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
         {
             try
             {
+                if (standardInput is not null)
+                {
+                    await process.StandardInput.WriteAsync(standardInput.AsMemory(), timeout.Token).ConfigureAwait(false);
+                    process.StandardInput.Close();
+                }
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -72,7 +94,8 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
         }
         finally
         {
-            if (!outputTask.IsCompleted || !errorTask.IsCompleted) Kill(process);
+            // A failed input write can leave a child alive after it closed both output pipes.
+            Kill(process);
             try { await Task.WhenAll(outputTask, errorTask).ConfigureAwait(false); }
             catch (Exception exception) when (exception is OperationCanceledException or IOException or InstallerException)
             {

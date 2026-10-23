@@ -34,7 +34,7 @@ internal sealed class PartialPrepareCrashException : Exception
     public PartialPrepareCrashException(string message) : base(message) { }
     public PartialPrepareCrashException(string message, Exception innerException) : base(message, innerException) { }
 }
-internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunner runner, Action<string>? injectedBoundary = null)
+internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessInputRunner runner, Action<string>? injectedBoundary = null)
 {
     private static readonly string[] PrepareEvidenceKeys = ["schemaVersion", "runId", "mode", "inventorySha256", "phaseStatus", "startedAt", "updatedAt", "completedAt"];
     private static readonly string[] PrepareTargetKeys = ["target", "status", "disposition", "controlDirectory", "markerDigest", "creatingRunId"];
