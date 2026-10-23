@@ -15,6 +15,11 @@ upgrade-time checkpoint policy. It supersedes this preparation's earlier
 key-signed train and post-commit/image-only rollback assumptions. #1608 studies
 the smallest coherent SQL Server/object/config checkpoint; existing #586
 evidence and native maintenance tools are inputs, not a new qualification.
+The [#1608 bounded decision](../validation/logichost-upgrade-recovery-1608.md)
+retains COPY_ONLY/restore and the existing offline object primitives. Native SQL
+snapshot/revert worked in three disposable CU26 trials but broke the log backup
+chain and demonstrated no overall benefit sufficient to add another mechanism.
+This settles backend selection, not coherent upgrade implementation/qualification.
 
 ## Delivered Inputs and Remaining Gates
 

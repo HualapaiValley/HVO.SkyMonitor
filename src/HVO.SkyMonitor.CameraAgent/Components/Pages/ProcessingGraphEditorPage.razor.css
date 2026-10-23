@@ -30,7 +30,7 @@
 .check--stale { color: var(--hvo-warning-fg); }
 
 .node-options-section { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--hvo-border-muted); scroll-margin-top: 6rem; }
-.node-options-section h3 { font-size: 1rem; margin-bottom: 1rem; }
+.node-options-section h3 { font-size: 1rem; margin-bottom: 1rem; scroll-margin-top: 6rem; }
 .conversion-review { border: 1px solid var(--hvo-border, #46617e); padding: 1rem; min-width: 0; }
 .conversion-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .conversion-columns > div { min-width: 0; }
