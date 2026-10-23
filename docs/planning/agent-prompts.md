@@ -54,6 +54,19 @@ docs/planning/performance-validation.md for canonical workloads and evidence.
 Inspect the current branch, worktree, recent commits, current tests, durable
 formats, and open PR state. Preserve unrelated changes.
 
+When selecting work overlapping persistent layout, recovery protocols or a
+substantial forward migration, require the recorded #1607 CameraAgent or #1608
+LogicHost keep/change outcome before committing to that path. Each affected
+story cites its decision and supported forward inputs. Keep-current satisfies
+the gate; no new filesystem/framework is mandatory. Follow agent-execution.md's
+SkyMonitor recovery ordering gate, including its 60–90 minute study stop rule.
+Unrelated features, clean-install preparation, release verification and strict
+existing-behavior #893 CLI parity stay independent. A separately declared larger
+conversion may be forward-only: specify validation, interruption/resume and
+operator recovery/data-loss expectations rather than adding reverse migrations
+or rollback solely due to size. Ordinary protected upgrade checkpoint recovery
+remains separate and required under its contract; no silent destructive changes.
+
 Claim the assigned issue before implementation: inspect existing claims, assign
 the GitHub issue to yourself if possible, apply workflow:in-progress, and post a
 claim comment with a unique person/agent identity, branch/worktree, scope, and
