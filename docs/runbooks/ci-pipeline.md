@@ -60,13 +60,13 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 13418 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
-| **Integration Tests** | 926 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 13438 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Integration Tests** | 939 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
-| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 9 slots. |
+| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
 | **LogicHost Component** | Component lane. Project-root restore/build of the LogicHost host and test project roots, the LogicHost Unit and Integration selections, the LogicHost publish with checksum manifest and an opposite-host assembly check, and the LogicHost component coverage baseline over 2 slots. |
 | **Combined Protocol & Integration** | Component lane. Project-root restore/build and execution of the only suites allowed to compose both hosts, covering registration, identity, artifact transfer, fleet contracts, and other cross-host behavior, plus the combined component coverage baseline over 2 slots. |
@@ -379,20 +379,58 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
-BuildKit shell-form `RUN`, `COPY`, `ADD` and their `ONBUILD` forms consume
-heredoc bodies in declaration order. Quoted/escaped delimiters, file descriptors,
-whitespace after `<<`, `<<-` tab stripping and exact LF/CRLF terminators are
-recognized; payload text never becomes an instruction. JSON forms and quoted
-literal `<<` words do not introduce bodies. Unterminated bodies report the
-opener's source line. Unsupported shell expansion in heredoc headers and malformed heredoc
-forms fail explicitly. The offline contracts retain representative inputs also
-checked independently against the real BuildKit parser; see
-[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
 and verifies that every checked-in Dockerfile directory is listed in Dependabot.
 No Docker daemon, image pull, SDK invocation, or registry access is needed.
+
+#### Base-image heredoc grammar
+
+The guard recognizes a bounded subset of BuildKit heredoc syntax, without
+evaluating shell expressions. Shell-form `RUN`, `COPY`, `ADD` and a single
+`ONBUILD` wrapper consume bodies in declaration order. A raw shell word must
+start with optional decimal file-descriptor digits followed by `<<` or `<<-`;
+`cat<<EOF`, a quoted `"<<EOF"` word and an escaped `\<<EOF` word do not open a
+body. Whitespace after `<<` is allowed. A delimiter must be nonempty after
+POSIX quote/escape removal and resolve to one word; single/double quotes,
+mixed quoted segments, escapes and quoted spaces are supported subject to the
+restrictions below. `<<-` strips leading tabs from body/terminator lines.
+Terminators match the entire LF/CRLF line exactly; leading spaces and trailing
+whitespace do not match. Dockerfile backslash continuations are joined before
+header parsing, retaining the first physical opener line. JSON argument arrays
+of strings never introduce bodies.
+
+Compatibility limits are deliberately conservative:
+
+- If a shell-form eligible instruction contains `<<`, the literal byte sequence
+  `${` anywhere in its header is rejected with
+  `unsupported expansion in heredoc instruction`. This includes command text,
+  single/double quoted or escaped literal brace text, and even a quoted `<<`
+  word that would not open a body. For example, `RUN echo ${FOO} <<EOF`,
+  `RUN echo '${FOO}' <<EOF` and `RUN echo \${FOO} <<EOF` are rejected.
+- Any dollar or backtick character in a raw delimiter is rejected with
+  `unsupported heredoc delimiter expansion`, even when quoted or escaped.
+  Examples: `RUN <<'$EOF'`, `RUN <<"$EOF"`, `RUN <<\$EOF`, and a delimiter
+  consisting of a quoted or escaped backtick followed by `EOF`. A delimiter
+  containing `${` hits the preceding header rule first. BuildKit accepts these
+  literal delimiters; the guard intentionally does not.
+- Plain `{FOO}` command text is allowed. Dollar/backtick characters in command
+  words alone do not trigger the delimiter restriction; the `${` header rule
+  still applies. This is lexical recognition, not shell expansion support.
+  Substitutions with spaces or apparent `<<` words containing `${` are rejected
+  as a whole, rather than guessed into delimiter/body boundaries.
+- Missing/empty delimiters, a bare `<<-`, any additional raw `<` in a delimiter
+  (including `<<<` and quoted/escaped `<`), unmatched quotes, unsupported
+  JSON forms, nested `ONBUILD` and unterminated bodies fail explicitly. Errors
+  identify the opener's source line; CLI diagnostics escape control characters.
+
+Supported bodies never become instructions; unsupported or malformed headers
+reject the file before consuming a body. A later unpinned FROM therefore cannot
+pass the check through a rejected header. The offline contracts retain inputs
+with separate guard and real BuildKit expectations, including these intentional
+differences; see
+[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 
 Development v1 CI does not build images; full qualification's Deployment
 Contracts job exercises the CameraAgent and LogicHost images. ProcessingRunner
@@ -485,7 +523,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=13418`, `Integration=926`, `Manual=277`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=13438`, `Integration=939`, `Manual=279`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -596,6 +634,7 @@ patterns=(
   'TestResults/unit/imaging/*/coverage.cobertura.xml'
   'TestResults/unit/processing/*/coverage.cobertura.xml'
   'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
+  'TestResults/unit/storage-filesystem/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-cli/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-distribution/*/coverage.cobertura.xml'
   'TestResults/unit/agent-core/*/coverage.cobertura.xml'

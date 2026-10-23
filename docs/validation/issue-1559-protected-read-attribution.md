@@ -7,6 +7,11 @@ introduces no cache, identity authority, validation shortcut, or installer chang
 #1041 remains open; executable optimization belongs to a later measured slice.
 The historical 35,049 ms observation is not a measurement of this candidate.
 
+This record describes the #1559 baseline. The later [#1591 same-load reuse
+measurement](issue-1591-schedule-validation-reuse.md) implements and measures the
+bounded follow-up below; its source pins and results are separate from this
+historical attribution run.
+
 ## Scope and method
 
 The harness calls the real token-authenticated
@@ -67,6 +72,19 @@ stack, transient-memory attribution or cache-independent disk throughput is clai
 
 Use SDK 10.0.402 and an isolated issue worktree. Set `evidence_root` to a directory
 registered with `hvo scratch HVO.SkyMonitor 1559 attribution`; retain the output.
+Use a **short absolute path**: this directory also hosts the disposable recovery
+socket at `iv-<32hex>/identity/owner.sock`. A normal deep worktree/TestResults
+path can exceed the platform's Unix socket limit, which applies to encoded bytes,
+not just characters. The harness preflights that prospective path before creating
+host state and refuses an unsuitable root with a sanitized message directing you
+to short registered scratch (#1578). Existing caller-owned report/TRX files stay
+intact. Successful disposal removes the generated `iv-*` host directory and socket,
+while retaining the output directory and its report/TRX. Copy retained outputs to
+a deeper evidence location after disposal if needed.
+
+The focused `InstallationReadEvidenceRootTests` cover long absolute roots,
+multibyte path limits, relative-root guidance, and a real short-root host's cleanup
+without rerunning the measured workload.
 Build before applying the runtime constraints:
 
 ```bash

@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -47,7 +48,7 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
     private const int Warmup = 5;
     private const int Measured = 30;
     private const string AgentId = "issue1187-msa-acceptance";
-    private const string SchemaVersion = "issue1187-msa-acceptance-evidence-v1";
+    private const string SchemaVersion = "issue1541-msa-acceptance-evidence-v2";
     private const string CatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string SceneNode = "ProjectedScene";
     private const string MeasuredNode = "MeasuredStellarAssociations";
@@ -188,7 +189,8 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
                 assemblySha256,
                 runtimeProfile = "tc0-side-cell",
                 productionLatency = false,
-                predeclaration = "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1187#issuecomment-6104952144",
+                predeclaration = "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1541#issuecomment-6360029027",
+                originalPredeclaration = "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1187#issuecomment-6104952144",
                 environment = new
                 {
                     dotnetVariables = Environment.GetEnvironmentVariables().Keys.Cast<string>()
@@ -216,6 +218,7 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
                     profiles = AccuracyProfiles,
                     costProfiles = CostProfiles,
                     pipeline = Pipeline,
+                    stellarCandidateSelection = nameof(VirtualSkyStellarCandidateSelection.Exhaustive),
                     MaximumCentroidRmsPixels,
                     MaximumExecutionMilliseconds,
                     MaximumAllocatedBytesPerPixel,
@@ -255,12 +258,27 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
+    internal static CameraModuleConfig CreateConfiguration(VirtualAstrometryProfile profile)
+    {
+        // Full-catalog independent truth requires the full qualification render, even when host composition supplies
+        // today's operator scene limit. Keep this override local to this harness; shipped profiles retain their policy.
+        var options = JsonNode.Parse(profile.Config.Module.Options!.Value.GetRawText())!.AsObject();
+        options["stellarCandidateSelection"] = nameof(VirtualSkyStellarCandidateSelection.Exhaustive);
+        return profile.Config with
+        {
+            AgentId = AgentId,
+            Pipeline = Pipeline,
+            Module = profile.Config.Module with { Options = JsonSerializer.SerializeToElement(options, EvidenceJsonOptions) }
+        };
+    }
+
     private static async Task RunCaseAsync(CaseEvidence evidence, CatalogSnapshotResult snapshot, AstrometricCatalogData catalog,
         VirtualAstrometryProfile profile, string root, bool cost, Process process)
     {
         var failures = evidence.Failures;
         var ingressRoot = Path.GetFullPath(Path.Combine(root, "ingress"));
-        var config = profile.Config with { AgentId = AgentId, Pipeline = Pipeline };
+        var config = CreateConfiguration(profile);
+        evidence.Configuration = config;
 
         // Ordinary host composition, as Issue1170ComposedPipelineEvidenceTests composes the shipped graph.
         var services = new ServiceCollection();
@@ -379,6 +397,8 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         var measuredPayload = await File.ReadAllBytesAsync(Path.Combine(ingressRoot, measuredOutput.PayloadRelativePath)).ConfigureAwait(false);
         evidence.ProductBytes = measuredPayload.Length;
         var scene = ProjectedSceneJson.Parse(scenePayload).Scene ?? throw new InvalidDataException("The durable projected scene does not parse.");
+        Check(failures, scene.Selection.MaximumResults == 2000 && scene.Selection.MaximumMagnitude == 5,
+            "The full-catalog qualification render was replaced by an operator-limited scene.");
         var product = MeasuredStellarAssociationJson.Parse(measuredPayload).Associations
             ?? throw new InvalidDataException("The durable measured association product does not parse.");
 
@@ -684,6 +704,7 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         public DateTimeOffset Utc { get; } = utc;
         public int Seed { get; } = seed;
         public Dictionary<string, object?> Composition { get; } = new(StringComparer.Ordinal);
+        public CameraModuleConfig? Configuration { get; set; }
         public object? Nodes { get; set; }
         public object? Lineage { get; set; }
         public object? Settings { get; set; }

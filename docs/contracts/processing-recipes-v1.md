@@ -67,6 +67,14 @@ filesystem, logging, stream, or disposable Skia types.
 | `cloud-assessment` | Analyzer | Linear current image, named compatible clear reference, and optional environmental snapshot | `Metadata/cloud-assessment-v1` canonical JSON | O(pixels + tiles), two borrowed inputs plus O(tile count) accumulators |
 | `weather-cloud-overlay` | Transform | Preview, named assessment, and named environmental snapshot | Packed or JPEG annotated preview | O(pixels + tiles), borrowed inputs plus one display/output copy |
 
+The opt-in `measured-stellar-associations` analyzer consumes linear raw Mono16
+or CFA samples and that capture's named projected scene, producing compact
+`Metadata/measured-stellar-associations-v1` facts. It measures final pixels and
+does not fit the scene or calibration. Its [operator and contract guide](../runbooks/measured-stellar-associations.md)
+describes identity, label policy and saved-draft compatibility; the [producer
+acceptance record](../validation/issue-1541-producer-results.md) gives the bounded
+allocation, process-memory, accuracy and reconstruction evidence.
+
 JPEG bytes are deterministic for the repository-pinned Skia/runtime environment.
 Cross-platform conformance compares decoded pixels and provenance unless the
 codec environment is identical. Packed products are used by the current

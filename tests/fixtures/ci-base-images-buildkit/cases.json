@@ -182,5 +182,313 @@
     "name": "unterminated-second",
     "dockerfile": "FROM scratch\nRUN <<A <<B\nA\nFROM payload\n",
     "instructions": null
+  },
+  {
+    "name": "single-quoted-dollar-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<'$EOF'\nFROM payload\n$EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "double-quoted-dollar-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<\"$EOF\"\nFROM payload\n$EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "escaped-dollar-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<\\$EOF\nFROM payload\n$EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "single-quoted-backtick-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<'`EOF'\nFROM payload\n`EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "double-quoted-backtick-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<\"`EOF\"\nFROM payload\n`EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "escaped-backtick-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<\\`EOF\nFROM payload\n`EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported heredoc delimiter expansion"
+  },
+  {
+    "name": "quoted-brace-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<'${EOF}'\nFROM payload\n${EOF}\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "command-brace-substitution",
+    "dockerfile": "FROM scratch\nRUN echo ${FOO} <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "command-quoted-brace-literal",
+    "dockerfile": "FROM scratch\nRUN echo '${FOO}' <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "command-escaped-brace-literal",
+    "dockerfile": "FROM scratch\nRUN echo \\${FOO} <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "substitution-with-spaces",
+    "dockerfile": "FROM scratch\nRUN echo ${FOO:-hello world} <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "substitution-with-apparent-heredoc",
+    "dockerfile": "FROM scratch\nRUN echo ${FOO:- <<FAKE} <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": null,
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "quoted-substitution-with-apparent-heredoc",
+    "dockerfile": "FROM scratch\nRUN echo \"${FOO:- <<FAKE}\" <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "plain-braces-in-command",
+    "dockerfile": "FROM scratch\nRUN echo '{FOO}' <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "dollar-backtick-in-command",
+    "dockerfile": "FROM scratch\nRUN echo $FOO `printf word` <<EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "quoted-heredoc-word-with-brace-command",
+    "dockerfile": "FROM scratch\nRUN echo '${FOO}' \"<<EOF\"\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        3,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
+  },
+  {
+    "name": "substitution-with-two-apparent-bodies",
+    "dockerfile": "FROM scratch\nRUN echo ${FOO:- <<FAKE} <<EOF\nFROM payload-one\nFAKE}\nFROM payload-two\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        7,
+        "FROM"
+      ]
+    ],
+    "guard_error": "unsupported expansion in heredoc instruction"
   }
 ]

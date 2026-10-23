@@ -4,6 +4,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -50,7 +51,7 @@ public sealed class InstallationVerificationReadTests
             using var trace = StartTrace("repeat")!;
             var repeated = await fixture.ReadAsync(client).ConfigureAwait(false);
             Assert.AreEqual(first.GetRawText(), repeated.GetRawText());
-            Assert.AreEqual(2, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
+            Assert.AreEqual(1, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
             Assert.AreEqual(1, stages.ForTrace(trace.TraceId).Count(stage => stage.Name == "deployment-location.validate-retained-journal"));
         }
         fixture.Loader.DelayNextRead();
@@ -83,7 +84,9 @@ public sealed class InstallationVerificationReadTests
             35.6, -113.9, 600, "America/Phoenix", manual.KnownVersion, manual.ManualSequence,
             "issue-1559-change", "disposable-test", "Actual retained location edit"), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(ManualDeploymentLocationStatus.Applied, locationChange.Status);
+        using var relocatedTrace = StartTrace("manual-location-change")!;
         var relocated = await fixture.ReadAsync(client).ConfigureAwait(false);
+        Assert.AreEqual(2, stages.ForTrace(relocatedTrace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
         Assert.IsGreaterThan(changed.GetProperty("deploymentLocationVersion").GetInt64(), relocated.GetProperty("deploymentLocationVersion").GetInt64());
         Assert.AreNotEqual(changed.GetProperty("deploymentLocationSha256").GetString(), relocated.GetProperty("deploymentLocationSha256").GetString());
         Assert.AreEqual(changed.GetProperty("configurationSha256").GetString(), relocated.GetProperty("configurationSha256").GetString());
@@ -136,8 +139,13 @@ public sealed class InstallationVerificationReadTests
     public async Task ConstrainedDisposableReadsRecordStageAttribution()
     {
         var output = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR");
-        Assert.IsFalse(string.IsNullOrWhiteSpace(output), "Set HVO_INSTALLATION_READ_EVIDENCE_DIR to registered scratch or retained TestResults.");
+        Assert.IsFalse(string.IsNullOrWhiteSpace(output), InstallationReadAttributionFixture.EvidenceRootGuidance);
+        InstallationReadAttributionFixture.ValidateEvidenceRoot(output);
         Directory.CreateDirectory(output);
+        var settlingReadCount = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_SETTLING_READS") is { } configuredSettling
+            ? int.Parse(configuredSettling, System.Globalization.CultureInfo.InvariantCulture)
+            : 40;
+        Assert.IsTrue(settlingReadCount is >= 40 and <= 1000, "Settling reads must be between 40 and 1000.");
         var workloads = new List<object>();
         foreach (var solar in new[] { false, true })
         {
@@ -155,8 +163,10 @@ public sealed class InstallationVerificationReadTests
                 samples.Add(await MeasureAsync("repeat-no-listener", fixture, client, null).ConfigureAwait(false));
             using var stages = new InstallationReadStageCollector();
             samples.Add(await MeasureAsync("first-instrumented", fixture, client, stages).ConfigureAwait(false));
-            for (var index = 0; index < 5; index++) _ = await fixture.ReadAsync(client).ConfigureAwait(false);
-            for (var index = 0; index < 10; index++)
+            // Retain settling samples separately so tiered-JIT phase changes cannot be credited to reuse (#1591).
+            for (var index = 0; index < settlingReadCount; index++)
+                samples.Add(await MeasureAsync("settling", fixture, client, stages).ConfigureAwait(false));
+            for (var index = 0; index < 30; index++)
                 samples.Add(await MeasureAsync("repeat", fixture, client, stages).ConfigureAwait(false));
             for (var batch = 0; batch < 2; batch++)
             {
@@ -171,7 +181,8 @@ public sealed class InstallationVerificationReadTests
                 Assert.IsTrue(responses.All(value => value.GetRawText() == responses[0].GetRawText()));
                 samples.Add(new ReadMeasurement("concurrent-4", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     (process.TotalProcessorTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes(true) - allocated,
-                    process.WorkingSet64, process.PeakWorkingSet64, IoDelta(io), responses[0], stages.ForTrace(trace.TraceId)));
+                    process.WorkingSet64, process.PeakWorkingSet64, IoDelta(io), responses[0], stages.ForTrace(trace.TraceId))
+                { Memory = ReadMemorySnapshot.Capture() });
             }
             var retainedAfter = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
             Assert.AreEqual(retainedBefore, retainedAfter, "Repeated and concurrent reads must leave retained inputs unchanged.");
@@ -202,8 +213,12 @@ public sealed class InstallationVerificationReadTests
             HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
             ServerGC = System.Runtime.GCSettings.IsServerGC,
             CpuAffinity = ReadCpuAffinity(),
+            SettlingReadCount = settlingReadCount,
+            MeasuredReadCount = 30,
             AllocationSemantics = "Process-wide inclusive deltas; stage nesting and concurrent intervals overlap. No additive per-request allocation claim.",
             ColdDefinition = "cold-host-empty: first protected request on each fresh host before loader/retained fixture setup. first-http-no-listener: first request with 10,000 retained manifests after setup; filesystem caches and loader JIT are warm. Neither drops OS caches.",
+            // Opt-in probe runs only after every timed phase and both fixtures have been disposed.
+            MemoryDiagnostics = ReadMemorySnapshot.CollectAfterMeasurement(),
             Workloads = workloads
         };
         var path = Path.Combine(output, "installation-read-attribution.json");
@@ -227,7 +242,8 @@ public sealed class InstallationVerificationReadTests
         var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         return new ReadMeasurement(kind, elapsed, (process.TotalProcessorTime - cpu).TotalMilliseconds,
             GC.GetTotalAllocatedBytes(true) - allocated, process.WorkingSet64, process.PeakWorkingSet64,
-            IoDelta(io), identity, trace is null || stages is null ? [] : stages.ForTrace(trace.TraceId));
+            IoDelta(io), identity, trace is null || stages is null ? [] : stages.ForTrace(trace.TraceId))
+        { Memory = ReadMemorySnapshot.Capture() };
     }
 
     private static string ReadCpuAffinity() => OperatingSystem.IsLinux()
@@ -254,4 +270,37 @@ public sealed class InstallationVerificationReadTests
 }
 
 internal sealed record ReadMeasurement(string Kind, double ElapsedMs, double CpuMs, long ProcessAllocatedBytes,
-    long WorkingSetBytes, long PeakWorkingSetBytes, Dictionary<string, long> IoDelta, JsonElement Identity, InstallationReadStage[] Stages);
+    long WorkingSetBytes, long PeakWorkingSetBytes, Dictionary<string, long> IoDelta, JsonElement Identity, InstallationReadStage[] Stages)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ReadMemorySnapshot? Memory { get; init; }
+}
+
+// Supplemental GC diagnostics are outside measured counters/timers. No forced
+// collection occurs until all workloads, edits and fixture disposal are complete.
+internal sealed record ReadMemorySnapshot(long ManagedAllocatedBytes, long LastGcHeapSizeBytes,
+    long ManagedCommittedBytes, long LastGcFragmentedBytes, long WorkingSetBytes, long PeakWorkingSetBytes,
+    int Gen0Count, int Gen1Count, int Gen2Count, long LastGcIndex)
+{
+    private static readonly bool Enabled = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_GC_DIAGNOSTICS") == "1";
+
+    internal static ReadMemorySnapshot? Capture()
+    {
+        if (!Enabled) return null;
+        var memory = GC.GetGCMemoryInfo();
+        using var process = Process.GetCurrentProcess();
+        return new ReadMemorySnapshot(GC.GetTotalMemory(forceFullCollection: false), memory.HeapSizeBytes,
+            memory.TotalCommittedBytes, memory.FragmentedBytes, process.WorkingSet64, process.PeakWorkingSet64,
+            GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), memory.Index);
+    }
+
+    internal static object? CollectAfterMeasurement()
+    {
+        if (!Enabled) return null;
+        var before = Capture();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        return new { Before = before, After = Capture() };
+    }
+}

@@ -191,6 +191,21 @@ FROM build AS final
                 self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\nEOF\n")
                 self.check("Dockerfile:2:")
 
+    def test_rejected_literal_headers_keep_opener_and_safe_diagnostics(self):
+        for header in ("RUN <<'$sensitive-marker\x1b\x07'",
+                       r"RUN <<\`sensitive-marker" + "\x1b\x07",
+                       "RUN echo '${sensitive-marker\x1b\x07}' <<EOF"):
+            with self.subTest(header=repr(header)):
+                self.dockerfile("bad\n::error title=forged/Dockerfile",
+                                f"FROM scratch\n\\\n{header}\nFROM unpinned\n")
+                result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Dockerfile:2: unsupported", result.stderr)
+                self.assertNotIn("sensitive-marker", result.stderr)
+                self.assertNotIn("\x1b", result.stderr)
+                self.assertNotIn("\x07", result.stderr)
+                self.assertFalse(any(line.startswith("::") for line in result.stderr.splitlines()))
+
     def test_F1_bare_chomp_operator_cannot_hide_real_from(self):
         for opener in ("RUN cat <<- EOF", "RUN cat <<-", "RUN cat 3<<- EOF"):
             with self.subTest(opener=opener):
@@ -205,12 +220,28 @@ FROM build AS final
         self.check("Dockerfile:2: unfinished continuation")
 
     def test_independent_buildkit_parser_fixtures(self):
-        parse = runpy.run_path(str(CHECK))["logical_lines"]
+        guard = runpy.run_path(str(CHECK))
+        parse = guard["logical_lines"]
         cases = json.loads((ROOT / "tests/fixtures/ci-base-images-buildkit/cases.json").read_text())
         for case in cases:
             with self.subTest(case=case["name"]):
                 self.dockerfile("Dockerfile", case["dockerfile"])
-                if case["instructions"] is None:
+                if "guard_error" in case:
+                    with self.assertRaises(guard["DockerfileSyntaxError"]) as caught:
+                        list(parse(self.root / "Dockerfile"))
+                    self.assertEqual(caught.exception.line, 2)
+                    self.assertEqual(str(caught.exception), case["guard_error"])
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                    # Both a real later FROM and a missing terminator must fail
+                    # at the unsupported opener, before consuming any body.
+                    prefix, separator, _ = case["dockerfile"].rpartition("FROM scratch\n")
+                    self.assertTrue(separator)
+                    self.dockerfile("Dockerfile", prefix + "FROM unpinned\n")
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                    self.dockerfile("Dockerfile", "\n".join(case["dockerfile"].splitlines()[:2])
+                                    + "\nFROM unpinned\n")
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                elif case["instructions"] is None:
                     with self.assertRaisesRegex(ValueError, "unterminated heredoc"):
                         list(parse(self.root / "Dockerfile"))
                 else:
