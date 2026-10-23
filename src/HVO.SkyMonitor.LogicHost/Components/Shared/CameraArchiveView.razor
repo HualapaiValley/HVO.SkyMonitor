@@ -52,7 +52,7 @@
     {
         <p class="archive-exact">Central capture @exact.Capture.CaptureId · captured @exact.Capture.CapturedAtUtc.ToString("u") · first received @exact.Capture.FirstReceivedAtUtc.ToString("u")</p>
         <CascadingValue Value="detail">
-            <ExactCaptureViewer @key="generation" CaptureId="exact.Capture.CaptureId" ReadOnly="true" AllowExactPreviewFallback="true" />
+            <ExactCaptureViewer @key="generation" CaptureId="exact.Capture.CaptureId" ReadOnly="true" AllowExactPreviewFallback="true" HeadingLevel="3" />
         </CascadingValue>
         <details class="archive-artifacts">
             <summary>Retained artifact metadata and downloads</summary>
