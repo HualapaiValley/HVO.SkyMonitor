@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -369,6 +370,26 @@ public sealed class ExecutionEvidenceCombinedTests
                 Assert.IsNotNull(latest);
                 Assert.AreEqual("Available", latest.State, latest.ReasonCode);
                 Assert.IsNotNull(latest.ObjectGeneration);
+                var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                    new Claim(ClaimTypes.NameIdentifier, central.OwnerUserId), new Claim("account_type", "User")], "Identity.Application"));
+                var inspector = await scope.ServiceProvider.GetRequiredService<IImportedExecutionInspectorReadService>()
+                    .ReadAsync(principal, central.Binding.ObservatoryId, cameraId, new ImportedExecutionQuery
+                    {
+                        Installation = central.Binding.LogicalCameraInstallationId,
+                        Binding = central.Binding.Id,
+                        Unit = item.UnitId,
+                        Artifact = item.Artifact.ArtifactReferenceId
+                    }).ConfigureAwait(false);
+                Assert.IsNotNull(inspector);
+                Assert.IsNotNull(inspector.Envelope);
+                Assert.IsNotNull(inspector.Reconciliation);
+                Assert.AreEqual("Available", inspector.Reconciliation.Observations[0].State);
+                Assert.AreEqual(item.Artifact, inspector.Reconciliation.Artifact);
+                Assert.AreEqual(await db.CentralArtifacts.Where(a => a.Id == raw.CentralArtifactId).Select(a => a.Frame!.Id)
+                    .SingleAsync().ConfigureAwait(false), inspector.ViewerCapture);
+                Assert.IsTrue(sealedBeforeUpload.Any(row => row.Envelope.EvidenceId == inspector.Envelope.EvidenceId &&
+                    row.Envelope.PayloadSha256 == inspector.Envelope.PayloadSha256 &&
+                    row.Envelope.OriginSequence == inspector.Envelope.OriginSequence), "The UI composition must preserve exact real-exporter evidence after late bytes arrive.");
             }
         }
         await central.AssertPersistedAsync(sealedBeforeUpload).ConfigureAwait(false);
