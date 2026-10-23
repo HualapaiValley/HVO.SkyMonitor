@@ -138,11 +138,14 @@ public sealed partial class ExistingDownTests
         {
             if (point == "after-graceful-stop-mutation-cameraagent:east") throw new PartialPrepareCrashException();
         }));
-        if (fault == "ssh") fixture.Host.BadHost = "east";
-        if (fault == "daemon") fixture.Host.BadDaemon = "east";
+        if (fault == "ssh") fixture.Host.BeforePrimitive = (operation, _) =>
+        {
+            if (operation == "probe") throw new InstallerException("simulated SSH transport unavailable");
+        };
         var docker = fixture.Host.DockerResponse!;
         fixture.Host.DockerResponse = args =>
         {
+            if (fault == "daemon" && args.Count > 2 && args[2] == "info") return new ProcessResult(1, "", "daemon unavailable");
             if (args.Count > 2 && args[2] == "compose" && args.Contains("ps"))
             {
                 if (fault == "ps-unavailable") return new ProcessResult(1, "", "daemon unreachable");
