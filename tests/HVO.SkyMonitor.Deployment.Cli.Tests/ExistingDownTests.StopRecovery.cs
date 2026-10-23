@@ -1,3 +1,6 @@
+using HVO.SkyMonitor.CameraAgent.Configuration;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using static HVO.SkyMonitor.Deployment.SplitHostJson;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
@@ -13,7 +16,9 @@ public sealed partial class ExistingDownTests
         await fixture.StageAsync();
         var east = fixture.Host.Contract.Targets.Single(t => t.Name == "east");
         var seeded = new[] { east.RuntimeRoot + "/config/private/owner-password", east.RuntimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile" };
-        foreach (var path in seeded) DeploymentFakeHost.Write(fixture.Host.Physical(path), "seeded-credential");
+        DeploymentFakeHost.Write(fixture.Host.Physical(seeded[0]), "seeded-credential");
+        DeploymentFakeHost.Write(fixture.Host.Physical(seeded[1]), "/run/hvo-private/owner-password");
+        Assert.IsFalse(File.Exists(fixture.Host.Physical(east.RuntimeRoot + "/config/secrets/LocalIdentity__AllowMissingAdminPassword")));
         await Assert.ThrowsAsync<PartialPrepareCrashException>(() => fixture.RunAsync(point =>
         {
             if (point != "abrupt-after-down-commit") return;
@@ -28,10 +33,30 @@ public sealed partial class ExistingDownTests
 
         Assert.AreEqual("passed", result.Text("phaseStatus"));
         foreach (var path in seeded) Assert.IsFalse(File.Exists(fixture.Host.Physical(path)), path);
+        AssertCameraStartupConfiguration(fixture, "east");
         Assert.AreEqual(2, fixture.Stops);
         Assert.AreEqual(0, fixture.StoppedHttpAttempts);
         AssertPrivateAbsent(fixture);
         AssertPreserved(fixture);
+    }
+
+    private static void AssertCameraStartupConfiguration(ExistingDownFixture fixture, string camera)
+    {
+        var target = fixture.Host.Contract.Targets.Single(t => t.Name == camera);
+        using var appsettings = typeof(ExistingDownTests).Assembly.GetManifestResourceStream("HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentAppsettings.json")!;
+        using var configuration = new ConfigurationManager();
+        configuration.AddJsonStream(appsettings)
+            .AddKeyPerFile(fixture.Host.Physical(target.RuntimeRoot + "/config/secrets"), optional: false);
+        // Program.ApplyLocalIdentityPasswordFile has no file to load after teardown.
+        Assert.IsNull(configuration["LocalIdentity:AdminPasswordFile"]);
+        var services = new ServiceCollection();
+        services.AddOptions<LocalIdentityOptions>()
+            .Bind(configuration.GetSection("LocalIdentity"))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IStartupValidator>().Validate();
+        Assert.AreEqual(string.Empty, provider.GetRequiredService<IOptions<LocalIdentityOptions>>().Value.AdminPassword);
     }
 
     [TestMethod]
