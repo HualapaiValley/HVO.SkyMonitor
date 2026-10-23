@@ -7,6 +7,15 @@ checks passed. The evidence supports the tested bounded reconciliation behavior;
 allocation budgets and sustained-host resident-memory qualification remain outside
 this result. No product or changelog change was needed.
 
+After capture, this evidence branch incorporated `development/v1` through
+`58e71cee1a1fab8b4b36b0ee548ef6ad95db5335`, including PR #1549's read-history
+fixture repair needed for normal Integration validation. The authority and
+reconciliation services, derivative scheduler, window resolver and retained #248
+helper are byte-identical to the measured revision. Other processing, recipe and
+seeding code changed upstream. These timing, identity and resource observations
+remain measurements of `3e118ee8`; subsequent local gates validate the synchronized
+branch separately and do not turn its newer binaries into measured endpoints.
+
 ## Workload and method
 
 W3M: one deployment, 10/100/1,000/10,000 captures, one Available/Complete,
