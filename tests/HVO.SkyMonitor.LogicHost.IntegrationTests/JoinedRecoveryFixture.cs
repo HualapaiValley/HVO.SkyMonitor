@@ -124,9 +124,9 @@ internal sealed partial class JoinedRecoveryFixture
             expectedClaims.Add("key", key.KeyId.ToString("D", CultureInfo.InvariantCulture));
         }
         var instance = Guid.NewGuid().ToString("D", CultureInfo.InvariantCulture);
-        File.WriteAllText(Path.Combine(SourceHost, "instance.json"), JsonSerializer.Serialize(new { Instance = instance }));
+        await File.WriteAllTextAsync(Path.Combine(SourceHost, "instance.json"), JsonSerializer.Serialize(new { Instance = instance }));
         // Public configuration carries a reference only; the ephemeral SQL password is never serialized.
-        File.WriteAllText(Path.Combine(SourceHost, "config.json"), JsonSerializer.Serialize(new
+        await File.WriteAllTextAsync(Path.Combine(SourceHost, "config.json"), JsonSerializer.Serialize(new
         {
             Instance = instance, Cutoff, Provider = "Filesystem", Buckets,
             CredentialReference = "ephemeral-test-credential", KeyReference = expectedClaims["key"],
@@ -303,12 +303,12 @@ internal sealed partial class JoinedRecoveryFixture
         var migrations = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
         if (validate)
         {
-        Require(artifacts.Length == 2 && frames.Length == 1 && seed.Length > 0 && migrations.Length == 1, "canonical-shape");
-        foreach (var pair in expectedClaims)
-            Require(claims.Count(claim => claim.UserId == UserId && claim.ClaimType == pair.Key && claim.ClaimValue == pair.Value) == 1, "sql-host-pair");
-        foreach (var artifact in artifacts)
-            Require(expectedObjects.Any(fact => artifact.StorageReference == $"object://{fact.Bucket}/{fact.Key}"
-                && artifact.MediaType == fact.ContentType && artifact.ByteLength == fact.Length && artifact.ChecksumSha256 == fact.Sha256), "sql-object-reference");
+            Require(artifacts.Length == 2 && frames.Length == 1 && seed.Length > 0 && migrations.Length == 1, "canonical-shape");
+            foreach (var pair in expectedClaims)
+                Require(claims.Count(claim => claim.UserId == UserId && claim.ClaimType == pair.Key && claim.ClaimValue == pair.Value) == 1, "sql-host-pair");
+            foreach (var artifact in artifacts)
+                Require(expectedObjects.Any(fact => artifact.StorageReference == $"object://{fact.Bucket}/{fact.Key}"
+                    && artifact.MediaType == fact.ContentType && artifact.ByteLength == fact.Length && artifact.ChecksumSha256 == fact.Sha256), "sql-object-reference");
         }
         return JsonSerializer.Serialize(new { claims, artifacts, frames, seed, assignments, users, migrations });
     }
