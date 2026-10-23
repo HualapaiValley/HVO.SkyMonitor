@@ -1,0 +1,222 @@
+[
+  {
+    "References": 1,
+    "Before": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 2,
+        "LogicalReads": 8,
+        "ReturnedRows": 2,
+        "OperatorRowsRead": 4
+      },
+      "ObservationSelects": {
+        "Commands": 2,
+        "LogicalReads": 6,
+        "ReturnedRows": 1,
+        "OperatorRowsRead": 3
+      },
+      "Writes": {
+        "Commands": 1,
+        "LogicalReads": 34,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 3
+      }
+    },
+    "After": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 2,
+        "LogicalReads": 6,
+        "ReturnedRows": 2,
+        "OperatorRowsRead": 3
+      },
+      "ObservationSelects": {
+        "Commands": 2,
+        "LogicalReads": 4,
+        "ReturnedRows": 1,
+        "OperatorRowsRead": 2
+      },
+      "Writes": {
+        "Commands": 1,
+        "LogicalReads": 35,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 3
+      }
+    }
+  },
+  {
+    "References": 32,
+    "Before": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 33,
+        "LogicalReads": 132,
+        "ReturnedRows": 33,
+        "OperatorRowsRead": 66
+      },
+      "ObservationSelects": {
+        "Commands": 33,
+        "LogicalReads": 130,
+        "ReturnedRows": 32,
+        "OperatorRowsRead": 65
+      },
+      "Writes": {
+        "Commands": 1,
+        "LogicalReads": 461,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 619
+      }
+    },
+    "After": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 2,
+        "LogicalReads": 6,
+        "ReturnedRows": 9,
+        "OperatorRowsRead": 18
+      },
+      "ObservationSelects": {
+        "Commands": 2,
+        "LogicalReads": 11,
+        "ReturnedRows": 32,
+        "OperatorRowsRead": 599
+      },
+      "Writes": {
+        "Commands": 1,
+        "LogicalReads": 456,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 572
+      }
+    }
+  },
+  {
+    "References": 128,
+    "Before": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 129,
+        "LogicalReads": 516,
+        "ReturnedRows": 129,
+        "OperatorRowsRead": 258
+      },
+      "ObservationSelects": {
+        "Commands": 129,
+        "LogicalReads": 514,
+        "ReturnedRows": 128,
+        "OperatorRowsRead": 257
+      },
+      "Writes": {
+        "Commands": 4,
+        "LogicalReads": 1793,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 1858
+      }
+    },
+    "After": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 2,
+        "LogicalReads": 6,
+        "ReturnedRows": 9,
+        "OperatorRowsRead": 18
+      },
+      "ObservationSelects": {
+        "Commands": 2,
+        "LogicalReads": 11,
+        "ReturnedRows": 128,
+        "OperatorRowsRead": 599
+      },
+      "Writes": {
+        "Commands": 4,
+        "LogicalReads": 1792,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 1857
+      }
+    }
+  },
+  {
+    "References": 256,
+    "Before": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 257,
+        "LogicalReads": 1028,
+        "ReturnedRows": 257,
+        "OperatorRowsRead": 514
+      },
+      "ObservationSelects": {
+        "Commands": 257,
+        "LogicalReads": 1026,
+        "ReturnedRows": 256,
+        "OperatorRowsRead": 513
+      },
+      "Writes": {
+        "Commands": 7,
+        "LogicalReads": 3568,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 3763
+      }
+    },
+    "After": {
+      "TargetAndLocks": {
+        "Commands": 5,
+        "LogicalReads": 6,
+        "ReturnedRows": 3,
+        "OperatorRowsRead": 3
+      },
+      "SourceSelects": {
+        "Commands": 2,
+        "LogicalReads": 6,
+        "ReturnedRows": 9,
+        "OperatorRowsRead": 18
+      },
+      "ObservationSelects": {
+        "Commands": 2,
+        "LogicalReads": 11,
+        "ReturnedRows": 256,
+        "OperatorRowsRead": 599
+      },
+      "Writes": {
+        "Commands": 7,
+        "LogicalReads": 3563,
+        "ReturnedRows": 0,
+        "OperatorRowsRead": 3745
+      }
+    }
+  }
+]

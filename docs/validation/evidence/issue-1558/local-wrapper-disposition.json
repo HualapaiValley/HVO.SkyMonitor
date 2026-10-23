@@ -1,0 +1,8 @@
+{
+  "InitialWrapper": "candidate-entry.py",
+  "ExitCode": 1,
+  "Stage": "After all standard Tier C gates, including solution Integration, had returned0",
+  "Cause": "TRX Coverlet href omitted its GUID directory; direct href resolution failed in the local evidence mapper.",
+  "Correction": "Mapped each canonical slot from the exact unique per-project coverage attachment in its matching solution-phase console log; retained source/TRX/coverage SHA256 in coverage-mapping.json. No suite was rerun.",
+  "Continuation": "candidate-resume.py runs only coverage/category/model/publish suffix and preserves all passing standard-gate results."
+}
