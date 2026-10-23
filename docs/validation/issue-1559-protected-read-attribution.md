@@ -210,6 +210,21 @@ before/after result. The whole command took 96 seconds, including setup; journal
 seeding uses real durable transactions and writes substantially more than the
 retained main-file size. Setup cost is excluded from the per-read numbers.
 
+The concurrent requests serialize retained scans under
+`ProtectedDeploymentLocationStore._gate`; manual-location commands also use that
+gate. Within each four-request batch, initialization spans grow in steps from
+about 185–268 ms for the first caller to 725–821 ms for the last, while each
+retained scan takes about 165–256 ms. Initialization includes both gate wait and
+the scan. These observations expose queued access to retained validation; they
+do not establish parallel retained-scan throughput on additional cores.
+
+The solar expansion series has two phases. Repeats 1–6 mostly take about 30 ms
+per expansion, with 49–52 ms outliers, and allocate about 7.98 MB each. Repeat 7
+transitions between phases; repeats 8–10 take 15.24–18.88 ms and allocate about
+7.59 MB each, with whole-read times of 212.38, 208.70 and 215.29 ms. The allocation
+and timing shift is consistent with tiered JIT, but these counters do not prove
+its cause. The ten-repeat medians above span both phases.
+
 ## Smallest bounded follow-up
 
 The smallest candidate supported here is **reuse of the first annual expansion's
@@ -224,12 +239,16 @@ the next measured slice, not implemented or demonstrated as an improvement here.
 
 One of the two identical expansions represents only about 2.4 ms for fixed
 schedules, but roughly 30 ms for this solar schedule: an estimated upper saving
-near 12% of the solar endpoint median before implementation overhead. That is not
-a claim to solve the dominant retained scan or the historical live observation.
-The next slice should compare against this immutable baseline with interleaved
-trials, validate real observer changes, and retain before/after latency and
-allocation evidence. As a measured runtime change it requires the appropriate
-higher local risk tier and independent protection/retained-state review.
+near 12% of the solar endpoint median before implementation overhead in the
+earlier phase. The later phase instead suggests about 16 ms, or roughly 7–8%
+of a 212 ms read. Neither estimate is a demonstrated optimization or a claim to
+solve the dominant retained scan or historical live observation. Expansion reuse
+would not shorten the retained scan's time holding the location-store gate.
+The next slice should use interleaved before/after trials after tiering has
+settled, report phase stability so warm-up is not credited as an optimization,
+validate real observer changes, and retain latency and allocation evidence.
+As a measured runtime change it requires the appropriate higher local risk tier
+and independent protection/retained-state review.
 
 Most cost here is retained parsing, which must continue detecting fresh retained
 file/journal corruption and preserving both pre-publication checks. A later
