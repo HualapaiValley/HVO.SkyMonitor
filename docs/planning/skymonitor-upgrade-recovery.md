@@ -29,8 +29,16 @@ as the study baseline. There is no measured evidence here that changing them
 reduces total complexity or elapsed recovery time. No new filesystem, snapshot
 framework, general backend matrix or routine CI campaign is justified by this
 specification alone. No alternate backend was provisioned or benchmarked here.
-Remaining uncertainty is the cost of completing the required coverage/fencing
-versus one promising alternative, to be measured by #1607/#1608.
+At that contract stage, the cost of completing the required coverage/fencing
+versus one promising alternative remained for #1607/#1608 to assess.
+
+**CameraAgent study decision, #1607 (2026-10-23):**
+[keep the current filesystem/layout and selected-SQLite checkpoint baseline](../validation/cameraagent-filesystem-decision-1607.md).
+The bounded benefit screen credits #1340's bulk-copy removal and #1369's separate
+backup/restore; it found no demonstrated net advantage that justifies adopting
+a filesystem backend. This clears the CameraAgent study ordering gate, without
+claiming today's selected-store snapshot meets complete #1606 coverage/fencing.
+The gaps below and the affected stories' own acceptance remain in force.
 
 ## Requirement and Implementation Map
 
