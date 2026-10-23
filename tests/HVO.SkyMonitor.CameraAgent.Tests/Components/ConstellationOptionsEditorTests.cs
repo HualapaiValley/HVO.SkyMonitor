@@ -161,6 +161,131 @@ public sealed class ConstellationOptionsEditorTests
     }
 
     [TestMethod]
+    public void SceneScalarPanelEditsOnlySelectedMembersAndHasAccessibleLabelsAndHelp()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, """{ "constellationIds":["Ori"], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "future": [ 1.50 ] }""");
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay");
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        Assert.IsNotNull(cut.Find("#scene-overlay"));
+        foreach (var input in cut.FindAll(".node-options input[id]"))
+        {
+            Assert.IsNotNull(cut.Find($"label[for='{input.Id}']"));
+            Assert.IsNotNull(cut.Find("#" + input.GetAttribute("aria-describedby")));
+        }
+        foreach (var member in new[] { "drawMarkers", "drawLabels", "drawConstellationLines", "drawImageCircle", "drawCardinalDirections" })
+            cut.Find("#node-options-0-" + member).Change(false);
+        cut.Find("#node-options-0-markerRadius").Change("12");
+        cut.Find("#node-options-0-labelScale").Change("3");
+        cut.Find("#node-options-0-maximumLabelCharacters").Change("16");
+        cut.Find("#node-options-0-maximumLabelMagnitude").Change("-1.25");
+        cut.Find("#node-options-0-cardinalScale").Change("4");
+        cut.Find("form").Submit();
+        cut.Find("button.btn-primary").Click();
+        var saved = service.Created.Single().Pipeline.Steps[0].Options!.Value;
+        Assert.IsFalse(saved.GetProperty("drawMarkers").GetBoolean());
+        Assert.IsFalse(saved.GetProperty("drawLabels").GetBoolean());
+        Assert.IsFalse(saved.GetProperty("drawConstellationLines").GetBoolean());
+        Assert.IsFalse(saved.GetProperty("drawImageCircle").GetBoolean());
+        Assert.IsFalse(saved.GetProperty("drawCardinalDirections").GetBoolean());
+        Assert.AreEqual(12, saved.GetProperty("markerRadius").GetInt32());
+        Assert.AreEqual(3, saved.GetProperty("labelScale").GetInt32());
+        Assert.AreEqual(16, saved.GetProperty("maximumLabelCharacters").GetInt32());
+        Assert.AreEqual(-1.25, saved.GetProperty("maximumLabelMagnitude").GetDouble());
+        Assert.AreEqual(4, saved.GetProperty("cardinalScale").GetInt32());
+        Assert.AreEqual("[\"Ori\"]", saved.GetProperty("constellationIds").GetRawText());
+        Assert.AreEqual("null", saved.GetProperty("markerValue").GetRawText());
+        Assert.AreEqual(17, saved.GetProperty("labelValue").GetInt32());
+        Assert.AreEqual("null", saved.GetProperty("imageCircleValue").GetRawText());
+        Assert.AreEqual(128, saved.GetProperty("cardinalValue").GetInt32());
+        Assert.AreEqual("[ 1.50 ]", saved.GetProperty("future").GetRawText());
+        Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
+    public void RestoringEverySceneScalarDefaultDoesNotMaterializeAbsentOptions()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, null);
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        foreach (var member in new[] { "drawMarkers", "drawLabels", "drawConstellationLines", "drawImageCircle", "drawCardinalDirections" })
+        {
+            cut.Find("#node-options-0-" + member).Change(false);
+            cut.Find("#node-options-0-" + member).Change(true);
+        }
+        foreach (var (member, original) in new[] { ("markerRadius", "6"), ("labelScale", "2"), ("maximumLabelCharacters", "24"), ("maximumLabelMagnitude", "2.5"), ("cardinalScale", "2") })
+        {
+            cut.Find("#node-options-0-" + member).Change("1");
+            cut.Find("#node-options-0-" + member).Change(original);
+        }
+        cut.Find("form").Submit();
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsEmpty(service.Created);
+        Assert.IsNull(service.RevisionDetail!.Pipeline.Steps[0].Options);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void SceneDeepLinkHonorsRegistryAndRevisionDenial(bool denyRevision)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, null);
+        if (denyRevision)
+            service.RevisionDetailFailure = OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Failure(OperatorUiResultKind.Unauthorized, "Denied");
+        else
+            service.RegistryFailure = OperatorUiResult<ProcessingGraphRegistryState>.Failure(OperatorUiResultKind.Unauthorized, "Denied");
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay");
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll(".node-options"));
+        Assert.IsEmpty(service.Created);
+    }
+
+    [TestMethod]
+    public void SceneDeepLinkReportsMissingNodeAndRepeatedNodesHaveUniqueAnchors()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, null);
+        var scene = service.RevisionDetail!.Pipeline.Steps[0];
+        service.RevisionDetail = service.RevisionDetail with { Pipeline = new CapturePipelineConfig([]) };
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay");
+        var missing = context.Render<ProcessingGraphEditorPage>();
+        StringAssert.Contains(missing.Markup, "no supported scene overlay node", StringComparison.Ordinal);
+        missing.Dispose();
+        service.RevisionDetail = service.RevisionDetail with
+        {
+            Pipeline = new CapturePipelineConfig([scene, scene with { Id = "second", Order = 20 }])
+        };
+        var repeated = context.Render<ProcessingGraphEditorPage>();
+        foreach (var id in new[] { "scene-overlay", "scene-overlay-1", "constellations", "constellations-1" })
+            Assert.HasCount(1, repeated.FindAll("#" + id));
+    }
+
+    [TestMethod]
+    [DataRow("markerRadius", "33")]
+    [DataRow("labelScale", "0")]
+    [DataRow("maximumLabelCharacters", "65")]
+    [DataRow("maximumLabelMagnitude", "30.1")]
+    [DataRow("maximumLabelMagnitude", "NaN")]
+    [DataRow("cardinalScale", "9")]
+    public void InvalidSceneScalarCannotSaveAfterAValidPreview(string member, string input)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, null);
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        cut.Find("#node-options-0-drawMarkers").Change(false);
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("#node-options-0-" + member).Change(input);
+        cut.Find("form").Submit();
+        Assert.IsNotEmpty(cut.FindAll(".option-errors li"));
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsEmpty(service.Created);
+    }
+
+    [TestMethod]
     public void ExistingLifecycle_RollbackUsesTheRetainedRevisionAndCurrentRegistryVersion()
     {
         using var context = new BunitContext();

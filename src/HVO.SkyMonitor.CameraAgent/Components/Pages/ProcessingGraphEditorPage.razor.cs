@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -46,7 +47,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "constellations" or "frame-facts")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -174,6 +175,11 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
     }
+
+    private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
+        => node.OptionsForm?.Descriptor.StepAlias == ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias
+            ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
+            : null;
 
     private void AddNode()
     {

@@ -90,10 +90,94 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private sealed record ConstellationCapture(string RevisionId, Guid ArtifactId, PresentationLayerPayloadV1 Payload, byte[] Bytes,
-        Guid AnnotationArtifactId, PresentationLayerPayloadV1 Annotations);
+    [TestMethod]
+    [DataRow("drawMarkers", "False")]
+    [DataRow("markerRadius", "12")]
+    [DataRow("drawLabels", "False")]
+    [DataRow("labelScale", "3")]
+    [DataRow("maximumLabelCharacters", "12")]
+    [DataRow("maximumLabelMagnitude", "0")]
+    [DataRow("drawConstellationLines", "False")]
+    [DataRow("drawImageCircle", "False")]
+    [DataRow("drawCardinalDirections", "False")]
+    [DataRow("cardinalScale", "3")]
+    public async Task SceneScalarEditChangesItsExistingOutputAndRollbackReconstructsOriginal(string member, string input)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-scene-scalar-options");
+        try
+        {
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var config = CreateProjectedSceneConfiguration();
+            config = config with
+            {
+                Rig = config.Rig with { Sensor = config.Rig.Sensor with { WidthPixels = 512, HeightPixels = 512 } },
+                Pipeline = new CapturePipelineConfig([
+                    new CaptureProcessingStepConfig("ProjectedScene", "projected-scene", 10, DependsOn: ["$raw"]),
+                    new CaptureProcessingStepConfig("ScenePresentationLayer", "overlay", 20,
+                        JsonSerializer.SerializeToElement(new { expectedPositionDiagnostics = true, future = new { keep = 17 } }), ["projected-scene"])
+                ])
+            };
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var original = await CaptureConstellationsAsync(provider, config, 0, 512).ConfigureAwait(false);
+            var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "sky", "2");
+            model.Nodes[1].OptionsForm!.Set(member, input);
+            Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
+            var draft = await operations.CreateRevisionAsync("sky", "2", pipeline, "create", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            var active = await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            var changed = await CaptureConstellationsAsync(provider, config, 1, 512).ConfigureAwait(false);
+            Assert.AreEqual(draft.RevisionId, changed.RevisionId);
+            PresentationLayerPayloadV1 Select(ConstellationCapture capture) => member switch
+            {
+                "drawConstellationLines" => capture.Payload,
+                "drawImageCircle" => capture.ImageCircle,
+                "drawCardinalDirections" or "cardinalScale" => capture.Cardinals,
+                _ => capture.Annotations
+            };
+            var before = Select(original);
+            var after = Select(changed);
+            Assert.AreNotEqual(before.ContentIdentitySha256, after.ContentIdentitySha256, member);
+            Assert.AreNotEqual(Convert.ToHexString(SHA256.HashData(RenderSceneLayer(before))),
+                Convert.ToHexString(SHA256.HashData(RenderSceneLayer(after))), member);
+            switch (member)
+            {
+                case "drawMarkers": Assert.IsEmpty(after.Markers); break;
+                case "markerRadius": Assert.IsTrue(after.Markers.All(static marker => marker.Radius == 12)); break;
+                case "drawLabels": Assert.IsEmpty(after.TextBlocks); break;
+                case "maximumLabelCharacters":
+                    Assert.IsNotEmpty(after.TextBlocks);
+                    Assert.IsTrue(after.TextBlocks.All(static text => text.Lines.Single().EndsWith(" (expected)", StringComparison.Ordinal)));
+                    break;
+                case "maximumLabelMagnitude": Assert.IsEmpty(after.Markers); Assert.IsEmpty(after.TextBlocks); break;
+                case "drawConstellationLines": Assert.IsEmpty(after.Segments); break;
+                case "drawImageCircle": Assert.IsEmpty(after.Ellipses); break;
+                case "drawCardinalDirections": Assert.IsEmpty(after.TextBlocks); break;
+            }
+            var retained = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(config.Pipeline.Steps[1].Options!.Value.GetRawText(), retained!.Steps[1].Options!.Value.GetRawText());
+            await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+            var reproduced = await CaptureConstellationsAsync(provider, config, 2, 512).ConfigureAwait(false);
+            Assert.AreEqual(initial.ActiveRevisionId, reproduced.RevisionId);
+            // A new capture has a new source/scene identity; reconstruction must reproduce its pixels, not its ID.
+            CollectionAssert.AreEqual(RenderSceneLayer(before), RenderSceneLayer(Select(reproduced)));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
 
-    private static async Task<ConstellationCapture> CaptureConstellationsAsync(ServiceProvider provider, CameraModuleConfig config, int sequence)
+    private static byte[] RenderSceneLayer(PresentationLayerPayloadV1 payload)
+        => PresentationLayerCompositor.Composite(new ImageLayout(512, 512, CameraPixelFormat.Rgb24, 512 * 3),
+            new byte[512 * 512 * 3], [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+
+    private sealed record ConstellationCapture(string RevisionId, Guid ArtifactId, PresentationLayerPayloadV1 Payload, byte[] Bytes,
+        Guid AnnotationArtifactId, PresentationLayerPayloadV1 Annotations, PresentationLayerPayloadV1 Cardinals, PresentationLayerPayloadV1 ImageCircle);
+
+    private static async Task<ConstellationCapture> CaptureConstellationsAsync(ServiceProvider provider, CameraModuleConfig config, int sequence, int size = 64)
     {
         var utc = DateTimeOffset.UnixEpoch;
         var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
@@ -103,7 +187,7 @@ public sealed partial class ProcessingGraphOperationsTests
             new("center", "Center", siderealHours, 0, 1, HipparcosId: "1"),
             new("near", "Near", (siderealHours + 1) % 24, 10, 1, HipparcosId: "2")
         ]), topology).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
-            new EquidistantProjectionContext(32, 32, 30, 30, WidthPixels: 64, HeightPixels: 64),
+            new EquidistantProjectionContext(size / 2, size / 2, size / 2 - 2, size / 2 - 2, WidthPixels: size, HeightPixels: size),
             new CatalogQuery(6, 10),
             new CatalogMetadata("test", "1", new Uri("https://example.test/catalog"), new string('0', 64), "test", "1"),
             projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1", constellationIds: ["TST"])).ConfigureAwait(false);
@@ -118,9 +202,9 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Frame = frame with
                 {
-                    Width = 64,
-                    Height = 64,
-                    PixelData = new byte[64 * 64 * 2],
+                    Width = size,
+                    Height = size,
+                    PixelData = new byte[size * size * 2],
                     Metadata = frame.Metadata with { Scene = frame.Metadata.Scene! with { RigProfileHashSha256 = RigProjectionContextFactory.CreateProfileHashSha256(config.Rig) } }
                 }
             }
@@ -136,7 +220,11 @@ public sealed partial class ProcessingGraphOperationsTests
         var annotations = detail.Nodes.Single(static node => node.NodeId == "overlay").Outputs
             .Single(static output => output.Variant == "scene-annotation-layer-v1");
         var starLayer = await ReadConstellationPayloadAsync(provider, annotations.ArtifactId).ConfigureAwait(false);
-        return new(detail.Execution.GraphRevisionId, output.ArtifactId, result.Payload, result.Bytes, annotations.ArtifactId, starLayer.Payload);
+        async Task<PresentationLayerPayloadV1> Layer(string variant)
+            => (await ReadConstellationPayloadAsync(provider, detail.Nodes.Single(static node => node.NodeId == "overlay")
+                .Outputs.Single(output => output.Variant == variant).ArtifactId).ConfigureAwait(false)).Payload;
+        return new(detail.Execution.GraphRevisionId, output.ArtifactId, result.Payload, result.Bytes, annotations.ArtifactId, starLayer.Payload,
+            await Layer("scene-cardinal-layer-v1").ConfigureAwait(false), await Layer("scene-image-circle-layer-v1").ConfigureAwait(false));
     }
 
     private static async Task<(PresentationLayerPayloadV1 Payload, byte[] Bytes)> ReadConstellationPayloadAsync(ServiceProvider provider, Guid artifactId)

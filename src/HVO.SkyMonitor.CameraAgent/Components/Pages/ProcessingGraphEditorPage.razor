@@ -83,7 +83,7 @@
                             @if (node.OptionsForm is { } optionsForm)
                             {
                                 <section class="node-options-section" id="@OptionsSection(node)" aria-label="@optionsForm.Descriptor.Title">
-                                    <h3>@optionsForm.Descriptor.Title</h3>
+                                    <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
                                     @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
                                     {
                                         <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
@@ -132,9 +132,9 @@
                 @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
             </div>
         </form>
-        @if (Section == "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ScenePresentationLayer"))
+        @if (Section is "scene-overlay" or "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ScenePresentationLayer"))
         {
-            <p role="status">This graph has no supported constellation overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure constellation lines.</p>
+            <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
         }
 
         @if (Section == "frame-facts" && !_model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type) || node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias))

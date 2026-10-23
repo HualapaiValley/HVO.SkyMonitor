@@ -78,6 +78,12 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
         Assert.AreEqual(expectedColor, decoded.Get("constellationLineColor").Value.AsColor());
         Assert.IsTrue(decoded.Get("constellationLineThickness").IsExplicit);
         Assert.AreEqual(2, decoded.Get("constellationLineThickness").Value.AsWholeNumber());
+        var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new { }));
+        var runtimeDefaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(stepDefaults));
+        Assert.IsTrue(defaults.IsValid);
+        Assert.IsTrue(runtimeDefaults.IsValid);
+        foreach (var option in defaults.Options)
+            Assert.AreEqual(runtimeDefaults.Get(option.Descriptor.Key).Value, option.Value, option.Descriptor.Key);
     }
 
     [TestMethod]
@@ -102,6 +108,34 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
     [DataRow("constellationLineThickness", "2.0")]
     [DataRow("constellationLineThickness", "true")]
     [DataRow("constellationLineThickness", "99999999999999999999")]
+    [DataRow("drawMarkers", "false")]
+    [DataRow("drawLabels", "false")]
+    [DataRow("drawConstellationLines", "false")]
+    [DataRow("drawImageCircle", "false")]
+    [DataRow("drawCardinalDirections", "false")]
+    [DataRow("drawMarkers", "null")]
+    [DataRow("markerRadius", "0")]
+    [DataRow("markerRadius", "32")]
+    [DataRow("markerRadius", "-1")]
+    [DataRow("markerRadius", "33")]
+    [DataRow("labelScale", "1")]
+    [DataRow("labelScale", "8")]
+    [DataRow("labelScale", "0")]
+    [DataRow("labelScale", "9")]
+    [DataRow("maximumLabelCharacters", "0")]
+    [DataRow("maximumLabelCharacters", "64")]
+    [DataRow("maximumLabelCharacters", "-1")]
+    [DataRow("maximumLabelCharacters", "65")]
+    [DataRow("maximumLabelMagnitude", "-30")]
+    [DataRow("maximumLabelMagnitude", "30")]
+    [DataRow("maximumLabelMagnitude", "2.25")]
+    [DataRow("maximumLabelMagnitude", "-31")]
+    [DataRow("maximumLabelMagnitude", "31")]
+    [DataRow("maximumLabelMagnitude", "null")]
+    [DataRow("cardinalScale", "1")]
+    [DataRow("cardinalScale", "8")]
+    [DataRow("cardinalScale", "0")]
+    [DataRow("cardinalScale", "9")]
     public async Task TheDescriptorAndTheStepBinderAgreeOnWhatTheyAccept(string member, string token)
     {
         var edited = WithSceneMember(await LoadAsync(W6).ConfigureAwait(false), member, token);
@@ -110,6 +144,19 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
             ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited)).IsValid;
 
         Assert.AreEqual(BinderAccepts(edited), descriptorAccepts, $"{member}={token}");
+    }
+
+    [TestMethod]
+    [DataRow("-30.01")]
+    [DataRow("30.01")]
+    public async Task MagnitudeEditorUsesDeclaredBoundsWithoutTheLegacyIntegerRangeRounding(string token)
+    {
+        var edited = WithSceneMember(await LoadAsync(W6).ConfigureAwait(false), "maximumLabelMagnitude", token);
+        // The legacy [Range(-30, 30)] converts to integer before comparing. The editor enforces the declared
+        // finite real interval; it does not change that runtime binder or rewrite retained JSON.
+        Assert.IsTrue(BinderAccepts(edited));
+        Assert.AreEqual(ProcessingOptionReasonCodes.OutOfRange, ProcessingNodeOptionsCodec.Decode(
+            ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneOptions(edited)).Diagnostics.Single().Code);
     }
 
     // The codec is stricter than the binder on quoted numbers and duplicate members. It reads an element rather than
