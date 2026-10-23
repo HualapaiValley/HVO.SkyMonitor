@@ -1,6 +1,7 @@
 @using HVO.SkyMonitor.Processing
 
 <div class="node-options">
+    <p>@Form.Descriptor.Help</p>
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
@@ -15,7 +16,7 @@
                     </div>
                     break;
                 case ProcessingOptionKind.Toggle:
-                    <input id="@inputId" type="checkbox" aria-describedby="@(inputId + "-help")" checked="@(Form.Get(option.Key) == bool.TrueString)" @onchange="args => ChangedAsync(option.Key, (args.Value is true).ToString())" />
+                    <input id="@inputId" type="checkbox" aria-describedby="@(inputId + "-help")" checked="@(option.Key == "enabled" && NodeEnabled.HasValue ? NodeEnabled.Value : Form.Get(option.Key) == bool.TrueString)" @onchange="args => ToggleChangedAsync(option.Key, args.Value is true)" />
                     break;
                 case ProcessingOptionKind.Choice:
                 case ProcessingOptionKind.Font:

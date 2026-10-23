@@ -116,7 +116,8 @@ public sealed class ProcessingOptionDescriptor
         double? minimumRealNumber = null,
         double? maximumRealNumber = null,
         int? maximumLength = null,
-        ImmutableArray<string> allowedValues = default)
+        ImmutableArray<string> allowedValues = default,
+        bool isIdentifier = false)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -145,6 +146,7 @@ public sealed class ProcessingOptionDescriptor
         MinimumRealNumber = minimumRealNumber;
         MaximumRealNumber = maximumRealNumber;
         MaximumLength = maximumLength;
+        IsIdentifier = isIdentifier;
         AllowedValues = allowedValues.IsDefault ? [] : allowedValues;
         if (Check(defaultValue) is { } reason)
         {
@@ -177,6 +179,9 @@ public sealed class ProcessingOptionDescriptor
     public double? MaximumRealNumber { get; }
 
     public int? MaximumLength { get; }
+
+    /// <summary>Text must be non-empty, trimmed and contain no control characters, as graph identities require.</summary>
+    public bool IsIdentifier { get; }
 
     /// <summary>The closed set of a choice, font or glyph option, compared ordinally.</summary>
     public ImmutableArray<string> AllowedValues { get; }
@@ -228,11 +233,12 @@ public sealed class ProcessingOptionDescriptor
         string label,
         string help,
         string defaultValue,
-        int maximumLength)
+        int maximumLength,
+        bool isIdentifier = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumLength);
         return new(key, ProcessingOptionKind.Text, label, help, [member],
-            ProcessingOptionValue.FromText(defaultValue), maximumLength: maximumLength);
+            ProcessingOptionValue.FromText(defaultValue), maximumLength: maximumLength, isIdentifier: isIdentifier);
     }
 
     public static ProcessingOptionDescriptor Choice(
@@ -296,6 +302,9 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionKind.Text when value.AsText().Length > MaximumLength
                 => (ProcessingOptionReasonCodes.TooLong, string.Create(CultureInfo.InvariantCulture,
                     $"Option '{Key}' must not exceed {MaximumLength} characters.")),
+            ProcessingOptionKind.Text when IsIdentifier && (string.IsNullOrWhiteSpace(value.AsText()) ||
+                value.AsText() != value.AsText().Trim() || value.AsText().Any(char.IsControl))
+                => (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' must be non-empty, trimmed and contain no control characters."),
             ProcessingOptionKind.Choice or ProcessingOptionKind.Font or ProcessingOptionKind.Glyph
                 when !AllowedValues.Contains(value.AsText(), StringComparer.Ordinal)
                 => (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' must be one of its allowed values."),
@@ -493,5 +502,7 @@ public static class ProcessingNodeOptionsDescriptors
         ScenePresentationLayerV12.Options);
 
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
-        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor];
+        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
+            CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
+            CaptureScalarOptionDescriptors.VirtualSkyCloudObservation];
 }

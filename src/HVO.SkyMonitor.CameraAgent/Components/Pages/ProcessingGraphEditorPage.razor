@@ -1,5 +1,6 @@
 @page "/operations/pipeline/graphs/new"
 @layout OperationsLayout
+@using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -90,7 +91,9 @@
                                     }
                                     else
                                     {
-                                        <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
+                                        <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
+                                            NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
+                                            NodeEnabledChanged="value => node.Enabled = value" />
                                     }
                                 </section>
                             }

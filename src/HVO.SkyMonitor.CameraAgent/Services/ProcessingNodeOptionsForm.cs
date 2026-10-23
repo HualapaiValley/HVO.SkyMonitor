@@ -34,9 +34,18 @@ public sealed class ProcessingNodeOptionsForm
 
     // The descriptor is bound to the actual producer version. A future producer cannot silently reuse this panel.
     public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias)
-        => ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias,
-            string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
-                ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion).Descriptor;
+    {
+        ArgumentNullException.ThrowIfNull(alias);
+        var version = alias.ToUpperInvariant() switch
+        {
+            "IMAGEQUALITY" => CaptureScalarOptionDescriptors.ImageQuality.StepVersion,
+            "TELEMETRY" => CaptureScalarOptionDescriptors.Telemetry.StepVersion,
+            "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
+            _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
+                ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
+        };
+        return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, version).Descriptor;
+    }
 
     public string Get(string key) => _inputs[key];
 
