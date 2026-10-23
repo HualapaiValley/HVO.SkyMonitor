@@ -1,0 +1,151 @@
+{
+  "source_sha": "58164c350bb7a1a9f977b548facef4c4c70868a0",
+  "os": "Linux 6.8.0-142-generic x86_64",
+  "sdk": "10.0.402",
+  "payload_manifest_sha256": "081ea37f03db2d003be02eb424c5814cbde38e41a5bfd7df7183dd80c3336b26",
+  "payload_files": 192,
+  "payload_bytes": 69206016,
+  "trials": [
+    {
+      "volume": {
+        "files": 195,
+        "bytes": 90844280,
+        "gib": 0.08
+      },
+      "operations": [
+        {
+          "name": "upgrade-unchanged-contract",
+          "seconds": 0.16,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-unchanged-contract",
+          "seconds": 0.06,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "upgrade-declared-migration",
+          "seconds": 0.14,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-declared-migration",
+          "seconds": 0.37,
+          "outcome": "completed",
+          "backups": 0
+        }
+      ],
+      "processPeakResidentBytes": 151863296,
+      "cgroupMemoryPeakBytes": 9637539840,
+      "cgroupMemoryMax": "max",
+      "cgroupCpuMax": null
+    },
+    {
+      "volume": {
+        "files": 195,
+        "bytes": 90844280,
+        "gib": 0.08
+      },
+      "operations": [
+        {
+          "name": "upgrade-unchanged-contract",
+          "seconds": 0.19,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-unchanged-contract",
+          "seconds": 0.07,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "upgrade-declared-migration",
+          "seconds": 0.13,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-declared-migration",
+          "seconds": 0.38,
+          "outcome": "completed",
+          "backups": 0
+        }
+      ],
+      "processPeakResidentBytes": 137777152,
+      "cgroupMemoryPeakBytes": 9637539840,
+      "cgroupMemoryMax": "max",
+      "cgroupCpuMax": null
+    },
+    {
+      "volume": {
+        "files": 195,
+        "bytes": 90844280,
+        "gib": 0.08
+      },
+      "operations": [
+        {
+          "name": "upgrade-unchanged-contract",
+          "seconds": 0.17,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-unchanged-contract",
+          "seconds": 0.06,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "upgrade-declared-migration",
+          "seconds": 0.13,
+          "outcome": "completed",
+          "backups": 0
+        },
+        {
+          "name": "rollback-declared-migration",
+          "seconds": 0.37,
+          "outcome": "completed",
+          "backups": 0
+        }
+      ],
+      "processPeakResidentBytes": 137601024,
+      "cgroupMemoryPeakBytes": 9637539840,
+      "cgroupMemoryMax": "max",
+      "cgroupCpuMax": null
+    }
+  ],
+  "source_hashes": {
+    "tests/HVO.SkyMonitor.Deployment.Cli.Tests/UpgradeVolumeTests.cs": "2d42d998bf0494e7793f6c3b1dbed93e51f4a28b1e41fb295753d8d6aefd408e",
+    "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs": "af8c3fc2315ea8b316abc99f99f328b4db1322754fca609ad11f397e8afc3ddd"
+  },
+  "process_times": [
+    {
+      "User time (seconds)": "25.43",
+      "System time (seconds)": "1.36",
+      "Elapsed (wall clock) time (h:mm:ss or m:ss)": "0:41.97",
+      "Maximum resident set size (kbytes)": "559072",
+      "File system inputs": "64",
+      "File system outputs": "13736"
+    },
+    {
+      "User time (seconds)": "3.88",
+      "System time (seconds)": "0.46",
+      "Elapsed (wall clock) time (h:mm:ss or m:ss)": "0:03.34",
+      "Maximum resident set size (kbytes)": "192160",
+      "File system inputs": "0",
+      "File system outputs": "128"
+    },
+    {
+      "User time (seconds)": "8.66",
+      "System time (seconds)": "1.11",
+      "Elapsed (wall clock) time (h:mm:ss or m:ss)": "0:03.32",
+      "Maximum resident set size (kbytes)": "198168",
+      "File system inputs": "0",
+      "File system outputs": "348520"
+    }
+  ]
+}

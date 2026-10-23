@@ -1,0 +1,2196 @@
+{
+  "retrieved_at_utc": "2026-10-23T18:59:31.672795+00:00",
+  "repository": "HualapaiValley/HVO.SkyMonitor",
+  "prs": [
+    {
+      "number": 1340,
+      "title": "Swap CameraAgent images without copying bulk capture data (#1314)",
+      "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1340",
+      "createdAt": "2026-10-17T10:21:15Z",
+      "mergedAt": "2026-10-18T00:27:44Z",
+      "headRefOid": "d9623260900d141b0193e332205713d32fc985d0",
+      "runs": [
+        {
+          "id": 39024576553,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39024576553",
+          "head_sha": "e81889dbb5b8204f3f83d8b3cc963dae993c1502",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T10:21:18Z",
+          "elapsed_seconds": 145.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 142.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T10:21:21Z",
+              "completed_at": "2026-10-17T10:23:43Z",
+              "seconds": 142.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:21:22Z",
+                  "completed_at": "2026-10-17T10:21:22Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:21:22Z",
+                  "completed_at": "2026-10-17T10:21:25Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:21:25Z",
+                  "completed_at": "2026-10-17T10:21:25Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:21:25Z",
+                  "completed_at": "2026-10-17T10:21:27Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:21:27Z",
+                  "completed_at": "2026-10-17T10:22:07Z",
+                  "seconds": 40.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:22:07Z",
+                  "completed_at": "2026-10-17T10:23:41Z",
+                  "seconds": 94.0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:23:41Z",
+                  "completed_at": "2026-10-17T10:23:42Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T10:23:42Z",
+                  "completed_at": "2026-10-17T10:23:42Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T10:23:44Z",
+              "completed_at": "2026-10-17T10:23:43Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39045826207,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39045826207",
+          "head_sha": "30270508204117d9638c591e9f02d88a65b0708b",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T15:36:58Z",
+          "elapsed_seconds": 154.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 151.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T15:37:01Z",
+              "completed_at": "2026-10-17T15:39:32Z",
+              "seconds": 151.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:03Z",
+                  "completed_at": "2026-10-17T15:37:03Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:03Z",
+                  "completed_at": "2026-10-17T15:37:07Z",
+                  "seconds": 4.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:07Z",
+                  "completed_at": "2026-10-17T15:37:07Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:07Z",
+                  "completed_at": "2026-10-17T15:37:08Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:08Z",
+                  "completed_at": "2026-10-17T15:37:53Z",
+                  "seconds": 45.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:37:53Z",
+                  "completed_at": "2026-10-17T15:38:05Z",
+                  "seconds": 12.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:38:05Z",
+                  "completed_at": "2026-10-17T15:38:06Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:38:06Z",
+                  "completed_at": "2026-10-17T15:39:29Z",
+                  "seconds": 83.0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:39:29Z",
+                  "completed_at": "2026-10-17T15:39:30Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:39:30Z",
+                  "completed_at": "2026-10-17T15:39:30Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T15:39:33Z",
+              "completed_at": "2026-10-17T15:39:32Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39046263330,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39046263330",
+          "head_sha": "72e0af61cfeffec588b29ea644bbf51214794334",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T15:42:57Z",
+          "elapsed_seconds": 55.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 52.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T15:43:00Z",
+              "completed_at": "2026-10-17T15:43:52Z",
+              "seconds": 52.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:01Z",
+                  "completed_at": "2026-10-17T15:43:01Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:01Z",
+                  "completed_at": "2026-10-17T15:43:04Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:04Z",
+                  "completed_at": "2026-10-17T15:43:04Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:04Z",
+                  "completed_at": "2026-10-17T15:43:05Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:05Z",
+                  "completed_at": "2026-10-17T15:43:41Z",
+                  "seconds": 36.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:41Z",
+                  "completed_at": "2026-10-17T15:43:50Z",
+                  "seconds": 9.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:50Z",
+                  "completed_at": "2026-10-17T15:43:50Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-17T15:43:50Z",
+                  "completed_at": "2026-10-17T15:43:50Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:50Z",
+                  "completed_at": "2026-10-17T15:43:51Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T15:43:51Z",
+                  "completed_at": "2026-10-17T15:43:51Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T15:43:53Z",
+              "completed_at": "2026-10-17T15:43:52Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39056742664,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39056742664",
+          "head_sha": "dcf5a6fc336959a101d15db31c2ba4e680c37c1b",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T18:07:48Z",
+          "elapsed_seconds": 51.0,
+          "initial_queue_seconds": 4.0,
+          "job_seconds": 47.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T18:07:52Z",
+              "completed_at": "2026-10-17T18:08:39Z",
+              "seconds": 47.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:07:52Z",
+                  "completed_at": "2026-10-17T18:07:53Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:07:53Z",
+                  "completed_at": "2026-10-17T18:07:56Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:07:56Z",
+                  "completed_at": "2026-10-17T18:07:56Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:07:56Z",
+                  "completed_at": "2026-10-17T18:07:57Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:07:57Z",
+                  "completed_at": "2026-10-17T18:08:28Z",
+                  "seconds": 31.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:08:28Z",
+                  "completed_at": "2026-10-17T18:08:37Z",
+                  "seconds": 9.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:08:37Z",
+                  "completed_at": "2026-10-17T18:08:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-17T18:08:37Z",
+                  "completed_at": "2026-10-17T18:08:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:08:37Z",
+                  "completed_at": "2026-10-17T18:08:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T18:08:37Z",
+                  "completed_at": "2026-10-17T18:08:37Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T18:08:40Z",
+              "completed_at": "2026-10-17T18:08:39Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39069010928,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39069010928",
+          "head_sha": "89996fc4b0aff1cdf7835258f0f7869873d7e2a7",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T20:59:18Z",
+          "elapsed_seconds": 68.0,
+          "initial_queue_seconds": 4.0,
+          "job_seconds": 64.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T20:59:22Z",
+              "completed_at": "2026-10-17T21:00:26Z",
+              "seconds": 64.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T20:59:23Z",
+                  "completed_at": "2026-10-17T20:59:24Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T20:59:24Z",
+                  "completed_at": "2026-10-17T20:59:28Z",
+                  "seconds": 4.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T20:59:28Z",
+                  "completed_at": "2026-10-17T20:59:28Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T20:59:28Z",
+                  "completed_at": "2026-10-17T20:59:29Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T20:59:29Z",
+                  "completed_at": "2026-10-17T21:00:10Z",
+                  "seconds": 41.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T21:00:10Z",
+                  "completed_at": "2026-10-17T21:00:22Z",
+                  "seconds": 12.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T21:00:22Z",
+                  "completed_at": "2026-10-17T21:00:23Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-17T21:00:23Z",
+                  "completed_at": "2026-10-17T21:00:23Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T21:00:23Z",
+                  "completed_at": "2026-10-17T21:00:23Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T21:00:23Z",
+                  "completed_at": "2026-10-17T21:00:23Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T21:00:26Z",
+              "completed_at": "2026-10-17T21:00:26Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39075973873,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39075973873",
+          "head_sha": "c1b2f6ffcef69b810b566d21d203c9ea3af2a9fd",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-17T22:39:41Z",
+          "elapsed_seconds": 50.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 47.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-17T22:39:44Z",
+              "completed_at": "2026-10-17T22:40:31Z",
+              "seconds": 47.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:39:44Z",
+                  "completed_at": "2026-10-17T22:39:45Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:39:45Z",
+                  "completed_at": "2026-10-17T22:39:48Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:39:48Z",
+                  "completed_at": "2026-10-17T22:39:48Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:39:48Z",
+                  "completed_at": "2026-10-17T22:39:49Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:39:49Z",
+                  "completed_at": "2026-10-17T22:40:21Z",
+                  "seconds": 32.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:40:21Z",
+                  "completed_at": "2026-10-17T22:40:29Z",
+                  "seconds": 8.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:40:29Z",
+                  "completed_at": "2026-10-17T22:40:30Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-17T22:40:30Z",
+                  "completed_at": "2026-10-17T22:40:30Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:40:30Z",
+                  "completed_at": "2026-10-17T22:40:30Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-17T22:40:30Z",
+                  "completed_at": "2026-10-17T22:40:30Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-17T22:40:32Z",
+              "completed_at": "2026-10-17T22:40:32Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39081655551,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39081655551",
+          "head_sha": "d9623260900d141b0193e332205713d32fc985d0",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-18T00:08:25Z",
+          "elapsed_seconds": 65.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 62.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-18T00:08:28Z",
+              "completed_at": "2026-10-18T00:09:30Z",
+              "seconds": 62.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:08:29Z",
+                  "completed_at": "2026-10-18T00:08:30Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:08:30Z",
+                  "completed_at": "2026-10-18T00:08:33Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:08:33Z",
+                  "completed_at": "2026-10-18T00:08:33Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:08:33Z",
+                  "completed_at": "2026-10-18T00:08:34Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:08:34Z",
+                  "completed_at": "2026-10-18T00:09:17Z",
+                  "seconds": 43.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:09:17Z",
+                  "completed_at": "2026-10-18T00:09:28Z",
+                  "seconds": 11.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:09:28Z",
+                  "completed_at": "2026-10-18T00:09:29Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T00:09:29Z",
+                  "completed_at": "2026-10-18T00:09:29Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:09:29Z",
+                  "completed_at": "2026-10-18T00:09:29Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:09:29Z",
+                  "completed_at": "2026-10-18T00:09:29Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-18T00:09:31Z",
+              "completed_at": "2026-10-18T00:09:31Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39082396293,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39082396293",
+          "head_sha": "d9623260900d141b0193e332205713d32fc985d0",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-18T00:20:26Z",
+          "elapsed_seconds": 387.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 382.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-18T00:20:29Z",
+              "completed_at": "2026-10-18T00:21:22Z",
+              "seconds": 53.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:20:30Z",
+                  "completed_at": "2026-10-18T00:20:30Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:20:30Z",
+                  "completed_at": "2026-10-18T00:20:34Z",
+                  "seconds": 4.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:20:34Z",
+                  "completed_at": "2026-10-18T00:20:34Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:20:34Z",
+                  "completed_at": "2026-10-18T00:20:35Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:20:35Z",
+                  "completed_at": "2026-10-18T00:21:07Z",
+                  "seconds": 32.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:07Z",
+                  "completed_at": "2026-10-18T00:21:18Z",
+                  "seconds": 11.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:18Z",
+                  "completed_at": "2026-10-18T00:21:19Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T00:21:19Z",
+                  "completed_at": "2026-10-18T00:21:19Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:19Z",
+                  "completed_at": "2026-10-18T00:21:19Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:19Z",
+                  "completed_at": "2026-10-18T00:21:19Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "success",
+              "started_at": "2026-10-18T00:21:24Z",
+              "completed_at": "2026-10-18T00:26:53Z",
+              "seconds": 329.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:25Z",
+                  "completed_at": "2026-10-18T00:21:27Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Record workload start",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:27Z",
+                  "completed_at": "2026-10-18T00:21:27Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:27Z",
+                  "completed_at": "2026-10-18T00:21:29Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:29Z",
+                  "completed_at": "2026-10-18T00:21:30Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Restore solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:30Z",
+                  "completed_at": "2026-10-18T00:21:32Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Build warning-clean Release solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:21:32Z",
+                  "completed_at": "2026-10-18T00:23:34Z",
+                  "seconds": 122.0
+                },
+                {
+                  "name": "Run Docker-disabled Unit selection",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:23:34Z",
+                  "completed_at": "2026-10-18T00:26:47Z",
+                  "seconds": 193.0
+                },
+                {
+                  "name": "Write evidence summary",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:26:47Z",
+                  "completed_at": "2026-10-18T00:26:47Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Upload development CI evidence",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:26:47Z",
+                  "completed_at": "2026-10-18T00:26:50Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Post Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:26:50Z",
+                  "completed_at": "2026-10-18T00:26:50Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:26:50Z",
+                  "completed_at": "2026-10-18T00:26:50Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T00:26:50Z",
+                  "completed_at": "2026-10-18T00:26:50Z",
+                  "seconds": 0
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "pr_elapsed_seconds": 50789.0,
+      "observed_run_elapsed_seconds": 975.0,
+      "observed_job_seconds": 947.0,
+      "final_artifact_sha256": "67ef5bf4bfe0c7fa6b0674d8c31703f6fc38a504fa69b94e35877ea001b11fa0",
+      "final_artifact_manifest": {
+        "schema": "hvo-development-v1-ci-v4",
+        "profile": "development-v1",
+        "headSha": "c22d67b60a9cc300115607bc3faf1d5918b4ab74",
+        "event": "pull_request",
+        "sdkVersion": "10.0.402",
+        "runnerElapsedThroughSummaryStartSeconds": 320,
+        "targetSeconds": 600,
+        "workloadBudgetSeconds": 720,
+        "hardTimeoutSeconds": 900,
+        "unitTrxCount": 21,
+        "memoryMetric": "GNU time ru_maxrss: largest single process",
+        "stages": [
+          {
+            "name": "restore",
+            "outcome": "success",
+            "elapsed": "0:01.98",
+            "largestProcessRssKilobytes": 235612
+          },
+          {
+            "name": "build",
+            "outcome": "success",
+            "elapsed": "2:02.46",
+            "largestProcessRssKilobytes": 260008
+          },
+          {
+            "name": "unit",
+            "outcome": "success",
+            "elapsed": "3:13.11",
+            "largestProcessRssKilobytes": 836752
+          }
+        ],
+        "qualificationWorkflow": "ci.yml",
+        "qualificationOnlyChecks": [
+          "whole-repository-shellcheck",
+          "exhaustive-test-category-discovery"
+        ]
+      }
+    },
+    {
+      "number": 1369,
+      "title": "Add cameraagent backup and restore (#1353)",
+      "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1369",
+      "createdAt": "2026-10-18T17:51:13Z",
+      "mergedAt": "2026-10-19T03:04:28Z",
+      "headRefOid": "4c8b48b529648696ee325e1e2f28b2c3b2b535a5",
+      "runs": [
+        {
+          "id": 39151479255,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39151479255",
+          "head_sha": "f6decbef5c357b675fe962f9601186a3633aeac0",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-18T17:51:16Z",
+          "elapsed_seconds": 67.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 64.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-18T17:51:19Z",
+              "completed_at": "2026-10-18T17:52:23Z",
+              "seconds": 64.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:20Z",
+                  "completed_at": "2026-10-18T17:51:20Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:20Z",
+                  "completed_at": "2026-10-18T17:51:23Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:23Z",
+                  "completed_at": "2026-10-18T17:51:23Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:23Z",
+                  "completed_at": "2026-10-18T17:51:24Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:24Z",
+                  "completed_at": "2026-10-18T17:51:24Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:51:24Z",
+                  "completed_at": "2026-10-18T17:52:10Z",
+                  "seconds": 46.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:52:10Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 12.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:52:22Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T17:52:22Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T17:52:22Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:52:22Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T17:52:22Z",
+                  "completed_at": "2026-10-18T17:52:22Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-18T17:52:24Z",
+              "completed_at": "2026-10-18T17:52:23Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39164215782,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39164215782",
+          "head_sha": "192866d554ea9845bbdb319178f3a2fb2c2ac134",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-18T20:38:20Z",
+          "elapsed_seconds": 44.0,
+          "initial_queue_seconds": 2.0,
+          "job_seconds": 42.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-18T20:38:22Z",
+              "completed_at": "2026-10-18T20:39:04Z",
+              "seconds": 42.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:23Z",
+                  "completed_at": "2026-10-18T20:38:24Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:24Z",
+                  "completed_at": "2026-10-18T20:38:27Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:27Z",
+                  "completed_at": "2026-10-18T20:38:27Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:27Z",
+                  "completed_at": "2026-10-18T20:38:28Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:28Z",
+                  "completed_at": "2026-10-18T20:38:28Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:28Z",
+                  "completed_at": "2026-10-18T20:38:54Z",
+                  "seconds": 26.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:38:54Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 7.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:39:01Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T20:39:01Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-18T20:39:01Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:39:01Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-18T20:39:01Z",
+                  "completed_at": "2026-10-18T20:39:01Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-18T20:39:05Z",
+              "completed_at": "2026-10-18T20:39:04Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39179248745,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39179248745",
+          "head_sha": "45b12da01a07820076b5bbca12845d298f6f1670",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-19T00:06:12Z",
+          "elapsed_seconds": 62.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 59.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-19T00:06:15Z",
+              "completed_at": "2026-10-19T00:07:14Z",
+              "seconds": 59.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:16Z",
+                  "completed_at": "2026-10-19T00:06:17Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:17Z",
+                  "completed_at": "2026-10-19T00:06:20Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:20Z",
+                  "completed_at": "2026-10-19T00:06:20Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:20Z",
+                  "completed_at": "2026-10-19T00:06:21Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:21Z",
+                  "completed_at": "2026-10-19T00:06:21Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:06:21Z",
+                  "completed_at": "2026-10-19T00:07:03Z",
+                  "seconds": 42.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:07:03Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 8.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:07:11Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T00:07:11Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T00:07:11Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:07:11Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T00:07:11Z",
+                  "completed_at": "2026-10-19T00:07:11Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-19T00:07:14Z",
+              "completed_at": "2026-10-19T00:07:14Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39187628403,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39187628403",
+          "head_sha": "87454787c6826347bca0a15d25ae5fad3ca2433d",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-19T01:56:40Z",
+          "elapsed_seconds": 72.0,
+          "initial_queue_seconds": 4.0,
+          "job_seconds": 68.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-19T01:56:44Z",
+              "completed_at": "2026-10-19T01:57:52Z",
+              "seconds": 68.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:45Z",
+                  "completed_at": "2026-10-19T01:56:46Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:46Z",
+                  "completed_at": "2026-10-19T01:56:49Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:49Z",
+                  "completed_at": "2026-10-19T01:56:49Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:49Z",
+                  "completed_at": "2026-10-19T01:56:50Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:50Z",
+                  "completed_at": "2026-10-19T01:56:51Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:56:51Z",
+                  "completed_at": "2026-10-19T01:57:37Z",
+                  "seconds": 46.0
+                },
+                {
+                  "name": "Test the terminal screenshot converter and script",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:57:37Z",
+                  "completed_at": "2026-10-19T01:57:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:57:37Z",
+                  "completed_at": "2026-10-19T01:57:49Z",
+                  "seconds": 12.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:57:49Z",
+                  "completed_at": "2026-10-19T01:57:49Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T01:57:49Z",
+                  "completed_at": "2026-10-19T01:57:49Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T01:57:49Z",
+                  "completed_at": "2026-10-19T01:57:49Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:57:49Z",
+                  "completed_at": "2026-10-19T01:57:50Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T01:57:50Z",
+                  "completed_at": "2026-10-19T01:57:50Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-19T01:57:53Z",
+              "completed_at": "2026-10-19T01:57:52Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39191049262,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39191049262",
+          "head_sha": "4c8b48b529648696ee325e1e2f28b2c3b2b535a5",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-19T02:40:12Z",
+          "elapsed_seconds": 63.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 60.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-19T02:40:15Z",
+              "completed_at": "2026-10-19T02:41:15Z",
+              "seconds": 60.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:16Z",
+                  "completed_at": "2026-10-19T02:40:16Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:17Z",
+                  "completed_at": "2026-10-19T02:40:20Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:20Z",
+                  "completed_at": "2026-10-19T02:40:20Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:20Z",
+                  "completed_at": "2026-10-19T02:40:21Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:21Z",
+                  "completed_at": "2026-10-19T02:40:21Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:40:21Z",
+                  "completed_at": "2026-10-19T02:41:04Z",
+                  "seconds": 43.0
+                },
+                {
+                  "name": "Test the terminal screenshot converter and script",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:41:04Z",
+                  "completed_at": "2026-10-19T02:41:04Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:41:04Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 8.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:41:12Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T02:41:12Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T02:41:12Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:41:12Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:41:12Z",
+                  "completed_at": "2026-10-19T02:41:12Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-19T02:41:15Z",
+              "completed_at": "2026-10-19T02:41:15Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 39192227439,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/39192227439",
+          "head_sha": "4c8b48b529648696ee325e1e2f28b2c3b2b535a5",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-19T02:55:28Z",
+          "elapsed_seconds": 462.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 457.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-19T02:55:31Z",
+              "completed_at": "2026-10-19T02:56:39Z",
+              "seconds": 68.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:32Z",
+                  "completed_at": "2026-10-19T02:55:32Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:32Z",
+                  "completed_at": "2026-10-19T02:55:35Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:35Z",
+                  "completed_at": "2026-10-19T02:55:35Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:35Z",
+                  "completed_at": "2026-10-19T02:55:37Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:37Z",
+                  "completed_at": "2026-10-19T02:55:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:55:37Z",
+                  "completed_at": "2026-10-19T02:56:24Z",
+                  "seconds": 47.0
+                },
+                {
+                  "name": "Test the terminal screenshot converter and script",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:24Z",
+                  "completed_at": "2026-10-19T02:56:24Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:24Z",
+                  "completed_at": "2026-10-19T02:56:36Z",
+                  "seconds": 12.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:36Z",
+                  "completed_at": "2026-10-19T02:56:37Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T02:56:37Z",
+                  "completed_at": "2026-10-19T02:56:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-19T02:56:37Z",
+                  "completed_at": "2026-10-19T02:56:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:37Z",
+                  "completed_at": "2026-10-19T02:56:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:37Z",
+                  "completed_at": "2026-10-19T02:56:37Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "success",
+              "started_at": "2026-10-19T02:56:41Z",
+              "completed_at": "2026-10-19T03:03:10Z",
+              "seconds": 389.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:42Z",
+                  "completed_at": "2026-10-19T02:56:44Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Record workload start",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:44Z",
+                  "completed_at": "2026-10-19T02:56:45Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:45Z",
+                  "completed_at": "2026-10-19T02:56:46Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:46Z",
+                  "completed_at": "2026-10-19T02:56:47Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Restore solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:47Z",
+                  "completed_at": "2026-10-19T02:56:52Z",
+                  "seconds": 5.0
+                },
+                {
+                  "name": "Build warning-clean Release solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:56:52Z",
+                  "completed_at": "2026-10-19T02:59:14Z",
+                  "seconds": 142.0
+                },
+                {
+                  "name": "Run Docker-disabled Unit selection",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T02:59:14Z",
+                  "completed_at": "2026-10-19T03:03:03Z",
+                  "seconds": 229.0
+                },
+                {
+                  "name": "Draw terminal screenshots",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:03Z",
+                  "completed_at": "2026-10-19T03:03:04Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Write evidence summary",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:04Z",
+                  "completed_at": "2026-10-19T03:03:04Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Upload development CI evidence",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:04Z",
+                  "completed_at": "2026-10-19T03:03:07Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Post Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:07Z",
+                  "completed_at": "2026-10-19T03:03:07Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:07Z",
+                  "completed_at": "2026-10-19T03:03:07Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-19T03:03:07Z",
+                  "completed_at": "2026-10-19T03:03:07Z",
+                  "seconds": 0
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "pr_elapsed_seconds": 33195.0,
+      "observed_run_elapsed_seconds": 770.0,
+      "observed_job_seconds": 750.0,
+      "final_artifact_sha256": "f71fa0b16c13a7c787b4d36d4e01432a16da0ece76078f5cdf6f69e4102238c7",
+      "final_artifact_manifest": {
+        "schema": "hvo-development-v1-ci-v4",
+        "profile": "development-v1",
+        "headSha": "1d20ac9e286c5ae41502faee6ab11add35b5146d",
+        "event": "pull_request",
+        "sdkVersion": "10.0.402",
+        "runnerElapsedThroughSummaryStartSeconds": 379,
+        "targetSeconds": 600,
+        "workloadBudgetSeconds": 720,
+        "hardTimeoutSeconds": 900,
+        "unitTrxCount": 21,
+        "memoryMetric": "GNU time ru_maxrss: largest single process",
+        "stages": [
+          {
+            "name": "restore",
+            "outcome": "success",
+            "elapsed": "0:04.58",
+            "largestProcessRssKilobytes": 254868
+          },
+          {
+            "name": "build",
+            "outcome": "success",
+            "elapsed": "2:22.48",
+            "largestProcessRssKilobytes": 227528
+          },
+          {
+            "name": "unit",
+            "outcome": "success",
+            "elapsed": "3:48.39",
+            "largestProcessRssKilobytes": 1127664
+          }
+        ],
+        "qualificationWorkflow": "ci.yml",
+        "qualificationOnlyChecks": [
+          "whole-repository-shellcheck",
+          "exhaustive-test-category-discovery"
+        ]
+      }
+    },
+    {
+      "number": 1614,
+      "title": "Configure image quality, telemetry and simulated cloud steps",
+      "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1614",
+      "createdAt": "2026-10-23T18:26:19Z",
+      "mergedAt": "2026-10-23T18:41:23Z",
+      "headRefOid": "7ed6a4796944179a2bd65e9be3fcd6c6a301497b",
+      "runs": [
+        {
+          "id": 40003283153,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/40003283153",
+          "head_sha": "7ed6a4796944179a2bd65e9be3fcd6c6a301497b",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-23T18:26:24Z",
+          "elapsed_seconds": 63.0,
+          "initial_queue_seconds": 3.0,
+          "job_seconds": 60.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-23T18:26:27Z",
+              "completed_at": "2026-10-23T18:27:27Z",
+              "seconds": 60.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:28Z",
+                  "completed_at": "2026-10-23T18:26:28Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:28Z",
+                  "completed_at": "2026-10-23T18:26:32Z",
+                  "seconds": 4.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:32Z",
+                  "completed_at": "2026-10-23T18:26:32Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:32Z",
+                  "completed_at": "2026-10-23T18:26:33Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:33Z",
+                  "completed_at": "2026-10-23T18:26:33Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:26:33Z",
+                  "completed_at": "2026-10-23T18:27:14Z",
+                  "seconds": 41.0
+                },
+                {
+                  "name": "Test the terminal screenshot converter and script",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:27:14Z",
+                  "completed_at": "2026-10-23T18:27:14Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:27:14Z",
+                  "completed_at": "2026-10-23T18:27:24Z",
+                  "seconds": 10.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:27:24Z",
+                  "completed_at": "2026-10-23T18:27:24Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-23T18:27:24Z",
+                  "completed_at": "2026-10-23T18:27:24Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-23T18:27:24Z",
+                  "completed_at": "2026-10-23T18:27:24Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:27:24Z",
+                  "completed_at": "2026-10-23T18:27:25Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:27:25Z",
+                  "completed_at": "2026-10-23T18:27:25Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "skipped",
+              "started_at": "2026-10-23T18:27:27Z",
+              "completed_at": "2026-10-23T18:27:27Z",
+              "seconds": 0,
+              "steps": []
+            }
+          ]
+        },
+        {
+          "id": 40004104603,
+          "name": "Development v1",
+          "html_url": "https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/40004104603",
+          "head_sha": "7ed6a4796944179a2bd65e9be3fcd6c6a301497b",
+          "run_attempt": 1,
+          "event": "pull_request",
+          "conclusion": "success",
+          "created_at": "2026-10-23T18:32:18Z",
+          "elapsed_seconds": 511.0,
+          "initial_queue_seconds": 4.0,
+          "job_seconds": 505.0,
+          "jobs": [
+            {
+              "name": "Development v1 / Preflight",
+              "conclusion": "success",
+              "started_at": "2026-10-23T18:32:22Z",
+              "completed_at": "2026-10-23T18:33:39Z",
+              "seconds": 77.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:22Z",
+                  "completed_at": "2026-10-23T18:32:23Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:23Z",
+                  "completed_at": "2026-10-23T18:32:26Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Reject whitespace errors",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:26Z",
+                  "completed_at": "2026-10-23T18:32:26Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Lint workflows",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:26Z",
+                  "completed_at": "2026-10-23T18:32:28Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Check Dockerfile base images",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:28Z",
+                  "completed_at": "2026-10-23T18:32:28Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Check CI control contracts",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:32:28Z",
+                  "completed_at": "2026-10-23T18:33:20Z",
+                  "seconds": 52.0
+                },
+                {
+                  "name": "Test the terminal screenshot converter and script",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:20Z",
+                  "completed_at": "2026-10-23T18:33:21Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Scan history for secrets",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:21Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 16.0
+                },
+                {
+                  "name": "Classify secret scanner contract inputs",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:37Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test secret scanner contract",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-23T18:33:37Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Test release scripts",
+                  "conclusion": "skipped",
+                  "started_at": "2026-10-23T18:33:37Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:37Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:37Z",
+                  "completed_at": "2026-10-23T18:33:37Z",
+                  "seconds": 0
+                }
+              ]
+            },
+            {
+              "name": "Development v1 / Build and Unit",
+              "conclusion": "success",
+              "started_at": "2026-10-23T18:33:41Z",
+              "completed_at": "2026-10-23T18:40:49Z",
+              "seconds": 428.0,
+              "steps": [
+                {
+                  "name": "Set up job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:42Z",
+                  "completed_at": "2026-10-23T18:33:45Z",
+                  "seconds": 3.0
+                },
+                {
+                  "name": "Record workload start",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:45Z",
+                  "completed_at": "2026-10-23T18:33:45Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:45Z",
+                  "completed_at": "2026-10-23T18:33:47Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:47Z",
+                  "completed_at": "2026-10-23T18:33:48Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Restore solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:48Z",
+                  "completed_at": "2026-10-23T18:33:50Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Build warning-clean Release solution",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:33:50Z",
+                  "completed_at": "2026-10-23T18:36:16Z",
+                  "seconds": 146.0
+                },
+                {
+                  "name": "Run Docker-disabled Unit selection",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:36:16Z",
+                  "completed_at": "2026-10-23T18:40:42Z",
+                  "seconds": 266.0
+                },
+                {
+                  "name": "Draw terminal screenshots",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:42Z",
+                  "completed_at": "2026-10-23T18:40:43Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Write evidence summary",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:43Z",
+                  "completed_at": "2026-10-23T18:40:44Z",
+                  "seconds": 1.0
+                },
+                {
+                  "name": "Upload development CI evidence",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:44Z",
+                  "completed_at": "2026-10-23T18:40:46Z",
+                  "seconds": 2.0
+                },
+                {
+                  "name": "Post Setup .NET from global.json",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:46Z",
+                  "completed_at": "2026-10-23T18:40:46Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Post Checkout exact commit",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:46Z",
+                  "completed_at": "2026-10-23T18:40:46Z",
+                  "seconds": 0
+                },
+                {
+                  "name": "Complete job",
+                  "conclusion": "success",
+                  "started_at": "2026-10-23T18:40:46Z",
+                  "completed_at": "2026-10-23T18:40:46Z",
+                  "seconds": 0
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "pr_elapsed_seconds": 904.0,
+      "observed_run_elapsed_seconds": 574.0,
+      "observed_job_seconds": 565.0,
+      "final_artifact_sha256": "1af9c46c26be5b04a5d8191ae4c83dc51691f5e4298c2522917095b6714eb5ca",
+      "final_artifact_manifest": {
+        "schema": "hvo-development-v1-ci-v4",
+        "profile": "development-v1",
+        "headSha": "c002bff2207cd08052d01961b244843be7b962a1",
+        "event": "pull_request",
+        "sdkVersion": "10.0.402",
+        "runnerElapsedThroughSummaryStartSeconds": 418,
+        "targetSeconds": 600,
+        "workloadBudgetSeconds": 720,
+        "hardTimeoutSeconds": 900,
+        "unitTrxCount": 21,
+        "memoryMetric": "GNU time ru_maxrss: largest single process",
+        "stages": [
+          {
+            "name": "restore",
+            "outcome": "success",
+            "elapsed": "0:02.01",
+            "largestProcessRssKilobytes": 245168
+          },
+          {
+            "name": "build",
+            "outcome": "success",
+            "elapsed": "2:26.00",
+            "largestProcessRssKilobytes": 244024
+          },
+          {
+            "name": "unit",
+            "outcome": "success",
+            "elapsed": "4:26.27",
+            "largestProcessRssKilobytes": 1709844
+          }
+        ],
+        "qualificationWorkflow": "ci.yml",
+        "qualificationOnlyChecks": [
+          "whole-repository-shellcheck",
+          "exhaustive-test-category-discovery"
+        ]
+      }
+    }
+  ]
+}
