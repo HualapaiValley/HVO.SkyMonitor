@@ -95,19 +95,23 @@ clear-reference prerequisite; its policy/prerequisite checks still run.
 
 Writer columns aggregate each trial's maximum, not individual-operation percentiles.
 The largest observed writer latency was 67.359 ms; none reached the 10-second timeout.
-No sustained writer block or failed drain was observed. Worker commands/transactions
-were identical across all five trials at each scale:
+No sustained writer block or failed drain was observed. EF-intercepted worker command
+counts and committed transaction counts were identical across all five trials at each scale:
 
-| Captures | Worker commands / committed transactions | Data used Δ MiB | Log allocated Δ MiB | Log used Δ MiB |
+| Captures | EF-intercepted worker commands / committed transactions | Data used Δ MiB | Log allocated Δ MiB | Log used Δ MiB |
 | --- | ---: | ---: | ---: | ---: |
 | 10 | 1,253 / 35 | 3.062 (3.000–3.062) | 0.000 (0.000–0.000) | 1.676 (1.656–1.688) |
 | 100 | 10,307 / 217 | 7.000 (6.938–7.125) | 64.000 (64.000–64.000) | 4.902 (4.836–5.020) |
 | 1,000 | 101,415 / 2,068 | 40.875 (40.688–40.938) | 64.000 (64.000–64.000) | 12.680 (12.500–12.773) |
 | 10,000 | 1,013,489 / 20,609 | 384.125 (383.688–385.562) | 256.000 (256.000–256.000) | -72.312 (-74.043–-72.051) |
 
+Command counts cover EF asynchronous interception. Direct application-lock RPCs
+from `CentralObjectApplicationLock` run on separate connections and are excluded,
+so the counts do not represent all worker SQL calls.
+
 Data-file allocation growth was 0/0/0/384 MiB by scale. At 1,000→10,000 captures,
-commands grow 9.99× and committed transactions 9.97×; median CPU per capture falls
-54.564→45.981 ms and median drain grows 8.12×. These observations support broad
+EF-intercepted worker commands grow 9.99× and committed transactions 9.97×; median CPU
+per capture falls 54.564→45.981 ms and median drain grows 8.12×. These observations support broad
 approximately linear work for this fixed one-Raw/five-position workload, without
 establishing general fan-out or query-plan complexity. Log-used deltas reflect
 checkpoint/reuse state; negative deltas do not represent negative writes. Endpoint
