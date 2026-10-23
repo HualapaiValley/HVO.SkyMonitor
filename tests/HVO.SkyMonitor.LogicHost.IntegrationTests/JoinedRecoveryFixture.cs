@@ -34,6 +34,11 @@ internal sealed partial class JoinedRecoveryFixture
     private readonly List<ObjectFact> expectedObjects = [];
     private readonly Dictionary<string, string> expectedClaims = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> timings = new(StringComparer.Ordinal);
+    // Match Program's Identity v3 configuration. A bare DbContext otherwise builds Identity v1
+    // and correctly reports a model mismatch against the canonical v3 migration.
+    private readonly ServiceProvider identityServices = new ServiceCollection()
+        .Configure<IdentityOptions>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
+        .BuildServiceProvider();
     private MsSqlContainer container = null!;
     private string connectionString = string.Empty;
     private string root = string.Empty;
@@ -82,6 +87,7 @@ internal sealed partial class JoinedRecoveryFixture
         Require(container.State == TestcontainersStates.Undefined, "container-cleanup");
         Directory.Delete(root, recursive: true);
         filesRemoved = true;
+        await identityServices.DisposeAsync();
         Require(!Directory.Exists(root), "filesystem-cleanup");
         Console.WriteLine(JsonSerializer.Serialize(new { Issue = 1630, ContainerRemoved = containerRemoved, FilesRemoved = filesRemoved, SharedServicesUsed = false }));
     }
@@ -97,6 +103,8 @@ internal sealed partial class JoinedRecoveryFixture
             IOException => "io",
             ObjectStoreException storage => ObjectStoreException.GetOutcome(storage.Kind),
             FixtureFailure failure => failure.Code,
+            InvalidOperationException invalid when invalid.Message.Contains("PendingModelChangesWarning", StringComparison.Ordinal) => "pending-model-changes",
+            InvalidOperationException => "invalid-operation",
             _ => "fixture"
         },
         SqlNumber = exception is SqlException sql ? sql.Number
@@ -162,7 +170,9 @@ internal sealed partial class JoinedRecoveryFixture
             }
         }
         await using var db = OpenDb(sourceDatabase);
+        phase = "canonical-migration";
         await db.Database.MigrateAsync();
+        phase = "canonical-graph-seed";
         _ = await DatabaseSeeder.ConvergeCanonicalCentralGraphChainAsync(db,
             new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog()),
             CanonicalCentralGraphSeedChain.Revisions, DatabaseSeeder.CreateBasicCentralProcessingGraph(), Cutoff, NullLogger.Instance);
@@ -196,6 +206,7 @@ internal sealed partial class JoinedRecoveryFixture
             });
         }
         db.CentralFrames.Add(frame);
+        phase = "canonical-corpus-save";
         await db.SaveChangesAsync();
         sqlFacts = await ReadSqlFactsAsync(sourceDatabase);
     }
@@ -318,6 +329,7 @@ internal sealed partial class JoinedRecoveryFixture
     }
 
     private ApplicationDbContext OpenDb(string database) => new(new DbContextOptionsBuilder<ApplicationDbContext>()
+        .UseApplicationServiceProvider(identityServices)
         .UseSqlServer(new SqlConnectionStringBuilder(connectionString) { InitialCatalog = database }.ConnectionString).Options);
 
     internal static FilesystemObjectStore OpenStore(string path)
