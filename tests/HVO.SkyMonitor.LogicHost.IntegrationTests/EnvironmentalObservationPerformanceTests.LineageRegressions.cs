@@ -214,6 +214,73 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         }
     }
 
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task BoundedLineageProviderRestartReplaysAfterCommittedReceiptLoss()
+    {
+        await using var fixture = await LineageRegressionFixture.CreateAsync().ConfigureAwait(false);
+        var fact = fixture.Derived(256);
+        var lost = new LineageReceiptLoss();
+        await using (var provider = RestartableProvider(BenchmarkNow, lost))
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            await Assert.ThrowsAsync<IOException>(() => scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationIngestService>()
+                .IngestAsync(fact)).ConfigureAwait(false);
+            Assert.IsTrue(lost.Fired, "The receipt is lost after SQL Server has committed.");
+        }
+        Guid committedId;
+        DateTimeOffset receivedAt;
+        await using (var db = new ApplicationDbContext(LineageOptions(fixture.Connection)))
+        {
+            var committed = await db.EnvironmentalObservations.AsNoTracking()
+                .SingleAsync(row => row.ObservationId == fact.ObservationId).ConfigureAwait(false);
+            committedId = committed.Id;
+            receivedAt = committed.ReceivedAtUtc;
+        }
+        // Recreate the entire ingest provider. Only the SQL database and submitted payload survive this restart.
+        await using (var provider = RestartableProvider(BenchmarkNow.AddDays(1)))
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var replay = await scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationIngestService>()
+                .IngestAsync(fact).ConfigureAwait(false);
+            Assert.AreEqual(EnvironmentalObservationIngestDisposition.Duplicate, replay.Disposition);
+            Assert.AreEqual(committedId, replay.RecordId);
+            Assert.AreEqual(receivedAt, replay.ReceivedAtUtc);
+            await VerifyLineageAsync(LineageOptions(fixture.Connection), fact, replay).ConfigureAwait(false);
+        }
+        await using var final = new ApplicationDbContext(LineageOptions(fixture.Connection));
+        Assert.AreEqual(257, await final.EnvironmentalObservations.CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(256, await final.EnvironmentalObservationLineage.CountAsync().ConfigureAwait(false));
+
+        ServiceProvider RestartableProvider(DateTimeOffset now, IInterceptor? fault = null)
+        {
+            var services = new ServiceCollection();
+            services.AddDbContext<ApplicationDbContext>(builder =>
+            {
+                builder.UseSqlServer(fixture.Connection);
+                if (fault is not null) builder.AddInterceptors(fault);
+            });
+            services.AddSingleton<TimeProvider>(new FixedTimeProvider(now));
+            services.AddSingleton(Options.Create(new EnvironmentalObservationOptions()));
+            services.AddSingleton(fixture.Telemetry);
+            services.AddSingleton<Microsoft.Extensions.Logging.ILogger<EnvironmentalObservationIngestService>>(
+                NullLogger<EnvironmentalObservationIngestService>.Instance);
+            services.AddScoped<IEnvironmentalObservationIngestService, EnvironmentalObservationIngestService>();
+            return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+        }
+    }
+
+    private sealed class LineageReceiptLoss : DbTransactionInterceptor
+    {
+        internal bool Fired { get; private set; }
+        public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            Fired = true;
+            throw new IOException("Synthetic receipt loss after SQL commit.");
+        }
+    }
+
     private static Task ObserveLineageTaskAsync(Task task) => task.ContinueWith(completed => { _ = completed.Exception; },
         CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 

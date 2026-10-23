@@ -32,7 +32,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
 
         internal void Finish()
         {
-            TransactionMilliseconds = Stopwatch.GetElapsedTime(TransactionStarted).TotalMilliseconds;
+            if (TransactionStarted != 0)
+                TransactionMilliseconds = Stopwatch.GetElapsedTime(TransactionStarted).TotalMilliseconds;
             if (RetentionAcquired != 0)
                 RetentionHeldMilliseconds = Stopwatch.GetElapsedTime(RetentionAcquired).TotalMilliseconds;
         }
