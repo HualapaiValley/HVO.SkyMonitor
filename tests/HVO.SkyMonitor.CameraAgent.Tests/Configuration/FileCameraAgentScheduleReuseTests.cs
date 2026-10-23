@@ -77,7 +77,7 @@ public sealed class FileCameraAgentScheduleReuseTests
         _ = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(2, expansions.Count);
         using var alreadyCanceled = new CancellationTokenSource();
-        alreadyCanceled.Cancel();
+        await alreadyCanceled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => loader.LoadAsync(alreadyCanceled.Token)).ConfigureAwait(false);
         Assert.AreEqual(2, expansions.Count);
         await fixture.EditAsync(node => node["schedule"]!["setpointProfiles"]![0]!["exposure"] = "00:00:00").ConfigureAwait(false);
@@ -146,7 +146,7 @@ public sealed class FileCameraAgentScheduleReuseTests
         var loader = fixture.CreateLoader();
         var pending = loader.LoadAsync(cancellation.Token);
         await fixture.Store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        cancellation.Cancel();
+        await cancellation.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
         Assert.AreEqual(1, expansions.Count);
         fixture.Store.Delay.SetResult();
