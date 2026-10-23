@@ -64,6 +64,14 @@ result clears the gate; neither a new backend/framework nor an implementation
 PR is required. Studies may be scheduled now or later, retain their 60–90 minute
 initial stop rule and credit delivered evidence.
 
+The owner-requested [#1615 recurring-cost reassessment](../validation/upgrade-recovery-cost-1615.md)
+adds the current disposition: simplify the pending-upgrade protocol on existing
+primitives first, retain a controlled snapshot alternative if integrated
+complexity/pause evidence reverses that choice. Overlapping stories cite this
+comparison alongside #1606 and their #1607/#1608 inputs. Its recorded outcome
+clears the reassessment ordering gate; it does not waive implementation
+acceptance or adopt the proposed test-policy reductions.
+
 The affected overlaps include CameraAgent #1059/#1060/#1300 and LogicHost
 #1244/#1245/#589/#591. Scope dependencies to those overlaps. Unrelated features,
 clean-install preparation, release verification and strict existing-behavior
