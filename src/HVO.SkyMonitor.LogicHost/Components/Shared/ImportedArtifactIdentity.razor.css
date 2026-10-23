@@ -1,0 +1,3 @@
+.artifact-identity { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .25rem .8rem; }
+dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 520px) { .artifact-identity { grid-template-columns: minmax(0, 1fr); } dd { margin-bottom: .5rem; } }
