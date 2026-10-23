@@ -28,6 +28,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
 - Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
 - Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
 

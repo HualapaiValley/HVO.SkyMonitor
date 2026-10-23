@@ -11,7 +11,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("""{ "DrawMarkers" : true, "constellationIds": [ "Ori", "UMa" ], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "expectedPositionDiagnostics":true, "future":{"x":1e+02} }""");
         var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(decoded.IsValid);
-        Assert.HasCount(12, decoded.Options);
+        Assert.HasCount(version == SceneVersion ? 13 : 12, decoded.Options);
         Assert.AreEqual(6, decoded.Get("markerRadius").Value.AsWholeNumber());
         Assert.AreEqual(2, decoded.Get("labelScale").Value.AsWholeNumber());
         Assert.AreEqual(24, decoded.Get("maximumLabelCharacters").Value.AsWholeNumber());
@@ -19,6 +19,17 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(2, decoded.Get("cardinalScale").Value.AsWholeNumber());
         foreach (var key in new[] { "drawMarkers", "drawLabels", "drawConstellationLines", "drawImageCircle", "drawCardinalDirections" })
             Assert.IsTrue(decoded.Get(key).Value.AsToggle(), key);
+        if (version == SceneVersion)
+        {
+            Assert.IsTrue(decoded.Get("expectedPositionDiagnostics").Value.AsToggle());
+            var strict = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
+            {
+                ["expectedPositionDiagnostics"] = ProcessingOptionValue.FromToggle(false)
+            });
+            Assert.IsTrue(strict.IsValid);
+            Assert.IsFalse(strict.Options!.Value.GetProperty("expectedPositionDiagnostics").GetBoolean());
+            Assert.AreEqual(source.GetProperty("future").GetRawText(), strict.Options.Value.GetProperty("future").GetRawText());
+        }
 
         var unchanged = ProcessingNodeOptionsCodec.Encode(descriptor, source,
             decoded.Options.ToDictionary(static item => item.Descriptor.Key, static item => item.Value, StringComparer.Ordinal));

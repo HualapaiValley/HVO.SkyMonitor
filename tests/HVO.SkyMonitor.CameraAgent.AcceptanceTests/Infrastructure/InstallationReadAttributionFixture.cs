@@ -249,7 +249,9 @@ internal sealed class InstallationReadStageCollector : IDisposable
             ActivityStopped = activity => _stages.Enqueue(new InstallationReadStage(activity.TraceId.ToString(),
                 activity.SpanId.ToString(), activity.ParentSpanId.ToString(), activity.OperationName,
                 activity.Duration.TotalMilliseconds,
-                GC.GetTotalAllocatedBytes(precise: true) - (long)activity.GetCustomProperty("allocated")!))
+                GC.GetTotalAllocatedBytes(precise: true) - (long)activity.GetCustomProperty("allocated")!,
+                activity.TagObjects.Where(tag => tag.Value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal)
+                    .ToDictionary(tag => tag.Key, tag => tag.Value!, StringComparer.Ordinal)))
         };
         ActivitySource.AddActivityListener(_listener);
     }
@@ -257,6 +259,8 @@ internal sealed class InstallationReadStageCollector : IDisposable
     public void Dispose() => _listener.Dispose();
 }
 
-// Allocation deltas are process-wide and inclusive. Overlapping stages and concurrent requests must never be summed.
+// ProcessAllocatedBytes is process-wide and inclusive; NumericTags also retains
+// explicitly named synchronous leaf thread_allocated_bytes. Do not sum either
+// into enclosing spans or across concurrent requests.
 internal sealed record InstallationReadStage(string TraceId, string SpanId, string ParentSpanId, string Name,
-    double ElapsedMs, long ProcessAllocatedBytes);
+    double ElapsedMs, long ProcessAllocatedBytes, Dictionary<string, object> NumericTags);
