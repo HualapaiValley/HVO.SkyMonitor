@@ -1,0 +1,1198 @@
+{
+  "profile": "development-v1",
+  "riskTier": "C",
+  "sourceHead": "190f7db1e6cc681887ec7e424b341821d3ea9b31",
+  "targetBase": "12bc513ad87bfc2a4cf477155ff0356b835e713c",
+  "selectorCommand": "scripts/ci:classify pull_request 12bc513ad87bfc2a4cf477155ff0356b835e713c 190f7db1e6cc681887ec7e424b341821d3ea9b31",
+  "selectorOutput": "mode=full\ndeployment=false\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=false\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=true\ndelivery=false\nsecret_scan_contract=false\nrelease_scripts=false\n",
+  "heavyWrapper": "flock -o /tmp/hvo-heavy-gate.lock timeout 7200 python3 candidate-gate.py <worktree>",
+  "environment": {
+    "HVO_PRODUCTION_CATALOG_BUNDLE": "unset",
+    "unit_DOCKER_HOST": "unix:///tmp/hvo-no-docker.sock",
+    "MSBUILDDISABLENODEREUSE": "1",
+    "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
+    "UseSharedCompilation": "false"
+  },
+  "unit": {
+    "discovered": 13345,
+    "passed": 13221,
+    "failed": 0,
+    "skipped": 124,
+    "skipReasons": {
+      "catalogBundleRequired": 122,
+      "OSXOnly": 1,
+      "providerAmbiguousDeleteUnreachable": 1
+    }
+  },
+  "integration": {
+    "passed": 932,
+    "failed": 0
+  },
+  "architectureIntegration": {
+    "passed": 7,
+    "failed": 0
+  },
+  "steps": [
+    {
+      "step": "tool-restore",
+      "exit": 0,
+      "seconds": 0.12501310789957643,
+      "command": [
+        "dotnet",
+        "tool",
+        "restore"
+      ]
+    },
+    {
+      "step": "solution-restore",
+      "exit": 0,
+      "seconds": 1.8876279240939766,
+      "command": [
+        "dotnet",
+        "restore",
+        "HVO.SkyMonitor.v9.slnx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "solution-build-debug",
+      "exit": 0,
+      "seconds": 182.2764823429752,
+      "command": [
+        "dotnet",
+        "build",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--configuration",
+        "Debug",
+        "-warnaserror",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "solution-build-release",
+      "exit": 0,
+      "seconds": 139.02439094800502,
+      "command": [
+        "dotnet",
+        "build",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--configuration",
+        "Release",
+        "-warnaserror",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "solution-format",
+      "exit": 0,
+      "seconds": 130.2568856331054,
+      "command": [
+        "dotnet",
+        "format",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--verify-no-changes"
+      ]
+    },
+    {
+      "step": "package-audit",
+      "exit": 0,
+      "seconds": 30.301154433982447,
+      "command": [
+        "./scripts/package:audit"
+      ]
+    },
+    {
+      "step": "ci-shell-syntax",
+      "exit": 0,
+      "seconds": 0.7353029930964112,
+      "command": [
+        "./scripts/ci:shell-syntax"
+      ]
+    },
+    {
+      "step": "test-ci-classification",
+      "exit": 0,
+      "seconds": 17.030933586880565,
+      "command": [
+        "./scripts/test:ci-classification"
+      ]
+    },
+    {
+      "step": "test-coordination-guard",
+      "exit": 0,
+      "seconds": 0.210115005960688,
+      "command": [
+        "./scripts/test:coordination-guard"
+      ]
+    },
+    {
+      "step": "test-pr-review-tools",
+      "exit": 0,
+      "seconds": 8.391176027944311,
+      "command": [
+        "./scripts/test:pr-review-tools"
+      ]
+    },
+    {
+      "step": "docs-audit-operations",
+      "exit": 0,
+      "seconds": 0.4585247940849513,
+      "command": [
+        "./scripts/docs:audit-operations"
+      ]
+    },
+    {
+      "step": "unit-Astronomy.Tests",
+      "exit": 0,
+      "seconds": 201.34395512286574,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/astronomy",
+        "--logger",
+        "trx;LogFileName=unit-astronomy.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Imaging.Tests",
+      "exit": 0,
+      "seconds": 26.38300998019986,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/imaging",
+        "--logger",
+        "trx;LogFileName=unit-imaging.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Processing.Tests",
+      "exit": 0,
+      "seconds": 21.481371079105884,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/processing",
+        "--logger",
+        "trx;LogFileName=unit-processing.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-ProcessingRunner.Tests",
+      "exit": 0,
+      "seconds": 14.534588514827192,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/processing-runner",
+        "--logger",
+        "trx;LogFileName=unit-processing-runner.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Catalog.Sqlite.Tests",
+      "exit": 0,
+      "seconds": 4.558780256891623,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/catalog-sqlite",
+        "--logger",
+        "trx;LogFileName=unit-catalog-sqlite.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Storage.FileSystem.Tests",
+      "exit": 0,
+      "seconds": 1.3737000031396747,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/storage-filesystem",
+        "--logger",
+        "trx;LogFileName=unit-storage-filesystem.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Deployment.Cli.Tests",
+      "exit": 0,
+      "seconds": 100.96775438496843,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/deployment-cli",
+        "--logger",
+        "trx;LogFileName=unit-deployment-cli.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Deployment.Distribution.Tests",
+      "exit": 0,
+      "seconds": 5.7738893430214375,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/deployment-distribution",
+        "--logger",
+        "trx;LogFileName=unit-deployment-distribution.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-AgentCore.Tests",
+      "exit": 0,
+      "seconds": 5.183620593976229,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/agent-core",
+        "--logger",
+        "trx;LogFileName=unit-agent-core.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Common.Tests",
+      "exit": 0,
+      "seconds": 2.273773723980412,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/common",
+        "--logger",
+        "trx;LogFileName=unit-common.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Fleet.Contracts.Tests",
+      "exit": 0,
+      "seconds": 4.742481851950288,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/fleet-contracts",
+        "--logger",
+        "trx;LogFileName=unit-fleet-contracts.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-TestSupport.Tests",
+      "exit": 0,
+      "seconds": 5.043073944048956,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/test-support",
+        "--logger",
+        "trx;LogFileName=unit-test-support.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Architecture.Tests",
+      "exit": 0,
+      "seconds": 30.993088786955923,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/architecture",
+        "--logger",
+        "trx;LogFileName=unit-architecture.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-CameraAgent.Tests",
+      "exit": 0,
+      "seconds": 379.2806658889167,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/cameraagent",
+        "--logger",
+        "trx;LogFileName=unit-cameraagent.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-CameraAgent.AcceptanceTests",
+      "exit": 0,
+      "seconds": 21.184014037018642,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/cameraagent-acceptance",
+        "--logger",
+        "trx;LogFileName=unit-cameraagent-acceptance.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-LogicHost.Tests",
+      "exit": 0,
+      "seconds": 30.35074003599584,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/logichost",
+        "--logger",
+        "trx;LogFileName=unit-logichost.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-CameraAgent.LogicHost.Tests",
+      "exit": 0,
+      "seconds": 29.165775515837595,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/unit/cameraagent-logichost",
+        "--logger",
+        "trx;LogFileName=unit-cameraagent-logichost.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-CameraAgent.IntegrationTests",
+      "exit": 0,
+      "seconds": 3.210465065902099,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--results-directory",
+        "TestResults/unit/cameraagent-integration",
+        "--logger",
+        "trx;LogFileName=unit-cameraagent-integration.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-LogicHost.IntegrationTests",
+      "exit": 0,
+      "seconds": 1.5297529760282487,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--results-directory",
+        "TestResults/unit/logichost-integration",
+        "--logger",
+        "trx;LogFileName=unit-logichost-integration.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-CameraAgent.LogicHost.IntegrationTests",
+      "exit": 0,
+      "seconds": 1.0613144452217966,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--results-directory",
+        "TestResults/unit/cameraagent-logichost-integration",
+        "--logger",
+        "trx;LogFileName=unit-cameraagent-logichost-integration.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "unit-Catalog.Sqlite.PerformanceTests",
+      "exit": 0,
+      "seconds": 0.9822725250851363,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--results-directory",
+        "TestResults/unit/catalog-sqlite-performance",
+        "--logger",
+        "trx;LogFileName=unit-catalog-sqlite-performance.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-LogicHost.IntegrationTests",
+      "exit": 0,
+      "seconds": 707.5129508220125,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/logichost",
+        "--logger",
+        "trx;LogFileName=integration-logichost.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-CameraAgent.Tests",
+      "exit": 0,
+      "seconds": 53.313437946140766,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/cameraagent-storage",
+        "--logger",
+        "trx;LogFileName=integration-cameraagent-storage.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-CameraAgent.AcceptanceTests",
+      "exit": 0,
+      "seconds": 66.62122312001884,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/cameraagent-standalone",
+        "--logger",
+        "trx;LogFileName=integration-cameraagent-standalone.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-Astronomy.Tests",
+      "exit": 0,
+      "seconds": 4.976921114837751,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/astronomy",
+        "--logger",
+        "trx;LogFileName=integration-astronomy.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-CameraAgent.IntegrationTests",
+      "exit": 0,
+      "seconds": 42.04749081400223,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/cameraagent",
+        "--logger",
+        "trx;LogFileName=integration-cameraagent.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "integration-CameraAgent.LogicHost.IntegrationTests",
+      "exit": 0,
+      "seconds": 200.49855201295577,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/integration/cameraagent-logichost",
+        "--logger",
+        "trx;LogFileName=integration-cameraagent-logichost.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "architecture-integration",
+      "exit": 0,
+      "seconds": 34.6909316170495,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--results-directory",
+        "TestResults/architecture",
+        "--logger",
+        "trx;LogFileName=architecture-publish.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    },
+    {
+      "step": "coverage-policy",
+      "exit": 0,
+      "seconds": 0.10387268988415599,
+      "command": [
+        "./scripts/coverage:policy",
+        "pull_request",
+        "development/v1"
+      ]
+    },
+    {
+      "step": "canonical-migration-cameraagent",
+      "exit": 0,
+      "seconds": 0.002190727973356843,
+      "command": [
+        "./scripts/ci:canonical-migration",
+        "cameraagent"
+      ]
+    },
+    {
+      "step": "canonical-migration-logichost",
+      "exit": 0,
+      "seconds": 0.003211753908544779,
+      "command": [
+        "./scripts/ci:canonical-migration",
+        "logichost"
+      ]
+    },
+    {
+      "step": "cameraagent-publish",
+      "exit": 0,
+      "seconds": 7.900976505130529,
+      "command": [
+        "./scripts/ci:component-publish",
+        "cameraagent"
+      ]
+    },
+    {
+      "step": "coverage-cameraagent",
+      "exit": 0,
+      "seconds": 9.344895498128608,
+      "command": [
+        "./scripts/coverage:component",
+        "cameraagent"
+      ]
+    },
+    {
+      "step": "coverage-combined",
+      "exit": 0,
+      "seconds": 8.468251280952245,
+      "command": [
+        "./scripts/coverage:component",
+        "combined"
+      ]
+    },
+    {
+      "step": "cameraagent-category-discovery",
+      "exit": 0,
+      "seconds": 1.5885338860098273,
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--list-tests",
+        "--filter",
+        "TestCategory=Unit",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "TestResults/architecture/architecture-publish.trx",
+      "sha256": "d430497d9460a9270efc28a18f794235de00ab511f336c197e59109d20c374cb"
+    },
+    {
+      "path": "TestResults/integration/astronomy/integration-astronomy.trx",
+      "sha256": "ef4c02352f5ffe5155766d61ee282b769794df934ce4b585170369788580752f"
+    },
+    {
+      "path": "TestResults/integration/cameraagent/integration-cameraagent.trx",
+      "sha256": "688d985e7bbe4894b292b26acbacfa299a775fcc2aa722729f1a588b03dfd71b"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+      "sha256": "9c4d295c83afbb026f9f35a4bb056b0f46783861ecf24fd0dbff4d2d0dbc46cd"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+      "sha256": "7ce8554c92f71395a2964d2282841f385f519cdb8e273565d39c5ab3902e6526"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+      "sha256": "64a4da5404108e2f94f3a1395f140bb80608e2eb662f31628262ef7034022418"
+    },
+    {
+      "path": "TestResults/integration/logichost/integration-logichost.trx",
+      "sha256": "d591a46971e47e99c8b37a2b540f7a128af6df57fa6ba0d6e2bff7ed6c74f78f"
+    },
+    {
+      "path": "TestResults/unit/agent-core/unit-agent-core.trx",
+      "sha256": "d1894679ce1d7392280a8a58e35e7937dfbffb0ffd9cb63409a91642f5bf5552"
+    },
+    {
+      "path": "TestResults/unit/architecture/unit-architecture.trx",
+      "sha256": "f6d3d2ce9def4c26750a6e4431d4b3b9ace1bf7f6aa0fdb82ee969dd5d148ecf"
+    },
+    {
+      "path": "TestResults/unit/astronomy/unit-astronomy.trx",
+      "sha256": "c06c4c6521e21a312cfe89c928972760a6c8449ee7ebcdacfffa161379433f66"
+    },
+    {
+      "path": "TestResults/unit/cameraagent/unit-cameraagent.trx",
+      "sha256": "7ad77595a6c9e7563acb5b009c59116c68d58f0294bbec965c0c0df8d503db0c"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-acceptance/unit-cameraagent-acceptance.trx",
+      "sha256": "da81f8d4da74c07a5e7122f1d12212098dceb122565af082abe26a5d8a315da7"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-integration/unit-cameraagent-integration.trx",
+      "sha256": "877710b1e438ab2c97c881a651c0408a300cedc277535dd8da8047938bf2ff2e"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-logichost/unit-cameraagent-logichost.trx",
+      "sha256": "1a489ff9520d97029cca1858631eed324507d77395ac048e21cb2a602dca0f5e"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-logichost-integration/unit-cameraagent-logichost-integration.trx",
+      "sha256": "dd6a661a502bdf3b15e532d3e8121b0d9659b71a310f88e101d264e77069654e"
+    },
+    {
+      "path": "TestResults/unit/catalog-sqlite/unit-catalog-sqlite.trx",
+      "sha256": "0033a48f05c9251945ae9cbf85f945643b1bd3996bc7d65768b4762f926fca18"
+    },
+    {
+      "path": "TestResults/unit/catalog-sqlite-performance/unit-catalog-sqlite-performance.trx",
+      "sha256": "c101328ab9181789a24abede0a2ac121a09bc30f39f3195b3bcc193ed1eb3a73"
+    },
+    {
+      "path": "TestResults/unit/common/unit-common.trx",
+      "sha256": "f9f8bf81bb4a5fa0a21bd24fd5b2b1373550c06249d0d22e2f38e40efe28d09d"
+    },
+    {
+      "path": "TestResults/unit/deployment-cli/unit-deployment-cli.trx",
+      "sha256": "cb3fca607d677ef16fb12234b64a6e8304964a1e18e621cccda6f0841be2aa8a"
+    },
+    {
+      "path": "TestResults/unit/deployment-distribution/unit-deployment-distribution.trx",
+      "sha256": "cd049bcb48d26b54ef7702c16285a068f6255c74a6ff6ac3f6e53edad8794917"
+    },
+    {
+      "path": "TestResults/unit/fleet-contracts/unit-fleet-contracts.trx",
+      "sha256": "52828efcd1f0a8b7a8ec95719bfe20d46dda23ba96f0f2df92077a6596da14c7"
+    },
+    {
+      "path": "TestResults/unit/imaging/unit-imaging.trx",
+      "sha256": "7bf2d88f4facea47c7850ee56cdd88ed4092956280fe93b27bcc2b97840fa380"
+    },
+    {
+      "path": "TestResults/unit/logichost/unit-logichost.trx",
+      "sha256": "fe396e8c96509481612767d2ea0b77ae8c5761401b37bd367ce9d1a72627488b"
+    },
+    {
+      "path": "TestResults/unit/logichost-integration/unit-logichost-integration.trx",
+      "sha256": "83dafee966c03be0daa77e13fd742f30b4637b9e2db9105e5fe7a93946f13a88"
+    },
+    {
+      "path": "TestResults/unit/processing/unit-processing.trx",
+      "sha256": "c2df4bd6f0df1b19559aabd4eb04124c5267c27362b0168238958d4bd0c07a48"
+    },
+    {
+      "path": "TestResults/unit/processing-runner/unit-processing-runner.trx",
+      "sha256": "91a396a07000c266aadeaf9930fb526b926e9df56e36bbde79a2658359739d7f"
+    },
+    {
+      "path": "TestResults/unit/storage-filesystem/unit-storage-filesystem.trx",
+      "sha256": "088f4e18075cbd7c6c7222130fbd1ce21e49961ca6a8aa42322c9a5848712e3d"
+    },
+    {
+      "path": "TestResults/unit/test-support/unit-test-support.trx",
+      "sha256": "db4f7e6beb78db56bea6f706c499abd9b50c07ecfbc9bf4cfe714e15ea7bcf6f"
+    },
+    {
+      "path": "TestResults/architecture/_home-dev-01_2026-10-23_04_30_15/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "2a53a30d37f62d4af1c2f1813490dca8ec78c2cd72de33c6bc6a653efd49ff7d"
+    },
+    {
+      "path": "TestResults/architecture/daa14920-4f10-4901-8059-72fc4271637e/coverage.cobertura.xml",
+      "sha256": "2a53a30d37f62d4af1c2f1813490dca8ec78c2cd72de33c6bc6a653efd49ff7d"
+    },
+    {
+      "path": "TestResults/integration/astronomy/9490973b-b45e-4e2d-a1aa-bcd773c2dc95/coverage.cobertura.xml",
+      "sha256": "e9502fa6878febb24eb280f61358a82ef03424938ef8ab2feaa37698b142c642"
+    },
+    {
+      "path": "TestResults/integration/astronomy/_home-dev-01_2026-10-23_04_26_10/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "e9502fa6878febb24eb280f61358a82ef03424938ef8ab2feaa37698b142c642"
+    },
+    {
+      "path": "TestResults/integration/cameraagent/_home-dev-01_2026-10-23_04_26_32/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "c7ccab0664ef000254212adcc60ea1a7338fe46c31274093dac3f1b97a14dc2b"
+    },
+    {
+      "path": "TestResults/integration/cameraagent/de75f3ba-766c-4697-b054-3d0a019f1791/coverage.cobertura.xml",
+      "sha256": "c7ccab0664ef000254212adcc60ea1a7338fe46c31274093dac3f1b97a14dc2b"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-logichost/9db445a0-a13a-4048-b42e-3adde581f8aa/coverage.cobertura.xml",
+      "sha256": "2b84a98a8417257add20fe84c2598bce84962e78b3eb97e043053275432ce065"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-logichost/_home-dev-01_2026-10-23_04_27_26/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "2b84a98a8417257add20fe84c2598bce84962e78b3eb97e043053275432ce065"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-standalone/3a3d4b48-9bc0-478b-94f5-6482ab9e5137/coverage.cobertura.xml",
+      "sha256": "3fc947ccefab7fea6ff21f4d80bf631faed97e6acf67a1f908aae5a6148ed5ef"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-standalone/_home-dev-01_2026-10-23_04_25_23/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "3fc947ccefab7fea6ff21f4d80bf631faed97e6acf67a1f908aae5a6148ed5ef"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-storage/_home-dev-01_2026-10-23_04_24_25/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "2fb3656aabbb472a70fecc8ee733e9570cab27401c94a0df7ab21c95009350ea"
+    },
+    {
+      "path": "TestResults/integration/cameraagent-storage/d6230442-2198-4192-8652-87ed9627c19c/coverage.cobertura.xml",
+      "sha256": "2fb3656aabbb472a70fecc8ee733e9570cab27401c94a0df7ab21c95009350ea"
+    },
+    {
+      "path": "TestResults/integration/logichost/2c3f656d-a727-462e-b396-2b5c5a77336f/coverage.cobertura.xml",
+      "sha256": "7a4c77bc9421af10c7e87abf0b8009e46229c638ab64adcbdc389e5011d04e5f"
+    },
+    {
+      "path": "TestResults/integration/logichost/_home-dev-01_2026-10-23_04_12_37/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "7a4c77bc9421af10c7e87abf0b8009e46229c638ab64adcbdc389e5011d04e5f"
+    },
+    {
+      "path": "TestResults/unit/agent-core/_home-dev-01_2026-10-23_04_03_47/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "82f41a1b0d85748897625c90d629995a8d27da49edb0b8f4c89a2a28118e5ae0"
+    },
+    {
+      "path": "TestResults/unit/agent-core/a0ed0f7c-afe5-4e29-af36-9f465eb17374/coverage.cobertura.xml",
+      "sha256": "82f41a1b0d85748897625c90d629995a8d27da49edb0b8f4c89a2a28118e5ae0"
+    },
+    {
+      "path": "TestResults/unit/architecture/10e8c2f9-acf1-4b3d-aa6a-7e468e7cfd96/coverage.cobertura.xml",
+      "sha256": "9a6a9de800deab422b9b00c3904815eef8406a4460aa6f4e057387be67806708"
+    },
+    {
+      "path": "TestResults/unit/architecture/_home-dev-01_2026-10-23_04_04_01/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "9a6a9de800deab422b9b00c3904815eef8406a4460aa6f4e057387be67806708"
+    },
+    {
+      "path": "TestResults/unit/astronomy/_home-dev-01_2026-10-23_03_57_32/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "a4021b26aa80a20712b6ce38d41eb415c0f95812ff93b13151884378b5548297"
+    },
+    {
+      "path": "TestResults/unit/astronomy/fcb2b0da-12a7-4fc5-9bda-731dc0e4cf02/coverage.cobertura.xml",
+      "sha256": "a4021b26aa80a20712b6ce38d41eb415c0f95812ff93b13151884378b5548297"
+    },
+    {
+      "path": "TestResults/unit/cameraagent/5a2fe64d-187d-494d-913d-71e8b5f99ad3/coverage.cobertura.xml",
+      "sha256": "30dcba00bfed36810aa83a0b5016eacdc4766f46d49bf99bbe45066d43428d87"
+    },
+    {
+      "path": "TestResults/unit/cameraagent/_home-dev-01_2026-10-23_04_04_49/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "30dcba00bfed36810aa83a0b5016eacdc4766f46d49bf99bbe45066d43428d87"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-acceptance/_home-dev-01_2026-10-23_04_11_09/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "1d5c265b78d03474c525b71f4726bd111628e6ff62d91d6aa73327af0949c780"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-acceptance/b56eb5ad-ad74-44c5-9730-efa7c861adab/coverage.cobertura.xml",
+      "sha256": "1d5c265b78d03474c525b71f4726bd111628e6ff62d91d6aa73327af0949c780"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-logichost/22944b9d-cee3-4e46-a9f8-89f99257bb4e/coverage.cobertura.xml",
+      "sha256": "1dc3dfb64f00c60307a9ae4bb8262bc39a27795eaf4196d7e51426a29704dfde"
+    },
+    {
+      "path": "TestResults/unit/cameraagent-logichost/_home-dev-01_2026-10-23_04_11_53/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "1dc3dfb64f00c60307a9ae4bb8262bc39a27795eaf4196d7e51426a29704dfde"
+    },
+    {
+      "path": "TestResults/unit/catalog-sqlite/69b84cfb-488d-4812-b576-e358e0a3735d/coverage.cobertura.xml",
+      "sha256": "f8240e3e98f0db727369985c8871bedf66988a79cf75699b4decfa8f9463987a"
+    },
+    {
+      "path": "TestResults/unit/catalog-sqlite/_home-dev-01_2026-10-23_04_01_52/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "f8240e3e98f0db727369985c8871bedf66988a79cf75699b4decfa8f9463987a"
+    },
+    {
+      "path": "TestResults/unit/common/_home-dev-01_2026-10-23_04_03_49/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "1acdac15ad9f59b1ca3f2102f49bf371a7c7bc5f166f894271f169339b929dad"
+    },
+    {
+      "path": "TestResults/unit/common/c6c105b1-0cf2-4723-85dd-de067109499b/coverage.cobertura.xml",
+      "sha256": "1acdac15ad9f59b1ca3f2102f49bf371a7c7bc5f166f894271f169339b929dad"
+    },
+    {
+      "path": "TestResults/unit/deployment-cli/1065f0b2-4475-4841-9117-dda6833e7fc1/coverage.cobertura.xml",
+      "sha256": "afaf62c7a7d213ba11366c39bc4c2765a87e3606f5998c43933990c764c730c5"
+    },
+    {
+      "path": "TestResults/unit/deployment-cli/_home-dev-01_2026-10-23_04_02_00/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "afaf62c7a7d213ba11366c39bc4c2765a87e3606f5998c43933990c764c730c5"
+    },
+    {
+      "path": "TestResults/unit/deployment-distribution/_home-dev-01_2026-10-23_04_03_41/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "12f549e02c4e2c94a96463986d839c010b3c74ae5c294a624d712cd9de154d20"
+    },
+    {
+      "path": "TestResults/unit/deployment-distribution/aefb8588-b208-47cd-8252-bc7f279658f3/coverage.cobertura.xml",
+      "sha256": "12f549e02c4e2c94a96463986d839c010b3c74ae5c294a624d712cd9de154d20"
+    },
+    {
+      "path": "TestResults/unit/fleet-contracts/8fb1eb1c-96b8-478d-af21-437adee1a37d/coverage.cobertura.xml",
+      "sha256": "46a289fa3bcc3c880c73b33274408ceeb7e13acb749796bf4f38719a95132f83"
+    },
+    {
+      "path": "TestResults/unit/fleet-contracts/_home-dev-01_2026-10-23_04_03_54/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "46a289fa3bcc3c880c73b33274408ceeb7e13acb749796bf4f38719a95132f83"
+    },
+    {
+      "path": "TestResults/unit/imaging/_home-dev-01_2026-10-23_04_00_51/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "04d8714f8d125aa0aa9d7e386d85b52fe83e0498e003f21cdce230f02839f1a7"
+    },
+    {
+      "path": "TestResults/unit/imaging/fe24645f-f673-4b0a-9e07-7ced0439bc9c/coverage.cobertura.xml",
+      "sha256": "04d8714f8d125aa0aa9d7e386d85b52fe83e0498e003f21cdce230f02839f1a7"
+    },
+    {
+      "path": "TestResults/unit/logichost/6fba476f-ab1f-4909-a01d-f34af005f09d/coverage.cobertura.xml",
+      "sha256": "e2e37ef4b55a8f47e0e548e091867ae2c82c8ee199f9c4c537738b5616e3a873"
+    },
+    {
+      "path": "TestResults/unit/logichost/_home-dev-01_2026-10-23_04_11_20/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "e2e37ef4b55a8f47e0e548e091867ae2c82c8ee199f9c4c537738b5616e3a873"
+    },
+    {
+      "path": "TestResults/unit/processing/8f01c0ac-50b0-42ef-80a1-bc163d4bbb10/coverage.cobertura.xml",
+      "sha256": "e8fa8577b6350054aaa4a5ee961192d426e5c78b05113f257afd40c0f2dfe971"
+    },
+    {
+      "path": "TestResults/unit/processing/_home-dev-01_2026-10-23_04_01_18/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "e8fa8577b6350054aaa4a5ee961192d426e5c78b05113f257afd40c0f2dfe971"
+    },
+    {
+      "path": "TestResults/unit/processing-runner/5a19a84b-8c91-45b5-a956-7797b5400e81/coverage.cobertura.xml",
+      "sha256": "d413cb5528dbaee5a0245ebfa2daefed2c208c3071b7cd36eff888aab1b5f261"
+    },
+    {
+      "path": "TestResults/unit/processing-runner/_home-dev-01_2026-10-23_04_01_40/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "d413cb5528dbaee5a0245ebfa2daefed2c208c3071b7cd36eff888aab1b5f261"
+    },
+    {
+      "path": "TestResults/unit/storage-filesystem/1020e97c-7af0-4208-a6aa-f936316df5a5/coverage.cobertura.xml",
+      "sha256": "3099b10f3490d2d2f694ce0a849022133e5bb14486ef22fc4743862a8a13bff5"
+    },
+    {
+      "path": "TestResults/unit/storage-filesystem/_home-dev-01_2026-10-23_04_01_56/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "3099b10f3490d2d2f694ce0a849022133e5bb14486ef22fc4743862a8a13bff5"
+    },
+    {
+      "path": "TestResults/unit/test-support/9c5cd0ba-a373-44a8-b352-dfa4681e1264/coverage.cobertura.xml",
+      "sha256": "d6e611f9211f2fdf0fbddb1075a05ea2de979518bb8b4b32c4f5ba124c5c1c8d"
+    },
+    {
+      "path": "TestResults/unit/test-support/_home-dev-01_2026-10-23_04_03_59/In/home-dev-01/coverage.cobertura.xml",
+      "sha256": "d6e611f9211f2fdf0fbddb1075a05ea2de979518bb8b4b32c4f5ba124c5c1c8d"
+    },
+    {
+      "path": "coverage-report/cameraagent/Cobertura.xml",
+      "sha256": "2fc856bb6a430efa73c7b8e2b5d81b9cff884f6e8871889082974c1c74117e3a"
+    },
+    {
+      "path": "coverage-report/combined/Cobertura.xml",
+      "sha256": "84ec190cefcb0af1138908e8a3e344de57fae645b72796e1fb7943e7f1ff2c20"
+    }
+  ]
+}
