@@ -44,6 +44,16 @@ the payload dimensions bind a retained result; changing a current graph cannot
 change it. An optional rendering failure publishes neither partial facts nor a
 partial layer and leaves source/raw/science products intact.
 
+Central ingestion validates the rich layer's facts-source identity separately
+from the manifest's scene-coordinate identity. The v4 layer must resolve to its
+retained v3 facts product, whose first canonical source is the exact projected
+scene named by the manifest coordinates. Both sources must remain available in
+the same capture and device. Content identities and presentation dimensions
+remain independently checked. Ingestion, delayed delivery, duplicate retry and
+reconciliation load this bounded retained lineage; no current facts or settings
+are consulted. Payload v1–v3 keep their existing direct coordinate comparison,
+and no serialized fields or versions change for this validation.
+
 ## Graph options
 
 The existing descriptor and typed codec describe the exact new alias/version.
@@ -103,7 +113,11 @@ The Unit tests in `FrameFactsPresentationTests` and
 `PresentationMetadataFactsBuilderTests` cover fonts/emphasis, all corners,
 missing policies, strict source/output bounds, immutable snapshots, identities,
 legacy serialization, opt-in registration, failure isolation and the actual
-CameraAgent/shared LogicHost rendering seams. The manual measurement is:
+CameraAgent/shared LogicHost rendering seams. The combined Integration tests in
+`FrameFactsPresentationIngestTests` execute the actual rich and manifest nodes,
+central ingestion and presentation retrieval, including delayed delivery, retry,
+reconciliation and independent identity mismatches. `PresentationReferenceLineageTests`
+pins the separate bindings and the legacy v1–v3 comparison. The manual measurement is:
 
 ```bash
 dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
