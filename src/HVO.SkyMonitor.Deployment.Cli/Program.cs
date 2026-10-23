@@ -109,7 +109,16 @@ internal static class Program
                     await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
-            if (command is ExistingDownRequest down)
+            if (command is PreflightRequest splitPreflight)
+            {
+                try
+                {
+                    var result = await services.SplitHostPreflight(splitPreflight, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(splitPreflight.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=preflight check=complete status=passed reason=read-only").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is ExistingDownRequest down)
             {
                 try
                 {
@@ -442,6 +451,7 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    public Func<PreflightRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> SplitHostPreflight { get; init; } = global::HVO.SkyMonitor.Deployment.SplitHostPreflight.ExecuteAsync;
     public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
     public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;
     /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>

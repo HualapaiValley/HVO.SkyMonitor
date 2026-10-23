@@ -390,6 +390,11 @@ shard_enabled() {
 
 # The migrated shard constructs its disposable typed hosts itself. Keep coordinator
 # and injected-fault behaviour above this boundary, without the unrelated shell fixture.
+if [[ "$SELECTED_SHARD" == preflight ]]; then
+    . "$REPO_ROOT/scripts/deploy-contracts/preflight-1.sh"
+    . "$REPO_ROOT/scripts/deploy-contracts/preflight-2.sh"
+    exit 0
+fi
 if [[ "$SELECTED_SHARD" == partial-prepare ]]; then
     . "$REPO_ROOT/scripts/deploy-contracts/partial-prepare.sh"
     exit 0
@@ -507,7 +512,7 @@ for _ in {1..100}; do
     sleep 0.1
 done
 [[ "$listener_ready" == true ]] || fail 'Local connectivity fixture did not start with the pinned .NET SDK.'
-# shellcheck disable=SC2034 # UNREACHABLE_PORT is read by scripts/deploy-contracts/preflight-3.sh, sourced into this shell.
+# shellcheck disable=SC2034 # UNREACHABLE_PORT is retained for the remaining shell fixture scenarios.
 readonly HTTP_PORT UNREACHABLE_PORT
 readonly EAST_PORT=5130
 readonly WEST_PORT=5131
@@ -522,12 +527,19 @@ ssh_host=$1
 shift
 case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=west ;; shared@*) host=shared ;; *) exit 1 ;; esac
 [[ "${FAKE_SSH_UNREACHABLE:-}" != "$host" ]] || exit 255
-if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
+if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then
+  if [[ "$*" != *"bash -c"* ]]; then /usr/bin/cat >/dev/null; fi
+  exit 127
+fi
 if (( $# == 1 )); then
   remote_command=$1
   eval "set -- $remote_command"
-  if [[ "$1" == timeout ]]; then
-    exec env FAKE_TYPED_HTTP_TRACE=true FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE=false PATH="${FAKE_REMOTE_BIN:?}" "$@"
+  if [[ "$1" == timeout || ( "$1" == bash && "$2" == -c ) ]]; then
+    remote_path="${FAKE_REMOTE_BIN:?}"
+    [[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
+    [[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
+    [[ "${FAKE_MISSING_TIMEOUT_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_TIMEOUT:?}"
+    exec env FAKE_TYPED_HTTP_TRACE=true FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE=false PATH="$remote_path" "$@"
   fi
   [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
   shift 3
@@ -1794,8 +1806,8 @@ write_inventory() {
 
 if shard_enabled preflight; then . "$REPO_ROOT/scripts/deploy-contracts/preflight-2.sh"; fi
 write_inventory
-
-if shard_enabled preflight; then . "$REPO_ROOT/scripts/deploy-contracts/preflight-3.sh"; fi
+# Serial mode formerly left this diagnostic fixture switch off after preflight.
+if [[ "$SELECTED_SHARD" == all ]]; then export FAKE_CAPTURE_REMOTE_SCRIPTS=false; fi
 
 if shard_enabled prepare-images; then . "$REPO_ROOT/scripts/deploy-contracts/prepare-images.sh"; fi
 
