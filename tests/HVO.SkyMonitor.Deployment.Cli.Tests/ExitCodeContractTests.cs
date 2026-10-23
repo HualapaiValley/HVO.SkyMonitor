@@ -29,6 +29,7 @@ public sealed class ExitCodeContractTests
     private static readonly (string Name, string[] Arguments)[] Commands =
     [
         ("partial-prepare-cleanup", ["partial-prepare-cleanup", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "failed-run", "--dry-run"]),
+        ("existing-down", ["existing-down", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "deployed-run", "--preserve-state"]),
         ("status", ["status", "--instance-id", Id]),
         ("cameraagent install",
             ["cameraagent", "install", "--friendly-name", "North Camera", "--catalog-bundle", "/srv/hvo/catalog.bundle", "--image-ref", ImageRef]),
@@ -62,6 +63,10 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("existing-down", "done", 0)]
+    [DataRow("existing-down", "failed", 1)]
+    [DataRow("existing-down", "refused", 3)]
+    [DataRow("existing-down", "interrupted", 130)]
     [DataRow("partial-prepare-cleanup", "done", 0)]
     [DataRow("partial-prepare-cleanup", "failed", 1)]
     [DataRow("partial-prepare-cleanup", "refused", 3)]
@@ -146,6 +151,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
@@ -177,6 +183,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
@@ -209,6 +216,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
@@ -398,6 +406,7 @@ public sealed class ExitCodeContractTests
                 1, request.Operation, "completed", Guid.NewGuid(), request.InstanceId, null, request.ProductRoot, null, null, null,
                 null, null, null, null, null, [], null, DateTimeOffset.UtcNow)))
         {
+            ExistingDown = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
             PartialPrepare = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" })
         };
     }

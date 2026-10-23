@@ -32,9 +32,10 @@ public sealed partial class HostRecipeContractConformanceTests
             .Concat(references.Select(a => new LogicHostProcessingInput(null, a.Payload, $"{a.Variant}-reference", a))).ToArray();
         var recorder = new RecordingExecutor();
         var adapter = new LogicHostRecipeExecutionAdapter(recorder);
+        var variant = "calibrated";
         async Task<ProcessingOutcome> Run(IReadOnlyList<LogicHostProcessingInput> bound) => await adapter.ExecuteAsync(
             bound, BuiltInProcessingRecipes.ReferenceCalibration, JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
-            ProcessingInputSelector.Raw("source"), "calibrated", auxiliaryInputs: [auxiliary]);
+            ProcessingInputSelector.Raw("source"), variant, auxiliaryInputs: [auxiliary]);
         var produced = await Run(inputs);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, produced.Status, produced.ReasonCode);
         var product = Assert.ContainsSingle(produced.Products);
@@ -42,6 +43,26 @@ public sealed partial class HostRecipeContractConformanceTests
         CollectionAssert.AreEqual(new[] { light.ArtifactId }.Concat(references.Select(a => a.ArtifactId)).ToArray(), product.SourceArtifactIds.ToArray());
         Assert.AreEqual(identity, product.Compatibility.Calibration);
         AssertContract(recorder.Request!, product);
+
+        var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve("Calibration", "reference-calibration-linear16-v2").Descriptor!;
+        Assert.AreSame(CalibrationOptionDescriptors.References, descriptor);
+        var retainedOptions = JsonSerializer.SerializeToElement(new { strategy = "CalibrationLibrary", outputVariant = variant, masterIdentity = identity });
+        var edited = ProcessingNodeOptionsCodec.Encode(descriptor, retainedOptions, new Dictionary<string, ProcessingOptionValue>
+        {
+            ["outputVariant"] = ProcessingOptionValue.FromText("calibrated-edited")
+        });
+        Assert.IsTrue(edited.IsValid);
+        Assert.AreEqual(identity, edited.Options!.Value.GetProperty("masterIdentity").GetString());
+        variant = ProcessingNodeOptionsCodec.Decode(descriptor, edited.Options.Value).Get("outputVariant").Value.AsText();
+        var editedCentral = (await Run(inputs)).Products.Single();
+        Assert.AreNotEqual(product.OutputIdentitySha256, editedCentral.OutputIdentitySha256);
+        CollectionAssert.AreEqual(product.Payload.ToArray(), editedCentral.Payload.ToArray());
+        CollectionAssert.AreEqual(product.SourceArtifactIds.ToArray(), editedCentral.SourceArtifactIds.ToArray());
+        Assert.AreEqual(identity, editedCentral.Compatibility.Calibration);
+        variant = retainedOptions.GetProperty("outputVariant").GetString()!;
+        var reconstructed = (await Run(inputs)).Products.Single();
+        Assert.AreEqual(product.OutputIdentitySha256, reconstructed.OutputIdentitySha256);
+        Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(light.Payload), ProcessingIdentity.ComputePayloadSha256(inputs[0].Payload));
         Assert.AreEqual(light.ArtifactId, recorder.Request!.InputArtifactId);
         CollectionAssert.AreEquivalent(references.Select(a => a.ArtifactId).ToArray(),
             recorder.Request.AuxiliaryInputs!.Where(a => a.Kind == ProcessingAuxiliaryInputKind.Artifact).Select(a => a.ArtifactId!.Value).ToArray());

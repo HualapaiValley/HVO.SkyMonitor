@@ -12,20 +12,21 @@ internal sealed class PartialPrepareState : IDisposable
     private readonly string evidence;
     private readonly string prefix;
     private readonly Action<string> boundary;
-    private readonly UnixNodeIdentity stateIdentity;
+    private readonly bool recovery;
+    private UnixNodeIdentity stateIdentity;
     private readonly UnixNodeIdentity evidenceIdentity;
-    public PartialPrepareState(string stateRoot, string evidenceRoot, bool inspect, Action<string> failpoint)
+    public PartialPrepareState(string stateRoot, string evidenceRoot, bool inspect, Action<string> failpoint, string? phase = null)
     {
         Require(Root(stateRoot) && Root(evidenceRoot) && !Beneath(stateRoot, evidenceRoot) && !Beneath(evidenceRoot, stateRoot), "state-evidence-overlap");
         PrepareDirectory(stateRoot); PrepareDirectory(evidenceRoot);
-        state = stateRoot; evidence = evidenceRoot; prefix = inspect ? "partial-prepare-inspect" : "partial-prepare-cleanup"; boundary = failpoint;
-        stateIdentity = NativeLinux.GetNodeIdentity(state); evidenceIdentity = NativeLinux.GetNodeIdentity(evidence);
+        state = stateRoot; evidence = evidenceRoot; prefix = phase ?? (inspect ? "partial-prepare-inspect" : "partial-prepare-cleanup"); boundary = failpoint; recovery = phase is null;
         runLock = NativeLinux.OpenLockFile(state + "/run.lock");
         try
         {
             SafeFileSystem.ValidateOwnerFile(runLock, "run.lock");
             Require(NativeLinux.GetOpenNodeIdentity(runLock, "run.lock") == NativeLinux.GetNodeIdentity(state + "/run.lock"), "unsafe-lock-entry");
             Require(NativeLinux.TryLockExclusive(runLock, "run.lock"), "run-already-active");
+            stateIdentity = NativeLinux.GetNodeIdentity(state); evidenceIdentity = NativeLinux.GetNodeIdentity(evidence);
         }
         catch { runLock.Dispose(); throw; }
     }
@@ -49,6 +50,14 @@ internal sealed class PartialPrepareState : IDisposable
     {
         Revalidate(); return Parse(ReadPrivate((fromEvidence ? evidence : state) + "/" + name));
     }
+    public void PreparePrivateDirectories(params string[] names)
+    {
+        Revalidate();
+        foreach (var name in names) { Require(Name(name), "unsafe-state-directory"); PrepareDirectory(state + "/" + name); }
+        var current = NativeLinux.GetNodeIdentity(state);
+        Require(stateIdentity with { LinkCount = current.LinkCount } == current, "state-directory-changed"); stateIdentity = current;
+    }
+    public void WriteState(string name, JsonNode value) { Revalidate(); SafeFileSystem.WriteTextAtomic(state + "/" + name, value.ToJsonString(Options) + "\n"); }
     public static string ReadPrivate(string path)
     {
         var identity = NativeLinux.GetNodeIdentity(path);
@@ -98,7 +107,9 @@ internal sealed class PartialPrepareState : IDisposable
     private void Write(string path, JsonObject value) { Revalidate(); SafeFileSystem.WriteTextAtomic(path, value.ToJsonString(Options) + "\n"); }
     public void Publish(JsonObject ledger)
     {
-        if (ledger.Text("phaseStatus") == "passed") RequireNoLaterPhase();
+        Revalidate();
+        if (recovery && ledger.Text("phaseStatus") == "passed") RequireNoLaterPhase();
+        if (prefix == "down" && ledger.Text("phaseStatus") == "passed") Require(JsonNode.Parse(ReadPrivate(state + "/private-upload-registry.json")) is JsonArray { Count: 0 }, "private-cleanup-incomplete");
         PublicationInProgress = true;
         ledger["updatedAt"] = Now(); ledger["publicationGeneration"] = ledger["publicationGeneration"]!.GetValue<int>() + 1;
         Write(Ledger, ledger); boundary("abrupt-after-" + prefix + "-ledger");

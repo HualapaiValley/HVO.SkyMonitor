@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CaptureScalarOptionsEditorTests
+public sealed partial class CaptureScalarOptionsEditorTests
 {
     public Microsoft.VisualStudio.TestTools.UnitTesting.TestContext TestContext { get; set; } = null!;
 
@@ -54,6 +54,8 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
     [DataRow("WeatherCloudOverlay")]
+    [DataRow("CloudAssessment")]
+    [DataRow("Calibration")]
     public void TogglePanelSavesOnlyTheEditedMemberWithAccessibleLabels(string alias)
     {
         using var context = new BunitContext();
@@ -81,6 +83,8 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
     [DataRow("WeatherCloudOverlay")]
+    [DataRow("CloudAssessment")]
+    [DataRow("Calibration")]
     public void UnchangedSaveAndRestoredToggleDoNotMaterializeDefaults(string alias)
     {
         using var context = new BunitContext();
@@ -126,6 +130,8 @@ public sealed class CaptureScalarOptionsEditorTests
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
     [DataRow("WeatherCloudOverlay")]
+    [DataRow("CloudAssessment")]
+    [DataRow("Calibration")]
     public void DeniedRevisionShowsNoOptionsOrSave(string alias)
     {
         using var context = new BunitContext();
