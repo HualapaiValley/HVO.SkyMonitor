@@ -30,6 +30,8 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     [Parameter, EditorRequired] public Guid CaptureId { get; set; }
     [Parameter] public bool ReadOnly { get; set; }
     [Parameter] public bool AllowExactPreviewFallback { get; set; }
+    /// <summary>The capture heading's native level (1–4); its subsections use the next two levels.</summary>
+    [Parameter] public int HeadingLevel { get; set; } = 1;
     [Parameter] public string? StatusMessage { get; set; }
     [Parameter] public EventCallback<Guid> StackSaved { get; set; }
     [Inject] internal ICentralLayeredPresentationService Presentations { get; set; } = default!;
@@ -89,8 +91,18 @@ public sealed partial class ExactCaptureViewer : ComponentBase, IAsyncDisposable
     internal string BaseImageKey => FormattableString.Invariant(
         $"{presentationGeneration}:{Presentation?.PresentationIdentitySha256}:{baseImageAttempt}");
 
+    private RenderFragment Heading(int offset, string text, string cssClass) => builder =>
+    {
+        builder.OpenElement(0, FormattableString.Invariant($"h{HeadingLevel + offset}"));
+        builder.AddAttribute(1, "class", cssClass);
+        builder.AddContent(2, text);
+        builder.CloseElement();
+    };
+
     protected override async Task OnParametersSetAsync()
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(HeadingLevel, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(HeadingLevel, 4);
         Guid? requestedCaptureId = Detail is null ? null : CaptureId;
         var requestedAuthenticationState = AuthenticationStateTask;
         // A refreshed detail for the same exact capture and the same authentication state keeps its presentation,

@@ -23,6 +23,23 @@ public sealed partial class CurrentSkyViewTests
     private static readonly Guid Artifact = Guid.NewGuid();
 
     [TestMethod]
+    public void HeadingTree_NestsTheExactCaptureUnderCurrentSky()
+    {
+        using var context = CreateContext(out _, out _);
+        var presentations = (Presentations)context.Services.GetRequiredService<ICentralLayeredPresentationService>();
+        presentations.Result = new(CentralLayeredPresentationStatus.Found,
+            new(Capture, Guid.NewGuid(), Artifact, "image/png", "manifest", "presentation", "svg",
+                1, 1, [], "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"u8.ToArray()));
+
+        var cut = Render(context);
+
+        cut.FindAll("h1,h2,h3,h4,h5,h6").Select(h => (h.LocalName, h.TextContent))
+            .Should().Equal(("h2", "Current Sky"), ("h3", $"Capture {DateTimeOffset.UnixEpoch:u}"),
+                ("h4", "Archived scene layers"), ("h4", "Capture provenance"));
+        cut.Find("#current-sky-heading").TextContent.Should().Be("Current Sky");
+    }
+
+    [TestMethod]
     public void PlainPreview_UsesSelectedExactBytesAndIndependentTimesWithoutMutation()
     {
         using var context = CreateContext(out var archive, out _);
