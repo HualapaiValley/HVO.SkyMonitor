@@ -82,9 +82,12 @@ internal sealed partial class JoinedRecoveryFixture
         await EmitEvidenceAsync();
         phase = "cleanup";
         // Only this disposable container and this exact run directory are owned by this fixture.
-        await container.DisposeAsync();
-        containerRemoved = true;
+        // WithCleanUp(false) preserves failed runs from the reaper, and DisposeAsync alone
+        // only stops such a container. Explicit deletion is reserved for successful runs.
+        await ((DotNet.Testcontainers.IFutureResource)container).DeleteAsync(CancellationToken.None);
         Require(container.State == TestcontainersStates.Undefined, "container-cleanup");
+        containerRemoved = true;
+        await container.DisposeAsync();
         Directory.Delete(root, recursive: true);
         filesRemoved = true;
         await identityServices.DisposeAsync();
