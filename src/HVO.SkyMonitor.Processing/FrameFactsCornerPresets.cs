@@ -67,6 +67,33 @@ public static class FrameFactsCornerPresets
         return new(presets, null, null);
     }
 
+    /// <summary>Editable live-capture equivalents of the fixed presets. No retained display string becomes a future reading.</summary>
+    public static FrameFactsPresetConversionResult FromConfiguration(IReadOnlyList<EnvironmentalObservationKind> kinds)
+    {
+        ArgumentNullException.ThrowIfNull(kinds);
+        if (kinds.Count > 7) return Failure("environment", new("frame-facts.too-many-lines", 0));
+        var lines = new List<string> { "ENVIRONMENT" };
+        if (kinds.Count == 0) lines.Add("NOT RETAINED");
+        foreach (var kind in kinds)
+        {
+            var entry = FrameFactsRetainedCatalog.Environment.SingleOrDefault(entry => entry.Kind == kind);
+            if (entry.Key is null || kinds.Count(value => value == kind) != 1)
+                return Failure("environment", new("frame-facts.unknown-token", 0));
+            lines.Add(kind + " {{environment." + entry.Key + "}} " + entry.Unit);
+        }
+        var presets = ImmutableArray.Create(
+            new FrameFactsCornerPreset("capture", "Capture", CaptureSource),
+            new FrameFactsCornerPreset("acquisition", "Acquisition", AcquisitionSource),
+            new FrameFactsCornerPreset("environment", "Environment", string.Join('\n', lines)),
+            new FrameFactsCornerPreset("lineage", "Lineage", LineageBeforeStack + "STACK {{stack.count}} {{stack.integrationSeconds|fixed3}} S" + LineageAfterStack));
+        foreach (var preset in presets)
+        {
+            var parsed = FrameFactsTemplate.Parse(preset.Source, FrameFactsRetainedCatalog.Catalog);
+            if (!parsed.IsValid) return Failure(preset.Id, parsed.Error!);
+        }
+        return new(presets, null, null);
+    }
+
     private static FrameFactsPresetConversionResult Convert(
         (string Id, string Name, IReadOnlyList<string> Lines)[] inputs)
     {

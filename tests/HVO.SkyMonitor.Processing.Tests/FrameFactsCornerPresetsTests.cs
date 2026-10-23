@@ -11,6 +11,40 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed class FrameFactsCornerPresetsTests
 {
     [TestMethod]
+    public void ConfiguredPresetsRemainTokenBasedAndAllFourCanMoveToAnyCorner()
+    {
+        var presets = FrameFactsCornerPresets.FromConfiguration([EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RainState]);
+        Assert.IsTrue(presets.IsValid);
+        Assert.HasCount(4, presets.Presets);
+        StringAssert.Contains(presets.Presets[2].Source, "{{environment.airTemperature}}", StringComparison.Ordinal);
+        StringAssert.Contains(presets.Presets[2].Source, "{{environment.rainState}}", StringComparison.Ordinal);
+        var empty = FrameFactsCornerPresets.FromConfiguration([]);
+        Assert.AreEqual("ENVIRONMENT\nNOT RETAINED", empty.Presets[2].Source);
+        foreach (var preset in presets.Presets)
+            Assert.IsTrue(FrameFactsTemplate.Parse(preset.Source, FrameFactsRetainedCatalog.Catalog).IsValid);
+    }
+
+    [TestMethod]
+    [DataRow(7, true)]
+    [DataRow(8, false)]
+    public void ConfiguredEnvironmentHonoursTheEightLineBound(int count, bool expected)
+    {
+        var kinds = Enum.GetValues<EnvironmentalObservationKind>().Take(count).ToArray();
+        Assert.AreEqual(expected, FrameFactsCornerPresets.FromConfiguration(kinds).IsValid);
+    }
+
+    [TestMethod]
+    public void ConfiguredEnvironmentRejectsDuplicateOrUnknownKindsAtomically()
+    {
+        foreach (var kinds in new[] { new[] { EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.RainState }, new[] { (EnvironmentalObservationKind)999 } })
+        {
+            var result = FrameFactsCornerPresets.FromConfiguration(kinds);
+            Assert.IsFalse(result.IsValid);
+            Assert.IsEmpty(result.Presets);
+        }
+    }
+
+    [TestMethod]
     public async Task TokenBasedConversionReproducesEveryFixedLegacyCornerWithoutChangingItsSource()
     {
         var descriptor = FrameFactsRetainedContextTests.Descriptor();

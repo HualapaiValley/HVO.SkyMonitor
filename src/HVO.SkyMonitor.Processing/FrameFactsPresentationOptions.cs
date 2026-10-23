@@ -66,6 +66,8 @@ public static class FrameFactsPresentationOptionDescriptors
     private static ImmutableArray<ProcessingOptionDescriptor> CreateOptions()
     {
         var options = ImmutableArray.CreateBuilder<ProcessingOptionDescriptor>();
+        options.Add(ProcessingOptionDescriptor.WholeNumber("widthPixels", "widthPixels", "Presentation width", "Set the source presentation width; zero requires an explicit value before rendering.", 0, 0, 65_536, "px"));
+        options.Add(ProcessingOptionDescriptor.WholeNumber("heightPixels", "heightPixels", "Presentation height", "Set the source presentation height; zero requires an explicit value before rendering.", 0, 0, 65_536, "px"));
         options.Add(ProcessingOptionDescriptor.WholeNumber("inset", "inset", "Corner inset", "Distance from the image edge.", 12, 0, 64, "px"));
         options.Add(ProcessingOptionDescriptor.WholeNumber("lineSpacing", "lineSpacing", "Line spacing", "Extra spacing between baselines.", 2, 0, 16, "px"));
         foreach (var prefix in new[] { "topLeft", "topRight", "bottomLeft", "bottomRight" })
