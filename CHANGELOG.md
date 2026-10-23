@@ -26,6 +26,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
 
+- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
+
 - CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
 
 - Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
