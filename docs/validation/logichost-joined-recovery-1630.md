@@ -238,6 +238,25 @@ It supplements the 32 admission refusal cases; it does not add production
 interrupted-restore behavior. Declared Integration inventory becomes 957,
 including 584 in the LogicHost assembly.
 
+The corrected behavioral candidate `202206f2` passed affected warning-clean
+Debug (70 s) and Release (66 s), the five-case migration/joined selection
+(52 s command), all 19 fixture Unit cases, and complete LogicHost Integration
+**584/584** with no failures or skips (785 s command). Full solution format
+verification passed (133 s), as did all four control guards and the documentation
+inventory audit. Both the correction and full-range classifiers selected only
+LogicHost (`complete=false`); profile remains `development-v1`. Unchanged tool,
+package, other integration and deployment-shard evidence remains credited.
+
+The [sanitized F1 before/after record](evidence/issue-1630/postrestore-result.json)
+has SHA-256 `448058a8eae30e7a79fe7c92820526d3f368471704f7bb84ab644ce461806d05`.
+It binds the failing and corrected source identities, exact test, original safe
+error, preservation observations, unchanged toolkit and affected case counts.
+Native failed/passing TRX, coverage, logs, commands, cleanup receipts and checksums
+remain in registered private evidence scratch. The later target merge introduces
+CameraAgent retained-read attribution and presentation defaults without conflicts;
+the issue's behavioral sources remain unchanged. Affected synchronization checks
+and current-head v1 checks are recorded in the PR ledger.
+
 ## Limits and parent acceptance
 
 The authoring host is macOS ARM64 without Docker. SQL/integration validation runs

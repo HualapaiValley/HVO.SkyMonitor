@@ -1,0 +1,31 @@
+{
+  "Issue": 1630,
+  "Finding": "F1",
+  "ReviewedCommit": "1be2994847847bbdea2d4814a2eaba2e7189dd06",
+  "FailingRegressionCommit": "489e5e87d32bdc70d40835f1d2e783afa97c7a2d",
+  "CorrectedTestedCommit": "202206f22d2984e0f883ec9e81f31f67f8f608a5",
+  "Test": "SqlFailure_AfterRestorePreservesSourceTargetBackupAndAttribution",
+  "Before": {
+    "SanitizedErrorNumber": 51266,
+    "SourceExists": true,
+    "BackupExists": true,
+    "RestoredTargetPreserved": false,
+    "PermanentRegressionFailure": "postrestore-target-preserved"
+  },
+  "After": {
+    "SanitizedErrorNumber": 51266,
+    "SourcePreserved": true,
+    "TargetPreserved": true,
+    "BackupPreserved": true,
+    "PrivateAttributionVerified": true
+  },
+  "SqlToolkitSha256": "6e9f50498408f9c707a4b0490d0197a1c43fac1554a648bdb7f62a17999483f5",
+  "Gates": {
+    "FocusedPassed": 5,
+    "UnitPassed": 19,
+    "LogicHostIntegrationPassed": 584,
+    "Skipped": 0,
+    "Failed": 0
+  },
+  "Limitations": "Disposable test corpus only; no production interrupted-restore, authentication restart, writer fencing or qualified filesystem claim."
+}
