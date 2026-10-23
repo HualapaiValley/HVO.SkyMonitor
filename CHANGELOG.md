@@ -49,6 +49,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+- LogicHost exposes authorized, bounded mappings and exact-artifact reconciliation observations for retained imported execution evidence. (#1554)
 
 - Operators can filter and page a logical camera’s retained archive, open an exact capture across installation replacements, and return to the same page and item with explicit unavailable-content and bounded-trace states. #1536
 
