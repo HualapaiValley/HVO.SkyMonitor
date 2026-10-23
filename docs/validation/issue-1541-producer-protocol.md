@@ -1,6 +1,6 @@
 # #1541 actual measured-association producer protocol
 
-Declared before measurement on 2026-10-23. This closes the remaining local
+Declared before measurement on 2026-10-23. This covers the remaining local
 acceptance of [#1187](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1187)
 through [#1541](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1541).
 Review, target synchronization and protected CI belong to the PR owner.
@@ -14,9 +14,10 @@ claimed.
 
 ## Workload and limits
 
-Use the existing `MeasuredStellarAssociationAcceptanceTests` in the CameraAgent
-test project, without changing its fixture, algorithms, ceilings or measurement
-windows. Its ordinary composition captures final noisy VirtualSky pixels,
+Use `MeasuredStellarAssociationAcceptanceTests` in the CameraAgent test project,
+with the explicit exhaustive qualification selection described below. Its
+algorithms, numerical/resource ceilings and measurement windows stay unchanged.
+Its ordinary composition captures final noisy VirtualSky pixels,
 commits raw ingress, stages and publishes the projected scene, runs the standard
 lane and actual opt-in measured-association node, then reloads the durable raw,
 scene and product. Catalog `hyg-v42-production` must contain 119,625 rows with
@@ -26,13 +27,15 @@ the magnitude-5 query returns exactly 1,637 stars. Retain the catalog manifest.
 
 - Cost: `RecipeStageCost`, Mono16 1936×1216 and RGGB16 3096×2080, UTC
   2026-01-15T08:00:00Z, seed 110201, equidistant projection, default variant,
-  one-second exposure. Five warmup and thirty measured operations per arm per
+  one-second exposure, `stellarCandidateSelection=Exhaustive`, magnitude 5,
+  query bound 2000. Five warmup and thirty measured operations per arm per
   profile, alternating arm order each ordinal on the **same final pixels**.
   Arm A is the bare qualified measurer; B is the complete production recipe via
   `CameraAgentRecipeExecutionAdapter`. They perform different work; report
   B−A as overhead and B as the absolute producer baseline.
-- Compare baseline commit `6ea815f24e1522fe1ba81107fd9a3a2ad993e18e` and a clean
-  committed candidate using **five fresh-process interleaved pairs**, baseline
+- Compare baseline production commit `6ea815f24e1522fe1ba81107fd9a3a2ad993e18e`
+  with an identical test-only acceptance-harness overlay and a clean committed
+  candidate using **five fresh-process interleaved pairs**, baseline
   first for odd pairs, candidate first for even pairs. Compare **B against B**.
   Record both source and binary revisions, assembly hashes and dirty state.
 - Final-pixel accuracy: `ActualCaptureAccuracyAndReconstruction`, exactly
@@ -63,6 +66,32 @@ minimum/median/maximum and paired deltas; never substitute favorable maxima or
 pool historical runs. Preserve the harness's absolute ceilings: every measured
 B operation ≤2500 ms and ≤64 allocated B/pixel, process peak ≤2 GiB.
 An unexplained material regression blocks acceptance.
+
+## Preserved initial failure and replacement allocation
+
+The original protocol was posted in
+[6359702812](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1541#issuecomment-6359702812)
+and committed at `735bdee6`. Its first baseline/candidate pair failed the
+zero-wrong-eligible-ID assertion for both profiles. The retained scene selected
+200 stars under the current operator default, whereas independent truth used
+all 1,637 catalog entries. It included `46518` (magnitude 3.6) and excluded
+neighbor `118632` (4.65); nearest-full-catalog truth assigned the unrendered
+neighbor. This was not an equivalent full-depth qualification workload.
+
+Remaining repetitions were stopped, no initial 21-case run started, and that
+pack receives no acceptance credit. A focused configuration test first failed
+with `OperatorSceneObjectLimit`, before the harness correction. The replacement
+protocol was posted in
+[6360029027](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1541#issuecomment-6360029027)
+before replacement measurement: explicitly select `Exhaustive` in this MSA
+harness only, retain the full independent oracle and every original bound,
+record full configuration and verify durable scene depth. Both source arms
+use the identical corrected harness, committed separately on the baseline;
+record the actual overlay commit and its unchanged baseline production tree.
+The replacement allocation is five fresh pairs plus one accuracy run with the
+same timeouts and rules. The failed initial pack and interrupted driver remain
+distinct. This does not change shipped profile defaults or assert a producer
+correction from the failed nearest-unrendered-star comparison.
 
 This is the existing **tc0 side cell**, `DOTNET_TieredCompilation=0`, Release,
 SDK 10.0.402; production latency and production-default JIT claims are excluded.
