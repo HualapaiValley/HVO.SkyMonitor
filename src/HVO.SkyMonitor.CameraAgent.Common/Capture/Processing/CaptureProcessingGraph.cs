@@ -36,7 +36,8 @@ internal sealed record CaptureProcessingOutputDescriptor(
     string? SchemaVersion = null,
     ProcessingRecipeDefinition? SharedRecipe = null,
     IReadOnlyList<ProcessingAlgorithmIdentity>? SharedAlgorithms = null,
-    string? MediaType = null);
+    string? MediaType = null,
+    ProcessingProductKind? ProductKind = null);
 
 internal interface IMultiOutputCaptureProcessingGraphStep
 {

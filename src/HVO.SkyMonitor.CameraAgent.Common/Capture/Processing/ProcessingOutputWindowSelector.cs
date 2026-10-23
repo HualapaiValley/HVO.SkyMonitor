@@ -264,7 +264,7 @@ internal static class ProcessingOutputWindowSelector
     private static bool Matches(ProcessingGraphInputContract contract, DurableProcessingOutput output)
     {
         var productKind = output.ProductKind ??
-            (output.Artifact.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData);
+            (output.Descriptor is null && output.Artifact.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData);
         return (contract.Roles.IsDefaultOrEmpty || contract.Roles.Contains(output.Artifact.Role)) &&
                (contract.ProductKinds.IsDefaultOrEmpty || contract.ProductKinds.Contains(productKind)) &&
                (contract.Variants.IsDefaultOrEmpty || contract.Variants.Contains(output.Artifact.Variant, StringComparer.Ordinal)) &&

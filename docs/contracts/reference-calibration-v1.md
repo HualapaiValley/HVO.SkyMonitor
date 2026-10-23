@@ -91,3 +91,40 @@ exposure, temperature, and effective interval, then produce exactly one active
 bundle. Missing, stale, corrupt, incomplete, ambiguous, incompatible, inactive,
 publication-conflict, acquisition-failure, and master-build-failure outcomes use
 stable `calibration.library.*` reasons.
+
+## Mixed-Gain Calibration Families
+
+The opt-in `mixed-gain-normalized-mean` recipe starts from raw frames and uses an
+explicitly activated, immutable `calibration-family-v1`, with exact gain-indexed
+bias, dark, flat and defect masters. Every selected light binds its own member,
+master IDs/checksums and exposure facts in `hvo-normalization-plan-v1`. The family
+identity replaces only the per-gain calibration axis; it does not relax layout,
+mask, offset, exposure, temperature setpoint, rig/sensor, location or processing
+profile matching. Members and retained masters are pinned by frozen plans while
+products still reference them, including completed executions.
+
+Missing members/masters, incompatible identities and gains outside the validated
+response or 4:1 coefficient bound are excluded with stable reasons. No raw,
+nearest-gain or guessed master is substituted. Missing/corrupt already-frozen
+master evidence fails closed rather than reselecting from the current library.
+The execution detail exposes the frozen candidate exclusions; a failed selection
+before freeze exposes its stage reason. Saturation is a per-photosite exclusion
+before correction, with per-light counts in the diagnostic companion. Defects and
+invalid flat responses also have zero weight; a no-coverage output zero is not a
+zero-flux measurement. Versioned row-major UInt8 Metadata rasters retain valid
+contributor counts (0–128) and no-coverage flags (1 when count is zero), with
+original geometry, exact byte bounds and lineage/checksum bindings in the small
+diagnostic companion. These support rasters use normal raster persistence and
+archived replay; operator execution details do not read their full payloads.
+The output uses fixed gain 0 and ×16 scaling, with signed
+calibration followed by equal valid-sample weights and one final clipping step.
+See [the processing contract](processing-recipes-v1.md#mixed-gain-normalized-mean).
+
+Gain responses for VirtualSky ASI174MM and configured virtual ASI178MC/ASI676
+profiles are pinned simulation truth, not measured physical response. Automatic
+night gain control is verified using rendered VirtualSky measurements. Physical
+mixed-gain mode remains unavailable until controlled gain-response and stored-code
+mapping evidence is accepted; sensors without supported gain data retain the
+ordinary identical-gain rule. Full-range-scaled readouts are not accepted by the
+current right-aligned mixed-gain plan. Mixed exposures, inverse-variance weighting,
+registration and physical sensitivity claims remain outside this contract.
