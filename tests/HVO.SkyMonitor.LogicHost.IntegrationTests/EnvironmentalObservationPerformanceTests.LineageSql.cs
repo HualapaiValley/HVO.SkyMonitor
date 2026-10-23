@@ -134,7 +134,7 @@ public sealed partial class EnvironmentalObservationPerformanceTests
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "Replays only captured production EF command text with its original typed parameters in a disposable database.")]
-    private static async Task<object> ReplayLineageCommandsAsync(string connectionString, List<LineageCommand> commands, string output)
+    private static async Task<object> ReplayLineageCommandsAsync(string connectionString, List<LineageCommand> commands, string output, int minimumSelectPlans = 514, string artifact = "sql-replay.json.gz")
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync().ConfigureAwait(false);
@@ -222,8 +222,8 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         {
             await transaction.RollbackAsync().ConfigureAwait(false);
         }
-        Assert.IsTrue(plansCount >= 514, "Capture actual plans for both own identity and all 512 lineage SELECTs.");
-        var path = Path.Combine(output, "sql-replay.json.gz");
+        Assert.IsTrue(plansCount >= minimumSelectPlans, "Capture actual plans for own identity and every lineage SELECT.");
+        var path = Path.Combine(output, artifact);
         await using (var stream = File.Create(path))
         await using (var gzip = new GZipStream(stream, CompressionLevel.SmallestSize))
         {
@@ -236,8 +236,10 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             LogicalReads = totalReads,
             ActualRowsRead = totalRowsRead,
             ServerCpuMilliseconds = serverCpu,
-            Artifact = "sql-replay.json.gz",
-            Boundary = "One untimed 256-reference production command sequence; exact parameters, all writes rolled back"
+            Artifact = artifact,
+            MaximumParameters = commands.Max(command => command.Parameters.Length),
+            RpcParameterOverheadAllowance = 3,
+            Boundary = "One untimed production command sequence; exact parameters, all writes rolled back"
         };
     }
 
