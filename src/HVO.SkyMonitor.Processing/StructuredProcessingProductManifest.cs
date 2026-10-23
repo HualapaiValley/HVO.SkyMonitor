@@ -119,11 +119,14 @@ public static class StructuredProcessingProductContracts
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
+            (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.RichTextSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SemanticSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.PreviousSchemaVersion) => true,
             (PresentationProcessingProducts.ManifestMediaType, OverlayManifestV1.CurrentSchemaVersion) => true,
             (PresentationMetadataFactsProductV1.MediaType,
                 PresentationMetadataFactsProductV1.CurrentSchemaVersion) => true,
+            (PresentationMetadataFactsProductV1.MediaType,
+                PresentationMetadataFactsProductV1.RichTextSchemaVersion) => true,
             _ => false
         };
 

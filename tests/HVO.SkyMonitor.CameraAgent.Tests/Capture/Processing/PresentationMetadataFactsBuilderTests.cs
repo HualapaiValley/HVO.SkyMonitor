@@ -4,11 +4,13 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -90,6 +92,12 @@ public sealed class PresentationMetadataFactsBuilderTests
         var payload = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
         Assert.IsTrue(payload.TextBlocks.SelectMany(static block => block.Lines).All(
             static line => line.Length <= HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.MaximumLineCharacters));
+        var rich = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            kinds, CancellationToken.None, retainFrameFacts: true).ConfigureAwait(false);
+        Assert.IsNotNull(rich?.FrameFacts);
+        var statuses = FrameFactsTemplate.Parse("{{environment.airTemperature.status}} {{environment.relativeHumidity.status}} {{environment.atmosphericPressure.status}} {{environment.cloudCover.status}}",
+            FrameFactsRetainedCatalog.Catalog).Template!;
+        Assert.AreEqual("AVAILABLE STALE MISSING CONFLICTING", FrameFactsEvaluator.Evaluate(statuses, rich.FrameFacts.ToContext()).Text);
 
         PresentationEnvironmentalFactV1 FactFor(EnvironmentalObservationKind kind) =>
             facts.Environment.Single(item => item.Kind == kind.ToString());
@@ -251,6 +259,139 @@ public sealed class PresentationMetadataFactsBuilderTests
             previous.PolicyIdentitySha256 != item.PolicyIdentitySha256)));
     }
 
+    [TestMethod]
+    public async Task RichFactsOptInRetainsTypedObservationAndPortableContextWithoutChangingLegacyFacts()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        await CommitAsync(store, Fact(Guid.Parse("15520000-0000-0000-0000-000000000001"),
+            EnvironmentalObservationKind.AirTemperature, 12)).ConfigureAwait(false);
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        await AssociateAirTemperatureAsync(fixture).ConfigureAwait(false);
+        var legacy = await CreateFactsProductAsync(fixture).ConfigureAwait(false);
+        var rich = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            [EnvironmentalObservationKind.AirTemperature], CancellationToken.None, retainFrameFacts: true).ConfigureAwait(false);
+        Assert.IsNotNull(rich);
+        var product = PresentationProcessingProducts.CreateMetadataFactsProduct(rich, "facts-v3", [fixture.SceneArtifact, fixture.StackArtifact]);
+        var retained = PresentationProcessingProducts.ParseMetadataFacts(product.Payload);
+        Assert.AreEqual(PresentationMetadataFactsProductV1.RichTextSchemaVersion, retained.SchemaVersion);
+        Assert.IsNotNull(retained.FrameFacts);
+        var template = FrameFactsTemplate.Parse("{{environment.airTemperature}} {{stack.count}} {{acquisition.cadenceSeconds}}", FrameFactsRetainedCatalog.Catalog).Template!;
+        Assert.AreEqual("12 5 10", FrameFactsEvaluator.Evaluate(template, retained.FrameFacts.ToContext()).Text);
+        var missing = FrameFactsTemplate.Parse("{{time.sourceUtc.status}} {{time.processingUtc.status}} {{time.captureLocal.status}} {{location.latitude.status}}", FrameFactsRetainedCatalog.Catalog).Template!;
+        Assert.AreEqual("MISSING MISSING MISSING MISSING", FrameFactsEvaluator.Evaluate(missing, retained.FrameFacts.ToContext()).Text);
+        CollectionAssert.AreEqual(SourceIds(fixture), product.SourceArtifactIds.ToArray());
+        Assert.IsNull(legacy.Facts.FrameFacts);
+        using var oldJson = JsonDocument.Parse(legacy.Product.Payload);
+        Assert.IsFalse(oldJson.RootElement.TryGetProperty("frameFacts", out _));
+        var legacyAgain = await CreateFactsProductAsync(fixture).ConfigureAwait(false);
+        CollectionAssert.AreEqual(legacy.Product.Payload.ToArray(), legacyAgain.Product.Payload.ToArray());
+        Assert.AreEqual(legacy.Product.OutputIdentitySha256, legacyAgain.Product.OutputIdentitySha256);
+        Assert.AreNotEqual(legacy.Product.OutputIdentitySha256, product.OutputIdentitySha256);
+    }
+
+    [TestMethod]
+    public async Task RichRetainedInputHasCameraAgentAndLogicHostRenderingParity()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        Assert.IsTrue(fixture.Descriptor.Validate().IsValid, JsonSerializer.Serialize(fixture.Descriptor.Validate()));
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), [],
+            CancellationToken.None, retainFrameFacts: true).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var factsProduct = PresentationProcessingProducts.CreateMetadataFactsProduct(facts, "facts-v3", [fixture.SceneArtifact, fixture.StackArtifact]);
+        var retained = PresentationProcessingProducts.ParseMetadataFacts(factsProduct.Payload);
+        var options = new FrameFactsPresentationOptions
+        {
+            WidthPixels = 1936,
+            HeightPixels = 1216,
+            TopLeftTemplate = "**CAPTURE {{capture.sequence}}**",
+            TopRightTemplate = "*{{stack.count}}*",
+            BottomLeftTemplate = "__{{time.captureUtc|date}}__",
+            BottomRightTemplate = "{{acquisition.gain}}",
+            TopLeftRed = 100,
+            TopRightFont = "PlexRegular",
+            BottomLeftFont = "MonoBold"
+        };
+        var edge = FrameFactsPresentation.Create(facts.FactsIdentitySha256, facts.FrameFacts!, options);
+        var central = FrameFactsPresentation.Create(retained.FactsIdentitySha256, retained.FrameFacts!, options);
+        CollectionAssert.AreEqual(PresentationLayerPayloadJson.Serialize(edge), PresentationLayerPayloadJson.Serialize(central));
+        var compatibility = new PresentationCompatibilityDescriptor(1936, 1216, new string('A', 64), new string('B', 64));
+        var layer = LayeredPresentationJson.CreateLayer("environment",
+            new(Guid.Parse("15520000-0000-0000-0000-000000000002"), edge.ContentIdentitySha256, PresentationLayerPayloadJson.MediaType, compatibility),
+            null, PresentationCoordinateSpace.ScenePixels, PresentationLayerCompositor.RichTextAlgorithmVersion,
+            FrameFactsPresentation.ProducerVersion, 50, PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { }));
+        var manifest = LayeredPresentationJson.CreateManifest(
+            new(Guid.Parse("15520000-0000-0000-0000-000000000003"), new string('C', 64), "application/x-hvo-packed-image", compatibility), null, [layer]);
+        var camera = CameraAgentLayeredPresentationService.Render(fixture.Descriptor.Capture.CaptureId, manifest, [edge], new string('D', 64));
+        // CentralLayeredPresentationService invokes this exact shared seam on parsed retained bytes.
+        var logicHost = GroupedSvgPresentationRenderer.Render(manifest, [central], new string('D', 64));
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, camera.Status);
+        CollectionAssert.AreEqual(camera.Presentation!.Svg.ToArray(), logicHost.Svg.ToArray());
+        Assert.AreEqual(camera.Presentation.SvgChecksumSha256, logicHost.SvgChecksumSha256);
+        var layout = new ImageLayout(1936, 1216, CameraPixelFormat.Mono8, 1936);
+        var raw = new byte[layout.RequiredByteLength];
+        var edgeRaster = PresentationLayerCompositor.CompositeDisplay(layout, raw, [new(edge, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var centralRaster = PresentationLayerCompositor.CompositeDisplay(layout, raw, [new(central, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        CollectionAssert.AreEqual(edgeRaster.Pixels, centralRaster.Pixels);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ExplicitRichStepProducesVersionedProductsOrFailsAtomicallyWithoutChangingSources(bool oversize)
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var sceneBytes = ProjectedSceneJson.Serialize(fixture.Scene);
+        var scene = fixture.Stack with
+        {
+            Role = FrameArtifactRole.Metadata,
+            Variant = "scene",
+            Kind = ProcessingProductKind.Metadata,
+            OutputIdentitySha256 = new string('E', 64),
+            SchemaVersion = fixture.Scene.SchemaVersion,
+            Payload = sceneBytes,
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes),
+            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
+        };
+        fixture.Context.BeginNode("scene", []);
+        fixture.Context.RegisterProcessingProduct(scene);
+        fixture.Context.BeginNode("stack", []);
+        fixture.Context.RegisterProcessingProduct(fixture.Stack);
+        var preview = fixture.Stack with
+        {
+            Role = FrameArtifactRole.Preview,
+            OutputIdentitySha256 = new string('F', 64),
+            SourceArtifactIds = [ProcessingIdentity.CreateArtifactId(fixture.Stack.OutputIdentitySha256)],
+            Recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                BuiltInProcessingRecipes.EncodedPreview, "1.0.0", "test", JsonSerializer.SerializeToElement(new { })))
+        };
+        fixture.Context.BeginNode("preview", []);
+        fixture.Context.RegisterProcessingProduct(preview);
+        fixture.Context.BeginNode("facts", ["scene", "preview"]);
+        var sourceChecksum = fixture.Context.RawCapture!.Manifest.Descriptor.Artifact.ChecksumSha256;
+        var step = new FrameFactsPresentationCaptureProcessingStep(new("facts", FrameFactsPresentation.StepAlias, 72),
+            new() { WidthPixels = oversize ? 2 : 1936, HeightPixels = oversize ? 2 : 1216, TopLeftTemplate = "CAPTURE {{capture.sequence}}" }, fixture.Builder);
+        Assert.AreEqual(FrameFactsPresentation.ProducerVersion, step.SharedStepVersion);
+        if (oversize)
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => step.ProcessAsync(fixture.Context, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.IsEmpty(fixture.Context.ProcessingProducts, "A failed optional layer must not publish partial facts.");
+        }
+        else
+        {
+            await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(2, fixture.Context.ProcessingProducts);
+            foreach (var product in fixture.Context.ProcessingProducts)
+                Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion!));
+            Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion));
+            Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion));
+        }
+        Assert.AreEqual(sourceChecksum, fixture.Context.RawCapture.Manifest.Descriptor.Artifact.ChecksumSha256);
+        CollectionAssert.AreEqual(sceneBytes, scene.Payload.ToArray());
+        Assert.AreEqual(new string('D', 64), fixture.Stack.OutputIdentitySha256);
+    }
+
     private async Task<(long RecordId, string FactsIdentitySha256, Guid? ObservationId,
         string? ObservationContentSha256)> BuildAtRootAsync(
         string root,
@@ -325,15 +466,21 @@ public sealed class PresentationMetadataFactsBuilderTests
                 RequestedStartUtc = Epoch,
                 ExposureStartedUtc = Epoch,
                 ExposureEndedUtc = Epoch.AddSeconds(5),
-                ReadoutCompletedUtc = Epoch.AddSeconds(5)
+                ReadoutCompletedUtc = Epoch.AddSeconds(5),
+                DurableIngressUtc = Epoch.AddSeconds(6),
+                SetpointAppliedUtc = null
             },
             Controls = original.Descriptor.Controls with { EffectiveExposure = TimeSpan.FromSeconds(5) },
             Profiles = original.Descriptor.Profiles with
             {
                 Calibration = new ProfileIdentityDescriptor(
                     "virtual-calibration-source-model", "virtual-calibration-source-model-v1", new string('A', 64))
-            },
-            CycleEvidence = CreateCycleEvidence(original.Descriptor) with
+            }
+        };
+        descriptor = descriptor with
+        {
+            Location = new("location", 1, "fixture", null, Epoch.AddDays(-1), null),
+            CycleEvidence = CreateCycleEvidence(descriptor) with
             {
                 CadenceMode = CaptureCadenceMode.MinimumStartInterval,
                 ScheduleAdmission = CreateScheduleAdmission()
@@ -439,10 +586,10 @@ public sealed class PresentationMetadataFactsBuilderTests
         CaptureCadenceMode.MinimumStartInterval, CaptureStartReason.DeadlineReached,
         AutomaticControlOwnership.Disabled, AutomaticControlOwnership.Disabled, null,
         descriptor.Timing.RequestedStartUtc, TimeSpan.FromSeconds(10), null,
-        new CaptureControlDecisionEvidence(descriptor.Timing.RequestedStartUtc, descriptor.Timing.RequestedStartUtc,
+        new CaptureControlDecisionEvidence(descriptor.Timing.ReadoutCompletedUtc, descriptor.Timing.ReadoutCompletedUtc,
             descriptor.Controls.EffectiveExposure, descriptor.Controls.EffectiveGain,
             descriptor.Controls.EffectiveExposure, descriptor.Controls.EffectiveGain,
-            CaptureControlDecisionReason.Disabled), descriptor.Timing.RequestedStartUtc);
+            CaptureControlDecisionReason.Disabled), descriptor.Timing.ReadoutCompletedUtc);
 
     private static CaptureScheduleAdmissionEvidence CreateScheduleAdmission() => new(
         CaptureScheduleAdmissionEvidence.CurrentSchemaVersion, "revision", new string('1', 64), new string('2', 64),

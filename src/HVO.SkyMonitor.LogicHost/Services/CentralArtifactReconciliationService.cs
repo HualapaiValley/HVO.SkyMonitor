@@ -1345,6 +1345,7 @@ internal sealed partial class CentralArtifactReconciliationService(
 
         var provenanceQuarantined = artifact.ReconstructionState == CentralReconstructionState.Quarantined &&
             artifact.StateReasonCode == "lineage.source-identity-mismatch";
+        await ArtifactIngestService.LoadRichPresentationLineageAsync(db, artifact, cancellationToken).ConfigureAwait(false);
         if (artifact.ObjectState == CentralArtifactObjectState.Available &&
             artifact.ReconstructionState == CentralReconstructionState.Complete &&
             ArtifactIngestService.HasStructuredSourceMismatch(artifact))
@@ -2124,6 +2125,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                     : "lineage.source-not-found";
             return;
         }
+        await ArtifactIngestService.LoadRichPresentationLineageAsync(db, artifact, cancellationToken).ConfigureAwait(false);
         if (ArtifactIngestService.HasStructuredSourceMismatch(artifact))
         {
             artifact.ReconstructionState = CentralReconstructionState.Quarantined;

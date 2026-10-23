@@ -1803,6 +1803,7 @@ internal sealed partial class ArtifactIngestService(
                 ResolvedArtifact = resolved
             });
         }
+        await LoadRichPresentationLineageAsync(dbContext, artifact, cancellationToken).ConfigureAwait(false);
         if (HasStructuredSourceMismatch(artifact))
         {
             throw new ArtifactIntegrityException("Structured product source facts do not match its lineage.");
@@ -1871,6 +1872,7 @@ internal sealed partial class ArtifactIngestService(
                 waitingArtifact,
                 waitingArtifact.Frame!.DeviceRigProfileId.HasValue,
                 waitingArtifact.Sources.Any(source => source != waitingSource && source.ResolvedCentralArtifactId == null));
+            await LoadRichPresentationLineageAsync(dbContext, waitingArtifact, cancellationToken).ConfigureAwait(false);
             if (HasStructuredSourceMismatch(waitingArtifact))
             {
                 waitingArtifact.ReconstructionState = CentralReconstructionState.Quarantined;
@@ -2180,6 +2182,7 @@ internal sealed partial class ArtifactIngestService(
             artifact,
             frame.DeviceRigProfileId.HasValue,
             unavailableSource: unavailableSource);
+        await LoadRichPresentationLineageAsync(dbContext, artifact, cancellationToken).ConfigureAwait(false);
         if (artifact.ReconstructionState == CentralReconstructionState.Complete &&
             HasStructuredSourceMismatch(artifact))
         {
@@ -2375,8 +2378,10 @@ internal sealed partial class ArtifactIngestService(
                 string.Equals(structured.ContentIdentitySha256, expectedIdentity, StringComparison.Ordinal) &&
                 structured.PresentationWidthPixels == source.ExpectedWidthPixels &&
                 structured.PresentationHeightPixels == source.ExpectedHeightPixels &&
-                string.Equals(structured.SourceIdentitySha256,
-                    source.ExpectedCoordinateIdentitySha256, StringComparison.Ordinal);
+                (structured.ProductSchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion
+                    ? MatchesRichPresentationCoordinates(resolved, source.ExpectedCoordinateIdentitySha256)
+                    : string.Equals(structured.SourceIdentitySha256,
+                        source.ExpectedCoordinateIdentitySha256, StringComparison.Ordinal));
         }
         try
         {

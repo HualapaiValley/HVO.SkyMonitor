@@ -87,9 +87,12 @@ public sealed record PresentationMetadataFactsProductV1(
     JsonElement Stack,
     JsonElement ProcessingProfile,
     PresentationMetadataFactsV1 Corners,
-    IReadOnlyList<Guid>? SourceArtifactIds = null)
+    IReadOnlyList<Guid>? SourceArtifactIds = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    FrameFactsSnapshotV1? FrameFacts = null)
 {
     public const string CurrentSchemaVersion = "presentation-metadata-facts-v2";
+    public const string RichTextSchemaVersion = "presentation-metadata-facts-v3";
     public const string MediaType = "application/vnd.hvo.presentation-metadata-facts+json";
 }
 
