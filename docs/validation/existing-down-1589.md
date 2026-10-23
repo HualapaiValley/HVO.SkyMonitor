@@ -420,3 +420,189 @@ release automatically. Disposable fixture copies and receipts are retained as
 evidence. Baseline and parent review files are unchanged. No push, PR/issue
 mutation, base synchronization, delegation, watcher, claim release or lifecycle
 cleanup was performed by this implementation child.
+
+
+## F2 correction: restart-valid stopped-camera configuration
+
+Recorded 2026-10-23 19:11:54 UTC. This is the bounded local correction of blocking F2 from
+[correction review 1](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1613#issuecomment-6372274779),
+with its [accepted disposition](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1613#issuecomment-6372275164).
+The prior ledger above is unchanged. Reviewed production starts at
+`e9a6577c28b2e4cad33c7ebdf5d4805607ad5dc5`. The test-first commit is
+`c60f2312705541071c6512d6d3fe7dd476f6fd08`; initial production correction is
+`499bf78b0e53302b3b6b3457cf18744a5a676e9b`; final production is
+`feca3639cb4ef06fdf41a3830dbd33cbf744b1a0`; all final candidate gates use
+`b723c44c2c70eb89713b7d85c62297e7691582b1`. Evidence is retained in the hvo-recorded scratch
+`/tmp/hvo-skymonitor-1589-correction-f2.lSCeEx`.
+
+### Actual startup-validator red and green
+
+Both existing rows of
+`RetainedIntentBeforeLogin_StoppedCameraStillErasesSeededCredentials` now seed
+`config/private/owner-password` and the real key-per-file value
+`LocalIdentity__AdminPasswordFile=/run/hvo-private/owner-password`, with no
+allow-missing setting. They interrupt at the first east intent before HTTP,
+externally stop east, and retry with both present stopped containers and verified
+absence. After teardown they overlay the final key-per-file directory on the
+actual embedded CameraAgent `appsettings.json`, bind the actual
+`LocalIdentityOptions`, and invoke `IStartupValidator.Validate()` through the
+same Bind / ValidateDataAnnotations / ValidateOnStart registration used by
+CameraAgent. The password-file setting must be absent, so Program's password-file
+loader has no file to apply; the final bound password remains empty.
+
+The product validator, `CameraAgentIdentityPolicy` and `ApplicationUser` are
+source-linked unchanged, with the ASP.NET shared framework supplying their real
+framework dependencies. No host ProjectReference or combined test dependency was
+added. Narrow type-specific analyzer suppressions preserve the linked product
+visibility and unused password-policy helper; no validation or test rule is
+suppressed. Validator source SHA-256 is
+`0aaf757fc7ef9199ddca77e58959791019d18c868ca2eb0330a3e0372e456ead`.
+`red-source-pins.json` and `candidate-source-pins.json` also pin its dependencies,
+actual appsettings, host startup source, changed files and shared adapter.
+
+The exact red command, through the recorded heavy-gate/environment wrapper, was:
+
+```bash
+timeout 360 dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --configuration Release --filter FullyQualifiedName~RetainedIntentBeforeLogin_StoppedCameraStillErasesSeededCredentials --logger trx\;LogFileName=red-before-fix.trx --results-directory /tmp/hvo-skymonitor-1589-correction-f2.lSCeEx/red-before-fix -nodeReuse:false -p:UseSharedCompilation=false
+```
+
+Both rows failed with the actual startup exception:
+`AdminPassword is required until local identity has been seeded.`
+`red-before-fix.log`, `red-before-fix/red-before-fix.trx`, `red-head.txt`, both
+empty `red-production-diff*.patch` files and `red-production.cs` prove unchanged
+reviewed production. Its ExistingDownHost SHA-256 was
+`76c71ccdb47d383fbbeb1faca8f610e82ba6cdd8acae06e4be12afc3fe87a8f1`.
+The final production SHA-256 is
+`0eb325a37d87a7e565294c31a2eaa7e497b597900965f66a31fb224aecfdeb61`.
+The final green command was:
+
+```bash
+timeout 420 dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --no-restore --configuration Release --filter TestCategory=Unit --settings tests/coverage.runsettings --collect:XPlat\ Code\ Coverage --logger trx\;LogFileName=cli-unit.trx --results-directory /tmp/hvo-skymonitor-1589-correction-f2.lSCeEx/cli-unit -nodeReuse:false -p:UseSharedCompilation=false
+```
+
+`final-red-green-unit-audit.json` individually matches both red rows to passing
+final results, preserves all 2,755 prior CLI Unit outcomes, verifies every one of
+the original 110 teardown cases, and proves all 22 added rows pass. The final
+selection has 2,656 passed / 121 skipped / zero failed, 2,777 total; all 132
+teardown cases pass without skips. `catalog-skip-audit.json` confirms the exact
+same 121 approved-catalog-dependent skips as the retained F1 run.
+
+### Publication, cleanup ordering and interruption behavior
+
+Only verified stopped/absent recovery enters the new transition. It authenticates
+and correlates the target, confines the existing AllowMissingAdminPassword path,
+rejects symlinks, hard links, directories and non-private modes, and uses the
+existing confined writer to repair missing, false or interrupted partial values.
+A valid published `true` is preserved without unlinking it. The exact bytes and
+open descriptor/path identity are verified, the file descriptor is synchronized,
+and then its containing directory is synchronized and rechecked. Only after that
+barrier and renewed target correlation is the password-file reference registered
+for cleanup. Its verified removal and directory synchronization precede
+registration/removal of the password itself. This prevents failure cleanup from
+erasing the password before its restart configuration is durable, and prevents a
+retained password-file reference from pointing at an already-erased password.
+The caller still strictly rechecks live Docker identity/stopped state before
+completion. No stopped-camera HTTP or additional stop is introduced; still-running
+cameras retain the unchanged fresh-authentication/drain path and F1 behavior.
+
+Twelve interruption rows exercise write failure/cancellation, a torn empty write,
+file sync, directory sync, password-reference sync and cleanup, with crash,
+I/O failure or cancellation as appropriate. Before publication, credentials and
+intent remain and identical retry repairs partial state. After reference cleanup,
+the actual startup validator already succeeds even on interrupted runs. Tests
+assert both synchronization barriers before credential removal and durable
+reference retirement before password unlink. Four unsafe-setting rows refuse
+without deleting seeded credentials or changing the hazardous file; three
+existing-setting rows prove partial-value repair and inode-preserving retries;
+one corrupt-write row refuses a nominally successful write with wrong bytes;
+two present/absent rows run the real shared SSH file primitives locally with
+literal quoted paths. Normal successful-down controls also run the actual
+startup validator. All these rows retain the existing Linux-only condition.
+
+The real adapter's existing `sync` primitive invokes Linux file synchronization;
+its existing `path` primitive addresses the retained open descriptor. The native
+test adapter now flushes that actual descriptor with RandomAccess.FlushToDisk,
+while its existing directory-sync behavior is unchanged. The successful real
+adapter regressions exercise both file and directory barriers. No primitive,
+publication schema, journal generation, host policy or production dependency was
+redesigned. No physical power-loss or real remote-host qualification is claimed.
+
+### Classifier and explicit affected gates
+
+The selector is `scripts/ci:classify pull_request` on immutable correction range
+`e9a6577c28b2e4cad33c7ebdf5d4805607ad5dc5..b723c44c2c70eb89713b7d85c62297e7691582b1`.
+`classifier-candidate-complete.log` records:
+
+```text
+mode=full deployment=true deployment_catalog=false deployment_shards=false
+ deployment_installer=true complete=true shared=true cameraagent=true
+ logichost=true combined=true delivery=true secret_scan_contract=false
+ release_scripts=false
+```
+
+Target profile remains **Development v1 / Preflight** plus **Development v1 /
+Build and Unit**. No protected workflow or qualification was dispatched. Under
+the review-correction rule, the complete original Tier C baseline remains above;
+the following explicitly enumerated affected set covers this bounded recovery,
+test-adapter, source-link and inventory delta. `gates-summary.json` retains every
+exact command and exit; `candidate-source-pins.json` binds all tested source.
+
+| Affected local gate | Final result / scratch evidence |
+| --- | --- |
+| CLI test project/dependency closure Debug and Release, warnings as errors | Both passed, zero warnings/errors; `debug.*`, `release.*` |
+| Solution format for all six changed C# files | Passed; `format.*` |
+| Complete CLI Unit with coverage and invalid Docker | 2,656 passed / 121 unchanged catalog skips / zero failed; `cli-unit.*`, `cli-unit/cli-unit.trx` |
+| Actual CameraAgent LocalIdentityOptions, LocalIdentityPasswordFile and CameraAgentIdentityPolicy Unit tests, with affected Release build | 51 passed / zero skipped; `host-adjacent.*`, `host-adjacent/host-adjacent.trx` |
+| Production reference graph, transitive host/test exclusion, imported/conditional graph and TestSupport direction | Four passed / zero skipped; `architecture-adjacent.*`, `architecture-adjacent/architecture-adjacent.trx` |
+| Changed-project category discovery and disjoint/complete audit | 2,777 Unit / zero Integration / seven Manual = 2,784; `category-*.diag`, `category-audit.json` |
+| Four CI-control guards on stable tested code | All passed; `stable-{ci-shell-syntax,test-ci-classification,test-coordination-guard,test-pr-review-tools}.*`, matching before/after `stable-guard-head*.txt` |
+| v1 workflow contract and operations documentation audit | Both passed; `stable-test-development-v1-ci.*`, `stable-docs-audit-operations.*` |
+| Exact-input path assessment and normal-path source equality | Passed for all 56 inputs, including 39 retained running inputs; `vector-assessment.json`, `vector-source-pins.json` |
+| Final patch whitespace and append-only ledger check | Passed; final handoff retains current-head check and source pins |
+
+CLI Unit inventory increases by 22, repository Unit inventory to 13,640, and the
+M5 CLI skip pin from 342 to 364. Actual changed-project discovery proves the
+counts; exhaustive repository discovery and macOS execution remain their CI
+checks. Current coverage records 163/181 instrumented line entries for
+ExistingDown, 181/183 for ExistingDownHost and 64/64 for DownObservation, including
+generated methods; `affected-coverage.json` retains the counts. No coverage or
+category-selection policy changed. The selected graph checks, classifier guard,
+actual-host tests and complete CLI Unit cover the source-link/framework boundary;
+there is no new host project reference, production package change or host source
+change. CLI owns zero Integration cases. No new failure invalidates the original
+whole-solution Unit/Integration, package, publish, architecture or unrelated shell
+baseline. No acceptance case is deferred. The known upstream count conflict is
+left for the parent after independent correction review. The existing #1589
+operator-facing recovery Fixed entry already covers this correction.
+
+### Retained measurements, failures and scope limits
+
+`vector-assessment.json` independently reads every original input's retained
+ledger, inventory and container JSON. All 39 inputs with camera intents have a
+single matching running camera container; none enters this stopped-camera branch.
+`vector-source-pins.json` pins those exact inputs. Normal LoginAsync and WriteAsync
+are byte-identical to reviewed e9a6577c. The production shared SSH adapter and all
+measured workload settings are unchanged. The F1 39-vector replay, paired
+measurements and original full Tier C evidence therefore remain applicable;
+no unchanged performance harness or long solution suite was rerun. New stopped
+recovery behavior is exercised by the current native and real-adapter rows, not
+claimed as a new timing, throughput, allocation or remote-target result.
+
+Failed attempts are retained: `red-wrapper-failed.*` records an evidence wrapper
+edited while active (shell read offsets shifted, exit 126; its child's exit 1
+remains in GNU time, but the build log was overwritten, so it is not red proof);
+`red-compile-failed.*` records the initial test configuration API error and linked
+source analyzer diagnostics; `green-focus.*` records a later test-only syntax
+error. The corrected intermediate `green-focus-2/green-focus.trx` passes 130 cases
+at 258070f2; final complete Unit at the pinned candidate supersedes it with all
+132 cases, including the final password-reference barrier and two extra rows.
+All failed attempts remain distinct from the valid two-row behavioral red.
+
+Heavy builds/tests/format used the host `flock -o /tmp/hvo-heavy-gate.lock`, a
+bounded outer timeout and individual gate timeouts, node reuse/shared compilation
+disabled, production catalogs unset and invalid Docker. Scratch is retained for
+review; test fixtures dispose their local temporary files/processes. No actual
+Docker resource, remote target, push, GitHub mutation, base synchronization,
+watcher, delegation, claim release or lifecycle cleanup was performed. T3-only PR
+registration satisfies the harness requirement; the parent owns lifecycle.
+Full source/command/limitations and final resource state are in the local handoff.
