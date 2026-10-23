@@ -23,6 +23,8 @@ public sealed partial class ExistingDownTests
         Assert.AreEqual(3, fixture.Stops); Assert.AreEqual(4, fixture.ControlKeys.Count); if (fault == "changing-then-stable") Assert.AreEqual(4, fixture.EastReads, "A,B,B then final observation");
         Assert.AreEqual(fixture.Queries.Where(q => q.Contains('?', StringComparison.Ordinal)).Count(), fixture.Queries.Where(q => q.Contains('?', StringComparison.Ordinal)).Distinct(StringComparer.Ordinal).Count(), "Each observation and continuity query must be fresh.");
         AssertPrivateAbsent(fixture); AssertPreserved(fixture);
+        AssertCameraStartupConfiguration(fixture, "east");
+        AssertCameraStartupConfiguration(fixture, "west");
         var privateLog = fixture.Host.StateRoot + "/down-private/east-summary-1.json"; var before = DeploymentFakeHost.Read(privateLog);
         await fixture.RunAsync(); Assert.AreEqual(3, fixture.Stops); Assert.AreEqual(before, DeploymentFakeHost.Read(privateLog)); AssertPrivateAbsent(fixture); AssertPreserved(fixture);
     }

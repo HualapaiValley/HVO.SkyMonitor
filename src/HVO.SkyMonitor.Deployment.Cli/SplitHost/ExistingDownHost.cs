@@ -109,12 +109,43 @@ internal sealed class ExistingDownHost(IDeploymentHost host, SplitHostInventory 
         token.ThrowIfCancellationRequested();
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
-    public Task ReconcileStoppedCameraAsync(DeploymentTarget target, CancellationToken token)
+    public async Task ReconcileStoppedCameraAsync(DeploymentTarget target, CancellationToken token)
     {
+        var setting = target.RuntimeRoot + "/config/secrets/LocalIdentity__AllowMissingAdminPassword";
+        var directory = Path.GetDirectoryName(setting)!;
+        await CorrelateAsync(target, token).ConfigureAwait(false);
+        bool ready;
+        using (var files = host.Open(target, token))
+        {
+            Components(files, directory);
+            var node = Stat(files, setting);
+            ready = node is not null && files.Call("read", OpenRestartSetting(files, setting, node)) == Convert.ToBase64String("true"u8);
+        }
+        // Preserve an already-published true setting. A missing or interrupted partial write is repairable.
+        if (!ready) await WriteAsync(target, setting, "true", token, false).ConfigureAwait(false);
+        using (var files = host.Open(target, token))
+        {
+            Components(files, directory);
+            var node = Stat(files, setting) ?? throw Error("restart-setting-missing");
+            var handle = OpenRestartSetting(files, setting, node);
+            Require(files.Call("read", handle) == Convert.ToBase64String("true"u8), "restart-setting-invalid");
+            files.Call("sync", files.Call("path", handle));
+            files.Call("sync", directory);
+            Require(Stat(files, setting) == node && files.Call("read", handle) == Convert.ToBase64String("true"u8), "private-file-changed");
+        }
+        await CorrelateAsync(target, token).ConfigureAwait(false);
         // An intent may predate LoginAsync, which normally registers these seeded credentials.
+        // Register only after the restart setting and its directory entry are durable: failure cleanup erases registrations.
         Register(target, target.RuntimeRoot + "/config/private/owner-password");
         Register(target, target.RuntimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile");
-        return ReconcileAsync(token);
+        await ReconcileAsync(token).ConfigureAwait(false);
+    }
+    private static string OpenRestartSetting(IDeploymentFiles files, string path, DeploymentNode node)
+    {
+        Require(node.File && node.Links == 1 && node.Mode == 384, "unsafe-private-file");
+        var handle = files.Call("open", path);
+        Require(DeploymentNode.Parse(files.Call("fstat", handle)) == node && Stat(files, path) == node, "private-file-changed");
+        return handle;
     }
     private static string ReadSecretSource(string path)
     {
