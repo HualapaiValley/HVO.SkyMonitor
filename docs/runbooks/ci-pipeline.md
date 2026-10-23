@@ -379,20 +379,58 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
-BuildKit shell-form `RUN`, `COPY`, `ADD` and their `ONBUILD` forms consume
-heredoc bodies in declaration order. Quoted/escaped delimiters, file descriptors,
-whitespace after `<<`, `<<-` tab stripping and exact LF/CRLF terminators are
-recognized; payload text never becomes an instruction. JSON forms and quoted
-literal `<<` words do not introduce bodies. Unterminated bodies report the
-opener's source line. Unsupported shell expansion in heredoc headers and malformed heredoc
-forms fail explicitly. The offline contracts retain representative inputs also
-checked independently against the real BuildKit parser; see
-[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
 and verifies that every checked-in Dockerfile directory is listed in Dependabot.
 No Docker daemon, image pull, SDK invocation, or registry access is needed.
+
+#### Base-image heredoc grammar
+
+The guard recognizes a bounded subset of BuildKit heredoc syntax, without
+evaluating shell expressions. Shell-form `RUN`, `COPY`, `ADD` and a single
+`ONBUILD` wrapper consume bodies in declaration order. A raw shell word must
+start with optional decimal file-descriptor digits followed by `<<` or `<<-`;
+`cat<<EOF`, a quoted `"<<EOF"` word and an escaped `\<<EOF` word do not open a
+body. Whitespace after `<<` is allowed. A delimiter must be nonempty after
+POSIX quote/escape removal and resolve to one word; single/double quotes,
+mixed quoted segments, escapes and quoted spaces are supported subject to the
+restrictions below. `<<-` strips leading tabs from body/terminator lines.
+Terminators match the entire LF/CRLF line exactly; leading spaces and trailing
+whitespace do not match. Dockerfile backslash continuations are joined before
+header parsing, retaining the first physical opener line. JSON argument arrays
+of strings never introduce bodies.
+
+Compatibility limits are deliberately conservative:
+
+- If a shell-form eligible instruction contains `<<`, the literal byte sequence
+  `${` anywhere in its header is rejected with
+  `unsupported expansion in heredoc instruction`. This includes command text,
+  single/double quoted or escaped literal brace text, and even a quoted `<<`
+  word that would not open a body. For example, `RUN echo ${FOO} <<EOF`,
+  `RUN echo '${FOO}' <<EOF` and `RUN echo \${FOO} <<EOF` are rejected.
+- Any dollar or backtick character in a raw delimiter is rejected with
+  `unsupported heredoc delimiter expansion`, even when quoted or escaped.
+  Examples: `RUN <<'$EOF'`, `RUN <<"$EOF"`, `RUN <<\$EOF`, and a delimiter
+  consisting of a quoted or escaped backtick followed by `EOF`. A delimiter
+  containing `${` hits the preceding header rule first. BuildKit accepts these
+  literal delimiters; the guard intentionally does not.
+- Plain `{FOO}` command text is allowed. Dollar/backtick characters in command
+  words alone do not trigger the delimiter restriction; the `${` header rule
+  still applies. This is lexical recognition, not shell expansion support.
+  Substitutions with spaces or apparent `<<` words containing `${` are rejected
+  as a whole, rather than guessed into delimiter/body boundaries.
+- Missing/empty delimiters, a bare `<<-`, any additional raw `<` in a delimiter
+  (including `<<<` and quoted/escaped `<`), unmatched quotes, unsupported
+  JSON forms, nested `ONBUILD` and unterminated bodies fail explicitly. Errors
+  identify the opener's source line; CLI diagnostics escape control characters.
+
+Supported bodies never become instructions; unsupported or malformed headers
+reject the file before consuming a body. A later unpinned FROM therefore cannot
+pass the check through a rejected header. The offline contracts retain inputs
+with separate guard and real BuildKit expectations, including these intentional
+differences; see
+[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 
 Development v1 CI does not build images; full qualification's Deployment
 Contracts job exercises the CameraAgent and LogicHost images. ProcessingRunner
