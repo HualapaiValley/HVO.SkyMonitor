@@ -49,7 +49,13 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         Assert.IsNull(await service.ReadAsync(new ClaimsPrincipal(), a.Observatory, a.Camera, selection).ConfigureAwait(false));
         // Historical identity stays readable after retirement and registration revocation.
         await db.LogicalCameraInstallations.Where(i => i.Id == a.Installation)
-            .ExecuteUpdateAsync(s => s.SetProperty(i => i.RetiredAtUtc, Epoch)).ConfigureAwait(false);
+            .ExecuteUpdateAsync(s => s.SetProperty(i => i.RetiredAtUtc, Epoch)
+                .SetProperty(i => i.RetiredByUserId, a.User)
+                .SetProperty(i => i.RetirementReasonCode, "inspector-read-test")).ConfigureAwait(false);
+        var registrationId = await db.LogicalCameraInstallations.Where(i => i.Id == a.Installation)
+            .Select(i => i.RegistrationId).SingleAsync().ConfigureAwait(false);
+        await db.DeviceRegistrations.Where(r => r.Id == registrationId)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, DeviceRegistrationStatus.Revoked)).ConfigureAwait(false);
         Assert.IsNotNull(await service.ReadAsync(principal, a.Observatory, a.Camera, selection).ConfigureAwait(false));
         await db.ObservatoryMemberships.Where(m => m.ObservatoryId == a.Observatory && m.UserId == a.User).ExecuteDeleteAsync().ConfigureAwait(false);
         Assert.IsNull(await service.ReadAsync(principal, a.Observatory, a.Camera, selection).ConfigureAwait(false));
@@ -274,6 +280,7 @@ internal sealed class ImportedInspectorProbe : IObserver<DiagnosticListener>, IO
     internal ImportedInspectorProbe() => all = DiagnosticListener.AllListeners.Subscribe(this);
     internal async Task<T> RunAsync<T>(Func<Task<T>> read)
     {
+        Commands.Clear();
         using var activity = new Activity("issue1240-read").SetIdFormat(ActivityIdFormat.W3C).Start();
         trace = activity.TraceId;
         try { return await read().ConfigureAwait(false); }

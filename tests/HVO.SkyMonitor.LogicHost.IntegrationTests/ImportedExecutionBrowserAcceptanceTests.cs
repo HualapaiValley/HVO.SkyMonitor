@@ -156,6 +156,8 @@ public sealed class ImportedExecutionBrowserAcceptanceTests
         var source = await SourceAsync();
         var directory = Path.Combine(EvidenceRoot, source.OutputDirectoryName, source.RunId);
         Directory.CreateDirectory(directory);
+        // Subscribe before the host and its contexts warm up so EF enables command diagnostics.
+        using var probe = new ImportedInspectorProbe();
         await using var fixture = await LogicHostUiKestrelFixture.CreateAsync();
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
@@ -176,7 +178,6 @@ public sealed class ImportedExecutionBrowserAcceptanceTests
                     ("exact-execution-node", data.Selection with { Unit = data.ExecutionUnit, Node = "preview" }),
                     ("exact-observations", data.Selection with { Unit = data.ExecutionUnit, Artifact = artifact }) })
                 {
-                    using var probe = new ImportedInspectorProbe();
                     var watch = Stopwatch.StartNew();
                     var snapshot = await probe.RunAsync(() => service.ReadAsync(principal, data.Observatory, data.Camera, query));
                     watch.Stop();
