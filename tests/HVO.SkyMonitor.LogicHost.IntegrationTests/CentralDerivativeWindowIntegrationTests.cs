@@ -2675,13 +2675,16 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     }
 
     private static Task DisableOtherActiveJobsAsync(Guid preservedJobId)
-        => WithDbAsync(db => db.CentralDerivativeJobs.Where(job => job.Id != preservedJobId
+        => WithDbAsync(db => DisableOtherActiveJobsAsync(db, preservedJobId));
+
+    internal static Task DisableOtherActiveJobsAsync(ApplicationDbContext db, Guid preservedJobId)
+        => Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(job => job.Id != preservedJobId
                 && (job.Status == CentralDerivativeJobStatus.Waiting
                     || job.Status == CentralDerivativeJobStatus.Pending
                     || job.Status == CentralDerivativeJobStatus.RetryableFailure))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
-                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)));
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null));
 
     /// <summary>
     /// Statuses in which a derivative job is finished. Every other status is one the health check still treats as an
@@ -2717,7 +2720,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     ];
 
     /// <summary>
-    /// Retires every open derivative job and processing-graph execution anchored to an artifact that does not belong
+    /// Retires mutable open derivative jobs and sealed processing-graph executions anchored to an artifact that does not belong
     /// to <paramref name="ownedDevicePublicId"/>, so a health assertion afterwards reads the caller's own state
     /// rather than the assembly's accumulated database.
     /// </summary>
@@ -2731,42 +2734,42 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     /// jobs alone, and a single foreign execution with a null <c>ExpandedAtUtc</c> reports the check Unhealthy
     /// outright.
     /// </remarks>
-    private static async Task RetireForeignActiveStateAsync(Guid ownedDevicePublicId)
+    private static Task RetireForeignActiveStateAsync(Guid ownedDevicePublicId)
+        => WithDbAsync(db => RetireForeignActiveStateAsync(db, ownedDevicePublicId));
+
+    internal static async Task RetireForeignActiveStateAsync(ApplicationDbContext db, Guid ownedDevicePublicId)
     {
-        await WithDbAsync(async db =>
-        {
-            var ownedArtifactIds = db.CentralArtifacts
-                .Where(artifact => artifact.DevicePublicId == ownedDevicePublicId)
-                .Select(artifact => artifact.Id);
-            await db.CentralDerivativeJobs
-                .Where(job => !ownedArtifactIds.Contains(job.SourceCentralArtifactId)
-                    && !TerminalDerivativeJobStatuses.Contains(job.Status))
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
-                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
-                .ConfigureAwait(false);
-            // Superseding an execution is not a single-column write. Superseded requires a CompletedAtUtc, and
-            // UpdatedAtUtc must not precede ExpandedAtUtc, so all three columns move together.
-            //
-            // Only a sealed execution is retired, and that limit is imposed by the schema rather than chosen. A row
-            // whose ExpandedAtUtc is null is required by CK_CentralProcessingGraphExecutions_Expansion to stay
-            // Pending, so retiring it means sealing it; sealing fires the frozen-count check in
-            // TR_CentralProcessingGraphExecutions_IdentityImmutable, which requires the actual source, node,
-            // dependency and output rows to match the four frozen counts, and those counts are themselves in the
-            // trigger's immutable set. Deleting the row instead is rejected by the same trigger's first clause.
-            // A partially expanded foreign execution is therefore permanently non-retirable by design, and a test
-            // that meets one is looking at a genuine product state that the health check is right to report.
-            var retiredAtUtc = DateTimeOffset.UtcNow;
-            await db.CentralProcessingGraphExecutions
-                .Where(execution => !ownedArtifactIds.Contains(execution.AnchorSourceCentralArtifactId)
-                    && execution.ExpandedAtUtc != null
-                    && !TerminalGraphExecutionStatuses.Contains(execution.Status))
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(execution => execution.Status, CentralProcessingGraphExecutionStatus.Superseded)
-                    .SetProperty(execution => execution.CompletedAtUtc, (DateTimeOffset?)retiredAtUtc)
-                    .SetProperty(execution => execution.UpdatedAtUtc, retiredAtUtc))
-                .ConfigureAwait(false);
-        }).ConfigureAwait(false);
+        var ownedArtifactIds = db.CentralArtifacts
+            .Where(artifact => artifact.DevicePublicId == ownedDevicePublicId)
+            .Select(artifact => artifact.Id);
+        await Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db)
+            .Where(job => !ownedArtifactIds.Contains(job.SourceCentralArtifactId)
+                && !TerminalDerivativeJobStatuses.Contains(job.Status))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        // Superseding an execution is not a single-column write. Superseded requires a CompletedAtUtc, and
+        // UpdatedAtUtc must not precede ExpandedAtUtc, so all three columns move together.
+        //
+        // Only a sealed execution is retired, and that limit is imposed by the schema rather than chosen. A row
+        // whose ExpandedAtUtc is null is required by CK_CentralProcessingGraphExecutions_Expansion to stay
+        // Pending, so retiring it means sealing it; sealing fires the frozen-count check in
+        // TR_CentralProcessingGraphExecutions_IdentityImmutable, which requires the actual source, node,
+        // dependency and output rows to match the four frozen counts, and those counts are themselves in the
+        // trigger's immutable set. Deleting the row instead is rejected by the same trigger's first clause.
+        // A partially expanded foreign execution is therefore permanently non-retirable by design, and a test
+        // that meets one is looking at a genuine product state that the health check is right to report.
+        var retiredAtUtc = DateTimeOffset.UtcNow;
+        await db.CentralProcessingGraphExecutions
+            .Where(execution => !ownedArtifactIds.Contains(execution.AnchorSourceCentralArtifactId)
+                && execution.ExpandedAtUtc != null
+                && !TerminalGraphExecutionStatuses.Contains(execution.Status))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(execution => execution.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                .SetProperty(execution => execution.CompletedAtUtc, (DateTimeOffset?)retiredAtUtc)
+                .SetProperty(execution => execution.UpdatedAtUtc, retiredAtUtc))
+            .ConfigureAwait(false);
     }
 
     private static async Task WithDbAsync(Func<ApplicationDbContext, Task> action)
