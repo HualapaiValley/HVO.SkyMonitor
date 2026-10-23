@@ -58,6 +58,14 @@ internal sealed partial class JoinedRecoveryFixture
     private string SourceHost => Path.Combine(root, "source-host");
     private string BackupPath => "/var/opt/mssql/data/hvo1630_" + runId + ".bak";
 
+    internal static bool HasCanonicalMetadataModel()
+    {
+        var fixture = new JoinedRecoveryFixture();
+        using (fixture.identityServices)
+        using (var db = fixture.OpenDb("MetadataOnly"))
+            return !db.Database.HasPendingModelChanges();
+    }
+
     internal async Task RunAsync()
     {
         root = Directory.CreateTempSubdirectory("hvo-1630-").FullName;
