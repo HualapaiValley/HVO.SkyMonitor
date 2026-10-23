@@ -308,7 +308,11 @@ lookup warnings during report rendering did not affect the coverage gates.
 The [local gate ledger](issue-1591-local-gate.json) retains exact commands,
 selector, source pin, durations, terminal codes and TRX/coverage checksums.
 Subsequent target synchronization and affected validation are recorded in the
-PR ledger; no unchanged long suite or performance cohort is repeated.
+PR ledger; no unchanged long suite or performance cohort is repeated. Target
+`523d43d9` subsequently adds two unrelated CameraAgent Unit cases and no
+production or protected-read fixture changes. Its merge resolves only the
+changelog and summed inventories (Unit=13,347; CameraAgent Unit=6,982).
+All four control guards and the documentation audit pass on that union.
 
 The signal manifest uses existing `configuration.load`, `configuration.validate`,
 `configuration.schedule-compatibility`, annual expansion and retained-validation
