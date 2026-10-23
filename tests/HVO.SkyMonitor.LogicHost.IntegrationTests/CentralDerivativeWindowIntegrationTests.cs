@@ -159,10 +159,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                     .Where(item => item.RecipeName == CentralTransientDerivativeRuntime.RecipeName &&
                         item.SourceArtifact!.Frame!.AgentId == scenario)
                     .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
-                await db.CentralDerivativeJobs.Where(item => item.Status == CentralDerivativeJobStatus.Pending &&
-                        item.Id != derivativeJobId)
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow.AddHours(1)))
+                await DelayOtherPendingJobsAsync(db, derivativeJobId, DateTimeOffset.UtcNow.AddHours(1))
                     .ConfigureAwait(false);
                 await db.CentralDerivativeJobs.Where(item => item.Id == derivativeJobId)
                     .ExecuteUpdateAsync(setters => setters
@@ -870,13 +867,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                     ["human.retention-approved"]),
                 CancellationToken.None).ConfigureAwait(false);
         review.Status.Should().Be(CentralTransientReviewMutationStatus.Applied);
-        await derivativeDb.CentralDerivativeJobs.Where(item =>
-                item.Status == CentralDerivativeJobStatus.Waiting ||
-                item.Status == CentralDerivativeJobStatus.Pending ||
-                item.Status == CentralDerivativeJobStatus.RetryableFailure)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
-                .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null))
+        await DisableActiveJobsAsync(derivativeDb)
             .ConfigureAwait(false);
         derivativeDb.ChangeTracker.Clear();
         var releaseCurrent = await derivativeDb.CentralTransientEventCurrent.AsNoTracking()
@@ -1313,6 +1304,8 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     [TestMethod]
     public async Task CentralTransientRuntime_EmitsBoundedConnectedPrivateOperationalSignals()
     {
+        await using var runtime = await IsolatedRuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var services = runtime.Factory.Services;
         var scenario = $"transient-runtime-signals-{Guid.NewGuid():N}";
         var devicePublicId = Guid.NewGuid();
         var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
@@ -1321,20 +1314,11 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             Mode = TransientDetectorExecutionMode.Central,
             StarMaximumMagnitude = -30
         };
-        // The worker telemetry is a host singleton every test in this assembly shares, and the health assertion below
-        // reads its failure axes over a LeaseDuration-wide window, so a failure any earlier test recorded in the last
-        // two minutes would be attributed to this run. Retire both axes here, with the same backdating the teardown
-        // below uses, so the assertion describes this test rather than the assembly's recent past. The instance must
-        // stay shared: the worker resolves its collaborators from the host provider, so a dependency failure raised by
-        // the graph scheduler or the submission service during this run reaches only the singleton, and a test-owned
-        // instance would be blind to exactly the failures the assertion exists to catch.
-        var telemetry = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
-        var retiredFailure = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
-        telemetry.RecordDependencyFailure("storage", retiredFailure);
-        telemetry.RecordRenewal("failed", retiredFailure);
+        // Resolve the production singleton from the same host used by the worker and health check.
+        var telemetry = services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
         using var collector = new TransientRuntimeCollector();
         using var logs = new TransientLogProvider();
-        AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ILoggerFactory>().AddProvider(logs);
+        services.GetRequiredService<ILoggerFactory>().AddProvider(logs);
         var sources = new Dictionary<long, Guid>();
         foreach (var sequence in new long[] { 98, 99, 100, 101, 102 })
         {
@@ -1342,14 +1326,14 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                 ? CreatePayload([100, 1_000, 1_000, 100])
                 : CreatePayload(100);
             sources[sequence] = await SeedAndScheduleSourceAsync(
-                scenario, devicePublicId, sequence, capturedBase, payload, "runtime-signals-compatible")
+                scenario, devicePublicId, sequence, capturedBase, payload, "runtime-signals-compatible", services: services)
                 .ConfigureAwait(false);
         }
-        await ScheduleTransientAsync(sources[100], options).ConfigureAwait(false);
+        await ScheduleTransientAsync(sources[100], options, services).ConfigureAwait(false);
         Guid jobId;
         string sourceChecksum;
         string storageReference;
-        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        await using (var scope = services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             jobId = await db.CentralDerivativeJobs.AsNoTracking()
@@ -1361,7 +1345,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             sourceChecksum = source.ChecksumSha256;
             storageReference = source.StorageReference;
         }
-        await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
+        await WithDbAsync(db => DisableOtherActiveJobsAsync(db, jobId), services).ConfigureAwait(false);
 
         var workerOptions = Options.Create(new CentralDerivativeWorkerOptions
         {
@@ -1376,17 +1360,17 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             BacklogDegradedAfter = TimeSpan.FromMinutes(10)
         });
         using var worker = new CentralDerivativeWorker(
-            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            services.GetRequiredService<IServiceScopeFactory>(),
             workerOptions,
             telemetry,
             TimeProvider.System,
-            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ILogger<CentralDerivativeWorker>>());
+            services.GetRequiredService<ILogger<CentralDerivativeWorker>>());
         await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             await WaitUntilAsync(async () =>
             {
-                await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                await using var scope = services.CreateAsyncScope();
                 return await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
                     .CentralDerivativeJobs.AsNoTracking().AnyAsync(job =>
                         job.Id == jobId && job.Status == CentralDerivativeJobStatus.Completed)
@@ -1431,47 +1415,38 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                 $"Activity '{activity.Name}' was not connected to the production execute span.");
         }
 
-        // The worker is stopped, so nothing further is written by this run. Six of the health check's axes are read
-        // from tables every test in this assembly shares, and unlike the telemetry axes none of them is bounded by a
-        // window: a foreign non-terminal graph execution degrades the check no matter how old it is, and a foreign
-        // input pin degrades it once it passes BacklogDegradedAfter. Retire the rows this test does not own so the
-        // assertion below describes this run. Ownership is this run's device, which is a fresh identifier per run and
-        // is carried by the derivative outputs the worker wrote as well as by the sources seeded above, so nothing
-        // this run produced is retired. An inconsistent runnable window or an unsealed graph produced by the run
-        // under test therefore still fails the assertion, which is the whole point of scoping rather than truncating.
-        await RetireForeignActiveStateAsync(devicePublicId).ConfigureAwait(false);
-
-        await using (var healthScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        await using (var healthScope = services.CreateAsyncScope())
         {
             var health = new HVO.SkyMonitor.LogicHost.HealthChecks.CentralDerivativeWorkerHealthCheck(
                 healthScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
                 workerOptions,
                 telemetry,
                 TimeProvider.System);
-            try
-            {
-                var healthy = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
-                healthy.Status.Should().Be(HealthStatus.Healthy,
-                    "worker health after the run should be clean; data: {0}",
-                    string.Join(", ", healthy.Data.Select(pair => $"{pair.Key}={pair.Value}")));
-                telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
-                (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
-                    .Should().Be(HealthStatus.Degraded);
-            }
-            finally
-            {
-                // Retire both axes again so this test is not itself the writer that degrades whatever runs next.
-                // This has to run even when an assertion above throws. The dependency failure written to prove the
-                // degraded reading is live and on the shared singleton, so an escaping exception would leave it set
-                // for a full LeaseDuration and hand the next test the exact failure #753 was filed for.
-                var retiredAfter = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
-                telemetry.RecordDependencyFailure("storage", retiredAfter);
-                telemetry.RecordRenewal("failed", retiredAfter);
-            }
+            var healthy = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+            healthy.Status.Should().Be(HealthStatus.Healthy,
+                "worker health after the run should be clean; data: {0}",
+                string.Join(", ", healthy.Data.Select(pair => $"{pair.Key}={pair.Value}")));
+            telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
+            (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
+                .Should().Be(HealthStatus.Degraded);
+
+            // Isolation must not hide this run's own incomplete graph from the real health check.
+            var graphSourceId = await SeedAndScheduleSourceAsync(
+                scenario, devicePublicId, 103, capturedBase, CreatePayload(100), "runtime-signals-compatible",
+                graphNodeIds: ["Preview"], services: services).ConfigureAwait(false);
+            var healthDb = healthScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var graphJob = await healthDb.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(item => item.SourceCentralArtifactId == graphSourceId).ConfigureAwait(false);
+            await CentralProcessingGraphMigrationTests.AddUnsealedFixtureGraphAsync(
+                healthDb, graphJob, DateTimeOffset.UtcNow, scenario).ConfigureAwait(false);
+            var unsealed = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+            unsealed.Status.Should().Be(HealthStatus.Unhealthy);
+            unsealed.Data["Status"].Should().Be("graph-topology-unsealed");
+            unsealed.Data["GraphUnsealedCount"].Should().Be(1);
         }
 
         Guid[] privateEventIds;
-        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        await using (var scope = services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             privateEventIds = await db.CentralTransientValidationIdentitySlots.AsNoTracking()
@@ -2629,9 +2604,9 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .SingleAsync(artifact => artifact.Id == sourceId).ConfigureAwait(false);
 
-    internal static async Task ScheduleTransientAsync(Guid sourceId, CentralTransientOptions options)
+    internal static async Task ScheduleTransientAsync(Guid sourceId, CentralTransientOptions options, IServiceProvider? services = null)
     {
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        await using var scope = (services ?? AssemblyHooks.Fixture.Factory.Services).CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var source = await LoadSchedulableArtifactAsync(db, sourceId).ConfigureAwait(false);
         var scheduler = new CentralDerivativeJobScheduler(
@@ -2686,6 +2661,17 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                 .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null));
 
+    internal static Task DisableActiveJobsAsync(ApplicationDbContext db)
+        => Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(item => item.Status == CentralDerivativeJobStatus.Waiting
+                || item.Status == CentralDerivativeJobStatus.Pending || item.Status == CentralDerivativeJobStatus.RetryableFailure)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null));
+
+    internal static Task DelayOtherPendingJobsAsync(ApplicationDbContext db, Guid preservedJobId, DateTimeOffset availableAtUtc)
+        => Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(item => item.Status == CentralDerivativeJobStatus.Pending && item.Id != preservedJobId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.AvailableAtUtc, availableAtUtc));
+
     /// <summary>
     /// Statuses in which a derivative job is finished. Every other status is one the health check still treats as an
     /// open window.
@@ -2734,9 +2720,6 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     /// jobs alone, and a single foreign execution with a null <c>ExpandedAtUtc</c> reports the check Unhealthy
     /// outright.
     /// </remarks>
-    private static Task RetireForeignActiveStateAsync(Guid ownedDevicePublicId)
-        => WithDbAsync(db => RetireForeignActiveStateAsync(db, ownedDevicePublicId));
-
     internal static async Task RetireForeignActiveStateAsync(ApplicationDbContext db, Guid ownedDevicePublicId)
     {
         var ownedArtifactIds = db.CentralArtifacts
@@ -2772,9 +2755,9 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             .ConfigureAwait(false);
     }
 
-    private static async Task WithDbAsync(Func<ApplicationDbContext, Task> action)
+    private static async Task WithDbAsync(Func<ApplicationDbContext, Task> action, IServiceProvider? services = null)
     {
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        await using var scope = (services ?? AssemblyHooks.Fixture.Factory.Services).CreateAsyncScope();
         await action(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()).ConfigureAwait(false);
     }
 

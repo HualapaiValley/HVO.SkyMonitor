@@ -46,6 +46,12 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 .SetProperty(item => item.Status, CentralDerivativeJobStatus.Canceled)
                 .SetProperty(item => item.StateReasonCode, "integration-test-isolation"));
 
+    internal static Task CancelOtherPendingJobsAsync(ApplicationDbContext db, Guid[] preservedJobIds)
+        => Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(item => !preservedJobIds.Contains(item.Id) && item.Status == CentralDerivativeJobStatus.Pending)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, CentralDerivativeJobStatus.Canceled)
+                .SetProperty(item => item.StateReasonCode, "integration-test-downstream-isolation"));
+
     [TestMethod]
     public async Task ModeDisabledReturnsTemporaryUnavailabilityAndAuditsReason()
     {
@@ -374,11 +380,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             var result = await executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
                 .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
             result.Status.Should().Be(ProcessingOutcomeStatus.Produced, result.ReasonCode);
-            await executionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralDerivativeJobs
-                .Where(item => !jobIds.Contains(item.Id) && item.Status == CentralDerivativeJobStatus.Pending)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.Status, CentralDerivativeJobStatus.Canceled)
-                    .SetProperty(item => item.StateReasonCode, "integration-test-downstream-isolation"))
+            await CancelOtherPendingJobsAsync(executionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(), jobIds)
                 .ConfigureAwait(false);
         }
         executedJobIds.Should().BeEquivalentTo(jobIds);

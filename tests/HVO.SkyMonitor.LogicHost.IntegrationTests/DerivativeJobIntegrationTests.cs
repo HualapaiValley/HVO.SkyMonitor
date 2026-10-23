@@ -418,11 +418,7 @@ public sealed class DerivativeJobIntegrationTests
         job.Status.Should().Be(CentralDerivativeJobStatus.Pending);
         job.AvailableAtUtc.Should().Be(now);
         job.CompletedAtUtc.Should().Be(completedAtUtc);
-        await db.CentralDerivativeJobs.Where(candidate => candidate.Id != jobId
-                && candidate.Status != CentralDerivativeJobStatus.Completed)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(candidate => candidate.Status, CentralDerivativeJobStatus.TerminalFailure)
-                .SetProperty(candidate => candidate.AvailableAtUtc, (DateTimeOffset?)null))
+        await DisableOtherIncompleteJobsAsync(db, jobId)
             .ConfigureAwait(false);
         var lease = await service.ClaimNextAsync("worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
         lease!.JobId.Should().Be(jobId);
@@ -794,6 +790,13 @@ public sealed class DerivativeJobIntegrationTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         await DisableClaimableJobsAsync(db).ConfigureAwait(false);
     }
+
+    internal static Task DisableOtherIncompleteJobsAsync(ApplicationDbContext db, Guid preservedJobId)
+        => Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(candidate => candidate.Id != preservedJobId
+                && candidate.Status != CentralDerivativeJobStatus.Completed)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(candidate => candidate.AvailableAtUtc, (DateTimeOffset?)null));
 
     internal static async Task DisableClaimableJobsAsync(ApplicationDbContext db)
     {
