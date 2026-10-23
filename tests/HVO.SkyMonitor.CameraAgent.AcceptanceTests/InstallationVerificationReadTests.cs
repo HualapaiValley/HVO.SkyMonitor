@@ -4,6 +4,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -174,7 +175,8 @@ public sealed class InstallationVerificationReadTests
                 Assert.IsTrue(responses.All(value => value.GetRawText() == responses[0].GetRawText()));
                 samples.Add(new ReadMeasurement("concurrent-4", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     (process.TotalProcessorTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes(true) - allocated,
-                    process.WorkingSet64, process.PeakWorkingSet64, IoDelta(io), responses[0], stages.ForTrace(trace.TraceId)));
+                    process.WorkingSet64, process.PeakWorkingSet64, IoDelta(io), responses[0], stages.ForTrace(trace.TraceId))
+                { Memory = ReadMemorySnapshot.Capture() });
             }
             var retainedAfter = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
             Assert.AreEqual(retainedBefore, retainedAfter, "Repeated and concurrent reads must leave retained inputs unchanged.");
@@ -207,6 +209,8 @@ public sealed class InstallationVerificationReadTests
             CpuAffinity = ReadCpuAffinity(),
             AllocationSemantics = "Process-wide inclusive deltas; stage nesting and concurrent intervals overlap. No additive per-request allocation claim.",
             ColdDefinition = "cold-host-empty: first protected request on each fresh host before loader/retained fixture setup. first-http-no-listener: first request with 10,000 retained manifests after setup; filesystem caches and loader JIT are warm. Neither drops OS caches.",
+            // Opt-in probe runs only after every timed phase and both fixtures have been disposed.
+            MemoryDiagnostics = ReadMemorySnapshot.CollectAfterMeasurement(),
             Workloads = workloads
         };
         var path = Path.Combine(output, "installation-read-attribution.json");
@@ -230,7 +234,8 @@ public sealed class InstallationVerificationReadTests
         var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         return new ReadMeasurement(kind, elapsed, (process.TotalProcessorTime - cpu).TotalMilliseconds,
             GC.GetTotalAllocatedBytes(true) - allocated, process.WorkingSet64, process.PeakWorkingSet64,
-            IoDelta(io), identity, trace is null || stages is null ? [] : stages.ForTrace(trace.TraceId));
+            IoDelta(io), identity, trace is null || stages is null ? [] : stages.ForTrace(trace.TraceId))
+        { Memory = ReadMemorySnapshot.Capture() };
     }
 
     private static string ReadCpuAffinity() => OperatingSystem.IsLinux()
@@ -257,4 +262,37 @@ public sealed class InstallationVerificationReadTests
 }
 
 internal sealed record ReadMeasurement(string Kind, double ElapsedMs, double CpuMs, long ProcessAllocatedBytes,
-    long WorkingSetBytes, long PeakWorkingSetBytes, Dictionary<string, long> IoDelta, JsonElement Identity, InstallationReadStage[] Stages);
+    long WorkingSetBytes, long PeakWorkingSetBytes, Dictionary<string, long> IoDelta, JsonElement Identity, InstallationReadStage[] Stages)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ReadMemorySnapshot? Memory { get; init; }
+}
+
+// Supplemental GC diagnostics are outside measured counters/timers. No forced
+// collection occurs until all workloads, edits and fixture disposal are complete.
+internal sealed record ReadMemorySnapshot(long ManagedAllocatedBytes, long LastGcHeapSizeBytes,
+    long ManagedCommittedBytes, long LastGcFragmentedBytes, long WorkingSetBytes, long PeakWorkingSetBytes,
+    int Gen0Count, int Gen1Count, int Gen2Count, long LastGcIndex)
+{
+    private static readonly bool Enabled = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_GC_DIAGNOSTICS") == "1";
+
+    internal static ReadMemorySnapshot? Capture()
+    {
+        if (!Enabled) return null;
+        var memory = GC.GetGCMemoryInfo();
+        using var process = Process.GetCurrentProcess();
+        return new ReadMemorySnapshot(GC.GetTotalMemory(forceFullCollection: false), memory.HeapSizeBytes,
+            memory.TotalCommittedBytes, memory.FragmentedBytes, process.WorkingSet64, process.PeakWorkingSet64,
+            GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), memory.Index);
+    }
+
+    internal static object? CollectAfterMeasurement()
+    {
+        if (!Enabled) return null;
+        var before = Capture();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        return new { Before = before, After = Capture() };
+    }
+}
