@@ -158,7 +158,7 @@ allocated/RSS values are MiB. All outliers remain included.
 | Journal stepping/filtering/blob read | 14.17 (14.11–15.35) | 14.41 (13.93–36.91) | 11.67 MiB |
 | Journal full manifest parse/validation | 54.01 (52.59–56.69) | 54.56 (52.66–116.02) | 44.83 MiB |
 | Journal provenance/history comparison | 0.41 (0.27–1.22) | 0.31 (0.27–0.74) | 0.46 MiB (0.46–0.76) |
-| Protected-history read, inclusive | 0.180 (0.169–0.246) | 0.173 (0.140–0.262) | N/A: async read allocation is not thread-local |
+| Protected-history read, inclusive | 0.178 (0.173–0.246) | 0.173 (0.138–0.257) | N/A: async read allocation is not thread-local |
 
 The protected history is 1,076 protected bytes and 991 plaintext bytes. Fixed
 median leaf times are 0.022 ms file read, 0.074 ms unprotection, 0.032 ms
@@ -293,3 +293,10 @@ unprotection failure, successful repair, absent-listener sequential/concurrent
 helpers and retained pre-mutation checksums. Existing complete Unit selections
 retain CLI timeout/caller-cancellation and installation field-comparison coverage.
 No operator-visible behavior changed, so no changelog entry is required.
+
+The first target synchronization merges `5c2f0f9860660578b00f225aadb45e0244b13432`
+without conflicts before initial review. It changes unrelated calibration/cloud
+option UI/descriptors and typed deployment teardown. The measured loader, store,
+parser, harness and fixtures remain byte-identical to the measurement pins.
+The initial review therefore covers this union; fresh selector/control and local
+validation evidence for the synchronized head is recorded in the PR ledger.
