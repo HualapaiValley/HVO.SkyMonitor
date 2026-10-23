@@ -140,6 +140,10 @@ public sealed class InstallationVerificationReadTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(output), InstallationReadAttributionFixture.EvidenceRootGuidance);
         InstallationReadAttributionFixture.ValidateEvidenceRoot(output);
         Directory.CreateDirectory(output);
+        var settlingReadCount = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_SETTLING_READS") is { } configuredSettling
+            ? int.Parse(configuredSettling, System.Globalization.CultureInfo.InvariantCulture)
+            : 40;
+        Assert.IsTrue(settlingReadCount is >= 40 and <= 1000, "Settling reads must be between 40 and 1000.");
         var workloads = new List<object>();
         foreach (var solar in new[] { false, true })
         {
@@ -158,7 +162,7 @@ public sealed class InstallationVerificationReadTests
             using var stages = new InstallationReadStageCollector();
             samples.Add(await MeasureAsync("first-instrumented", fixture, client, stages).ConfigureAwait(false));
             // Retain settling samples separately so tiered-JIT phase changes cannot be credited to reuse (#1591).
-            for (var index = 0; index < 40; index++)
+            for (var index = 0; index < settlingReadCount; index++)
                 samples.Add(await MeasureAsync("settling", fixture, client, stages).ConfigureAwait(false));
             for (var index = 0; index < 30; index++)
                 samples.Add(await MeasureAsync("repeat", fixture, client, stages).ConfigureAwait(false));
@@ -207,6 +211,8 @@ public sealed class InstallationVerificationReadTests
             HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
             ServerGC = System.Runtime.GCSettings.IsServerGC,
             CpuAffinity = ReadCpuAffinity(),
+            SettlingReadCount = settlingReadCount,
+            MeasuredReadCount = 30,
             AllocationSemantics = "Process-wide inclusive deltas; stage nesting and concurrent intervals overlap. No additive per-request allocation claim.",
             ColdDefinition = "cold-host-empty: first protected request on each fresh host before loader/retained fixture setup. first-http-no-listener: first request with 10,000 retained manifests after setup; filesystem caches and loader JIT are warm. Neither drops OS caches.",
             // Opt-in probe runs only after every timed phase and both fixtures have been disposed.
