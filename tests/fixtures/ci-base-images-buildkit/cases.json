@@ -1,0 +1,186 @@
+[
+  {
+    "name": "run-quotes",
+    "dockerfile": "FROM scratch\nRUN <<E\"O\"F\nFROM payload\n# escape=`\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        6,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "multiple-copy-tabs-crlf",
+    "dockerfile": "FROM scratch\r\nCOPY <<'A' <<-B /out/\r\nFROM payload\r\nA\r\n\tFROM payload\r\n\tB\r\nFROM scratch\r\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "COPY"
+      ],
+      [
+        7,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "onbuild-add",
+    "dockerfile": "FROM scratch\nONBUILD ADD <<\"EOF\" /out\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "ONBUILD"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "delimiter-continuation",
+    "dockerfile": "FROM scratch\nRUN <<E\\\nOF\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "literal-and-json",
+    "dockerfile": "FROM scratch\nRUN echo \"<<EOF\"\nRUN [\"echo\", \"<<EOF\"]\nCOPY [\"<<EOF\", \"/out\"]\nRUN cat<<EOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        3,
+        "RUN"
+      ],
+      [
+        4,
+        "COPY"
+      ],
+      [
+        5,
+        "RUN"
+      ],
+      [
+        6,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "exact-termination",
+    "dockerfile": "FROM scratch\nRUN <<EOF\n EOF\nEOF \n\tEOF\nEOF\\\n# EOF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        10,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "descriptor-whitespace",
+    "dockerfile": "FROM scratch\nRUN cat 3<< \t'END'\nFROM payload\nEND\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "escaped-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<E\\OF\nFROM payload\nEOF\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "quoted-space-delimiter",
+    "dockerfile": "FROM scratch\nRUN <<\"E O F\"\nFROM payload\nE O F\nFROM scratch\n",
+    "instructions": [
+      [
+        1,
+        "FROM"
+      ],
+      [
+        2,
+        "RUN"
+      ],
+      [
+        5,
+        "FROM"
+      ]
+    ]
+  },
+  {
+    "name": "unterminated",
+    "dockerfile": "FROM scratch\nRUN <<EOF\nFROM payload\n",
+    "instructions": null
+  },
+  {
+    "name": "unterminated-second",
+    "dockerfile": "FROM scratch\nRUN <<A <<B\nA\nFROM payload\n",
+    "instructions": null
+  }
+]
