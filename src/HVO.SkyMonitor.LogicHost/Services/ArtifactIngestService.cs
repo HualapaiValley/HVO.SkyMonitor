@@ -306,6 +306,29 @@ internal sealed partial class ArtifactIngestService(
                     }
                 }
                 break;
+            case StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType:
+                var measured = MeasuredStellarAssociationJson.Parse(payload);
+                schemaVersion = measured.Associations?.SchemaVersion;
+                contentIdentity = measured.Associations?.AssociationIdentitySha256;
+                if (measured.Associations is { } associations)
+                {
+                    EnsureStructuredLineage(product, [associations.Source.ArtifactId]);
+                    if (associations.Source.CaptureId != product.SourceCapture.Capture.CaptureId)
+                    {
+                        throw new ArtifactIntegrityException("Measured association capture lineage does not match its manifest.");
+                    }
+                    if (associations.Source.ArtifactId != product.SourceCapture.Artifact.ArtifactId || !string.Equals(
+                            associations.Source.DescriptorIdentitySha256,
+                            CaptureContractJson.ComputeDescriptorSha256(product.SourceCapture),
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArtifactIntegrityException(
+                            "Measured association source descriptor identity does not match its manifest.");
+                    }
+                    sourceFacts = [new(associations.Source.Role, associations.Source.Variant,
+                        associations.Source.RecipeIdentitySha256)];
+                }
+                break;
             case "application/vnd.hvo.cloud-assessment+json":
                 var cloud = CloudAssessmentJson.Parse(payload);
                 schemaVersion = cloud.Assessment?.SchemaVersion;

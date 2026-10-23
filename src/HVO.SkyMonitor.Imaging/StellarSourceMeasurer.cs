@@ -85,7 +85,21 @@ public enum StellarMeasurementStatus
 }
 
 /// <summary>A gated candidate that was not accepted. The pixel is the peak sample center, not a measured centroid.</summary>
-public sealed record StellarMeasurementExclusion(PixelPoint Peak, double PeakAboveBackground, int SampleCount, string ReasonCode);
+public sealed record StellarMeasurementExclusion(PixelPoint Peak, double PeakAboveBackground, int SampleCount, string ReasonCode)
+{
+    /// <summary>Inclusive sample bounds of the segmented component. An extended or blended component, such as a transient
+    /// streak crossing a star, can cover a location far from its peak; null only for exclusions created outside the measurer.</summary>
+    public StellarFootprintBounds? Footprint { get; init; }
+}
+
+/// <summary>Inclusive integer sample bounds of a segmented component.</summary>
+public readonly record struct StellarFootprintBounds(int MinX, int MinY, int MaxX, int MaxY)
+{
+    /// <summary>Returns whether a continuous pixel-edge point lies within the bounds expanded by a margin in pixels.</summary>
+    public bool Contains(PixelPoint point, double marginPixels) =>
+        point.X >= MinX - marginPixels && point.X <= MaxX + 1 + marginPixels &&
+        point.Y >= MinY - marginPixels && point.Y <= MaxY + 1 + marginPixels;
+}
 
 /// <summary>Owned, immutable measurement output. A budget failure carries no partial detections or exclusions.</summary>
 public sealed class StellarMeasurementResult
@@ -222,7 +236,10 @@ public static class StellarSourceMeasurer
             else
             {
                 exclusions.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
-                    component.PeakExcess, component.Count, outcome.Reason!));
+                    component.PeakExcess, component.Count, outcome.Reason!)
+                {
+                    Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY)
+                });
             }
         }
         var ordered = accepted

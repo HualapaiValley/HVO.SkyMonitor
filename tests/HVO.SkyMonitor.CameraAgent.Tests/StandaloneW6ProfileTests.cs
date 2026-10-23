@@ -74,7 +74,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "4C29376C111CBDF06406AE4B3450CB9DA0C7B6FA29F6EA9CFEDDC6EC4A4DFDB9",
+            "2EB6E76393B69DDF3BC090488931B6179CB34FC7A4F60C1D75F0AA3E4C7B0729",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -104,6 +104,7 @@ public sealed class StandaloneW6ProfileTests
         var graph = factory.CreateGraph(configuration);
         try
         {
+            AssertMeasuredAssociationSceneContract(preview, graph, "scene-presentation", 2);
             var shared = graph.SharedPlan!;
             AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(configuration, graph, preview);
             var scene = shared.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
@@ -144,7 +145,8 @@ public sealed class StandaloneW6ProfileTests
     {
         var configuration = await LoadAsync("cameraagent.standalone-w6-mono8.json").ConfigureAwait(false);
         using var provider = CreateProvider();
-        var preview = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(configuration);
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var preview = factory.PreviewPlan(configuration);
 
         Assert.AreEqual(
             "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479",
@@ -171,7 +173,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "0057FF63B73D26C31C376646EDD99C4C4BCCED9A7FDAD65849A8B8C45F6910D2",
+            "FF5FA1CD6A6351AF64346027DDA9D630A102F273C7DE20C9050539B6406CA262",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -185,6 +187,35 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual(120, layout.Height);
         Assert.AreEqual(CameraPixelFormat.Mono8, layout.PixelFormat);
         Assert.AreEqual(19_200L, layout.ByteLength);
+        var graph = factory.CreateGraph(configuration);
+        try
+        {
+            AssertMeasuredAssociationSceneContract(preview, graph, "annotation", 3);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+    }
+
+    private static void AssertMeasuredAssociationSceneContract(
+        CaptureProcessingPlanPreview preview, CaptureProcessingGraph graph, string consumerId, int requirementCount)
+    {
+        // The diagnostic default and typed dependency requirements enter ComputeNodePlanSha256. ScenePresentation
+        // adds an optional association requirement; Annotation replaces its old role groups with typed requirements.
+        // These effective contracts change even when the unchanged profile wires no association producer.
+        var scene = preview.EffectiveNodes.Single(node => node.Id == consumerId);
+        Assert.IsFalse(scene.Options!.Value.GetProperty("expectedPositionDiagnostics").GetBoolean());
+        var step = (IRequiredCaptureProcessingDependencies)graph.Nodes.Single(node => node.Id == consumerId).Step;
+        Assert.HasCount(requirementCount, step.DependencyRequirements);
+        Assert.IsTrue(step.DependencyRequirements.Single(static requirement =>
+            requirement.RecipeNames?.Contains(BuiltInProcessingRecipes.ProjectedScene) == true).Required);
+        var associations = step.DependencyRequirements.Single(static requirement =>
+            requirement.RecipeNames?.Contains(BuiltInProcessingRecipes.MeasuredStellarAssociations) == true);
+        Assert.IsFalse(associations.Required);
+        CollectionAssert.AreEquivalent(new[] { FrameArtifactRole.Metadata }, associations.Roles.ToArray());
+        CollectionAssert.AreEqual(new[] { MeasuredStellarAssociationsV1.CurrentSchemaVersion }, associations.SchemaVersions!.ToArray());
+        Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Alias == "MeasuredStellarAssociations"));
     }
 
     [TestMethod]
@@ -424,7 +455,7 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("E23B8D202465380E70EDF12B136D09236A6F2003B4728516441AB498239C909C", Aggregate(removeV3: true),
+        Assert.AreEqual("7DD0899B6349AE0EDC8825C5DF03EA5AEFBBD5E0DA3A50DFD9E5E06579334229", Aggregate(removeV3: true),
             "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 
