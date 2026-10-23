@@ -17,6 +17,7 @@ public sealed partial class CurrentSkyPageTests
         Configure(context);
         var cut = context.Render<CurrentSkyPage>();
         Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay']"));
     }
 
     [TestMethod]

@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Current Sky links to weather and cloud overlay settings in graph drafts: enablement, artifact/output labels, boundary thickness and label visibility/length, with validation and explicit activation or rollback. (#1564)
+
 ### Changed
 
 - The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)

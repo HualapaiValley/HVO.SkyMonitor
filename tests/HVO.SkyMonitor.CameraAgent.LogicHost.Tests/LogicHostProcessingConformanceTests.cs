@@ -14,7 +14,7 @@ using System.Collections.Immutable;
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
 [TestClass]
-public sealed class LogicHostProcessingConformanceTests
+public sealed partial class LogicHostProcessingConformanceTests
 {
 #if !COMBINED_TESTS
     [TestMethod]
@@ -891,10 +891,8 @@ public sealed class LogicHostProcessingConformanceTests
     }
 #endif
 
-    private static byte[] CreateLinearPayload(Func<int, int, ushort> value)
+    private static byte[] CreateLinearPayload(Func<int, int, ushort> value, int width = 4, int height = 2)
     {
-        const int width = 4;
-        const int height = 2;
         var payload = new byte[width * height * 2];
         for (var y = 0; y < height; y++)
         {
@@ -926,7 +924,9 @@ public sealed class LogicHostProcessingConformanceTests
     private static ReconstructionDescriptor CreateCloudSource(
         ReconstructionDescriptor baseline,
         byte[] payload,
-        int suffix)
+        int suffix,
+        int width = 4,
+        int height = 2)
         => baseline with
         {
             Capture = baseline.Capture with
@@ -936,9 +936,9 @@ public sealed class LogicHostProcessingConformanceTests
             },
             Layout = baseline.Layout with
             {
-                Width = 4,
-                Height = 2,
-                StrideBytes = 8,
+                Width = width,
+                Height = height,
+                StrideBytes = width * 2,
                 BlackLevel = 0,
                 WhiteLevel = ushort.MaxValue,
                 ByteLength = payload.Length

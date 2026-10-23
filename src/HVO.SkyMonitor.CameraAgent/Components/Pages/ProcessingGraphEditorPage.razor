@@ -140,6 +140,10 @@
             <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
         }
 
+        @if (Section == "weather-cloud-overlay" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "WeatherCloudOverlay"))
+        {
+            <p role="note">This graph has no weather and cloud overlay node. Add WeatherCloudOverlay with an explicit preview and CloudAssessment dependency to configure it; saving and activation remain separate.</p>
+        }
         @if (Section == "frame-facts" && !_model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type) || node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias))
         {
             <p role="status">This graph has no Frame Facts node. Add FrameFactsPresentationLayerV1 with its ProjectedScene and combined-preview inputs, and explicitly opt manifest/materializer consumers in before previewing the plan.</p>
