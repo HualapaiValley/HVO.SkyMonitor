@@ -28,7 +28,10 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
     {
         Require(mode is "isolated" or "persistent", "invalid-mode");
         Require(new FileInfo(path).LinkTarget is null && File.Exists(path), "inventory-missing-or-symlink");
-        var bytes = await File.ReadAllTextAsync(path, token).ConfigureAwait(false);
+        using var input = SafeFileSystem.OpenRegularFileRead(path);
+        Require(input.Length <= 4 * 1024 * 1024, "inventory-too-large");
+        using var reader = new StreamReader(input);
+        var bytes = await reader.ReadToEndAsync(token).ConfigureAwait(false);
         Require(bytes.Length <= 4 * 1024 * 1024, "inventory-too-large");
         var original = Parse(bytes);
         var schema = original["schemaVersion"]!.GetValue<int>();

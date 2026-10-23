@@ -7,6 +7,16 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class ProcessRunnerTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RunAsync_ExplicitOutputLimit_StopsExcessiveOutput(bool standardError)
+    {
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => new ProcessRunner(1024).RunAsync(
+            "bash", ["-c", standardError ? "head -c 65536 /dev/zero >&2" : "head -c 65536 /dev/zero"], CancellationToken.None));
+        StringAssert.Contains(exception.Message, "output exceeded", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task RunAsync_DoesNotExposeDistributionTokenToChildProcess()
     {
         var previous = Environment.GetEnvironmentVariable("HVO_GITHUB_TOKEN");

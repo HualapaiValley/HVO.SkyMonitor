@@ -23,7 +23,7 @@ internal sealed class DeploymentHost : IDeploymentHost
     private static async Task<ProcessResult> DockerProcessAsync(IReadOnlyList<string> arguments, CancellationToken token)
     {
         // env removes every endpoint/TLS override before Docker resolves the explicit pinned endpoint.
-        return await new ProcessRunner().RunAsync("env", ["-u", "DOCKER_CONTEXT", "-u", "DOCKER_HOST", "-u", "DOCKER_TLS_VERIFY", "-u", "DOCKER_CERT_PATH", "docker", .. arguments], token).ConfigureAwait(false);
+        return await new ProcessRunner(4 * 1024 * 1024).RunAsync("env", ["-u", "DOCKER_CONTEXT", "-u", "DOCKER_HOST", "-u", "DOCKER_TLS_VERIFY", "-u", "DOCKER_CERT_PATH", "docker", .. arguments], token).ConfigureAwait(false);
     }
 }
 
@@ -32,7 +32,7 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
     private readonly Process process;
     private readonly CancellationToken token;
     private readonly CancellationTokenSource deadline;
-    private readonly Task<string> errors;
+    private readonly Task errors;
     public SshDeploymentFiles(string host, CancellationToken cancellationToken, bool local = false)
     {
         token = cancellationToken;
@@ -41,11 +41,11 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
         if (local) { process.StartInfo.ArgumentList.Add("-c"); process.StartInfo.ArgumentList.Add(Adapter); }
         else
         {
-            foreach (var arg in new[] { "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3", "--", host, "bash -c " + Quote(Adapter) }) process.StartInfo.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3", "--", host, "timeout --signal=TERM --kill-after=30s 3600 bash -c " + Quote(Adapter) }) process.StartInfo.ArgumentList.Add(arg);
         }
         process.StartInfo.Environment.Remove("HVO_GITHUB_TOKEN");
         Require(process.Start(), "ssh-unavailable");
-        errors = process.StandardError.ReadToEndAsync(deadline.Token);
+        errors = process.StandardError.BaseStream.CopyToAsync(Stream.Null, deadline.Token);
     }
     public string Call(string operation, params string[] arguments)
     {
@@ -56,11 +56,23 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
             var line = operation + " " + string.Join(' ', arguments.Select(value => Convert.ToBase64String(Encoding.UTF8.GetBytes(value)) is { Length: > 0 } encoded ? encoded : "-"));
             Require(line.Length <= 128 * 1024, "ssh-request-too-large");
             process.StandardInput.WriteLine(line); process.StandardInput.Flush();
-            var response = process.StandardOutput.ReadLineAsync(command.Token).AsTask().GetAwaiter().GetResult();
+            var response = ReadReplyAsync(process.StandardOutput, command.Token).GetAwaiter().GetResult();
             Require(response is { Length: <= 2 * 1024 * 1024 } && response.StartsWith("ok ", StringComparison.Ordinal), "host-primitive-failed");
             return Encoding.UTF8.GetString(Convert.FromBase64String(response![3..]));
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested) { throw Error("host-deadline-exceeded"); }
+    }
+    private static async Task<string> ReadReplyAsync(StreamReader reader, CancellationToken token)
+    {
+        var reply = new StringBuilder(); var character = new char[1];
+        while (reply.Length <= 2 * 1024 * 1024)
+        {
+            var count = await reader.ReadAsync(character.AsMemory(), token).ConfigureAwait(false);
+            Require(count != 0, "host-disconnected");
+            if (character[0] == '\n') return reply.ToString();
+            reply.Append(character[0]);
+        }
+        throw Error("host-response-too-large");
     }
     internal static string Quote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
     public void Dispose()
@@ -92,7 +104,7 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
             move) mv -T -n -- "$a" "$b"; value=moved ;;
             unlink) rm -f -- "$a"; value=removed ;;
             rmdir) rmdir -- "$a"; value=removed ;;
-            sync) sync -f -- "$a"; value=synced ;;
+            sync) sync -- "$a"; value=synced ;;
             *) exit 96 ;;
           esac
           printf 'ok %s\n' "$(printf '%s' "$value" | base64 -w0)"

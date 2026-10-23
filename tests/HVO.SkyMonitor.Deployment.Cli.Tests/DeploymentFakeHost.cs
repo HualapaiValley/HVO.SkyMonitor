@@ -29,6 +29,9 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
     public string? BadHost { get; set; }
     public string? BadDaemon { get; set; }
     public string? Resource { get; set; }
+    public string ResourceOutput { get; set; } = "unexpected-resource\n";
+    public Func<IReadOnlyList<string>, ProcessResult?>? DockerResponse { get; set; }
+    public Func<string, string[], string, string>? PrimitiveResponse { get; set; }
     public int ResourceAfter { get; set; } = 1;
     public int ResourceProbes { get; private set; }
     public string? PresentContainer { get; set; }
@@ -131,6 +134,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
     public Task<ProcessResult> DockerAsync(IReadOnlyList<string> arguments, CancellationToken token)
     {
         token.ThrowIfCancellationRequested(); var args = arguments.ToArray(); DockerCalls.Add(args);
+        if (DockerResponse?.Invoke(arguments) is { } replacement) return Task.FromResult(replacement);
         if (args[0] == "context")
         {
             var target = Contract.Targets.First(t => t.DockerContext == args[2]); return Result(0, new JsonObject { ["name"] = target.DockerContext, ["host"] = "ssh://" + target.SshHost }.ToJsonString());
@@ -138,7 +142,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
         Assert.AreEqual("--host", args[0]); var t = Contract.Targets.First(t => "ssh://" + t.SshHost == args[1]);
         if (args[2] == "info") return Result(0, new JsonObject { ["ID"] = BadDaemon == t.Name ? "changed-daemon" : t.DockerDaemonIdentity, ["Name"] = t.HostName, ["Architecture"] = t.Architecture, ["OSType"] = "linux", ["ServerVersion"] = "test" }.ToJsonString());
         if (args[3] == "inspect") return (DockerResources.Contains(t.DockerContext + ":" + args[2] + ":" + args[^1]) || args[^1] == (args[2] == "container" ? PresentContainer : PresentNetwork)) ? Result(0, "\"unexpected\"") : Result(1, "", "Error: No such " + args[2] + ": " + args[^1]);
-        if (Resource == t.DockerContext + ":" + args[2] + ":" + args[^1]) { ResourceProbes++; if (ResourceProbes >= ResourceAfter) return Result(0, "unexpected-resource\n"); }
+        if (Resource == t.DockerContext + ":" + args[2] + ":" + args[^1]) { ResourceProbes++; if (ResourceProbes >= ResourceAfter) return Result(0, ResourceOutput); }
         return Result(0, "");
     }
     private static Task<ProcessResult> Result(int code, string output, string error = "") => Task.FromResult(new ProcessResult(code, output, error));
@@ -149,7 +153,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
         {
             token.ThrowIfCancellationRequested(); host.BeforePrimitive?.Invoke(operation, args);
             if (operation == "probe") return $"{(host.BadHost == target.Name ? "changed-machine" : target.HostIdentity)} {target.HostName} {NativeLinux.getuid()} {NativeLinux.getuid()} {target.Architecture}";
-            var result = files.Call(operation, args.Select(host.Physical).ToArray()); host.AfterPrimitive?.Invoke(operation, args); return result;
+            var result = files.Call(operation, args.Select(host.Physical).ToArray()); host.AfterPrimitive?.Invoke(operation, args); return host.PrimitiveResponse?.Invoke(operation, args, result) ?? result;
         }
         public void Dispose() => files.Dispose();
     }

@@ -19,11 +19,12 @@ internal sealed record PartialPrepareRequest(string Inventory, string Mode, stri
             var key = args[i];
             if (key == "--dry-run" && !dry) { dry = true; continue; }
             if (key == "--json" && !json) { json = true; continue; }
-            if (key is not ("--inventory" or "--mode" or "--run-id" or "--state-root" or "--evidence-root" or "--confirm") || i + 1 >= args.Length || !options.TryAdd(key, args[++i])) throw new InstallUsageException("Invalid or repeated recovery option.");
+            if (key is not ("--inventory" or "--mode" or "--run-id" or "--state-root" or "--evidence-root" or "--confirm")) throw new InstallUsageException($"Unknown option '{key}'.");
+            if (i + 1 >= args.Length || !options.TryAdd(key, args[++i])) throw new InstallUsageException($"Missing value or repeated option '{key}'.");
         }
         string Need(string key) => options.GetValueOrDefault(key) ?? throw new InstallUsageException(key + " is required.");
         var run = Need("--run-id"); var output = Path.GetFullPath("TestResults/deploy/" + run);
-        var request = new PartialPrepareRequest(Need("--inventory"), Need("--mode"), run, options.GetValueOrDefault("--state-root") ?? output + "/state", options.GetValueOrDefault("--evidence-root") ?? output + "/evidence", dry, options.GetValueOrDefault("--confirm"), json);
+        var request = new PartialPrepareRequest(Path.GetFullPath(Need("--inventory")), Need("--mode"), run, options.GetValueOrDefault("--state-root") ?? output + "/state", options.GetValueOrDefault("--evidence-root") ?? output + "/evidence", dry, options.GetValueOrDefault("--confirm"), json);
         request.Validate(); return request;
     }
 }
@@ -43,7 +44,7 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
     {
         try
         {
-            return await new PartialPrepareRecovery(new DeploymentHost(), new ProcessRunner(), value =>
+            return await new PartialPrepareRecovery(new DeploymentHost(), new ProcessRunner(4 * 1024 * 1024), value =>
             {
                 if (Environment.GetEnvironmentVariable("DEPLOY_TEST_FAILPOINT") != value) return;
                 if (value.StartsWith("abrupt-", StringComparison.Ordinal)) throw new PartialPrepareCrashException();
@@ -212,7 +213,7 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
         foreach (var kind in new[] { "container", "network", "volume" })
         {
             var result = await host.DockerAsync(["--host", endpoint.Key, kind, "ls", .. (kind == "container" ? AllContainers : []), "--quiet", "--filter", filter], token).ConfigureAwait(false);
-            Require(result.ExitCode == 0 && result.StandardOutput.Trim().Length == 0, "unexpected-deployment-resource");
+            Require(result.ExitCode == 0 && result.StandardOutput.TrimEnd('\n').Length == 0, "unexpected-deployment-resource");
         }
     }
     private async Task<JsonObject> DockerJsonAsync(string[] args, CancellationToken token)
@@ -222,6 +223,6 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
     private async Task RequireAbsentAsync(string endpoint, string kind, string name, CancellationToken token)
     {
         var result = await host.DockerAsync(["--host", endpoint, kind, "inspect", "--format", "{{json .Name}}", name], token).ConfigureAwait(false);
-        Require(result.ExitCode == 1 && result.StandardOutput.Length == 0 && (result.StandardError.Trim() == "Error: No such " + kind + ": " + name || result.StandardError.Trim() == "Error response from daemon: No such " + kind + ": " + name || result.StandardError.Trim() == "Error: No such object: " + name), "unexpected-deployment-resource");
+        Require(result.ExitCode == 1 && result.StandardOutput.Length == 0 && (result.StandardError.TrimEnd('\n') == "Error: No such " + kind + ": " + name || result.StandardError.TrimEnd('\n') == "Error response from daemon: No such " + kind + ": " + name || result.StandardError.TrimEnd('\n') == "Error response from daemon: get " + name + ": no such " + kind || result.StandardError.TrimEnd('\n') == "Error response from daemon: " + kind + " " + name + " not found"), "unexpected-deployment-resource");
     }
 }

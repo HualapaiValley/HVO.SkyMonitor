@@ -303,7 +303,7 @@ internal static class CommandLine
             .AppendLine()
             .AppendLine("Options:");
         AppendRows(usage, [
-            .. command.ValueOptions.Concat(command.Flags).Select(static option => OptionHelp[option] switch
+            .. command.ValueOptions.Concat(command.Flags).Select(option => (command.Name == "partial-prepare-cleanup" && option == "--dry-run" ? ((string? Value, string Description))(null, "Inspect recovery candidates and write private evidence without changing a target.") : OptionHelp[option]) switch
             {
                 (null, var description) => (option, description),
                 var (value, description) => ($"{option} {value}", description)

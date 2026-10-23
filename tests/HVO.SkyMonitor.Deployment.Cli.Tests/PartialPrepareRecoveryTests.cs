@@ -48,7 +48,7 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "mismatch-or-not-passed");
     }
     [TestMethod]
-    [DataRow("host")][DataRow("daemon")][DataRow("unjournaled")][DataRow("marker")][DataRow("lock")][DataRow("state")][DataRow("application")]
+    [DataRow("host")][DataRow("daemon")][DataRow("unjournaled")][DataRow("marker")][DataRow("lock")][DataRow("state")][DataRow("application")][DataRow("foreign-parent")][DataRow("mount")]
     public async Task InvalidRemoteProvenance_IsRejectedBeforeMutation(string mutation)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); var prepared = host.Prepared[0]; var root = host.Physical(prepared.RuntimeRoot);
@@ -56,6 +56,8 @@ public sealed class PartialPrepareRecoveryTests
         switch (mutation)
         {
             case "host": host.BadHost = "logic"; break;
+            case "foreign-parent": host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == Path.GetDirectoryName(prepared.RuntimeRoot) ? "4294967294" + result[result.IndexOf(' ')..] : result; break;
+            case "mount": host.PrimitiveResponse = (operation, _, result) => operation == "mounts" ? Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("1 0 0:0 / " + prepared.RuntimeRoot + " rw - ext4 /dev/fake rw\n")) : result; break;
             case "daemon": host.BadDaemon = "logic"; break;
             case "unjournaled": Directory.CreateDirectory(host.Physical(host.Contract.Targets[1].RuntimeRoot)); break;
             case "marker": DeploymentFakeHost.Write(root + "/.hvo-deploy/ownership", "tampered\n"); break;
@@ -125,6 +127,8 @@ public sealed class PartialPrepareRecoveryTests
         {
             var value = Parse(DeploymentFakeHost.Read(path)); value.Array("targets")[1]!["deploymentState"] = "ready"; DeploymentFakeHost.WriteJson(path, value);
         }
+        var parent = Path.GetDirectoryName(host.Contract.Targets[1].RuntimeRoot);
+        host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == parent ? "4294967294" + result[result.IndexOf(' ')..] : result;
         await host.RunAsync(); Assert.AreEqual("preserve\n", DeploymentFakeHost.Read(root + "/pre-existing-state"));
     }
     [TestMethod]
@@ -160,7 +164,7 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "unexpected-deployment-resource"); host.Resource = null; var result = await host.RunAsync(inspect: true); Assert.AreEqual(host.Contract.Sha256, result.Text("inventorySha256"));
     }
     [TestMethod]
-    [DataRow("v8-field")][DataRow("collision")][DataRow("historical-path")]
+    [DataRow("v8-field")][DataRow("collision")][DataRow("historical-path")][DataRow("missing-tmp")]
     public async Task Schema7Validation_PreservesHistoricalShapeAndPath(string mutation)
     {
         using var host = new DeploymentFakeHost(); host.Legacy();
@@ -168,7 +172,7 @@ public sealed class PartialPrepareRecoveryTests
         if (mutation == "collision") host.Inventory["cameraAgents"]![0]!["sshHost"] = host.Inventory["logicHost"]!["sshHost"]!.DeepClone();
         if (mutation == "historical-path") host.Inventory["deployment"]!["catalog"]!["installRoot"] = host.Inventory["deployment"]!["catalog"]!.Text("installRoot") + ",retained";
         DeploymentFakeHost.WriteJson(host.InventoryPath, host.Inventory);
-        if (mutation == "historical-path") _ = await SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", new ProcessRunner(), CancellationToken.None);
+        if (mutation is "historical-path" or "missing-tmp") _ = await SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", mutation == "missing-tmp" ? new MissingTempRunner() : new ProcessRunner(), CancellationToken.None);
         else await Assert.ThrowsExactlyAsync<InstallerException>(() => SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", new ProcessRunner(), CancellationToken.None));
     }
     [TestMethod]
@@ -236,6 +240,8 @@ public sealed class PartialPrepareRecoveryTests
     public async Task MissingOrContradictoryConfirmationAndWrongRun_AreRejected()
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync();
+        var help = ((HelpCommand)CommandLine.ParseCommand(["partial-prepare-cleanup", "--help"])).Usage;
+        StringAssert.Contains(help, "Inspect recovery candidates", StringComparison.Ordinal); Assert.DoesNotContain("--plan", help, StringComparison.Ordinal);
         Assert.ThrowsExactly<InstallUsageException>(() => (host.Request() with { Confirmation = null }).Validate());
         Assert.ThrowsExactly<InstallUsageException>(() => (host.Request(true) with { Confirmation = host.RunId }).Validate());
         await Assert.ThrowsExactlyAsync<InstallerException>(() => new PartialPrepareRecovery(host, new ProcessRunner()).RunAsync(host.Request() with { Confirmation = "wrong-run" }, CancellationToken.None));
@@ -285,6 +291,37 @@ public sealed class PartialPrepareRecoveryTests
         host.Legacy(); DeploymentFakeHost.WriteJson(host.InventoryPath, host.Inventory);
         var preflight = await runner.RunAsync(repository.FullName + "/scripts/deploy:environment", ["preflight", "--inventory", host.InventoryPath, "--mode", "isolated", "--run-id", host.RunId], CancellationToken.None);
         Assert.AreNotEqual(0, preflight.ExitCode); StringAssert.Contains(preflight.StandardError, "schema-or-value-invalid", StringComparison.Ordinal);
+    }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DockerOutageOrMalformedAbsence_NeverAuthorizesDeletion(bool whitespace)
+    {
+        using var host = new DeploymentFakeHost(); await host.StageAsync();
+        if (whitespace) { host.Resource = "logic-context:container:label=io.hvoskymonitor.run-id=" + host.RunId; host.ResourceOutput = " "; }
+        else host.DockerResponse = args => args.Count > 3 && args[3] == "inspect" ? new ProcessResult(1, "", "authentication failed") : null;
+        await Reject(host, "unexpected-deployment-resource");
+    }
+    [TestMethod]
+    [DataRow(".ownership.cleanup.")]
+    [DataRow(".hvo-deploy.cleanup.")]
+    [DataRow(".hvo-deploy-cleanup-root-")]
+    [DataRow(".state.cleanup.")]
+    [DataRow(".lock.cleanup.")]
+    public async Task InterruptionAfterQuarantineRename_ResumesWithoutTraversingTheTree(string nameFragment)
+    {
+        using var host = new DeploymentFakeHost(); await host.StageAsync(); var fired = false;
+        host.BeforePrimitive = (operation, args) =>
+        {
+            if (!fired && operation is "unlink" or "rmdir" && Path.GetFileName(args[0]).Contains(nameFragment, StringComparison.Ordinal)) { fired = true; throw new PartialPrepareCrashException(); }
+        };
+        await Assert.ThrowsExactlyAsync<PartialPrepareCrashException>(() => host.RunAsync()); Assert.IsTrue(fired); host.BeforePrimitive = null;
+        await host.RunAsync(); Assert.IsFalse(Directory.Exists(host.Physical(host.Prepared[0].RuntimeRoot)));
+    }
+    private sealed class MissingTempRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken token) =>
+            new ProcessRunner().RunAsync("env", ["TMPDIR=/untrusted-missing-tmp", fileName, .. arguments], token);
     }
     private static async Task Reject(DeploymentFakeHost host, string code, bool inspect = true)
     {
