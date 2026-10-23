@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
 [TestCategory("Unit")]
-public sealed class ExistingDownTests
+public sealed partial class ExistingDownTests
 {
     [TestMethod]
     [DataRow("Off", "")]

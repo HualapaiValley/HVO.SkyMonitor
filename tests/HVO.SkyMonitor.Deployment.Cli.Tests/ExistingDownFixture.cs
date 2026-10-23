@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using HVO.SkyMonitor.Deployment.Contracts;
 using static HVO.SkyMonitor.Deployment.SplitHostJson;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
@@ -13,8 +14,11 @@ internal sealed class ExistingDownFixture : IDisposable
     public List<string> ControlKeys { get; } = [];
     public int Stops { get; private set; }
     public int EastReads { get; private set; }
+    public bool KeepStoppedContainers { get; init; }
+    public int StoppedHttpAttempts { get; private set; }
     private readonly Dictionary<string, int> reads = new(StringComparer.Ordinal);
     private readonly HashSet<string> stopped = new(StringComparer.Ordinal);
+    public void RestartCamera(string name) => stopped.Remove(Host.Contract.Project(Host.Contract.Targets.Single(t => t.Name == name)));
     public ExistingDownRequest Request => new(Host.InventoryPath, Host.Mode, Host.RunId, Host.StateRoot, Host.EvidenceRoot, "preserve", null);
     public async Task StageAsync()
     {
@@ -41,9 +45,13 @@ internal sealed class ExistingDownFixture : IDisposable
             {
                 var project = args[4];
                 if (args.Contains("stop")) { if (Fault == "compose") return new ProcessResult(1, "", "private diagnostic"); Stops++; stopped.Add(project); return new(0, "", ""); }
-                return new(0, Fault == "recreated" || !stopped.Contains(project) ? new string('a', 64) : "", "");
+                return new(0, Fault == "recreated" || KeepStoppedContainers || !stopped.Contains(project) ? ContainerId(Host.Contract.Targets.Single(t => Host.Contract.Project(t) == project)) : "", "");
             }
-            if (args.Count > 3 && args[2] == "container" && args[3] == "inspect") return new(0, new JsonObject { ["project"] = Host.Contract.Project(Host.Contract.Targets.First(t => "ssh://" + t.SshHost == args[1])), ["service"] = "cameraagent", ["running"] = true }.ToJsonString(), "");
+            if (args.Count > 3 && args[2] == "container" && args[3] == "inspect")
+            {
+                var target = Host.Contract.Targets.Single(t => ContainerId(t) == args[^1]);
+                return new(0, new JsonObject { ["project"] = Host.Contract.Project(target), ["service"] = target.Component == "logicHost" ? "logichost" : "cameraagent", ["running"] = Fault == "recreated" || !stopped.Contains(Host.Contract.Project(target)) }.ToJsonString(), "");
+            }
             return null;
         };
         Host.PrimitiveHandler = (operation, args) =>
@@ -51,6 +59,11 @@ internal sealed class ExistingDownFixture : IDisposable
             if (operation != "http") return null;
             var output = args[Array.IndexOf(args, "--output") + 1]; var cookies = args[Array.IndexOf(args, "--cookie-jar") + 1]; var url = args[^1]; Queries.Add(url);
             var target = Host.Contract.Targets.First(t => Beneath(output, t.RuntimeRoot)); var device = "device-" + target.Name;
+            if (stopped.Contains(Host.Contract.Project(target)))
+            {
+                StoppedHttpAttempts++;
+                throw new IOException("simulated curl: connection refused (application container stopped)");
+            }
             var final = url.Contains("-final-", StringComparison.Ordinal); var status = 200; string content;
             if (url.EndsWith("/Account/Login", StringComparison.Ordinal))
             {
@@ -99,6 +112,7 @@ internal sealed class ExistingDownFixture : IDisposable
             DeploymentFakeHost.Write(Host.Physical(output), content); DeploymentFakeHost.Write(Host.Physical(cookies), "fixture-cookie"); return status.ToString(CultureInfo.InvariantCulture);
         };
     }
+    private string ContainerId(DeploymentTarget target) => new((char)('a' + Host.Contract.Targets.ToList().IndexOf(target)), 64);
     public static JsonObject Continuity(string device = "device-east") => new() { ["deviceId"] = device, ["configuredAgentId"] = device, ["isProvisioned"] = true, ["activeConfigurationSha256"] = new string('a', 64), ["durable"] = new JsonObject { ["rawIngressDatabaseExists"] = true, ["captureSequences"] = new JsonArray(new JsonObject { ["agentId"] = device, ["lastSequence"] = 2 }) } };
     public static JsonObject Summary(string device, string mode, string fault = "", int count = 1, bool final = false)
     {

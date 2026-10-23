@@ -105,11 +105,18 @@ internal sealed class ExistingDown(IDeploymentHost host, IProcessInputRunner run
                 var action = ledger.Array("resources").SingleOrDefault(n => n!.Text("resource") == resourceName && n.Text("action") == "graceful-stop");
                 if (action?.Text("status") != "completed")
                 {
+                    var retainedCameraIntent = target.Component == "cameraAgent" && action is not null;
                     if (action is null) { action = Intent(resourceName, "graceful-stop"); ledger.Array("resources").Add(action); }
                     state.Publish(ledger);
-                    if (target.Component == "cameraAgent") await PauseAndDrainAsync(remote, inventory, request, target, ledger["publicationGeneration"]!.GetValue<int>(), token).ConfigureAwait(false);
-                    await ComposeAsync(remote, inventory, request, target, false, token).ConfigureAwait(false);
-                    await ComposeAsync(remote, inventory, request, target, true, token).ConfigureAwait(false);
+                    // An intent can precede the drain or outlive a successful stop. Only live,
+                    // correlated Docker evidence permits recovery without the stopped application's HTTP.
+                    var alreadyStopped = retainedCameraIntent && await ComposeAsync(remote, inventory, request, target, true, token, allowRunning: true).ConfigureAwait(false);
+                    if (!alreadyStopped)
+                    {
+                        if (target.Component == "cameraAgent") await PauseAndDrainAsync(remote, inventory, request, target, ledger["publicationGeneration"]!.GetValue<int>(), token).ConfigureAwait(false);
+                        await ComposeAsync(remote, inventory, request, target, false, token).ConfigureAwait(false);
+                        await ComposeAsync(remote, inventory, request, target, true, token).ConfigureAwait(false);
+                    }
                     Boundary("after-graceful-stop-mutation-" + resourceName);
                     Complete(action); state.Publish(ledger); Boundary("after-graceful-stop-" + resourceName);
                 }
@@ -164,21 +171,24 @@ internal sealed class ExistingDown(IDeploymentHost host, IProcessInputRunner run
     }
     private static JsonObject Intent(string resource, string action) => new() { ["resource"] = resource, ["action"] = action, ["status"] = "intent", ["intentAt"] = Now(), ["updatedAt"] = Now() };
     private static void Complete(JsonNode action) { action["status"] = "completed"; action["completedAt"] = Now(); action["updatedAt"] = Now(); }
-    private async Task ComposeAsync(ExistingDownHost remote, SplitHostInventory inventory, ExistingDownRequest request, DeploymentTarget target, bool inspect, CancellationToken token)
+    private async Task<bool> ComposeAsync(ExistingDownHost remote, SplitHostInventory inventory, ExistingDownRequest request, DeploymentTarget target, bool inspect, CancellationToken token, bool allowRunning = false)
     {
         var endpoint = await remote.CorrelateAsync(target, token).ConfigureAwait(false); var service = target.Component == "logicHost" ? "logichost" : "cameraagent"; var project = inventory.Project(target);
         var env = request.StateRoot + "/up-rendered/" + target.Name + ".env"; _ = PartialPrepareState.ReadPrivate(env);
         string[] compose = ["--host", endpoint, "compose", "--project-name", project, "--env-file", env, "--file", repository + "/deploy/split-host/compose." + service + ".yml"];
         var result = await host.DockerAsync([.. compose, .. (inspect ? new[] { "ps", "--all", "-q", service } : ["stop", "-t", "60", service])], token).ConfigureAwait(false);
         Require(result.ExitCode == 0, "compose-failed");
+        var stopped = inspect;
         if (inspect && result.StandardOutput.Trim() is { Length: > 0 } container)
         {
             Require(Match(container, "[a-f0-9]{12,64}"), "container-identity-invalid");
             var identity = await host.DockerAsync(["--host", endpoint, "container", "inspect", "--format", "{\"project\":{{json (index .Config.Labels \"com.docker.compose.project\")}},\"service\":{{json (index .Config.Labels \"com.docker.compose.service\")}},\"running\":{{json .State.Running}}}", container], token).ConfigureAwait(false);
             Require(identity.ExitCode == 0, "container-state-unavailable"); var doc = Parse(identity.StandardOutput);
-            Require(doc.Text("project") == project && doc.Text("service") == service && !doc.Flag("running"), "completed-container-state-invalid");
+            stopped = !doc.Flag("running");
+            Require(doc.Text("project") == project && doc.Text("service") == service && (allowRunning || stopped), "completed-container-state-invalid");
         }
         await remote.CorrelateAsync(target, token).ConfigureAwait(false);
+        return stopped;
     }
     private async Task PauseAndDrainAsync(ExistingDownHost remote, SplitHostInventory inventory, ExistingDownRequest request, DeploymentTarget target, int generation, CancellationToken token)
     {
