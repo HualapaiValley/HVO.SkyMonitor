@@ -73,6 +73,7 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
                 if (standardInput is not null)
                 {
                     await process.StandardInput.WriteAsync(standardInput.AsMemory(), timeout.Token).ConfigureAwait(false);
+                    await process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
                     process.StandardInput.Close();
                 }
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);

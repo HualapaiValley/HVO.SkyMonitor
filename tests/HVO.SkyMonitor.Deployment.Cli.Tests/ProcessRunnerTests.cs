@@ -18,6 +18,14 @@ public sealed class ProcessRunnerTests
     }
 
     [TestMethod]
+    public async Task RunWithInputAsync_BlockedReader_IsCanceledAndReaped()
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => new ProcessRunner().RunWithInputAsync(
+            "bash", ["-c", "sleep 30"], new string('x', 256 * 1024), cancellation.Token));
+    }
+
+    [TestMethod]
     public async Task RunWithInputAsync_BrokenPipe_ReapsChildEvenAfterBothOutputPipesClosed()
     {
         var pidFile = Path.Combine(Path.GetTempPath(), "hvo-input-child-" + Guid.NewGuid().ToString("N") + ".pid");
