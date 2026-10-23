@@ -80,7 +80,10 @@ public sealed class CameraArchiveBrowserAcceptanceTests
             await Assertions.Expect(page.Locator(".camera-archive img")).ToBeVisibleAsync();
             (await page.Locator(".camera-archive img").GetAttributeAsync("src")).Should().Contain("/artifacts/");
             var tree = await page.Locator(".camera-archive").AriaSnapshotAsync();
-            tree.Should().Contain("Capture provenance").And.Contain("Back to archive page");
+            tree.Should().Contain("heading \"Camera archive\" [level=2]")
+                .And.Contain($"heading \"Capture {data.Frames.Single(f => f.Id == selected).CapturedAtUtc:u}\" [level=3]")
+                .And.Contain("heading \"Capture provenance\" [level=4]").And.Contain("Back to archive page");
+            await Assertions.Expect(page.Locator(".scope-content h1")).ToHaveCountAsync(1);
             (await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth")).Should().BeTrue();
             await page.ScreenshotAsync(new() { Path = Path.Combine(EvidenceRoot, $"archive-detail-{width}x{height}.png"), FullPage = true });
             await page.GetByRole(AriaRole.Button, new() { Name = "Load bounded capture trace", Exact = true }).ClickAsync();
