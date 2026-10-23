@@ -63,7 +63,10 @@ public sealed partial class LogicHostProcessingConformanceTests
         Assert.AreSame(CloudAssessmentOptionDescriptors.Descriptor, descriptor);
         var source = JsonSerializer.SerializeToElement(new
         {
-            gridColumns = 2, gridRows = 1, clearReferenceManifestPath = "retained/clear.manifest.json", future = new { keep = 17 }
+            gridColumns = 2,
+            gridRows = 1,
+            clearReferenceManifestPath = "retained/clear.manifest.json",
+            future = new { keep = 17 }
         });
         var retainedJson = source.GetRawText();
         var environment = new CloudAssessmentEnvironmentV1(CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
@@ -147,7 +150,8 @@ public sealed partial class LogicHostProcessingConformanceTests
         Assert.AreEqual(original.Product.ChecksumSha256, route.Product.ChecksumSha256, "Routing does not change assessment evidence.");
         var bounded = await Execute(ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
         {
-            ["gridColumns"] = ProcessingOptionValue.FromWholeNumber(64), ["gridRows"] = ProcessingOptionValue.FromWholeNumber(64)
+            ["gridColumns"] = ProcessingOptionValue.FromWholeNumber(64),
+            ["gridRows"] = ProcessingOptionValue.FromWholeNumber(64)
         }).Options!.Value).ConfigureAwait(false);
         Assert.HasCount(4096, bounded.Assessment.Regions);
         Assert.IsTrue(bounded.Product.Payload.Length <= 1024 * 1024);

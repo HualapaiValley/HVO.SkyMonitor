@@ -73,12 +73,32 @@ are also retained in local issue evidence.
 
 ## Validation boundary
 
-The candidate gate selector is `scripts/ci:classify pull_request <base> HEAD` on
-the committed range. Its output and exact candidate gate results belong with the
-issue/PR evidence. Tier B uses affected builds/format, Processing Unit tests,
-CameraAgent editor/service/graph tests, both-host conformance, LogicHost graph
-tests, architecture tests and all four CI-control guards. Protected CI remains
-the development-v1 profile; full qualification is not selected by this document.
+The candidate gate selector is `scripts/ci:classify pull_request
+dffab19529c55769e25fbd162fe06b248386eed0 HEAD` on the committed range. It selects
+`mode=full`, `complete=false`, `shared/cameraagent/logichost/combined/delivery=true`
+and `deployment/secret_scan_contract/release_scripts=false`. Protected CI remains
+the development-v1 profile; this selector does not request full qualification.
+
+| Local candidate gate | Result |
+| --- | --- |
+| Release solution build, warnings as errors | Passed; zero warnings/errors |
+| Conformance rebuild after test whitespace correction | Passed; zero warnings/errors |
+| Changed-file format verification | Passed |
+| Processing Unit selection | 869 passed |
+| CameraAgent affected editor/service/graph/endpoint selection | 365 passed |
+| Both-host conformance Unit selection | 81 passed |
+| LogicHost processing-graph/conformance Unit selection | 152 passed |
+| Architecture Unit selection | 32 passed |
+| All four CI-control guards | Passed |
+| Operations documentation audit and diff whitespace check | Passed |
+
+The final selected 1499 tests have no failures or skips. Detailed commands, TRX
+files and logs are retained in the registered local issue scratch. Initial
+Processing runs exposed existing nominal-causal fixtures rejecting macOS temp
+paths through symlinks. Setting `TMPDIR` to the physical `/private/tmp/` path of
+that same scratch resolved them without changing repository code. Bash 5 and
+Homebrew GNU coreutils are on `PATH` for the control guards (`realpath -e` is
+required; macOS's system `realpath` does not support it).
 
 Heavy gates use `flock -o /tmp/hvo-heavy-gate.lock timeout ...`; builds/tests disable
 node reuse and shared compilation. Unit runs unset `HVO_PRODUCTION_CATALOG_BUNDLE`
