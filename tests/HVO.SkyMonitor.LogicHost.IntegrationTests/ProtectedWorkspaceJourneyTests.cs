@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class ProtectedWorkspaceJourneyTests
 {
+    private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
@@ -189,7 +190,7 @@ public sealed class ProtectedWorkspaceJourneyTests
             Publication = "Exact release; expired sibling excluded; stale Owner withdrawal denied; authorized withdrawal; reconnect revalidation",
             Scope = "Four mixed observatory/camera routes denied despite membership in both sites",
             ImmutableEvidence = "Canonical bytes, payload hash and receipt time unchanged by publication and role races"
-        }, new JsonSerializerOptions { WriteIndented = true }));
+        }, EvidenceJsonOptions));
         await diagnostics.CompleteAsync();
     }
 
