@@ -119,7 +119,13 @@ internal sealed class PartialPrepareRecovery(IDeploymentHost host, IProcessRunne
             if (ledger is not null && !state.PublicationInProgress)
             {
                 ledger["phaseStatus"] = "failed"; ledger.Remove("completedAt");
-                try { state.Publish(ledger); } catch (Exception publication) when (publication is InstallerException or IOException or UnauthorizedAccessException) { /* Preserve the original failure; ledger publication is resumable. */ }
+                try
+                {
+                    // The retained shell receipt commits two failure generations. Preserve that observable
+                    // sequence while never starting a second generation after an incomplete publication.
+                    state.Publish(ledger); state.Publish(ledger);
+                }
+                catch (Exception publication) when (publication is InstallerException or IOException or UnauthorizedAccessException) { /* Preserve the original failure; ledger publication is resumable. */ }
             }
             throw;
         }

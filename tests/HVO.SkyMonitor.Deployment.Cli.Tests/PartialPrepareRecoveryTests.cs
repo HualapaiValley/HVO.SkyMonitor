@@ -4,6 +4,7 @@ using static HVO.SkyMonitor.Deployment.SplitHostJson;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
+[OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
 [TestCategory("Unit")]
 public sealed class PartialPrepareRecoveryTests
 {
@@ -32,7 +33,11 @@ public sealed class PartialPrepareRecoveryTests
         foreach (var file in Directory.EnumerateFiles(host.StateRoot).Concat(Directory.EnumerateFiles(host.EvidenceRoot))) Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
     }
     [TestMethod]
-    [DataRow("hash")][DataRow("installation")][DataRow("target")][DataRow("root")][DataRow("owner")]
+    [DataRow("hash")]
+    [DataRow("installation")]
+    [DataRow("target")]
+    [DataRow("root")]
+    [DataRow("owner")]
     public async Task ChangedInventory_IsRejectedBeforeMutation(string mutation)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync();
@@ -48,7 +53,15 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "mismatch-or-not-passed");
     }
     [TestMethod]
-    [DataRow("host")][DataRow("daemon")][DataRow("unjournaled")][DataRow("marker")][DataRow("lock")][DataRow("state")][DataRow("application")][DataRow("foreign-parent")][DataRow("mount")]
+    [DataRow("host")]
+    [DataRow("daemon")]
+    [DataRow("unjournaled")]
+    [DataRow("marker")]
+    [DataRow("lock")]
+    [DataRow("state")]
+    [DataRow("application")]
+    [DataRow("foreign-parent")]
+    [DataRow("mount")]
     public async Task InvalidRemoteProvenance_IsRejectedBeforeMutation(string mutation)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); var prepared = host.Prepared[0]; var root = host.Physical(prepared.RuntimeRoot);
@@ -56,7 +69,7 @@ public sealed class PartialPrepareRecoveryTests
         switch (mutation)
         {
             case "host": host.BadHost = "logic"; break;
-            case "foreign-parent": host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == Path.GetDirectoryName(prepared.RuntimeRoot) ? "4294967294" + result[result.IndexOf(' ')..] : result; break;
+            case "foreign-parent": host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == Path.GetDirectoryName(prepared.RuntimeRoot) ? "4294967294" + result[result.IndexOf(' ', StringComparison.Ordinal)..] : result; break;
             case "mount": host.PrimitiveResponse = (operation, _, result) => operation == "mounts" ? Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("1 0 0:0 / " + prepared.RuntimeRoot + " rw - ext4 /dev/fake rw\n")) : result; break;
             case "daemon": host.BadDaemon = "logic"; break;
             case "unjournaled": Directory.CreateDirectory(host.Physical(host.Contract.Targets[1].RuntimeRoot)); break;
@@ -68,7 +81,12 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, mutation == "daemon" ? "docker-daemon-correlation-mismatch" : mutation == "unjournaled" ? "unjournaled-prepare-artifacts" : "provenance-or-content-invalid");
     }
     [TestMethod]
-    [DataRow("container")][DataRow("network")][DataRow("volume")][DataRow("named-container")][DataRow("named-network")][DataRow("late")]
+    [DataRow("container")]
+    [DataRow("network")]
+    [DataRow("volume")]
+    [DataRow("named-container")]
+    [DataRow("named-network")]
+    [DataRow("late")]
     public async Task DeploymentResources_BlockAllDeletion_IncludingAfterIntent(string kind)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync();
@@ -91,24 +109,26 @@ public sealed class PartialPrepareRecoveryTests
         Assert.IsTrue(host.DockerCalls.Where(c => c[0] != "context").All(c => c[0] == "--host" && c[1].StartsWith("ssh://", StringComparison.Ordinal)));
     }
     [TestMethod]
-    [DataRow("ownership", false)][DataRow("lock-state", false)][DataRow("ownership", true)]
+    [DataRow("ownership", false)]
+    [DataRow("lock-state", false)]
+    [DataRow("ownership", true)]
     public async Task ByteIdenticalReplacement_IsPreservedAndRejected(string artifact, bool onMove)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); var target = host.Contract.Targets[0];
         var path = artifact == "ownership" ? target.RuntimeRoot + "/.hvo-deploy/ownership" : Path.GetDirectoryName(target.RuntimeRoot) + "/" + SplitHostInventory.LockName(target) + ".state";
-        var physical = host.Physical(path); var expected = File.ReadAllBytes(physical); var fired = false; var seen = 0;
+        var physical = host.Physical(path); var expected = await File.ReadAllBytesAsync(physical); var fired = false; var seen = 0;
         host.BeforePrimitive = (operation, args) =>
         {
             if (fired) return;
             var source = operation == "move" ? args[0] : "";
             var actual = source.StartsWith("/proc/", StringComparison.Ordinal) ? new FileInfo(source).FullName : source;
-            if (onMove ? operation == "move" && Path.GetFileName(actual) == "ownership" : operation == "stat" && args[0] == path && ++seen == 5)
+            if (onMove ? operation == "move" && Path.GetFileName(actual) == "ownership" : operation == "stat" && args[0] == path && ++seen == 6)
             {
                 fired = true; File.Move(physical, physical + ".race-original"); File.WriteAllBytes(physical, expected); File.SetUnixFileMode(physical, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
         };
         await Assert.ThrowsExactlyAsync<InstallerException>(() => host.RunAsync());
-        Assert.IsTrue(fired); CollectionAssert.AreEqual(expected, File.ReadAllBytes(physical)); Assert.IsTrue(File.Exists(physical + ".race-original"));
+        Assert.IsTrue(fired); CollectionAssert.AreEqual(expected, await File.ReadAllBytesAsync(physical)); Assert.IsTrue(File.Exists(physical + ".race-original"));
     }
     [TestMethod]
     public async Task PreexistingRoot_IsRetained_AndForeignUnpreparedTargetIsUntouched()
@@ -128,11 +148,13 @@ public sealed class PartialPrepareRecoveryTests
             var value = Parse(DeploymentFakeHost.Read(path)); value.Array("targets")[1]!["deploymentState"] = "ready"; DeploymentFakeHost.WriteJson(path, value);
         }
         var parent = Path.GetDirectoryName(host.Contract.Targets[1].RuntimeRoot);
-        host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == parent ? "4294967294" + result[result.IndexOf(' ')..] : result;
+        host.PrimitiveResponse = (operation, args, result) => operation == "stat" && args[0] == parent ? "4294967294" + result[result.IndexOf(' ', StringComparison.Ordinal)..] : result;
         await host.RunAsync(); Assert.AreEqual("preserve\n", DeploymentFakeHost.Read(root + "/pre-existing-state"));
     }
     [TestMethod]
-    [DataRow("lock")][DataRow("duplicate")][DataRow("creating-run")]
+    [DataRow("lock")]
+    [DataRow("duplicate")]
+    [DataRow("creating-run")]
     public async Task RetainedPersistentProvenance_RequiresExactCanonicalBytes(string mutation)
     {
         using var host = new DeploymentFakeHost { Mode = "persistent" }; await host.StageAsync(foreign: true);
@@ -155,7 +177,8 @@ public sealed class PartialPrepareRecoveryTests
         Assert.IsFalse(Directory.Exists(host.Physical(host.Prepared[0].RuntimeRoot))); Assert.IsFalse(File.Exists("nope"));
     }
     [TestMethod]
-    [DataRow("logic")][DataRow("east")]
+    [DataRow("logic")]
+    [DataRow("east")]
     public async Task Schema7RetainedBytes_UseHistoricalDockerProject(string name)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(legacy: true); var target = host.Contract.Targets.Single(t => t.Name == name);
@@ -164,7 +187,11 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "unexpected-deployment-resource"); host.Resource = null; var result = await host.RunAsync(inspect: true); Assert.AreEqual(host.Contract.Sha256, result.Text("inventorySha256"));
     }
     [TestMethod]
-    [DataRow("v8-field")][DataRow("collision")][DataRow("historical-path")][DataRow("missing-tmp")][DataRow("root-collision")]
+    [DataRow("v8-field")]
+    [DataRow("collision")]
+    [DataRow("historical-path")]
+    [DataRow("missing-tmp")]
+    [DataRow("root-collision")]
     public async Task Schema7Validation_PreservesHistoricalShapeAndPath(string mutation)
     {
         using var host = new DeploymentFakeHost(); host.Legacy();
@@ -182,7 +209,10 @@ public sealed class PartialPrepareRecoveryTests
         else await Assert.ThrowsExactlyAsync<InstallerException>(() => SplitHostInventory.ReadAsync(host.InventoryPath, "isolated", new ProcessRunner(), CancellationToken.None));
     }
     [TestMethod]
-    [DataRow("ledger")][DataRow("manifest")][DataRow("evidence")][DataRow("commit")]
+    [DataRow("ledger")]
+    [DataRow("manifest")]
+    [DataRow("evidence")]
+    [DataRow("commit")]
     public async Task InterruptedPublication_RepairsOnlyTheNextUncommittedGeneration(string point)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); var fired = false;
@@ -190,7 +220,12 @@ public sealed class PartialPrepareRecoveryTests
         await host.RunAsync(); Assert.IsTrue(fired);
     }
     [TestMethod]
-    [DataRow("manifest")][DataRow("evidence")][DataRow("commit")][DataRow("orphan")][DataRow("generation")][DataRow("resource")]
+    [DataRow("manifest")]
+    [DataRow("evidence")]
+    [DataRow("commit")]
+    [DataRow("orphan")]
+    [DataRow("generation")]
+    [DataRow("resource")]
     public async Task CommittedJournalTampering_IsRejected(string mutation)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); await host.RunAsync(inspect: true);
@@ -205,7 +240,13 @@ public sealed class PartialPrepareRecoveryTests
         await Assert.ThrowsExactlyAsync<InstallerException>(() => host.RunAsync(inspect: true)); Assert.IsTrue(Directory.Exists(host.Physical(host.Prepared[0].RuntimeRoot)));
     }
     [TestMethod]
-    [DataRow("up-ledger.json")][DataRow("down-manifest.json")][DataRow("up-rendered")][DataRow("private")][DataRow("prepare-passed")][DataRow("prepare-empty")][DataRow("preflight")]
+    [DataRow("up-ledger.json")]
+    [DataRow("down-manifest.json")]
+    [DataRow("up-rendered")]
+    [DataRow("private")]
+    [DataRow("prepare-passed")]
+    [DataRow("prepare-empty")]
+    [DataRow("preflight")]
     public async Task IncompleteOrLaterLifecycle_IsRefused(string boundary)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync();
@@ -232,7 +273,10 @@ public sealed class PartialPrepareRecoveryTests
         Assert.AreEqual("failed", Parse(DeploymentFakeHost.Read(host.StateRoot + "/partial-prepare-cleanup-ledger.json")).Text("phaseStatus")); await host.RunAsync();
     }
     [TestMethod]
-    [DataRow("symlink")][DataRow("hardlink")][DataRow("mode")][DataRow("foreign-entry")]
+    [DataRow("symlink")]
+    [DataRow("hardlink")]
+    [DataRow("mode")]
+    [DataRow("foreign-entry")]
     public async Task UnsafeRemoteEntries_RejectDeletion(string kind)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync(); var path = host.Physical(host.Prepared[0].RuntimeRoot) + "/.hvo-deploy/ownership";
@@ -288,6 +332,14 @@ public sealed class PartialPrepareRecoveryTests
         DirectoryInfo? repository = new(AppContext.BaseDirectory);
         while (repository is not null && !File.Exists(repository.FullName + "/scripts/deploy:environment")) repository = repository.Parent;
         Assert.IsNotNull(repository);
+        // During phase-by-phase migration, the remaining shell preflight and typed recovery must use
+        // exactly the same v8 shape predicate. This guard prevents independent schema drift.
+        var inventorySource = DeploymentFakeHost.Read(repository.FullName + "/scripts/deploy/inventory.sh");
+        const string predicateStart = "jq -e --arg mode \"$mode\" '";
+        var predicateAt = inventorySource.IndexOf(predicateStart, StringComparison.Ordinal); Assert.IsTrue(predicateAt >= 0);
+        predicateAt += predicateStart.Length;
+        var predicateEnd = inventorySource.IndexOf("\n    ' \"$inventory\"", predicateAt, StringComparison.Ordinal); Assert.IsTrue(predicateEnd > predicateAt);
+        Assert.AreEqual(inventorySource[predicateAt..predicateEnd].Trim(), SplitHostInventory.Resource("InventoryV8.jq").Trim());
         var runner = new ProcessRunner(); var revision = await runner.RunAsync("git", ["-C", repository.FullName, "rev-parse", "HEAD"], CancellationToken.None);
         host.Inventory["source"]!["revision"] = revision.StandardOutput.Trim(); host.Inventory["images"]!["tag"] = "rev-" + revision.StandardOutput.Trim();
         host.Inventory["secretSource"]!["path"] = host.Directory + "/deploy.env";

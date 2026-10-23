@@ -17,10 +17,11 @@ internal static class SplitHostJson
     public static string Canonical(JsonNode? node) => Sorted(node)?.ToJsonString(Options) ?? "null";
     private static JsonNode? Sorted(JsonNode? node) => node switch
     {
+        null => null,
         JsonObject obj => new JsonObject(obj.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Select(pair => KeyValuePair.Create(pair.Key, Sorted(pair.Value)))),
         JsonArray array => new JsonArray(array.Select(Sorted).ToArray()),
-        _ => node!.DeepClone()
+        _ => node.DeepClone()
     };
     public static JsonObject Parse(string json)
     {

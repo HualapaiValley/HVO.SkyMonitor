@@ -85,7 +85,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
     public async Task<JsonObject> ImportAsync(string input)
     {
         var metadata = Parse(Read(input + "/case.json")); replay = true; LogicalRoot = metadata.Text("fixture");
-        Inventory = Parse(Read(input + "/inventory.json")); WriteJson(InventoryPath, Inventory);
+        Inventory = Parse(Read(input + "/inventory.json")); File.Copy(input + "/inventory.json", InventoryPath);
         foreach (var tree in new[] { "remote", "state", "evidence" }) CopyTree(input + "/" + tree, Directory + "/" + tree);
         var options = metadata["options"]!; RunId = options.Text("--run-id"); Mode = options.Text("--mode");
         var environment = metadata["env"]!;
@@ -142,6 +142,7 @@ internal sealed class DeploymentFakeHost : IDeploymentHost, IDisposable
         Assert.AreEqual("--host", args[0]); var t = Contract.Targets.First(t => "ssh://" + t.SshHost == args[1]);
         if (args[2] == "info") return Result(0, new JsonObject { ["ID"] = BadDaemon == t.Name ? "changed-daemon" : t.DockerDaemonIdentity, ["Name"] = t.HostName, ["Architecture"] = t.Architecture, ["OSType"] = "linux", ["ServerVersion"] = "test" }.ToJsonString());
         if (args[3] == "inspect") return (DockerResources.Contains(t.DockerContext + ":" + args[2] + ":" + args[^1]) || args[^1] == (args[2] == "container" ? PresentContainer : PresentNetwork)) ? Result(0, "\"unexpected\"") : Result(1, "", "Error: No such " + args[2] + ": " + args[^1]);
+        Assert.IsTrue(args.Length > 3 && args[3] == "ls" && args[2] is "container" or "network" or "volume", "Unexpected Docker operation: the recovery fixture permits only inspection and absence queries.");
         if (Resource == t.DockerContext + ":" + args[2] + ":" + args[^1]) { ResourceProbes++; if (ResourceProbes >= ResourceAfter) return Result(0, ResourceOutput); }
         return Result(0, "");
     }

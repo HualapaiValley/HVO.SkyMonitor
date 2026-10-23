@@ -55,8 +55,9 @@ The explicit abrupt-publication failpoint returns 75, as the shell publisher did
 
 ## Comparison and retained inputs
 
-The original shell shard remains authoritative until the complete comparison
-succeeds. The recorded scratch root is
+The original shell shard remained authoritative through the successful complete
+comparison. Its implementation and assertions were removed only after archiving
+the exact tested sources and proof. The recorded scratch root is
 `/tmp/hvo-skymonitor-1588-implementation.EyRt3Q`.
 
 - `before/` retains the exact original phase/shard/coordinator sources.
@@ -65,15 +66,21 @@ succeeds. The recorded scratch root is
 - `comparison-source/` retains the original shell with an observation-only
   wrapper that snapshots each command input and result. `record-phase.py` is the
   wrapper source; no recovery logic is replaced by it.
-- `parity-complete-inputs/case-*/` retain the exact inventory bytes, before-state,
+- `parity-final-inputs/case-*/` retain the exact inventory bytes, before-state,
   before-evidence, remote filesystem fixture, fake Docker state, fault options,
   command arguments, exit result, output, after-state/evidence and per-command
   GNU time output.
 - `PartialPrepareParityTests.RetainedShellCycle_MatchesTypedResultsAndDurableEvidence`
   replays every retained input through the real typed phase and typed fake host.
-  It compares exit codes and all phase journal/evidence fields. Only wall-clock
-  timestamp values are normalized. Each candidate commit digest is independently
-  checked against its unmodified canonical ledger before digest normalization.
+  It compares exit codes, both phase-file inventories, every phase journal/evidence
+  field, timestamp key presence, and remote filesystem paths, types, modes and
+  content checksums. Only wall-clock timestamp values are normalized. Both shell
+  and typed commit digests are independently checked against their unmodified
+  canonical ledgers before digest normalization.
+- `pre-cutover-proof/` retains the committed source archive at `8594b5c0`, the
+  exact tested worktree patch and C# sources, and the successful 45-vector JSON
+  result with its checksum. This archive was created before removing either the
+  superseded implementation or its assertions.
 - Original failed focused logs/TRX and comparison attempts remain alongside the
   corrected results. They are never overwritten with passing logs.
 
@@ -92,11 +99,42 @@ Docker resources. The design's historical 77-second partial-prepare result is a
 separate measurement from main run 35280447884, not this before value.
 
 The direct comparison uses the same 45 input vectors and failed/successful state
-boundaries for both implementations. Shell timings are retained per invocation;
-the typed replay records elapsed phase time and test-host peak RSS, with the
-same Release configuration and fixture input bytes. Fixture snapshot/copy time is
-reported separately from phase time. This slice makes no whole-lane speed,
-production-network, ARM64, physical-device or release-qualification claim.
+boundaries. Their immutable inventories name `8594b5c0`; the recovery shell code
+is byte-identical to the starting revision, retained in `comparison-source/`.
+The typed tested source is exactly the `pre-cutover-proof/` archive plus patch.
+Both execute on the same native host and disposable filesystem inputs, with the
+CLI test assembly built in Release. `phase-resource-summary-initial.json` records:
 
-Final comparison results, immutable candidate range, selector output and candidate
-gates are recorded in the issue/PR evidence ledger and retained evidence bundle.
+| Equivalent 45-vector phase work | Shell | Typed |
+| --- | ---: | ---: |
+| Sum of phase wall time | 44.01 s | 1.327 s |
+| Peak RSS | 12032 KiB maximum child | 117548 KiB test host |
+
+Shell timings come from each retained `shell.time`; typed phase time is the sum
+of stopwatches around the real phase calls, excluding fixture copying. RSS scopes
+differ: the typed value includes the resident .NET/MSTest host and its fixture,
+whereas the shell value is the largest command child. The higher typed RSS is a
+runtime/test-host cost and is explicitly retained; these figures do not establish
+production working set or the RSS of an installed CLI invocation. The unchanged
+whole-shell-shard value above includes fixture setup and assertions and must not
+be substituted for phase time. The separate Manual replay's GNU time output is
+`typed-parity.time`, with discovery and fixture copying included.
+
+Reproduction (all evidence paths are under the recorded scratch root): capture
+with `comparison-source/scripts/test:deploy-environment --shard partial-prepare`,
+using `record-phase.py`; replay with `HVO_PARTIAL_PREPARE_PARITY=<scratch>/parity-final-inputs`
+and `dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --configuration Release
+--filter FullyQualifiedName~PartialPrepareParityTests`. The retained source,
+wrapper, environment manifest, raw per-vector timings and result JSON make both
+sides reproducible without live hosts. Use the shared heavy-gate flock and the
+repository's build flags when rerunning.
+
+The expanded migrated shard has 78 native Unit cases. Like the existing installer
+contracts, those cases and the Manual replay declare their Linux-only descriptor
+semantics explicitly. The macOS inventory retains their discovered cases and adds
+the 78 new recovery cases plus seven Linux-only exit rows to its skip pin; no
+Linux case is skipped. The migrated shard is a superset, so its
+wall time is not an identical-workload comparison. This slice makes no whole-lane
+speed, production-network, ARM64, physical-device or release-qualification claim.
+Final immutable candidate range, selector output and candidate gates are recorded
+in the issue/PR evidence ledger and retained evidence bundle.

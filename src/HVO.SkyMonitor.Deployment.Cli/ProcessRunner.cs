@@ -46,29 +46,43 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
             throw new InstallerException($"Required command '{fileName}' is unavailable.", exception);
         }
 
-        var outputTask = ReadOutputAsync(process.StandardOutput, process, timeout.Token);
-        var errorTask = ReadOutputAsync(process.StandardError, process, timeout.Token);
+        Action stop = () => Kill(process);
+        var outputTask = ReadOutputAsync(process.StandardOutput, stop, timeout.Token);
+        var errorTask = ReadOutputAsync(process.StandardError, stop, timeout.Token);
         try
         {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                Kill(process);
+                throw new InstallerException($"Required command '{fileName}' exceeded its ten-minute deadline.");
+            }
+            catch (OperationCanceledException)
+            {
+                Kill(process);
+                throw;
+            }
+            return new ProcessResult(
+                process.ExitCode,
+                await outputTask.ConfigureAwait(false),
+                await errorTask.ConfigureAwait(false));
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        finally
         {
-            Kill(process);
-            throw new InstallerException($"Required command '{fileName}' exceeded its ten-minute deadline.");
+            if (!outputTask.IsCompleted || !errorTask.IsCompleted) Kill(process);
+            try { await Task.WhenAll(outputTask, errorTask).ConfigureAwait(false); }
+            catch (Exception exception) when (exception is OperationCanceledException or IOException or InstallerException)
+            {
+                // The command path above reports the original failure. Both pipe readers must finish before
+                // their process and cancellation source are disposed, including an output-limit failure.
+            }
         }
-        catch (OperationCanceledException)
-        {
-            Kill(process);
-            throw;
-        }
-        return new ProcessResult(
-            process.ExitCode,
-            await outputTask.ConfigureAwait(false),
-            await errorTask.ConfigureAwait(false));
     }
 
-    private async Task<string> ReadOutputAsync(StreamReader reader, Process process, CancellationToken token)
+    private async Task<string> ReadOutputAsync(StreamReader reader, Action stop, CancellationToken token)
     {
         if (maximumOutputCharacters is null) return await reader.ReadToEndAsync(token).ConfigureAwait(false);
         var output = new System.Text.StringBuilder();
@@ -79,7 +93,7 @@ internal sealed class ProcessRunner(int? maximumOutputCharacters = null) : IProc
             if (count == 0) return output.ToString();
             if (output.Length + count > maximumOutputCharacters)
             {
-                Kill(process);
+                stop();
                 throw new InstallerException("Required command output exceeded its configured limit.");
             }
             output.Append(buffer, 0, count);

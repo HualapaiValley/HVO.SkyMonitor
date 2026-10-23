@@ -30,7 +30,8 @@ internal sealed class DeploymentFakeFiles : IDeploymentFiles
             case "mounts": return Convert.ToBase64String(File.ReadAllBytes("/proc/self/mountinfo"));
             case "move":
                 using (var parent = NativeLinux.OpenDirectoryNoFollow(Path.GetDirectoryName(path)! + "/.")) NativeLinux.RenameNodeAt(parent, Path.GetFileName(path), Path.GetFileName(args[1])); return "moved";
-            case "unlink": case "rmdir":
+            case "unlink":
+            case "rmdir":
                 using (var parent = NativeLinux.OpenDirectoryNoFollow(Path.GetDirectoryName(path)! + "/.")) NativeLinux.UnlinkNodeAt(parent, Path.GetFileName(path), operation == "rmdir"); return "removed";
             case "sync": NativeLinux.FlushDirectory(path + "/."); return "synced";
             default: throw new InvalidOperationException("Unexpected host primitive " + operation);

@@ -351,7 +351,7 @@ Do not use normal `down` when prepare failed and `up` never ran. Inspect the
 retained run first without changing a target:
 
 ```bash
-./scripts/deploy:environment partial-prepare-cleanup \
+hvo-sky-install partial-prepare-cleanup \
   --inventory /absolute/path/inventory.yml \
   --mode persistent \
   --run-id d331-0821171819 \
@@ -359,6 +359,13 @@ retained run first without changing a target:
   --evidence-root /absolute/path/to/d331-0821171819/evidence \
   --dry-run
 ```
+
+This recovery phase is owned by the typed `Deployment.Cli` command. Use the
+matching self-contained installer, or from a source checkout run
+`dotnet run --project src/HVO.SkyMonitor.Deployment.Cli --configuration Release -- partial-prepare-cleanup ...`.
+The old `scripts/deploy:environment partial-prepare-cleanup` spelling delegates to
+that same CLI. Linux, authenticated OpenSSH, Bash/coreutils, jq, and the Docker CLI
+remain required on the control/target boundaries; no container is created.
 
 The command requires the original canonical inventory and retained passed
 preflight plus failed prepare ledger, manifest, and evidence. Their run ID,
@@ -388,7 +395,7 @@ After reviewing that evidence, remove only artifacts proven to have been
 created by the failed run:
 
 ```bash
-./scripts/deploy:environment partial-prepare-cleanup \
+hvo-sky-install partial-prepare-cleanup \
   --inventory /absolute/path/inventory.yml \
   --mode persistent \
   --run-id d331-0821171819 \
