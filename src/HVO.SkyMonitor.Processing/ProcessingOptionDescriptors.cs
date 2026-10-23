@@ -515,5 +515,6 @@ public static class ProcessingNodeOptionsDescriptors
         [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
-            CloudAssessmentOptionDescriptors.Descriptor];
+            CloudAssessmentOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
+            CalibrationOptionDescriptors.References];
 }

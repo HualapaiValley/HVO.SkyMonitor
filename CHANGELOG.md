@@ -58,6 +58,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+- CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
 
 - CameraAgent graph drafts expose the existing cloud-assessment output route, grid, transmission/support/saturation thresholds and tile mask, with validation and explicit activation or rollback while retaining opaque clear-reference provisioning. (#1565)
 
