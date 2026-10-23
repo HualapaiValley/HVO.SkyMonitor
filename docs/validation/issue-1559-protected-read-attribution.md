@@ -7,6 +7,11 @@ introduces no cache, identity authority, validation shortcut, or installer chang
 #1041 remains open; executable optimization belongs to a later measured slice.
 The historical 35,049 ms observation is not a measurement of this candidate.
 
+This record describes the #1559 baseline. The later [#1591 same-load reuse
+measurement](issue-1591-schedule-validation-reuse.md) implements and measures the
+bounded follow-up below; its source pins and results are separate from this
+historical attribution run.
+
 ## Scope and method
 
 The harness calls the real token-authenticated
