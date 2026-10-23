@@ -18,15 +18,17 @@ public sealed class CentralSceneAnnotationGoldenTests
         ProcessingInputSelector.RecipeResult(FrameArtifactRole.Preview, "preview", new string('B', 64));
 
     // Computed by feature/518-resolved-sun-moon 6bbaf8ea, before central annotation read resolved footprints, for the
-    // projected-scene-v1 artifact below. A v1 scene keeps these exact provenance, identity and rendered bytes.
+    // projected-scene-v1 artifact below. A v1 scene keeps these exact provenance and rendered bytes; its identity moved
+    // with the Annotation Definition's projected-annotation-v4 implementation version (#526, measured label policy).
     private const string V1ProvenanceSha256 = "027FF72064484A7A6ADA9E885F74A6FA8B91CDFFC76F8AD762C88703DFE5FA4E";
-    private const string V1IdentitySha256 = "B0A0AAA40F21429A53ECF60BB7655B6CD58D3692DF0133ED8FCAE5999FFB5726";
+    private const string V1IdentitySha256 = "5C41AC5ADCB9F6AD911E824155A316AC3CBCB0FCEDD6755B6B89F154F9EB4543";
     private const string V1RenderSha256 = "5D91A7B5DDC7135E6E7300B4B3A9DF8CFACB3A7CFF3963C91034620B3E2296B4";
 
     // Computed by the #518 r0 F1 correction, which binds the resolved outline into the central projected-scene-v2
-    // annotation; the point-mark mapping of the same scene has a different identity, asserted below.
+    // annotation; the point-mark mapping of the same scene has a different identity, asserted below. The identity moved
+    // with projected-annotation-v4 (#526); provenance and rendered bytes did not.
     private const string V2ProvenanceSha256 = "8766346CA743E5FCEDE734F62D1288884A79B6A3A540EF6E24072414AA6A3333";
-    private const string V2IdentitySha256 = "A16DE0635BAF3BE29DBB7CDCE772A57BE34A895C6372A861CD353F42D9DA67DA";
+    private const string V2IdentitySha256 = "ABC6A43A6E87A4119561A4F4167B108DFD6B3C45734CED16C90CBD4610674284";
     private const string V2RenderSha256 = "433F4B78F60CE243B468B63ECF0B1A10F8AF265CE6CBE70D04BC129C884330D6";
 
     [TestMethod]

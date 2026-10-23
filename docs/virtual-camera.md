@@ -543,12 +543,20 @@ display pixels together with the point objects. Inputs without footprints,
 including every `projected-scene-v1` scene and the standalone CameraAgent path,
 render the released bytes. Golden hashes pin this.
 
-The presentation layers have since changed twice: #1383 restored the original
-overlay colours in `projected-scene-presentation-v11-original-colours`, so
-footprint outlines and point markers are drawn in the marker grey, and #1415
+The presentation layers have since changed three times: #1383 restored the
+original overlay colours in `projected-scene-presentation-v11-original-colours`,
+so footprint outlines and point markers are drawn in the marker grey, and #1415
 drew the point marker as the original plain circle outline, without the
-crosshair, in `projected-scene-presentation-v12-plain-circle-markers`. The
-layers' golden hash pins the v12 bytes. The Annotation raster is unchanged.
+crosshair, in `projected-scene-presentation-v12-plain-circle-markers`. #526
+then gated star labels on measured associations, in
+`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`: a star
+label is drawn only for a policy-eligible measured association, or marked as
+expected when expected-position diagnostics are requested, and the markers stay.
+The layers' golden hash pins the v13 bytes, and pins the v12 bytes for a scene
+in which every star is measured. #1383 and #1415 left the Annotation raster
+unchanged; #526 applies the same label policy to it under Annotation Definition
+`projected-annotation-v4`, and only expected-position diagnostics select the
+`projected-annotation-raster-v5-bounded-expected-labels` renderer.
 
 Reference values come from offline JPL Horizons responses in
 `tests/fixtures/horizons/issue-518/`:

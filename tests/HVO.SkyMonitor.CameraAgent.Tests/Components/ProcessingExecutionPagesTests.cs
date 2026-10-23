@@ -54,6 +54,38 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void MixedGainDiagnosticsShowsExclusionsClippingAndNoMeasurement()
+    {
+        using var context = new BunitContext();
+        var node = new CameraAgentProcessingNodeView("mixed", true, new string('A', 64), "Completed", null,
+            1, Now, Now, [], [], [])
+        {
+            NormalizationPlanIdentitySha256 = new string('B', 64),
+            NormalizationInputs =
+            [
+                new(-3, CaptureId, Guid.NewGuid(), 0, "excluded", "calibration.family.master-missing"),
+                new(-2, CaptureId, Guid.NewGuid(), 121, "excluded", "normalization.coefficient-ratio-exceeded"),
+                new(-1, CaptureId, Guid.NewGuid(), 0, "excluded", "calibration.family.identity-mismatch")
+            ],
+            MixedGainDiagnostics = new(MixedGainDiagnosticsV1.CurrentSchemaVersion,
+                new string('B', 64), new string('C', 64), new string('D', 64), 10, 10, 100, 2, 3, 4,
+                [new(Guid.NewGuid(), 5, 6)], [])
+        };
+        var cut = context.Render<MixedGainDiagnostics>(parameters => parameters.Add(component => component.Node, node));
+        var text = cut.Find("section").TextContent;
+        StringAssert.Contains(text, "Clipped low: 2", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Clipped high: 3", StringComparison.Ordinal);
+        StringAssert.Contains(text, "No measurement: 4 of 100", StringComparison.Ordinal);
+        StringAssert.Contains(text, "does not establish zero flux", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Saturated samples", StringComparison.Ordinal);
+        foreach (var input in node.NormalizationInputs) StringAssert.Contains(text, input.ExclusionReason!, StringComparison.Ordinal);
+        cut.Render(parameters => parameters.Add(component => component.Node, node with
+        { MixedGainDiagnostics = null, MixedGainDiagnosticsUnavailableReason = "Diagnostic evidence is missing or corrupt; counts are unavailable." }));
+        StringAssert.Contains(cut.Markup, "counts are unavailable", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Markup.Contains("Clipped low: 0", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ExecutionsPage_SeparatesLiveAndReplayAndMarksActiveWork()
     {
         using var context = new BunitContext();

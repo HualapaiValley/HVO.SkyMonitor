@@ -15,9 +15,10 @@
             <dt>First received</dt><dd>@exact.Capture.FirstReceivedAtUtc.ToString("u")</dd>
         </dl>
         <p>Capture time and receipt time are independent. This retained image does not establish current fleet health.</p>
-        <CascadingValue Value="detail" IsFixed="false">
+        @* Replace the cascades together so an immediate refresh cannot notify the retiring viewer first. *@
+        <CascadingValue @key="generation" Value="detail" IsFixed="false">
             <CascadingValue Value="selection" IsFixed="false">
-                <ExactCaptureViewer @key="generation" CaptureId="exact.Capture.CaptureId" ReadOnly="true" />
+                <ExactCaptureViewer CaptureId="exact.Capture.CaptureId" ReadOnly="true" HeadingLevel="3" />
             </CascadingValue>
         </CascadingValue>
         <details>

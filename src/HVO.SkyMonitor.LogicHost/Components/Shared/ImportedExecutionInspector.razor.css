@@ -1,0 +1,20 @@
+.imported-inspector, section, details, li, dd { min-width: 0; overflow-wrap: anywhere; }
+.imported-inspector { display: grid; gap: 1rem; }
+.imported-protected { display: grid; gap: 1rem; min-width: 0; }
+header, section, details { border: 1px solid var(--bs-border-color, #40516a); border-radius: .5rem; padding: .85rem; }
+section section { margin-top: 1rem; }
+header p { margin-bottom: .75rem; }
+li { margin-bottom: .8rem; }
+li > span { display: block; }
+nav { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1rem; }
+a { display: inline-block; padding: .35rem .1rem; }
+button, input { min-height: 44px; max-width: 100%; border: 1px solid #7187a7; border-radius: .3rem; background: #162338; color: #f1f5ff; padding: .5rem .7rem; }
+button { cursor: pointer; } button:disabled { opacity: .6; }
+form { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+input { width: 24rem; min-width: 0; }
+dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .4rem 1rem; }
+dd { margin: 0; }
+pre { max-height: 24rem; white-space: pre-wrap; overflow-wrap: anywhere; color: inherit; }
+summary { min-height: 44px; cursor: pointer; }
+:is(a, button, input, summary):focus-visible, [tabindex="-1"]:focus { outline: 3px solid #8ed5ff; outline-offset: 3px; }
+@media (max-width: 560px) { dl { grid-template-columns: minmax(0, 1fr); } dd { margin-bottom: .6rem; } header, section, details { padding: .6rem; } ul, ol { padding-left: 1.2rem; } }

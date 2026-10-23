@@ -22,6 +22,86 @@ public sealed class ExactCaptureViewerTests
     private static readonly Guid CaptureB = Guid.Parse("6d1c2a4e-3b7f-4e0a-9c21-5a8b7e2f0002");
 
     [TestMethod]
+    public void HeadingTree_StandaloneCaptureKeepsItsPageHeadingAndSubsections()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out _);
+        var host = RenderViewer(context, CaptureA, Detail(CaptureA));
+
+        host.FindAll("h1,h2,h3,h4,h5,h6").Select(h => (h.LocalName, h.TextContent))
+            .Should().Equal(("h1", $"Capture {CapturedAt(CaptureA):u}"),
+                ("h2", "Archived scene layers"), ("h2", "Capture provenance"));
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(2)]
+    [DataRow(3)]
+    [DataRow(4)]
+    public void HeadingTree_UsesBoundedNativeLevelsForEverySubsection(int level)
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out _);
+        var detail = Detail(CaptureA);
+        detail = detail with
+        {
+            Provenance = detail.Provenance with
+            {
+                Profiles = [new(CentralProfileKind.Rig, "Capture rig", "v1", new string('a', 64))]
+            }
+        };
+
+        var host = RenderViewer(context, CaptureA, detail, headingLevel: level);
+
+        host.FindAll("h1,h2,h3,h4,h5,h6").Select(h => (h.LocalName, h.TextContent))
+            .Should().Equal(($"h{level}", $"Capture {CapturedAt(CaptureA):u}"),
+                ($"h{level + 1}", "Archived scene layers"), ($"h{level + 1}", "Capture provenance"),
+                ($"h{level + 2}", "Capture-time profiles"));
+        host.FindAll("h1,h2,h3,h4,h5,h6").Select(h => h.ClassName)
+            .Should().Equal("h1", "h4 mb-0", "h5", "h6 mt-3");
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(5)]
+    public void HeadingTree_RejectsLevelsThatCannotContainAllSubsections(int level)
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out _);
+
+        Action render = () => RenderViewer(context, CaptureA, Detail(CaptureA), headingLevel: level);
+
+        render.Should().Throw<ArgumentOutOfRangeException>().WithParameterName("HeadingLevel");
+        presentations.Requests.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void HeadingTree_LevelChangePreservesTheExistingPresentationAndControls()
+    {
+        var presentations = new RecordingPresentations(id => Found(Presentation(id)));
+        using var context = CreateContext(presentations, out _);
+        var detail = Detail(CaptureA);
+        var host = RenderViewer(context, CaptureA, detail);
+        var viewer = host.FindComponent<ExactCaptureViewer>().Instance;
+        var presentation = viewer.Presentation;
+        var imageKey = viewer.BaseImageKey;
+        var controls = host.Find(".layer-controls").OuterHtml;
+
+        host.Render(parameters => parameters.Add(cascade => cascade.Value, detail)
+            .AddChildContent<ExactCaptureViewer>(viewer => viewer.Add(c => c.CaptureId, CaptureA)
+                .Add(c => c.HeadingLevel, 3)));
+
+        host.Find("h3").TextContent.Should().Be($"Capture {CapturedAt(CaptureA):u}");
+        host.FindComponent<ExactCaptureViewer>().Instance.Should().BeSameAs(viewer);
+        viewer.Presentation.Should().BeSameAs(presentation);
+        viewer.BaseImageKey.Should().Be(imageKey);
+        host.Find("img").GetAttribute("src").Should().Be(BasePath(CaptureA));
+        host.Find(".layer-controls").OuterHtml.Should().Be(controls);
+        presentations.Requests.Should().Equal(CaptureA);
+        context.JSInterop.VerifyInvoke("bindLayerToggles", 1);
+    }
+
+    [TestMethod]
     public void PlainPreviewWithoutAnnotation_RendersTheExactBaseWithNoLayerControls()
     {
         var presentations = new RecordingPresentations(id => Found(Presentation(id, layers: false)));
@@ -398,11 +478,13 @@ public sealed class ExactCaptureViewerTests
         Guid captureId,
         OperationsCaptureDetail detail,
         string? statusMessage = null,
-        Action<Guid>? stackSaved = null)
+        Action<Guid>? stackSaved = null,
+        int headingLevel = 1)
         => context.Render<CascadingValue<OperationsCaptureDetail>>(parameters => parameters
             .Add(cascade => cascade.Value, detail)
             .AddChildContent<ExactCaptureViewer>(viewer => viewer
                 .Add(component => component.CaptureId, captureId)
+                .Add(component => component.HeadingLevel, headingLevel)
                 .Add(component => component.StatusMessage, statusMessage)
                 .Add(component => component.StackSaved, stackSaved ?? (_ => { }))));
 

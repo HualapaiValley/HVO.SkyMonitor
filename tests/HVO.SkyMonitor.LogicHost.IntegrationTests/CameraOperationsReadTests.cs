@@ -732,6 +732,8 @@ internal sealed class CameraOperationsSeed
                 {
                     ExecutionClass = CentralProcessingGraphExecutionClass.Replay,
                     Status = CentralProcessingGraphExecutionStatus.Pending,
+                    ExpectedNodeCount = target == camera && index == 0 ? 3 : 0,
+                    ExpectedOutputCount = target == camera && index == 0 ? 3 : 0,
                     RevisionId = revision.Id,
                     RequestIdentitySha256 = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
                     DefinitionIdentitySha256 = revision.DefinitionIdentitySha256,
@@ -769,6 +771,8 @@ internal sealed class CameraOperationsSeed
                             node.SharedNodePlanIdentitySha256 = new string('a', 64);
                             node.FrozenNodePlanJson = "{}";
                             node.GraphFailurePolicy = ProcessingGraphNodeFailurePolicy.Required;
+                            node.Status = CentralDerivativeJobStatus.TerminalFailure;
+                            node.AvailableAtUtc = null;
                             db.Add(node);
                             seed.Jobs.Add(node.Id);
                             db.Add(new CentralDerivativeJobOutput
@@ -787,6 +791,14 @@ internal sealed class CameraOperationsSeed
                 if (index % 500 == 499) await SaveAndClearAsync(db).ConfigureAwait(false);
             }
             await SaveAndClearAsync(db).ConfigureAwait(false);
+            // Read-history fixtures finish the normal sealing transition with their actual frozen counts.
+            // Their terminal nodes keep later shared-fixture workers and health checks scoped to live test work.
+            await db.CentralProcessingGraphExecutions.Where(item => item.LogicalCameraId == target.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.ExpandedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc)
+                    .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                    .SetProperty(item => item.CompletedAtUtc, item => (DateTimeOffset?)item.CreatedAtUtc))
+                .ConfigureAwait(false);
             for (var index = 0; index < proposals; index++)
             {
                 var installation = installations[index % installations.Length];

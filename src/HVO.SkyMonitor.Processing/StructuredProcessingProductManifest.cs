@@ -108,6 +108,7 @@ public static class StructuredProcessingProductContracts
 {
     public const string ProjectedSceneMediaType = "application/vnd.hvo.projected-scene+json";
     public const string CloudAssessmentMediaType = "application/vnd.hvo.cloud-assessment+json";
+    public const string MeasuredStellarAssociationsMediaType = "application/vnd.hvo.measured-stellar-associations+json";
 
     public static bool IsSupported(string mediaType, string schemaVersion)
         => (mediaType, schemaVersion) switch
@@ -116,6 +117,7 @@ public static class StructuredProcessingProductContracts
             (ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion) => true,
             (ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion) => true,
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
+            (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SemanticSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.PreviousSchemaVersion) => true,
@@ -138,7 +140,7 @@ public static class StructuredProcessingProductContracts
                 string.Equals(productSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion, StringComparison.Ordinal));
 
     public static bool IsSupportedMediaType(string mediaType)
-        => mediaType is ProjectedSceneMediaType or CloudAssessmentMediaType or
+        => mediaType is ProjectedSceneMediaType or CloudAssessmentMediaType or MeasuredStellarAssociationsMediaType or
             PresentationLayerPayloadJson.MediaType or PresentationProcessingProducts.ManifestMediaType or
             PresentationMetadataFactsProductV1.MediaType;
 }

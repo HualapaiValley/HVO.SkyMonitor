@@ -23,6 +23,14 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+- Capture headings in LogicHost Current Sky and camera archive detail now nest coherently for screen-reader navigation, while standalone capture detail retains its page heading. (#1548)
+
+
+- LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
+
+- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
+
+- Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
 
 - CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
 
@@ -41,6 +49,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+- LogicHost camera workspaces now inspect immutable imported CameraAgent execution evidence, exact input/output lineage and independent receipt and byte observations, with bounded history and comparison to an explicitly selected central execution. (#1240)
+- LogicHost exposes authorized, bounded mappings and exact-artifact reconciliation observations for retained imported execution evidence. (#1554)
 
 - Operators can filter and page a logical camera’s retained archive, open an exact capture across installation replacements, and return to the same page and item with explicit unavailable-content and bounded-trace states. #1536
 
@@ -50,7 +60,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - LogicHost camera-scoped operations history under `/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`: graph assignments (`processing-graph-assignments?targetHost=`), central executions with a node-paged inspector, jobs by capture with an inspector whose attempts, inputs and outputs page separately, delivery proposals with their stored terminal and latest facts and a fact page, and transient-event associations. Every collection is keyset paged (`take` 1–50, opaque `cursor`), covers retired and replaced installations, requires current membership of the camera's observatory, and rejects a continuation reused for another camera, list or filter. "Staged" appears only as a labelled, timestamp-free derivation: an Accepted proposal that was never activated or whose latest lifecycle fact is a rollback. `GET /api/internal/processing-graphs/revision-summaries` pages the global graph catalog beyond its latest 100 revisions without definition documents. (#1237)
 
-- Groundwork for stacking frames captured at different gains: versioned gain-response and normalization-policy contracts with exactly reproducible electrons-per-ADU coefficients for the VirtualSky ASI174MM model and the configured virtual ASI178MC and ASI676 profiles. The policy records the approved choices (electron-space combination at a fixed reference gain, a 4:1 coefficient limit, equal weights and strict exclusion when calibration is missing). Physical cameras report normalization as unavailable, and stacking still requires identical gain. (#1475)
+- CameraAgent can opt in to calibrated mixed-gain night stacks with VirtualSky simulation responses: stacks retain their depth across automatic gain steps, use a fixed ×16 reference-gain scale and a 4:1 coefficient bound, and retain byte-exact archived replay. Execution details show frozen frame exclusions, saturation and invalid samples, no-coverage sites and low/high output clipping; physical-camera mixed-gain operation remains unavailable. (#1515)
 
 - CameraAgent's new Space weather page lists active, pending, recent and paged SWPC notices with source freshness, drift and halts, and offers Refresh now, Resume and Acknowledge. Each notice keeps SWPC's own activity apart from the relevance at the site's geomagnetic latitude and its daylight limits; relevance is an HVO SkyMonitor estimate, not a NOAA statement, and cloud is not assessed. The Overview adds a compact summary and attention items, Automations offers guided setup of the refresh schedule, the `spaceWeather` settings switch turns the feature on after a restart, and System health lists Space weather. (#1398)
 
@@ -103,6 +113,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Star labels require an eligible measured stellar association; optional expected-position diagnostics label unmeasured stars explicitly as expected. The opt-in measured-association recipe preserves capture, scene and catalog lineage through durable edge publication and authorized central processing. (#1540)
+
 - A space-weather refresh uses less CPU and memory. Measured on a stress tick with a 1 MiB alerts body, it allocates
   about 14 MiB instead of 115 MiB and takes about a third of the time. A simulated day of refreshes uses about 40% of
   the CPU and a sixth of the allocation. The store keeps its schema, stored formats and fingerprints, and still
@@ -138,6 +150,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   Refresh image skips the wait. (#1382)
 
 ### Fixed
+
+- Stopping central graph recovery no longer reports an aborted SQL command as a database outage; faults while recovery is running still degrade health. (#1540)
 
 - Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
 

@@ -395,6 +395,17 @@ internal sealed partial class CaptureProcessingPersistence(
                         checkedOutput = candidate.OutputIdentitySha256;
                         continue;
                     }
+                    if (candidate.AvailabilityState == "Available" && candidate.Role == FrameArtifactRole.Metadata &&
+                        heldAbsolutePaths.Count > 0 &&
+                        await _store.ReadMixedGainCompanionAnchorAsync(candidate.OutputIdentitySha256, cancellationToken)
+                            .ConfigureAwait(false) is { } anchor &&
+                        (heldAbsolutePaths.Contains(ResolveSafePath(anchor.PayloadRelativePath)) ||
+                         heldAbsolutePaths.Contains(ResolveSafePath(anchor.SidecarRelativePath))))
+                    {
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        continue;
+                    }
                     if (!unavailable)
                     {
                         bool sceneHeld;

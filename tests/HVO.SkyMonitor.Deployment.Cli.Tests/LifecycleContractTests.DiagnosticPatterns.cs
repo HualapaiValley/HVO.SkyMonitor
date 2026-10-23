@@ -32,6 +32,7 @@ public sealed partial class LifecycleContractTests
         var corpus = Diagnostic1491Corpus(10_000).Concat(Diagnostic1491ReviewRows).Concat(Diagnostic1499Cases().Select(row => (string)row[2]).Distinct())
             .Concat(Diagnostic1509Cases().Select(row => (string)row[1]).Distinct())
             .Concat(Diagnostic1523Cases().Select(row => (string)row[1]).Distinct())
+            .Concat(Diagnostic1569Cases().Select(row => (string)row[0]).Distinct())
             .Concat(["<redacted>… tail", @"\u003Credacted\u003E\u2026 tail", @"\\u003credacted\\u003e\\u2026 tail",
                 @"<redacted>\u2026 tail", @"\u003Credacted>… tail", "<redacted> tail", @"\u003Credacted\u003E\u202"])
             .ToList();

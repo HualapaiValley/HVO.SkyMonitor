@@ -469,6 +469,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IProcessingGraphDeliveryService, ProcessingGraphDeliveryService>();
         builder.Services.AddScoped<IProcessingGraphProposalReadService, ProcessingGraphProposalReadService>();
         builder.Services.AddScoped<ICameraOperationsReadService, CameraOperationsReadService>();
+        builder.Services.AddScoped<IImportedExecutionInspectorReadService, ImportedExecutionInspectorReadService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
         builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()
@@ -904,6 +905,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<CentralProjectedSceneResolver>();
+        builder.Services.AddScoped<CentralMeasuredAssociationSceneReader>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<CentralDerivativeJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobService>(
