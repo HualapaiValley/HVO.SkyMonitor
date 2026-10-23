@@ -180,6 +180,10 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
             "Calibration" => "calibration",
+            "Preview" => "preview",
+            "CalibratedPreview" => "calibrated-preview",
+            "CombinedPreview" => "combined-preview",
+            "JpegEncoding" => "jpeg-encoding",
             _ => "constellations"
         };
         var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);

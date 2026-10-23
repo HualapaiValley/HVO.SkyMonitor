@@ -56,6 +56,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("WeatherCloudOverlay")]
     [DataRow("CloudAssessment")]
     [DataRow("Calibration")]
+    [DataRow("Preview")]
+    [DataRow("CalibratedPreview")]
+    [DataRow("CombinedPreview")]
     public void TogglePanelSavesOnlyTheEditedMemberWithAccessibleLabels(string alias)
     {
         using var context = new BunitContext();
@@ -85,6 +88,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("WeatherCloudOverlay")]
     [DataRow("CloudAssessment")]
     [DataRow("Calibration")]
+    [DataRow("Preview")]
+    [DataRow("CalibratedPreview")]
+    [DataRow("CombinedPreview")]
     public void UnchangedSaveAndRestoredToggleDoNotMaterializeDefaults(string alias)
     {
         using var context = new BunitContext();
@@ -132,6 +138,10 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("WeatherCloudOverlay")]
     [DataRow("CloudAssessment")]
     [DataRow("Calibration")]
+    [DataRow("Preview")]
+    [DataRow("CalibratedPreview")]
+    [DataRow("CombinedPreview")]
+    [DataRow("JpegEncoding")]
     public void DeniedRevisionShowsNoOptionsOrSave(string alias)
     {
         using var context = new BunitContext();
