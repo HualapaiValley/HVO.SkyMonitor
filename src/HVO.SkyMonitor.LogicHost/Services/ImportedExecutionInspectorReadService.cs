@@ -117,7 +117,7 @@ internal sealed class ImportedExecutionInspectorReadService(ApplicationDbContext
                             reference, exact.CaptureId, exact.ArtifactId, user, credential, cancellationToken).ConfigureAwait(false);
                         if (observations is null) return null;
                         result = result with { Reconciliation = observations };
-                        if (observations.Observations.FirstOrDefault()?.State == "Available")
+                        if (observations.Observations.Count > 0 && observations.Observations[0].State == "Available")
                         {
                             // Producer CaptureId is CentralFrame.FrameId; the archive route takes CentralFrame.Id.
                             // Resolve this through the exact artifact and retained binding, never by assuming UUID equality.
