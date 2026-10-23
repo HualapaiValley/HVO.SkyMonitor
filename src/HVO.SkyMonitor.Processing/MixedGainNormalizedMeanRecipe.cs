@@ -311,7 +311,7 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             masterOrder.Add(artifact);
         }
 
-        var pixels = Compute(plan, selected, lights, masters, mapping, out var planeFailure, cancellationToken);
+        var pixels = Compute(plan, selected, lights, masters, mapping, out var planeFailure, out var counts, cancellationToken);
         if (pixels is null)
         {
             return planeFailure!;
@@ -333,7 +333,33 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
             [.. lights, .. masterOrder],
             TimeSpan.FromTicks(selected.Sum(static input => input.Exposure.Ticks)),
             compatibility);
-        return ProcessingOutcome.Produced(product);
+        var supportLayout = MixedGainSupportV1.CreateLayout(masterLayout.Width, masterLayout.Height);
+        ProcessingProduct SupportProduct(string encoding, byte[] payload) => ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Metadata, MixedGainSupportV1.VariantFor(request.OutputVariant, encoding),
+            MixedGainSupportV1.MediaType, supportLayout, payload, identity,
+            [.. product.Algorithms, new("support-encoding", encoding)], [.. lights, .. masterOrder],
+            product.TotalIntegration, compatibility, ProcessingProductKind.PixelData);
+        var validCounts = SupportProduct(MixedGainSupportV1.ValidCountsEncoding, counts!.ValidCounts);
+        var noCoverage = SupportProduct(MixedGainSupportV1.NoCoverageEncoding, counts.NoCoverageMask);
+        var diagnostics = new MixedGainDiagnosticsV1(
+            MixedGainDiagnosticsV1.CurrentSchemaVersion,
+            ProcessingIdentity.ComputePayloadSha256(planInput.Payload),
+            product.OutputIdentitySha256,
+            product.ChecksumSha256,
+            masterLayout.Width, masterLayout.Height, checked(masterLayout.Width * masterLayout.Height),
+            counts!.ClippedLow,
+            counts.ClippedHigh,
+            counts.NoCoverage,
+            selected.Select((input, index) => new MixedGainInputDiagnostics(
+                input.ArtifactId, counts.Saturated[index], counts.Invalid[index])).ToArray(),
+            [new(MixedGainSupportV1.ValidCountsEncoding, validCounts.OutputIdentitySha256, validCounts.ChecksumSha256, validCounts.Payload.Length),
+             new(MixedGainSupportV1.NoCoverageEncoding, noCoverage.OutputIdentitySha256, noCoverage.ChecksumSha256, noCoverage.Payload.Length)]);
+        var diagnosticPayload = diagnostics.Serialize();
+        var diagnosticProduct = ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Metadata, MixedGainSupportV1.VariantFor(request.OutputVariant, MixedGainDiagnosticsV1.Variant), MixedGainDiagnosticsV1.MediaType,
+            null, diagnosticPayload, identity, product.Algorithms, [.. lights, .. masterOrder],
+            product.TotalIntegration, compatibility, ProcessingProductKind.Metadata);
+        return ProcessingOutcome.Produced(product, diagnosticProduct, validCounts, noCoverage);
     }
 
     private static byte[]? Compute(
@@ -343,8 +369,10 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
         Dictionary<Guid, ProcessingArtifact> masters,
         CodeMapping mapping,
         out ProcessingOutcome? failure,
+        out DiagnosticCounts? counts,
         CancellationToken cancellationToken)
     {
+        counts = new DiagnosticCounts(selected.Length, checked(plan.InputLayout.Width * plan.InputLayout.Height));
         var layout = plan.InputLayout;
         var width = layout.Width;
         var height = layout.Height;
@@ -417,6 +445,13 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 cancellationToken.ThrowIfCancellationRequested();
                 ReadBand(lights[index], firstRow, rows, lightBands[index]);
                 var planes = inputPlanes[index];
+                for (var sample = 0; sample < photosites; sample++)
+                {
+                    if (lightBands[index][sample] >= saturationCode) counts.Saturated[index]++;
+                    else if (planes.Defect[sample] != 0 ||
+                        planes.Flat[sample] is < 1 or > Linear16GainNormalizedMean.MaximumFlatScaledValue)
+                        counts.Invalid[index]++;
+                }
                 kernelInputs[index] = new GainNormalizedMeanInput(
                     lightBands[index].AsMemory(0, photosites),
                     planes.Bias.AsMemory(0, photosites),
@@ -435,10 +470,30 @@ internal sealed class MixedGainNormalizedMeanRecipe : IProcessingRecipe
                 plan.Kernel.OutputScale,
                 photosites,
                 cancellationToken);
+            for (var sample = 0; sample < photosites; sample++)
+            {
+                var count = checked((byte)band.ValidCounts.Span[sample]);
+                counts.ValidCounts[firstRow * width + sample] = count;
+                counts.NoCoverageMask[firstRow * width + sample] = count == 0 ? (byte)1 : (byte)0;
+            }
+            counts.ClippedLow += band.ClippedLowCount;
+            counts.ClippedHigh += band.ClippedHighCount;
+            counts.NoCoverage += band.NoCoverageCount;
             band.PixelData.Span.CopyTo(output.AsSpan(firstRow * width * 2));
         }
         failure = null;
         return output;
+    }
+
+    private sealed class DiagnosticCounts(int inputCount, int photositeCount)
+    {
+        public byte[] ValidCounts { get; } = new byte[photositeCount];
+        public byte[] NoCoverageMask { get; } = new byte[photositeCount];
+        public int ClippedLow { get; set; }
+        public int ClippedHigh { get; set; }
+        public int NoCoverage { get; set; }
+        public int[] Saturated { get; } = new int[inputCount];
+        public int[] Invalid { get; } = new int[inputCount];
     }
 
     private static void ReadBand(ProcessingArtifact light, int firstRow, int rows, ushort[] destination)

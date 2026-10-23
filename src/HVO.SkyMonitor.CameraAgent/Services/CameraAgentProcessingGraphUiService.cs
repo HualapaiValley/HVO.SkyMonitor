@@ -137,6 +137,10 @@ public sealed record CameraAgentProcessingNodeView(
     IReadOnlyList<CameraAgentProcessingNodeAttemptView> Attempts,
     IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
 {
+    public string? NormalizationPlanIdentitySha256 { get; init; }
+    public IReadOnlyList<ProcessingNormalizationInputDiagnostic> NormalizationInputs { get; init; } = [];
+    public HVO.SkyMonitor.Processing.MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
+    public string? MixedGainDiagnosticsUnavailableReason { get; init; }
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
 }
@@ -213,7 +217,15 @@ internal static class CameraAgentProcessingExecutionProjection
                     attempt.Duration,
                     attempt.ExecutionRoute.ToString())).ToArray(),
                 node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())
-            { Dependencies = node.Dependencies, OutputContracts = node.OutputContracts }).ToArray());
+            {
+                Dependencies = node.Dependencies,
+                OutputContracts = node.OutputContracts,
+                NormalizationPlanIdentitySha256 = node.NormalizationPlanIdentitySha256,
+                NormalizationInputs = node.NormalizationInputs.Select(static input => input with
+                { ExclusionReason = CameraAgentReplayUiService.Sanitize(input.ExclusionReason) }).ToArray(),
+                MixedGainDiagnostics = node.MixedGainDiagnostics,
+                MixedGainDiagnosticsUnavailableReason = node.MixedGainDiagnosticsUnavailableReason
+            }).ToArray());
     }
 }
 

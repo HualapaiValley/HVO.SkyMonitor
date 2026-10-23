@@ -241,3 +241,87 @@ single canonical baseline using the
 [database initialization procedure](logichost-database-initialization.md).
 This schema change does not provide an upgrade path for an earlier unreleased
 database.
+
+## Exact-artifact reconciliation reads (#1554 / #1240 handoff)
+
+These LogicHost-only projections read existing immutable relationships. They do
+not change the producer/transport schema or create storage, reconciliation, or
+receipt state. Both routes require `ApiKeyRead` and the existing owner credential
+check; current observatory membership and API-key observatory scope are resolved
+on every call. Viewer, Manager, and Owner memberships may read. Anonymous/invalid
+credentials retain the endpoint policy's 401/403 behavior. Missing or mismatched
+authorized resource paths return service `null` / HTTP 404 without association,
+count, or cursor disclosure.
+
+The common prefix is:
+
+```text
+/api/internal/observatories/{observatoryId}/cameras/{logicalCameraId}/installations/{installationId}/execution-evidence/bindings/{bindingId}/units/{unitId}
+```
+
+`installationId` is the retained central installation primary key, never its
+public identity. The server checks its camera, observatory, registration and
+pinned installation-public identity against the binding, and checks the exact
+accepted unit and its origin under that binding. Retired installations remain
+readable; current camera selection and mutable registration status do not select
+historical evidence.
+
+1. `GET {prefix}/artifacts?take=50&cursor={opaque}` calls
+   `ExecutionEvidenceService.ListUnitArtifactsAsync(observatoryId, logicalCameraId,
+   installationId, bindingId, unitId, userId, observatoryScope, cursor = null,
+   take = 50, cancellationToken = default)`. The response schema is
+   `hvo-imported-unit-artifacts-v1`. `Association` includes the binding, pinned
+   installation public ID, producer installation/agent IDs, origin identity hash,
+   and the complete existing unit-view provenance (unit/origin IDs, origin
+   sequence, evidence ID, payload hash, kind, revision/execution/capture IDs,
+   producer/receipt timestamps and acceptance). `Artifacts` exposes the retained
+   `ArtifactReferenceId`, reference `Ordinal`, capture/artifact IDs, output,
+   payload and descriptor hashes, payload length, media type, role and variant.
+   Join an input/output's entire canonical artifact-reference tuple to these
+   fields; null metadata is an exact absent value, not a wildcard. References
+   were deduplicated by the importer across the primary reference and node
+   inputs/outputs. Reference ordinal is not a node/input/output ordinal and does
+   not establish production. Availability-report membership also does not
+   establish production; inspect `Association.Unit.Kind` and canonical bytes.
+   `take` must be 1–100 (default 50); invalid bounds return HTTP 400. SQL selects
+   at most `take + 1` metadata rows ordered by reference ordinal and never reads
+   canonical bodies or observation history. `NextCursor` is null at exhaustion;
+   otherwise pass it unchanged on the same selection. Its protected v1 payload
+   binds the entire route, unit, user and credential observatory scope. There
+   are no extra filters. Page size may change. Tampering, oversize (>4096 chars),
+   or replay on another selection returns null/404 after authorization.
+2. `GET {prefix}/artifacts/{artifactReferenceId}/observations?captureId={captureId}&artifactId={artifactId}`
+   calls `ExecutionEvidenceService.GetArtifactReconciliationAsync(observatoryId,
+   logicalCameraId, installationId, bindingId, unitId, artifactReferenceId,
+   captureId, artifactId, userId, observatoryScope, cancellationToken = default)`.
+   The schema is `hvo-imported-artifact-reconciliation-v1`. The exact reference,
+   capture and artifact must all belong to the requested unit and binding.
+   `Association` and `Artifact` carry the same immutable identities as above.
+   `Observations` contains at most the latest 50 retained observations, newest
+   database ID first, including repeated states, reason code, observed timestamp
+   and object generation. A 51st sentinel sets `ObservationsTruncated`; no total
+   count or history-continuation cursor is returned. Refresh directly to obtain
+   the latest observation; consumers must not drain binding history or sweep
+   offsets. Empty observations mean no retained central result, never available.
+
+Central states/reasons remain separate from producer facts and receipt
+acknowledgements. Current reconciliation returns `Missing` (artifact not received,
+object missing or expired), `Unresolved` (object/descriptor pending or object-store unavailable),
+`Quarantined` (ownership, metadata, output identity, descriptor or object mismatch),
+or `Available` with object generation.
+Conflicting metadata is represented by its quarantine reason; evidence sequence
+conflicts remain importer receipt/conflict facts, not image availability. A
+producer `Available` report or an `Acknowledged` receipt alone establishes none
+of these central results. These are observations, not a guarantee that bytes
+remain available after the observation time, and observation pressure can retain
+an older result (see the existing pressure semantics above).
+
+Current-source evidence is in `ExecutionEvidenceIntegrationTests.ArtifactReads.cs`:
+the delivered #538 revision/execution/availability fixtures are read through both
+HTTP routes; tests cover exact full reference fields, denial substitutions,
+removed membership, credential scope, malformed cursors, page bounds and latest
+repeated-observation truncation. The existing combined
+`EvidenceBeforeActualArtifactUploadReconcilesLaterWithoutRewritingProducerFacts`
+now resolves artifact mappings and before/after observations through the
+authorized service contract; private database access only schedules the test's
+reconciliation work. No #1240 UI or CameraAgent contract changes are included.

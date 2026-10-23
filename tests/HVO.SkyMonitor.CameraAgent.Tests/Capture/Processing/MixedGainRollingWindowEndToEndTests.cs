@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Buffers.Binary;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -25,6 +27,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 public sealed partial class MixedGainRollingWindowEndToEndTests
 {
+    public TestContext TestContext { get; set; } = null!;
     private const string NodeId = "mixed-gain";
     private const double LowGain = 82;
     private const double HighGain = 100;
@@ -45,6 +48,101 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task HeldCombinedKeepsOnlyItsExactCompanionsUntilTheHoldIsReleased(bool holdSidecar)
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain],
+            [MixedGainStep(), new CaptureProcessingStepConfig("ImageQuality", "unrelated", DependsOn: ["$raw"])], async run =>
+        {
+            var before = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.HasCount(4, before.Outputs);
+            var combined = before.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined);
+            var originals = new Dictionary<Guid, byte[]>();
+            foreach (var output in before.Outputs)
+                originals.Add(output.ArtifactId, await File.ReadAllBytesAsync(Path.Combine(run.Root, output.PayloadRelativePath)).ConfigureAwait(false));
+            var holds = run.Provider.GetRequiredService<IProcessingRetentionHolds>();
+            var expiration = (IProcessingOutputExpiration)holds;
+            var heldPath = Path.Combine(run.Root, holdSidecar ? combined.SidecarRelativePath : combined.PayloadRelativePath);
+            _ = await expiration.ExpireOutputsAsync(run.Root, DateTimeOffset.UtcNow.AddDays(1),
+                new HashSet<string>([heldPath], StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
+
+            var retained = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            Assert.HasCount(4, retained.Outputs, "a held combined image requires its diagnostic JSON, valid counts and no-coverage map");
+            foreach (var output in retained.Outputs)
+            {
+                Assert.IsTrue(File.Exists(Path.Combine(run.Root, output.SidecarRelativePath)));
+                CollectionAssert.AreEqual(originals[output.ArtifactId],
+                    await File.ReadAllBytesAsync(Path.Combine(run.Root, output.PayloadRelativePath)).ConfigureAwait(false));
+            }
+            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(0), NodeId, CancellationToken.None).ConfigureAwait(false),
+                "another window must not inherit the hold");
+            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(1), "unrelated", CancellationToken.None).ConfigureAwait(false),
+                "unrelated metadata must not inherit the hold");
+
+            _ = await expiration.ExpireOutputsAsync(run.Root, DateTimeOffset.UtcNow.AddDays(1),
+                new HashSet<string>(StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
+            foreach (var output in before.Outputs)
+            {
+                Assert.IsNull(await run.Store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+                Assert.IsFalse(File.Exists(Path.Combine(run.Root, output.PayloadRelativePath)));
+                Assert.IsFalse(File.Exists(Path.Combine(run.Root, output.SidecarRelativePath)));
+            }
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task MissingOrCorruptDiagnosticEvidenceNeverAppearsAsZeroCounts(bool corrupt)
+        => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
+        {
+            var executionId = await run.Store.ReadLiveExecutionIdAsync(run.CaptureId(1), CancellationToken.None).ConfigureAwait(false);
+            var before = await run.Store.ReadExecutionDetailAsync(executionId!.Value, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(before!.Nodes.Single(static node => node.NodeId == NodeId).MixedGainDiagnostics);
+            var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
+            var diagnostic = node.Outputs.Single(static output => output.Artifact.MediaType == MixedGainDiagnosticsV1.MediaType);
+            var path = Path.Combine(run.Root, diagnostic.PayloadRelativePath);
+            if (corrupt)
+            {
+                var payload = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+                payload[0] ^= 1;
+                await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
+            }
+            else File.Delete(path);
+            var after = await run.Store.ReadExecutionDetailAsync(executionId.Value, CancellationToken.None).ConfigureAwait(false);
+            var state = after!.Nodes.Single(static node => node.NodeId == NodeId);
+            Assert.IsNull(state.MixedGainDiagnostics);
+            StringAssert.Contains(state.MixedGainDiagnosticsUnavailableReason!, "unavailable", StringComparison.Ordinal);
+            Assert.HasCount(2, state.NormalizationInputs);
+            Assert.AreEqual("Completed", state.Status, "loss of diagnostics must not fabricate a failed pixel computation");
+        });
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public Task AutomaticNightGainStepsKeepTheFullTrailingStackDepth()
+        => RunAsync(new double[6], [82, 88, 94, 100], [MixedGainStep(windowSize: 3)], async run =>
+        {
+            TestContext.WriteLine("VirtualSky AGC: 64x48, 6 lights, 32 ms, UTC 2026-02-01T03:00Z, seed 1524; supports 6144 bytes per stack; four gain-specific acquired master sets.");
+            var gains = run.Receipts.Select(static receipt => receipt.Manifest.Descriptor.Controls.EffectiveGain).ToArray();
+            CollectionAssert.AreEqual(new double[] { 82, 88, 94, 100, 100, 100 }, gains,
+                "gains must come from feedback over rendered VirtualSky pixels");
+            for (var index = 0; index < run.Receipts.Count; index++)
+            {
+                var frozen = await run.ReadPlanAsync(index, NodeId).ConfigureAwait(false);
+                Assert.AreEqual(GainResponseProvenance.VirtualSimulationTruth, frozen.Plan.Response.Provenance);
+                Assert.HasCount(Math.Min(index + 1, 3), Selected(frozen.Plan), "AGC must not reset the stack");
+                var execution = await run.Store.ReadLiveExecutionIdAsync(run.CaptureId(index), CancellationToken.None).ConfigureAwait(false);
+                var detail = await run.Store.ReadExecutionDetailAsync(execution!.Value, CancellationToken.None).ConfigureAwait(false);
+                var node = detail!.Nodes.Single(static node => node.NodeId == NodeId);
+                Assert.AreEqual("Completed", node.Status, node.Reason);
+                Assert.IsNotNull(node.MixedGainDiagnostics, node.MixedGainDiagnosticsUnavailableReason);
+                Assert.HasCount(Math.Min(index + 1, 3), node.MixedGainDiagnostics.Inputs);
+                Assert.IsTrue(node.Outputs.Any(static output => output.Role == FrameArtifactRole.Metadata));
+            }
+        }, automaticGain: true);
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public Task AWindowAcrossAGainStepIsFrozenExecutedThroughTheAdapterAndStoredWithItsPlan()
         => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
         {
@@ -55,7 +153,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             var light = run.Receipts[1].Manifest.Descriptor;
             var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
-            Assert.HasCount(1, node.Outputs);
+            Assert.HasCount(4, node.Outputs);
 
             // The window's execution froze its plan across the gain step, and the stored product is what it planned.
             var frozen = await run.ReadPlanAsync(1, NodeId).ConfigureAwait(false);
@@ -73,7 +171,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 masters);
             CollectionAssert.AreEquivalent(
                 selected.Select(static input => input.ArtifactId).Concat(masters).ToArray(),
-                node.Outputs[0].Descriptor!.Artifact.SourceArtifactIds.ToArray());
+                node.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds.ToArray());
         });
 
     [TestMethod]
@@ -125,6 +223,8 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             var node = detail.Nodes.Single(static state => state.NodeId == "centered");
             Assert.AreEqual("Skipped", node.Status, node.Reason);
             Assert.AreEqual(NormalizationPlanFreezer.WindowIncomplete, node.Reason);
+            Assert.AreEqual(frozen.Plan.Inputs.Single(static input => input.WindowPosition == 1).ExclusionReason,
+                node.NormalizationInputs.Single(static input => input.WindowPosition == 1).ExclusionReason);
             Assert.IsEmpty(node.Outputs);
         });
 
@@ -138,14 +238,14 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             {
                 var mixed = await run.ReadNodeAsync(index, NodeId).ConfigureAwait(false);
                 Assert.AreEqual(DurableProcessingNodeStatus.Completed, mixed.Status, mixed.Reason);
-                products.Add(mixed.Outputs.Single().ArtifactId);
+                products.Add(mixed.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).ArtifactId);
             }
 
             // Two windows freeze two plans, so their products' recipe identities differ, but both are on the scale the
             // family, policy and response fix, which their shared normalized compatibility names.
             var mean = await run.ReadNodeAsync(1, "mean").ConfigureAwait(false);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, mean.Status, mean.Reason);
-            CollectionAssert.AreEquivalent(products, mean.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds.ToArray());
+            CollectionAssert.AreEquivalent(products, mean.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds.ToArray());
         });
 
     [TestMethod]
@@ -161,8 +261,8 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
             var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, node.Reason);
-            Assert.Contains(run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
-            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+            Assert.Contains(run.Receipts[1].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds);
         });
 
     [TestMethod]
@@ -178,7 +278,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
             var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, node.Reason);
-            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds);
         });
 
     [TestMethod]
@@ -194,7 +294,12 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             Assert.AreEqual(
                 GainNormalizationReasonCodes.CoefficientRatioExceeded,
                 plan.Inputs.Single(static input => input.WindowPosition == -1).ExclusionReason);
-            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds);
+            var executionId = await run.Store.ReadLiveExecutionIdAsync(run.CaptureId(1), CancellationToken.None).ConfigureAwait(false);
+            var detail = await run.Store.ReadExecutionDetailAsync(executionId!.Value, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(GainNormalizationReasonCodes.CoefficientRatioExceeded,
+                detail!.Nodes.Single(static node => node.NodeId == NodeId).NormalizationInputs
+                    .Single(static input => input.WindowPosition == -1).ExclusionReason);
+            Assert.DoesNotContain(run.Receipts[0].Manifest.Descriptor.Artifact.ArtifactId, node.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds);
         });
 
     [TestMethod]
@@ -211,14 +316,14 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 {
                     var first = await run.ReadNodeAsync(index, "mean-1").ConfigureAwait(false);
                     Assert.AreEqual(DurableProcessingNodeStatus.Completed, first.Status, first.Reason);
-                    products.Add(first.Outputs.Single().ArtifactId);
+                    products.Add(first.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).ArtifactId);
                 }
 
                 // A rolling mean of mixed-gain products carries their normalized compatibility on, and a later window
                 // over those means keeps both.
                 var second = await run.ReadNodeAsync(1, "mean-2").ConfigureAwait(false);
                 Assert.AreEqual(DurableProcessingNodeStatus.Completed, second.Status, second.Reason);
-                CollectionAssert.AreEquivalent(products, second.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds.ToArray());
+                CollectionAssert.AreEquivalent(products, second.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined).Descriptor!.Artifact.SourceArtifactIds.ToArray());
             });
 
     /// <summary>
@@ -230,7 +335,8 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
         double[] captureGains,
         double[] familyGains,
         CaptureProcessingStepConfig[] windowSteps,
-        Func<Run, Task> assert)
+        Func<Run, Task> assert,
+        bool automaticGain = false)
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -269,11 +375,32 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
             var receipts = new List<RawCaptureReceipt>(captureGains.Length);
+            var activeGain = LowGain;
+            var gainProfile = new PipelineExposureProfile(LightExposure, LightExposure, LightExposure, LowGain, LowGain,
+                new ExposureEnvelope(LightExposure, LightExposure, LowGain, HighGain,
+                    new ExposureDefaults(LightExposure, LowGain), new ExposureDefaults(LightExposure, LowGain),
+                    TargetAduLevel: 0.8, GainStep: 6, Hysteresis: 0.01));
             for (var index = 0; index < captureGains.Length; index++)
             {
+                var submission = await CreateSubmissionAsync(module, index, automaticGain ? activeGain : captureGains[index])
+                    .ConfigureAwait(false);
+                if (automaticGain)
+                {
+                    var frame = submission.Result.Frame!;
+                    ulong sum = 0;
+                    for (var sample = 0; sample < frame.Width * frame.Height; sample++)
+                        sum += BinaryPrimitives.ReadUInt16LittleEndian(frame.PixelData.Span[(sample * 2)..]);
+                    var brightness = (double)sum / (frame.Width * frame.Height * frame.Layout!.WhiteLevel!.Value);
+                    var decision = ExposureController.Next(gainProfile, submission.Request.RequestedSetpoint!, brightness,
+                        CaptureSolarRegime.Night, adjustExposure: false, adjustGain: true);
+                    Assert.IsTrue(decision.Reason is CaptureControlDecisionReason.GainAdjusted or CaptureControlDecisionReason.UpperLimitReached,
+                        $"frame {index}, brightness={brightness}, decision={decision.Reason}");
+                    Assert.AreEqual(LightExposure, decision.Setpoint.Exposure);
+                    activeGain = decision.Setpoint.Gain;
+                }
                 var receipt = await ingress.AcceptAsync(
                     configuration,
-                    await CreateSubmissionAsync(module, index, captureGains[index]).ConfigureAwait(false),
+                    submission,
                     CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(receipt);
                 receipts.Add(receipt);

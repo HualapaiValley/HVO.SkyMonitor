@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class RollingCombinationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     RollingCombinationProcessingStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep, IWindowCaptureProcessingGraphStep
+    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep, IWindowCaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep
 {
     private static readonly IReadOnlySet<FrameArtifactRole> StackRoles =
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined };
@@ -34,6 +34,16 @@ internal sealed class RollingCombinationCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Combined;
 
     public string OutputVariant => Options.OutputVariant;
+
+    public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs => MixedGain
+        ? [new(OutputRole, OutputVariant, RecipeName, MediaType: OutputMediaType),
+           new(FrameArtifactRole.Metadata, MixedGainSupportV1.VariantFor(OutputVariant, MixedGainDiagnosticsV1.Variant), RecipeName,
+               MediaType: MixedGainDiagnosticsV1.MediaType),
+           new(FrameArtifactRole.Metadata, MixedGainSupportV1.VariantFor(OutputVariant, MixedGainSupportV1.ValidCountsEncoding), RecipeName,
+               MediaType: MixedGainSupportV1.MediaType, ProductKind: ProcessingProductKind.PixelData),
+           new(FrameArtifactRole.Metadata, MixedGainSupportV1.VariantFor(OutputVariant, MixedGainSupportV1.NoCoverageEncoding), RecipeName,
+               MediaType: MixedGainSupportV1.MediaType, ProductKind: ProcessingProductKind.PixelData)]
+        : [new(OutputRole, OutputVariant, RecipeName, MediaType: OutputMediaType)];
 
     public string? OutputMediaType => "application/x-hvo-linear-frame";
 
@@ -147,6 +157,13 @@ internal sealed class RollingCombinationCaptureProcessingStep(
             product.SourceArtifactIds,
             CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
         context.AssociateProcessingProduct(artifact, product);
+        foreach (var support in outcome.Products.Where(static product => product.Role == FrameArtifactRole.Metadata && product.Layout is not null))
+        {
+            var frame = CameraAgentRecipeExecutionAdapter.CreateFrame(support, sourceArtifact.Frame, "RollingCombination");
+            var supportArtifact = context.AddDerivative(FrameArtifactRole.Metadata, frame, "mixed-gain-support-v1",
+                support.SourceArtifactIds, ProcessingIdentity.CreateArtifactId(support.OutputIdentitySha256));
+            context.AssociateProcessingProduct(supportArtifact, support);
+        }
 
         ProcessingExecutionRequest CreateRequest(IReadOnlyList<ProcessingArtifact> inputs) => MixedGain
             ? new(
