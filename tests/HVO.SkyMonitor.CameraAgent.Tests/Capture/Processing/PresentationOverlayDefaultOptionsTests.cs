@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -53,5 +54,24 @@ public sealed class PresentationOverlayDefaultOptionsTests
         Assert.AreEqual("environment-layer-v1", new EnvironmentPresentationLayerProcessingStepOptions().OutputVariant);
         Assert.AreEqual("environment-layer-v1", new OverlayManifestProcessingStepOptions().EnvironmentVariant);
         Assert.AreEqual("presentation-metadata-facts-v2", new OverlayManifestProcessingStepOptions().EnvironmentFactsVariant);
+        var legacyOptions = new OverlayManifestProcessingStepOptions();
+        Assert.IsFalse(JsonSerializer.SerializeToElement(legacyOptions).TryGetProperty("UseRichFrameFacts", out _),
+            "An absent opt-in must not change legacy effective options or graph identity.");
+        var legacy = new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 80), legacyOptions);
+        var optedIn = new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 80), new() { UseRichFrameFacts = true });
+        Assert.IsFalse(legacy.DependencyRequirements.Any(requirement => requirement.SchemaVersions?.Contains(
+            HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.RichTextSchemaVersion) == true));
+        Assert.IsTrue(optedIn.DependencyRequirements.Any(requirement => requirement.SchemaVersions?.Contains(
+            HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.RichTextSchemaVersion) == true));
+        var legacyMaterializerOptions = new PresentationMaterializerProcessingStepOptions();
+        Assert.IsFalse(JsonSerializer.SerializeToElement(legacyMaterializerOptions).TryGetProperty("UseRichFrameFacts", out _));
+        var legacyMaterializer = new PresentationMaterializerCaptureProcessingStep(
+            new("materializer", "PresentationMaterializer", 90), legacyMaterializerOptions);
+        var richMaterializer = new PresentationMaterializerCaptureProcessingStep(
+            new("materializer", "PresentationMaterializer", 90), new() { UseRichFrameFacts = true });
+        Assert.IsFalse(legacyMaterializer.DependencyRequirements.Any(requirement => requirement.SchemaVersions?.Contains(
+            HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.RichTextSchemaVersion) == true));
+        Assert.IsTrue(richMaterializer.DependencyRequirements.Any(requirement => requirement.SchemaVersions?.Contains(
+            HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.RichTextSchemaVersion) == true));
     }
 }

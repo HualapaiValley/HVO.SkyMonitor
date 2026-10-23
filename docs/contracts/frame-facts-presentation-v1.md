@@ -67,8 +67,10 @@ Only explicitly selected `environmentalKinds` are retained; default is empty.
 The new default output variants are `presentation-metadata-facts-v3` and
 `environment-layer-v2`. An explicitly authored graph must select those variants
 in its manifest/materializer's `environmentFactsVariant` and `environmentVariant`
-and declare the new node as a dependency. Existing consumers accept these new
-schemas at that boundary while keeping their legacy default variants. The
+and declare the new node as a dependency. Both consumer nodes must explicitly set
+`useRichFrameFacts: true` to accept the new schemas. False is omitted from effective
+options, preserving the exact legacy graph contracts and identities, as well as
+their default variants. The
 required scene/combined-preview dependencies and normal durable publication
 policy still apply. No upgrade is registered or executed implicitly.
 
