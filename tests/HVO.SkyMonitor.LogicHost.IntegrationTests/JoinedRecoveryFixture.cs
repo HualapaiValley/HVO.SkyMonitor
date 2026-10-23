@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -75,7 +76,7 @@ internal sealed partial class JoinedRecoveryFixture
         phase = "cleanup";
         // Only this disposable container and this exact run directory are owned by this fixture.
         await container.DisposeAsync();
-        Require(!await container.ExistsAsync(), "container-cleanup");
+        Require(container.State == TestcontainersStates.Undefined, "container-cleanup");
         Directory.Delete(root, recursive: true);
         Require(!Directory.Exists(root), "filesystem-cleanup");
         Console.WriteLine("issue1630 cleanup: one owned SQL container (source/target databases and native backup), one owned filesystem tree removed; no shared services used");

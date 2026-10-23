@@ -82,6 +82,16 @@ internal sealed partial class JoinedRecoveryFixture
             await db.CentralArtifacts.Where(item => item.Id == Guid.Parse("16300000-0000-0000-0001-000000000001"))
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.StorageReference, $"object://{first.Bucket}/{first.Key}"));
         }
+        foreach (var claim in expectedClaims)
+        {
+            await using (var db = OpenDb(targetDatabase))
+                await db.UserClaims.Where(item => item.ClaimType == claim.Key)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ClaimValue, "different-fixture"));
+            await AssertRefusalPreservesAsync("sql-" + claim.Key + "-identity", "sql-facts", positive);
+            await using (var db = OpenDb(targetDatabase))
+                await db.UserClaims.Where(item => item.ClaimType == claim.Key)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ClaimValue, claim.Value));
+        }
         Require(await AdmitAsync(positive) == "admitted", "post-refusal-positive");
         Require(Hash(await container.ReadFileAsync(BackupPath)) == Hash(sqlBackup), "native-backup-preserved");
     }
