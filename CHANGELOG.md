@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
+
 - Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
 
 - Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
