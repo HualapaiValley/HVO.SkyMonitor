@@ -159,6 +159,10 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                         "Inspect the attributed own-identity and lineage validation SELECTs.");
                     Assert.IsTrue(probes.Where((_, index) => failures[index] is null).All(probe => probe.TransactionMilliseconds > 0 && probe.RetentionHeldMilliseconds > 0),
                         "Every derived operation must expose its transaction and retention lock timing.");
+                    Assert.IsTrue(probes.Where((_, index) => failures[index] == 51006).All(probe => probe.SourceLockMilliseconds > 0),
+                        "Failed source-lock attempts must retain their command wait duration.");
+                    Assert.IsTrue(probes.Where((_, index) => failures[index] == 51007).All(probe => probe.RetentionAcquireMilliseconds > 0),
+                        "Failed retention-lock attempts must retain their command wait duration.");
                     scenarios.Add(new
                     {
                         References = count,

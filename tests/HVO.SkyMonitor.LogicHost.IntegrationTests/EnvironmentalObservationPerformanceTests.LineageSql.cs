@@ -76,6 +76,19 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             return ValueTask.FromResult(result);
         }
 
+        public override Task CommandFailedAsync(DbCommand command, CommandErrorEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("sp_getapplock", StringComparison.Ordinal))
+            {
+                if (command.Parameters.Cast<SqlParameter>().Any(parameter =>
+                    Equals(parameter.Value, "environmental-observation-retention")))
+                    RetentionAcquireMilliseconds = eventData.Duration.TotalMilliseconds;
+                else SourceLockMilliseconds = eventData.Duration.TotalMilliseconds;
+            }
+            return Task.CompletedTask;
+        }
+
         internal sealed class LineageTransactions : DbTransactionInterceptor
         {
             internal LineageProbe? Owner { get; set; }
