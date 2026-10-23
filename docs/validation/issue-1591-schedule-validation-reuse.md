@@ -324,4 +324,3 @@ operational tracing provider, and no new label cardinality or payload/path
 logging was introduced. There is no worker/backlog or retry policy change.
 CLI deadline/caller-cancellation behavior remains covered by the unchanged
 complete Unit selection.
-
