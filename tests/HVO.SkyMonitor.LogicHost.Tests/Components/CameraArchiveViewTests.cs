@@ -23,6 +23,19 @@ public sealed class CameraArchiveViewTests
     private static readonly Guid Artifact = Guid.NewGuid();
 
     [TestMethod]
+    public void HeadingTree_NestsTheExactCaptureUnderTheArchiveAndPreservesItsFocusTarget()
+    {
+        using var context = CreateContext(out _, out _);
+        var cut = Render(context);
+
+        cut.FindAll("h1,h2,h3,h4,h5,h6").Select(h => (h.LocalName, h.TextContent))
+            .Should().Equal(("h2", "Camera archive"), ("h3", $"Capture {DateTimeOffset.UnixEpoch:u}"),
+                ("h4", "Capture provenance"), ("h3", "Preview · default"));
+        cut.Find("#archive-heading").GetAttribute("tabindex").Should().Be("-1");
+        cut.Find("section.camera-archive").GetAttribute("aria-labelledby").Should().Be("archive-heading");
+    }
+
+    [TestMethod]
     public void Archive_UsesOneBoundedPageAndPreservesQueryAndCentralIdentityInLinks()
     {
         using var context = CreateContext(out var archive, out _);

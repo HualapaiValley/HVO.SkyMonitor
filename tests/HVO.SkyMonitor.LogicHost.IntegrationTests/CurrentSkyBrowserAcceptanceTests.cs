@@ -76,13 +76,32 @@ public sealed class CurrentSkyBrowserAcceptanceTests
             await Assertions.Expect(refresh).ToBeFocusedAsync();
             (await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth")).Should().BeTrue();
             var tree = await page.Locator(".current-sky").AriaSnapshotAsync();
-            tree.Should().Contain("heading \"Current Sky\"").And.Contain("status:").And.Contain("Selected Preview");
+            tree.Should().Contain("heading \"Current Sky\" [level=2]").And.Contain("status:").And.Contain("Selected Preview")
+                .And.Contain("heading \"Capture provenance\" [level=4]");
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Level = 3 }))
+                .ToHaveTextAsync($"Capture {data.Frames[0].CapturedAtUtc:u}");
+            await Assertions.Expect(page.Locator(".scope-content h1")).ToHaveCountAsync(1);
             if (width == 390)
             {
                 await page.Locator(".current-sky details summary").TapAsync();
                 await Assertions.Expect(page.Locator(".current-sky details")).ToHaveAttributeAsync("open", "");
             }
         }
+        // The same viewer remains the page heading outside the scoped workspace.
+        await page.GotoAsync(new Uri(fixture.BaseAddress, $"/app/captures/{data.Frames[0].Id:D}").AbsoluteUri);
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Level = 1 }))
+            .ToHaveTextAsync($"Capture {data.Frames[0].CapturedAtUtc:u}");
+        await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Capture provenance", Exact = true, Level = 2 }))
+            .ToBeVisibleAsync();
+        foreach (var (width, height) in new[] { (1440, 900), (390, 844), (844, 390), (320, 700) })
+        {
+            await page.SetViewportSizeAsync(width, height);
+            (await page.Locator("main").AriaSnapshotAsync()).Should().Contain("heading \"Capture provenance\" [level=2]");
+            (await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth")).Should().BeTrue();
+        }
+        await page.GotoAsync(url);
+        await page.Locator(".current-sky[data-scope-interactive='true']").WaitForAsync();
+        await Assertions.Expect(page.Locator(".current-sky img")).ToHaveAttributeAsync("src", imagePath!);
         // Real circuit recovery must recheck membership before reusing any selected image.
         socket.Should().NotBeNull();
         gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
