@@ -129,6 +129,15 @@ public static class ProcessingNodeOptionsCodec
             }
             decoded.Add(new(option, value, isExplicit));
         }
+        if (diagnostics.Count == 0 && PreviewOptionDescriptors.IsPreviewAlias(descriptor.StepAlias) &&
+            descriptor.StepVersion == PreviewOptionDescriptors.PercentileVersion &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "blackPercentile") is { } black &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "whitePercentile") is { } white &&
+            black.Value.AsRealNumber() >= white.Value.AsRealNumber())
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "blackPercentile"),
+                "BlackPercentile must be less than WhitePercentile."));
+        }
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
         {
