@@ -131,7 +131,10 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                         "Every derived operation must expose its transaction and retention lock timing.");
                     scenarios.Add(new
                     {
-                        References = count, Concurrency = concurrency, Warmups = 5, Measurements = 30,
+                        References = count,
+                        Concurrency = concurrency,
+                        Warmups = 5,
+                        Measurements = 30,
                         ElapsedMilliseconds = elapsed.TotalMilliseconds,
                         IngestsPerSecond = 30 / elapsed.TotalSeconds,
                         LatencyMilliseconds = LineageDistribution(latency),
@@ -140,9 +143,11 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                         SourceLockAcquireMilliseconds = LineageDistribution(probes.Select(probe => probe.SourceLockMilliseconds)),
                         RetentionLockAcquireMilliseconds = LineageDistribution(probes.Select(probe => probe.RetentionAcquireMilliseconds)),
                         SqlCommands = probes.Select(probe => probe.CommandCount).ToArray(),
-                        SourceLookupsPerIngest = count + 1, ObservationLookupsPerIngest = count + 1,
+                        SourceLookupsPerIngest = count + 1,
+                        ObservationLookupsPerIngest = count + 1,
                         LineageOnlyLookupsPerIngest = 2 * count,
-                        ClientCpuMilliseconds = cpu.TotalMilliseconds, ClientAllocatedBytes = allocated,
+                        ClientCpuMilliseconds = cpu.TotalMilliseconds,
+                        ClientAllocatedBytes = allocated,
                         ClientPeakSampledRssBytes = peakRss,
                         StorageDelta = after.Delta(before)
                     });
@@ -174,22 +179,35 @@ public sealed partial class EnvironmentalObservationPerformanceTests
             var retention = await VerifyLineageRetentionAsync(connection.ConnectionString, telemetry, inputs).ConfigureAwait(false);
             var evidence = new
             {
-                Schema = "hvo-issue-1557-maximum-lineage-baseline-v1", Source = source, RecordedAtUtc = DateTimeOffset.UtcNow,
+                Schema = "hvo-issue-1557-maximum-lineage-baseline-v1",
+                Source = source,
+                RecordedAtUtc = DateTimeOffset.UtcNow,
                 ProductionBoundary = "EnvironmentalObservationIngestService.IngestAsync; production implementation unchanged",
                 Environment = new
                 {
-                    Os = RuntimeInformation.OSDescription, Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
-                    Runtime = RuntimeInformation.FrameworkDescription, Sdk = RunCommand("dotnet", root, "--version"),
-                    Cpu = ReadCpuIdentity(), Environment.ProcessorCount, ServerGc = GCSettings.IsServerGC,
+                    Os = RuntimeInformation.OSDescription,
+                    Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                    Runtime = RuntimeInformation.FrameworkDescription,
+                    Sdk = RunCommand("dotnet", root, "--version"),
+                    Cpu = ReadCpuIdentity(),
+                    Environment.ProcessorCount,
+                    ServerGc = GCSettings.IsServerGC,
                     SqlVersion = await ReadSqlServerVersionAsync(setup).ConfigureAwait(false),
-                    SqlImage = IntegrationTestFixture.SqlServerImage, Configuration = "Release",
+                    SqlImage = IntegrationTestFixture.SqlServerImage,
+                    Configuration = "Release",
                     Topology = "Direct service invocation, independent EF context per ingest, disposable SQL database on shared fixture container; no HTTP/object-store payload"
                 },
-                Workload = new { Sizes = new[] { 1, 32, 128, 256 }, Concurrency = new[] { 1, 4, 8 }, InputSources = 8,
-                    InputObservations = 256, DerivedSources = "one per concurrency lane; avoids serializing every operation on one source lock",
+                Workload = new
+                {
+                    Sizes = new[] { 1, 32, 128, 256 },
+                    Concurrency = new[] { 1, 4, 8 },
+                    InputSources = 8,
+                    InputObservations = 256,
+                    DerivedSources = "one per concurrency lane; avoids serializing every operation on one source lock",
                     Setup = "lane-source priming followed by exactly five untimed warmups and 30 timed ingests per arm",
                     Fixture = "DeterministicGuid(600000+i), eight production-ingested source descriptors, ordinal permutation i*73%256",
-                    Backlog = "N/A: direct closed-loop calls; no durable worker queue" },
+                    Backlog = "N/A: direct closed-loop calls; no durable worker queue"
+                },
                 Method = new
                 {
                     Timing = "Nearest-rank percentiles. Client wall time includes context construction/disposal; transaction from TransactionStarted through TransactionCommitted; shared retention lock from successful sp_getapplock return through commit.",
@@ -198,9 +216,18 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                     LockLimits = "Client completion timestamps approximate server lock release; network/commit response time is included. Source-lock acquisition includes wait and round trip. No claim of deployed throughput or unchanged W3M/W4 budgets.",
                     Writes = "SQL Server STATISTICS IO has no logical-write counter; leaf insert/update/delete DMV deltas and actual plan write-row counts are explicit proxies. Log physical bytes may be buffered."
                 },
-                Scenarios = scenarios, SqlReplay = sql, Controls = controls, Retention = retention,
-                Correctness = new { VerifiedAcceptedRows = accepted.Count, ExactOrdinalsAndCompositeIdentity = true,
-                    CanonicalPayloadHashes = true, ReplayPreservesRecordIdHashAndReceiptTime = true, DiagnosticReplayRolledBack = true },
+                Scenarios = scenarios,
+                SqlReplay = sql,
+                Controls = controls,
+                Retention = retention,
+                Correctness = new
+                {
+                    VerifiedAcceptedRows = accepted.Count,
+                    ExactOrdinalsAndCompositeIdentity = true,
+                    CanonicalPayloadHashes = true,
+                    ReplayPreservesRecordIdHashAndReceiptTime = true,
+                    DiagnosticReplayRolledBack = true
+                },
                 Handoff = "Amplification confirmed if baseline assertions pass: 256 source + 256 observation lineage lookups, beyond two own-identity lookups. Slice B should project distinct source hashes to IDs and qualified (SourceRecordId, ObservationId) pairs to IDs with at most two bounded EF queries; retain ordinal reconstruction and atomic negative controls. No TVP/procedure is justified by this baseline alone."
             };
             var evidencePath = Path.Combine(output, "maximum-lineage-baseline.json");
@@ -323,7 +350,13 @@ public sealed partial class EnvironmentalObservationPerformanceTests
     private static object LineageDistribution(IEnumerable<double> values)
     {
         var samples = values.ToArray();
-        return new { Median = Percentile(samples, 0.5), P95 = Percentile(samples, 0.95),
-            P99 = Percentile(samples, 0.99), Maximum = samples.Max(), Samples = samples };
+        return new
+        {
+            Median = Percentile(samples, 0.5),
+            P95 = Percentile(samples, 0.95),
+            P99 = Percentile(samples, 0.99),
+            Maximum = samples.Max(),
+            Samples = samples
+        };
     }
 }

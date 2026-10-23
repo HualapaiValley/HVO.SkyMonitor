@@ -86,8 +86,11 @@ public sealed partial class EnvironmentalObservationPerformanceTests
 
     private static SqlParameter CopyLineageParameter(SqlParameter parameter) => new(parameter.ParameterName, parameter.SqlDbType, parameter.Size)
     {
-        Value = parameter.Value, Precision = parameter.Precision, Scale = parameter.Scale,
-        Direction = parameter.Direction, IsNullable = parameter.IsNullable
+        Value = parameter.Value,
+        Precision = parameter.Precision,
+        Scale = parameter.Scale,
+        Direction = parameter.Direction,
+        IsNullable = parameter.IsNullable
     };
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
@@ -137,8 +140,10 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                 var operators = documents.SelectMany(plan => plan.Descendants().Where(node => node.Name.LocalName == "RelOp"))
                     .Select(node => new
                     {
-                        NodeId = (int?)node.Attribute("NodeId"), Logical = (string?)node.Attribute("LogicalOp"),
-                        Physical = (string?)node.Attribute("PhysicalOp"), EstimatedRows = (double?)node.Attribute("EstimateRows"),
+                        NodeId = (int?)node.Attribute("NodeId"),
+                        Logical = (string?)node.Attribute("LogicalOp"),
+                        Physical = (string?)node.Attribute("PhysicalOp"),
+                        EstimatedRows = (double?)node.Attribute("EstimateRows"),
                         ActualRows = node.Elements().Where(item => item.Name.LocalName == "RunTimeInformation")
                             .SelectMany(item => item.Elements()).Sum(item => (long?)item.Attribute("ActualRows") ?? 0),
                         ActualRowsRead = node.Elements().Where(item => item.Name.LocalName == "RunTimeInformation")
@@ -154,14 +159,23 @@ public sealed partial class EnvironmentalObservationPerformanceTests
                 plansCount += plans.Count;
                 evidence.Add(new
                 {
-                    Ordinal = evidence.Count, Sql = captured.Text,
+                    Ordinal = evidence.Count,
+                    Sql = captured.Text,
                     Parameters = captured.Parameters.Select(parameter => new
                     {
-                        parameter.ParameterName, Type = parameter.SqlDbType.ToString(), parameter.Size,
-                        parameter.Precision, parameter.Scale, Value = parameter.Value is DBNull ? null : parameter.Value
+                        parameter.ParameterName,
+                        Type = parameter.SqlDbType.ToString(),
+                        parameter.Size,
+                        parameter.Precision,
+                        parameter.Scale,
+                        Value = parameter.Value is DBNull ? null : parameter.Value
                     }),
-                    ReturnedRows = returnedRows, LogicalReads = reads, ServerCpuMilliseconds = cpu,
-                    Operators = operators, IoMessages = messages.ToString(), ActualPlans = plans
+                    ReturnedRows = returnedRows,
+                    LogicalReads = reads,
+                    ServerCpuMilliseconds = cpu,
+                    Operators = operators,
+                    IoMessages = messages.ToString(),
+                    ActualPlans = plans
                 });
             }
         }
@@ -176,9 +190,16 @@ public sealed partial class EnvironmentalObservationPerformanceTests
         {
             await JsonSerializer.SerializeAsync(gzip, evidence, EvidenceJsonOptions).ConfigureAwait(false);
         }
-        return new { Commands = commands.Count, ActualPlans = plansCount, LogicalReads = totalReads,
-            ActualRowsRead = totalRowsRead, ServerCpuMilliseconds = serverCpu, Artifact = "sql-replay.json.gz",
-            Boundary = "One untimed 256-reference production command sequence; exact parameters, all writes rolled back" };
+        return new
+        {
+            Commands = commands.Count,
+            ActualPlans = plansCount,
+            LogicalReads = totalReads,
+            ActualRowsRead = totalRowsRead,
+            ServerCpuMilliseconds = serverCpu,
+            Artifact = "sql-replay.json.gz",
+            Boundary = "One untimed 256-reference production command sequence; exact parameters, all writes rolled back"
+        };
     }
 
     private sealed record LineageStorage(long LeafInserts, long LeafUpdates, long LeafDeletes,
