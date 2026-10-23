@@ -29,7 +29,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     new("Preview", "preview", 17, JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["$raw"]),
                     new("CloudAssessment", "cloud", 20, JsonSerializer.SerializeToElement(new { gridColumns = 2, gridRows = 1, minimumSamplesPerTile = 1 }), ["$raw"]),
                     new("WeatherCloudOverlay", "weather", 30, DependsOn: ["preview", "cloud"]),
-                    new("JpegEncoding", "jpeg", 40, JsonSerializer.SerializeToElement(new { MaximumDimension = (int?)null, future = new[] { 100 } }), ["weather"])
+                    new("JpegEncoding", "jpeg", 40, JsonSerializer.SerializeToElement(new { MaximumDimension = (int?)null, future = new { keep = 100 } }), ["weather"])
                 ])
             };
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -95,7 +95,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var options = JsonSerializer.SerializeToElement(new
             {
                 FixedTransfer = fixedTransfer ? new HVO.SkyMonitor.Imaging.FixedDisplayTransferOptions() : null,
-                future = new[] { 100 }
+                future = new { keep = 100 }
             });
             var steps = new List<CaptureProcessingStepConfig>();
             var input = "$raw";

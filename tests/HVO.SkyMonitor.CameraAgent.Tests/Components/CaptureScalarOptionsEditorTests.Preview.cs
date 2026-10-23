@@ -52,6 +52,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
         const string source = """{ "FixedTransfer": { "BlackLevel":1e+02, "WhiteLevel":4095, "Gamma":1.2, "future":[1e+02] }, "blackPercentile":0.25, "AsinhStrength":8, "future":true }""";
         var service = Configure(context, alias, source);
         var cut = context.Render<ProcessingGraphEditorPage>();
+        var fixturePath = Path.Combine(TestContext.TestResultsDirectory!, "fixed-" + alias + "-options.html");
+        File.WriteAllText(fixturePath, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Fixed preview options fixture</title><body data-theme='hvo-dark'>" + cut.Markup + "</body></html>");
+        TestContext.AddResultFile(fixturePath);
         StringAssert.Contains(cut.Find(".node-options-help").TextContent, "Fixed transfer is active", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll("input[id*='Percentile'],input[id*='asinhStrength'],input[id*='fixedTransfer']"));
         cut.Find("form").Submit();
@@ -99,6 +102,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
         var source = "{ \"future\":[1e+02]" + (resize is null ? "" : ", \"MaximumDimension\":" + resize) + " }";
         var service = Configure(context, "JpegEncoding", source);
         var cut = context.Render<ProcessingGraphEditorPage>();
+        var fixturePath = Path.Combine(TestContext.TestResultsDirectory!, "jpeg-options.html");
+        File.WriteAllText(fixturePath, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>JPEG options fixture</title><body data-theme='hvo-dark'>" + cut.Markup + "</body></html>");
+        TestContext.AddResultFile(fixturePath);
         Assert.IsNotNull(cut.Find("#jpeg-encoding"));
         Assert.IsEmpty(cut.FindAll("input[id*='maximumDimension'],input[id*='enabled']"));
         Assert.IsNotEmpty(cut.Find("label[for='node-options-0-jpegQuality']").TextContent);

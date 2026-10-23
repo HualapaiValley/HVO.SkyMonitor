@@ -8,6 +8,7 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("CombinedPreview", "combined-preview")]
     public void PreviewDescriptorsMatchExactModesDefaultsAndPreserveUntouchedJson(string alias, string variant)
     {
+        ArgumentNullException.ThrowIfNull(alias);
         foreach (var fixedTransfer in new[] { false, true })
         {
             var version = fixedTransfer ? "fixed-preview-v1" : "encoded-preview-v1";
