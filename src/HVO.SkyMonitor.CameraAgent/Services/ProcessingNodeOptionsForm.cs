@@ -33,9 +33,13 @@ public sealed class ProcessingNodeOptionsForm
     private JsonElement Source => _source ?? JsonSerializer.SerializeToElement(new { });
 
     // The descriptor is bound to the actual producer version. A future producer cannot silently reuse this panel.
-    public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias)
+    public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias, JsonElement? options = null)
     {
         ArgumentNullException.ThrowIfNull(alias);
+        if (PreviewOptionDescriptors.IsPreviewAlias(alias))
+        {
+            return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
+        }
         var version = alias.ToUpperInvariant() switch
         {
             "IMAGEQUALITY" => CaptureScalarOptionDescriptors.ImageQuality.StepVersion,
@@ -44,6 +48,7 @@ public sealed class ProcessingNodeOptionsForm
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
+            "JPEGENCODING" => "packed-jpeg-v1",
             _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
                 ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
         };

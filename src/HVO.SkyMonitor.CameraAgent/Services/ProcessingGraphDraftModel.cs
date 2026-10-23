@@ -231,7 +231,7 @@ internal sealed class ProcessingGraphDraftModel
         {
             get
             {
-                var descriptor = ProcessingNodeOptionsForm.DescriptorFor(Type);
+                var descriptor = ProcessingNodeOptionsForm.DescriptorFor(Type, Options);
                 if (descriptor is null)
                 {
                     return null;

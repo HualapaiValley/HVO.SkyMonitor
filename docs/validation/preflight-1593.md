@@ -257,3 +257,24 @@ corrected to the observed values; repository totals are Unit 14,083, Integration
 phase production sources remain identical to the accepted comparison inputs.
 The PR's append-only ledger records affected correction results and the remaining
 candidate/finalization evidence, preserving every original failure.
+
+## Final target synchronization
+
+The full candidate at `f3ecdd9c139f9baf45e4f9709f975b845c164829` passed all
+ten deployment shards (843 s), complete Integration 955/955 with no skips, and
+the complete Unit selection with exact correction receipts (13,959 passed,
+124 expected skips, zero unresolved failures). All 43 TRX-bound coverage
+attachments were checked against their retained report paths and checksums.
+
+The target subsequently advanced to
+`75ad7d9de596585da4a35451a04d4b7806f60bdf` (#1632 preview/JPEG editing).
+The merge conflicts concern only three test-count inventories and the runbook
+totals. Their resolution preserves the prior real-discovery corrections and
+adds the target's new cases: Processing 922 Unit, combined-host 87, CameraAgent
+7,218 and LogicHost 959, for repository Unit 14,191; Integration 955 and Manual
+285 remain unchanged. `candidate/count-merge-resolution.json` records all three
+Git stages and the arithmetic. Fresh focused discovery, target interaction
+tests, warning-clean builds, format and the four control guards are recorded
+in the PR ledger before independent review. The accepted preflight production
+sources and their dependency inputs are unchanged by this synchronization,
+so its exact comparison and resource evidence remain applicable.
