@@ -245,6 +245,10 @@ public sealed class OrbitalSnapshotPanelTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(TestOrbitalUiService.Status() with
+        {
+            LastRetrievalSuccessUtc = Now.AddHours(-24)
+        }));
         var completion = new TaskCompletionSource<OperatorUiResult<OrbitalCommandView>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         service.RefreshHandler = (_, _) => new ValueTask<OperatorUiResult<OrbitalCommandView>>(completion.Task);
@@ -266,12 +270,27 @@ public sealed class OrbitalSnapshotPanelTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.StartsWith(cut.Find("#orbital-message").TextContent, "Refresh queued.", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#orbital-message").TextContent, "Select Reload status", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#orbital-data-notice").TextContent, "Orbital refresh is overdue.", StringComparison.Ordinal);
             Assert.AreEqual("status", cut.Find("#orbital-message").GetAttribute("role"));
             Assert.AreEqual("Refresh now", cut.Find("#orbital-refresh").TextContent);
         });
         Assert.HasCount(1, service.RefreshKeys);
         Assert.AreEqual(OrbitalSnapshotPanel.RefreshReason, service.RefreshReasons.Single());
         StringAssert.StartsWith(service.RefreshKeys[0], "ui-", StringComparison.Ordinal);
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(TestOrbitalUiService.Status() with
+        {
+            LastRetrievalSuccessUtc = Now,
+            LastActivationUtc = Now
+        }));
+        cut.Find("#orbital-reload").Click();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Fresh", cut.Find("#orbital-state").TextContent);
+            Assert.IsFalse(cut.Find("#orbital-data-notice").TextContent.Contains("overdue", StringComparison.Ordinal));
+            Assert.IsEmpty(cut.FindAll("#orbital-message"));
+        });
+        Assert.HasCount(1, service.RefreshKeys, "Reading the finished result must not queue another provider request.");
     }
 
     [TestMethod]

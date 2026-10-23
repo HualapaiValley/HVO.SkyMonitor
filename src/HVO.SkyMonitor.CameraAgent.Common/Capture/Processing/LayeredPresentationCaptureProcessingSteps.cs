@@ -512,8 +512,11 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(0, 255)] public byte? ImageCircleValue { get; init; }
     [Range(0, 255)] public byte? CardinalValue { get; init; }
     [Range(1, 8)] public int CardinalScale { get; init; } = 2;
-    /// <summary>Opt-in diagnostic: keep unqualified star labels at expected positions, suffixed "(expected)".</summary>
-    public bool ExpectedPositionDiagnostics { get; init; }
+    /// <summary>
+    /// Sky context labels expected catalog positions by default, suffixed "(expected)". Explicit false keeps only
+    /// qualified measured star labels; the separate measured annotation recipe retains its strict default.
+    /// </summary>
+    public bool ExpectedPositionDiagnostics { get; init; } = true;
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (ConstellationIds.Count > 256 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))

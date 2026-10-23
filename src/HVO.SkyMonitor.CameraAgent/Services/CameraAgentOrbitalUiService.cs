@@ -544,9 +544,9 @@ internal static class OrbitalOperatorText
         [OrbitalElementsOperations.ProviderHaltedReasonCode] =
             "The provider refused a request, or an attempt's outcome could not be confirmed, so every refresh is halted until an operator resumes the provider.",
         [OrbitalElementsOperations.RefreshQueuedReasonCode] =
-            "Refresh queued. The automation runner makes the request on its next poll, and the provider floor and halt still apply.",
+            "Refresh queued. A queued request does not confirm a successful download. Select Reload status to see the latest retrieval and run result; the provider floor and halt still apply.",
         [OrbitalElementsOperations.RefreshReplayedReasonCode] =
-            "Already queued. This refresh request was recorded before, so nothing new was queued.",
+            "Request already recorded. Nothing new was queued. Select Reload status to see whether it completed and when the last retrieval succeeded.",
         [OrbitalElementsOperations.InvalidIdempotencyKeyReasonCode] = "The refresh request identifier was not valid. Try again.",
         [OrbitalElementsOperations.InvalidActorReasonCode] = "The signed-in identity cannot be recorded as the requester.",
         [OrbitalElementsOperations.InvalidReasonReasonCode] =
@@ -667,7 +667,8 @@ internal static class OrbitalOperatorText
         [OrbitalElementsAutomationAdapter.IntervalOutOfRangeReasonCode] = "The interval must be at most 86,400 seconds.",
 
         // Automation codes an orbital refresh can return.
-        [LocalAutomationContract.RunNowPendingReasonCode] = "A refresh is already queued or running.",
+        [LocalAutomationContract.RunNowPendingReasonCode] =
+            "A refresh is already queued or running. Nothing new was queued. Select Reload status to see the latest retrieval and run result.",
         [LocalAutomationContract.RunNowUnavailableReasonCode] =
             "The refresh schedule cannot run now; it is disabled or no longer valid.",
         [LocalAutomationContract.InvalidCommandReasonCode] = "The command was rejected as invalid.",
