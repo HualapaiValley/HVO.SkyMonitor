@@ -33,7 +33,7 @@ validation, activation and rollback remain separate.
 Each of **Top left**, **Top right**, **Bottom left** and **Bottom right** accepts
 literal text and any token from **Supported tokens and formats**. The catalogue
 shows the retained source, unit, provenance, default format and every allowed
-format. Token names and formats are case sensitive. For example:
+scalar format. Status companions support only `text`. Token names and formats are case sensitive. For example:
 
 ```text
 **CAPTURE {{capture.sequence}}**

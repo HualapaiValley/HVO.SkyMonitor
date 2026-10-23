@@ -71,6 +71,91 @@ inside its panel; final measurements and screenshots use the compiled styles.
 
 ## Current evidence
 
-Final command/counts, classifier range and browser artifacts are recorded here
-when the local candidate gate completes. Evidence is retained under registered
-issue scratch; selected portable screenshots/products accompany this receipt.
+Software candidate `ab869b16416934387b8c7675c167e9973999d44c` follows the initial
+candidate `5b904d5dd8cef6773367fb8f53d8e14da3ccf000`; the final handoff adds only
+this evidence ledger. Base is `3686e19a57b4c9c9ea0d4324755278c288827661`.
+
+The selector was `scripts/ci:classify pull_request <base> <candidate>`, recorded
+on both immutable ranges. Full PR output is `mode=full`, `complete=false`,
+`shared=cameraagent=logichost=combined=delivery=true`, with deployment, all three
+deployment subprofiles, secret-scan-contract and release-scripts false.
+The correction range `5b904d5d..ab869b16` selects only CameraAgent, also
+`mode=full`, `complete=false`. That selector preserved the unchanged shared,
+combined and central evidence and selected the affected UI rebuild/tests.
+Protected profile remains the two development-v1 checks, pending parent
+lifecycle work; no full-qualification dispatch ran.
+
+| Local gate | Result |
+| --- | --- |
+| SDK/tool/solution restore and complete Release solution build | Pass, SDK 10.0.402; 0 warnings/errors at 5b904d5d |
+| Full solution format verification | Pass at 5b904d5d |
+| Affected CameraAgent Release rebuild and format verification after async corrections | Pass at ab869b16, warning-clean |
+| Editor/form/conversion/service/facts-builder Unit selection | 80 passed, 0 failed/skipped at ab869b16 |
+| Shared Frame Facts and typed-options Unit selection | 201 passed, 0 failed/skipped; relevant source unchanged through ab869b16 |
+| Combined-host Unit selection | 74 passed, 0 failed/skipped; source unchanged through ab869b16 |
+| Central retained-presentation lineage Unit selection | 20 passed, 0 failed/skipped; source unchanged through ab869b16 |
+| Real Kestrel/VirtualSky collaborative-browser Manual case | 1 passed in each of two complete runs; same test case, zero skips |
+| Shell syntax, CI classification, coordination and PR-review guards | All four passed on each candidate; shell syntax covered 203 files under Bash 5.2 |
+| Documentation/inventory audit and diff whitespace | Pass |
+
+Every build/test command used the shared host `flock -o` lock and timeout,
+`-nodeReuse:false` and `-p:UseSharedCompilation=false`. Unit and virtual-host
+runs unset `HVO_PRODUCTION_CATALOG_BUNDLE` and used the invalid Docker endpoint.
+The ledger is 375 distinct selected Unit cases plus one Manual case executed
+twice; it does not claim the entire 13,438-case Unit inventory ran locally.
+Inventories add 33 Unit cases and one Manual case. Full v1 Unit execution and
+independent exact-range deep review remain with the parent.
+
+Two async boundaries received additional test-first checks after the browser
+pass. `PendingFactsUploadCannotRelabelAMissingPreviewAsLoadedFacts` failed
+before disabling preview during input validation and publishing its snapshot
+on the renderer context. A queued older file cannot replace a newer snapshot.
+`InFlightCompilationCannotRestoreAPlanOrConversionAfterTheDraftChanges` failed
+in both modes before generation checks discarded stale plan/conversion results.
+All four new cases pass in the final 80-case selection. These changes leave
+the ready-state native rendering and existing positive browser receipt intact.
+The red TRXs are retained alongside the passing runs.
+
+[The portable gate receipt](frame-facts-editor-v1/local-gate-receipt.json)
+contains exact selectors, counts and executable source checksums.
+[The browser receipt](frame-facts-editor-v1/browser-receipt.json) records
+cancel/apply focus, all four templates/styles, invalid-format/line-bound
+rejection, anonymous login and viewer denial, immutable save, unchanged reopen,
+validation/activation/rollback, 390/320 px measurements and empty browser console.
+[The screenshot receipt](frame-facts-editor-v1/screenshot-receipt.json) records
+a complete second pass using the same frozen input, with settled viewport
+captures of the controls and full preview.
+
+The frozen editor JPEG and actual rich VirtualSky product both hash to
+`B1E048662DC1AB342BFDCE01AD896BD580D9C7E2016A9794106B5A33E8652C53`.
+The snapshot identity is
+`30D11ACA5B32E93DCFD6A1632783F66AB9AA75668DD453A44A14B86750AC904C`.
+The original retained legacy layer re-read after activation/rollback remains
+byte-identical, SHA-256
+`E49E9B986BD01AC8557E9EDDA30FA41CB70B4E13FD855B86B4430FA8310C28B8`.
+The second pass also verified its original layer unchanged and restored its
+original registry selection. Neither pass rewrote prior output.
+
+Portable evidence:
+
+- [Before legacy presets](frame-facts-editor-v1/before-legacy.png) and
+  [whole-draft conversion review](frame-facts-editor-v1/conversion-review.png).
+- [Top corners](frame-facts-editor-v1/after-top-corners.png),
+  [bottom corners](frame-facts-editor-v1/after-bottom-corners.png),
+  [frozen preview](frame-facts-editor-v1/frozen-preview.png),
+  [390 px](frame-facts-editor-v1/narrow-390.png) and
+  [320 px](frame-facts-editor-v1/narrow-320.png).
+- Actual retained [legacy layer](frame-facts-editor-v1/retained-legacy-payload.json),
+  [legacy raster](frame-facts-editor-v1/retained-legacy-render.jpg),
+  [rich facts](frame-facts-editor-v1/retained-rich-facts.json),
+  [rich layer](frame-facts-editor-v1/retained-rich-payload.json) and
+  [rich raster](frame-facts-editor-v1/retained-rich-render.jpg).
+
+Full commands, logs and TRXs remain in registered scratch
+`/tmp/hvo-skymonitor-1553-implementation.RuxHYi`; browser receipts/products
+also remain in the registered `1553-b.WFNc2T`, `1553-c.QYQ6Fe` and
+`1553-d.tLgfzt` roots. All isolated fixture runtime directories were disposed,
+both owned browser tabs were closed, and no issue-owned container, test database
+or host process remains. The shared heavy-gate lock file, build caches and all
+evidence artifacts are retained. No claim, PR, deployment or promotion action
+was performed by the implementation task.
