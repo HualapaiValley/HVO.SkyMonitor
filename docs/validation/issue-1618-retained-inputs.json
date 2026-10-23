@@ -64,10 +64,17 @@
       "sha256": "5c61454e01604e573e7bb86693367898c6e321bef940365ac1f8d9d332faedd2"
     },
     "issue-1618-retained-summary.json": {
-      "sha256": "418bc87fc444c05381af56cc2dfc429dcc06b9d202458d476e522db360c909c1"
+      "sha256": "f0bedc11254c98244f55daf8037bd692805b646ba92ce476448695d0291cd863"
     },
     "issue-1618-local-gate.json": {
       "sha256": "4632a16d4d4ebd258b981bfcf75e664db222d4b209267d9f2679858921979be9"
     }
+  },
+  "summaryCorrection": {
+    "finding": "PR #1634 F1",
+    "reviewedHead": "793b4eb20d38b3a1466a53ae46f5f3e0c2a0d585",
+    "removedConcurrentProcessAllocationAggregates": 136,
+    "retained": "Batch process-allocation medians and all original raw individual span deltas. Sequential summaries and all other metrics unchanged.",
+    "measurementRerun": false
   }
 }

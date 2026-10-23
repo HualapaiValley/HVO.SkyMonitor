@@ -40,7 +40,11 @@ async protected reads report elapsed time/bytes without a thread-allocation
 claim. Neither is an allocation-stack or per-stage CPU profile. Concurrent
 request/span allocation intervals overlap and cannot be summed into per-request
 allocation. Full endpoint CPU, allocation, logical I/O and RSS remain separately
-measured process counters.
+measured process counters. The derived concurrent summaries retain the valid
+batch process-allocation counter and omit aggregate process-allocation values
+for spans, whose overlapping intervals repeatedly count the same allocations.
+Individual span deltas remain in the raw archive; sequential summaries are
+unchanged. This correction uses existing evidence and reruns no measurement.
 
 ## Workload and method
 
