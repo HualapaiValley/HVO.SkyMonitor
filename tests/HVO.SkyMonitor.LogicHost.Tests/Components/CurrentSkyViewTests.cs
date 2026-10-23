@@ -15,12 +15,29 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Components;
 [SuppressMessage("Reliability", "CA2025:Do not pass disposables into unawaited tasks", Justification = "Tests intentionally hold refresh tasks to inspect pending UI; each task is completed and awaited before context disposal.")]
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CurrentSkyViewTests
+public sealed partial class CurrentSkyViewTests
 {
     private static readonly Guid Observatory = Guid.NewGuid();
     private static readonly Guid Camera = Guid.NewGuid();
     private static readonly Guid Capture = Guid.NewGuid();
     private static readonly Guid Artifact = Guid.NewGuid();
+
+    [TestMethod]
+    public void HeadingTree_NestsTheExactCaptureUnderCurrentSky()
+    {
+        using var context = CreateContext(out _, out _);
+        var presentations = (Presentations)context.Services.GetRequiredService<ICentralLayeredPresentationService>();
+        presentations.Result = new(CentralLayeredPresentationStatus.Found,
+            new(Capture, Guid.NewGuid(), Artifact, "image/png", "manifest", "presentation", "svg",
+                1, 1, [], "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"u8.ToArray()));
+
+        var cut = Render(context);
+
+        cut.FindAll("h1,h2,h3,h4,h5,h6").Select(h => (h.LocalName, h.TextContent))
+            .Should().Equal(("h2", "Current Sky"), ("h3", $"Capture {DateTimeOffset.UnixEpoch:u}"),
+                ("h4", "Archived scene layers"), ("h4", "Capture provenance"));
+        cut.Find("#current-sky-heading").TextContent.Should().Be("Current Sky");
+    }
 
     [TestMethod]
     public void PlainPreview_UsesSelectedExactBytesAndIndependentTimesWithoutMutation()
@@ -213,11 +230,13 @@ public sealed class CurrentSkyViewTests
         internal OperationsCaptureDetail? Detail { get; set; } = CurrentSkyViewTests.Detail();
         internal List<string?> Cursors { get; } = [];
         internal int ListCalls { get; private set; }
+        internal int DetailCalls { get; private set; }
         public Task<CameraCurrentSelection?> SelectCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, string? cursor, CancellationToken cancellationToken = default)
         { Cursors.Add(cursor); return Select(cursor); }
         public Task<CameraArchivePage> ListCapturesAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, CameraArchiveFilter filter, int take, string? cursor, CancellationToken cancellationToken = default)
         { take.Should().Be(1); ListCalls++; return Task.FromResult(new CameraArchivePage([Selected().Capture!], null)); }
-        public Task<OperationsCaptureDetail?> GetCaptureAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, Guid captureId, CancellationToken cancellationToken = default) => Task.FromResult(Detail);
+        public Task<OperationsCaptureDetail?> GetCaptureAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, Guid captureId, CancellationToken cancellationToken = default)
+        { DetailCalls++; return Task.FromResult(Detail); }
     }
     private sealed class Authentication : AuthenticationStateProvider
     {
@@ -229,8 +248,10 @@ public sealed class CurrentSkyViewTests
     private sealed class Presentations : ICentralLayeredPresentationService
     {
         internal CentralLayeredPresentationResult Result { get; set; } = new(CentralLayeredPresentationStatus.Unavailable);
+        internal Func<Task<CentralLayeredPresentationResult>>? Read { get; set; }
+        internal List<ClaimsPrincipal> Principals { get; } = [];
         public Task<CentralLayeredPresentationResult> GetAsync(Guid captureId, ClaimsPrincipal principal, CancellationToken cancellationToken = default)
-            => Task.FromResult(Result);
+        { captureId.Should().Be(Capture); Principals.Add(principal); return Read?.Invoke() ?? Task.FromResult(Result); }
     }
     private sealed class Materializer : ICentralPresentationMaterializer
     {

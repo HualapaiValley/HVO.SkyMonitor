@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -20,6 +21,9 @@ public sealed class FileCameraAgentConfigurationLoader(
     IDeploymentLocationStore? deploymentLocationStore = null,
     ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null) : ICameraAgentConfigurationLoader
 {
+    // Opt-in attribution only: no listener means no activities or measurement state.
+    internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
+    internal static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
     private const string SampleAgentId = "replace-with-registered-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -44,6 +48,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
     {
+        using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
         if (!File.Exists(path))
         {
@@ -52,8 +57,12 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
 
         using var stream = File.OpenRead(path);
-        var document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
-            .ConfigureAwait(false);
+        CameraModuleDocument? document;
+        using (ActivitySource.StartActivity("configuration.deserialize"))
+        {
+            document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (document is null)
         {
@@ -136,6 +145,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     internal static void ValidateConfig(CameraModuleConfig config)
     {
+        using var activity = ActivitySource.StartActivity("configuration.validate");
         if (config.Module is null || string.IsNullOrWhiteSpace(config.Module.Type))
         {
             throw new InvalidOperationException("Camera module type must be specified.");
@@ -230,6 +240,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     private static void ValidateScheduleCompatibility(CameraModuleConfig config)
     {
+        using var activity = ActivitySource.StartActivity("configuration.schedule-compatibility");
         var schedule = config.Schedule!;
         var envelope = config.Rig.Pipeline.Envelope;
         if (envelope is not null && schedule.SetpointProfiles.Any(profile =>
@@ -251,13 +262,16 @@ public sealed class FileCameraAgentConfigurationLoader(
             var observer = config.ResolveObservatory();
             var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
             var solarEvents = new AstronomyEngineSolarEventCalculator();
-            _ = CaptureScheduleIntervalExpander.Expand(
-                schedule,
-                new DateOnly(2024, 1, 1),
-                366,
-                timeZone,
-                observer,
-                solarEvents);
+            using (ActivitySource.StartActivity("configuration.schedule-expand-366-days"))
+            {
+                _ = CaptureScheduleIntervalExpander.Expand(
+                    schedule,
+                    new DateOnly(2024, 1, 1),
+                    366,
+                    timeZone,
+                    observer,
+                    solarEvents);
+            }
             foreach (var date in (schedule.DateExceptions ?? []).Select(static rule => rule.Date).Distinct())
             {
                 _ = CaptureScheduleIntervalExpander.Expand(

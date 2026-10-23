@@ -2,7 +2,7 @@
 {
     <header class="mb-4">
         <p class="text-uppercase text-info small fw-bold mb-1">@detail.Capture.ObservatoryName</p>
-        <h1>Capture @detail.Capture.CapturedAtUtc.ToString("u")</h1>
+        @Heading(0, $"Capture {detail.Capture.CapturedAtUtc:u}", "h1")
         <p class="text-muted">@(detail.Capture.LogicalCameraName ?? "Unassigned installation") - @(detail.Capture.RigId ?? "Unknown rig") - sequence @(detail.Capture.CaptureSequence?.ToString() ?? "unknown")</p>
         <p class="small text-muted mb-0">Installation @(detail.Capture.InstallationPublicId?.ToString("D") ?? "unbound") - rig profile @(detail.Capture.RigProfileVersion?.ToString() ?? "legacy")</p>
     </header>
@@ -15,7 +15,7 @@
         <section class="card mb-4 layered-presentation" @ref="presentationRoot" data-presentation-identity="@Presentation.PresentationIdentitySha256">
             <div class="card-body">
                 <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
-                    <div><p class="text-uppercase text-info small fw-bold mb-1">Central layered presentation</p><h2 class="h4 mb-0">Archived scene layers</h2></div>
+                    <div><p class="text-uppercase text-info small fw-bold mb-1">Central layered presentation</p>@Heading(1, "Archived scene layers", "h4 mb-0")</div>
                     <span class="text-muted small">One base + one grouped SVG</span>
                 </div>
                 <div class="layered-canvas mb-3@(IsBaseImageUnavailable ? " layered-canvas-unavailable" : null)" style="--presentation-aspect: @Presentation.WidthPixels / @Presentation.HeightPixels" aria-describedby="layered-presentation-summary">
@@ -93,7 +93,7 @@
     }
     <section class="card mb-4">
         <div class="card-body">
-            <h2 class="h5">Capture provenance</h2>
+            @Heading(1, "Capture provenance", "h5")
             <dl class="row small mb-0">
                 <dt class="col-md-3">Agent / frame</dt><dd class="col-md-9 text-break font-monospace">@detail.Provenance.AgentId / @detail.Provenance.FrameId</dd>
                 <dt class="col-md-3">Location evidence</dt><dd class="col-md-9">@detail.Provenance.LocationEvidenceState - @(detail.Provenance.LocationId ?? "No reported location") @(detail.Provenance.LocationVersion is null ? null : $"v{detail.Provenance.LocationVersion}")</dd>
@@ -103,7 +103,7 @@
             </dl>
             @if (detail.Provenance.Profiles.Count > 0)
             {
-                <h3 class="h6 mt-3">Capture-time profiles</h3>
+                @Heading(2, "Capture-time profiles", "h6 mt-3")
                 <ul class="list-unstyled small mb-0">
                     @foreach (var profile in detail.Provenance.Profiles)
                     {

@@ -1044,6 +1044,7 @@ public sealed class ProtectedDeploymentLocationStore(
 
     private void ValidateRetainedEvidence(DeploymentLocationHistory history)
     {
+        using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained");
         var root = Path.GetFullPath(_options.RawIngressRoot);
         if (!Directory.Exists(root))
         {
@@ -1055,17 +1056,20 @@ public sealed class ProtectedDeploymentLocationStore(
             AttributesToSkip = FileAttributes.ReparsePoint,
             IgnoreInaccessible = false
         };
-        foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
+        using (DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-files"))
         {
-            try
+            foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
             {
-                RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                ValidateRetainedManifest(history, File.ReadAllBytes(path));
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw new InvalidDataException(
-                    "Existing capture evidence could not be inspected for location provenance.", exception);
+                try
+                {
+                    RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+                    ValidateRetainedManifest(history, File.ReadAllBytes(path));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidDataException(
+                        "Existing capture evidence could not be inspected for location provenance.", exception);
+                }
             }
         }
         ValidateJournalEvidence(root, history);
@@ -1092,6 +1096,7 @@ public sealed class ProtectedDeploymentLocationStore(
 
     private static void ValidateJournalEvidence(string root, DeploymentLocationHistory history)
     {
+        using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-journal");
         var path = Path.Combine(root, "journal", "raw-ingress.db");
         if (!File.Exists(path))
         {
