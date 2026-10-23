@@ -35,6 +35,8 @@ and out-of-scope JSON members and their source formatting survive edits. Old
 graph and product identities remain reconstructable from their frozen inputs.
 
 These are display controls over retained preview and assessment products. They
+bound the recipe's status text before rendering, so short or zero character
+budgets work without a layout failure, including with labels hidden. They
 do not modify raw/science bytes, assessment grid dimensions, cloud measurements
 or their unavailable/unknown status. Hiding labels does not make missing weather
 known or qualify a physical cloud profile. No physical profile (#1004), weather

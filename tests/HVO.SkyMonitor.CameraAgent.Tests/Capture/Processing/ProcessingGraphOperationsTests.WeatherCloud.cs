@@ -25,7 +25,10 @@ public sealed partial class ProcessingGraphOperationsTests
                 Rig = baseline.Rig with { Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 } },
                 Pipeline = new CapturePipelineConfig([
                     new("Preview", "preview", 10, DependsOn: ["$raw"]),
-                    new("CloudAssessment", "cloud", 20, DependsOn: ["$raw"]),
+                    new("CloudAssessment", "cloud", 20, JsonSerializer.SerializeToElement(new
+                    {
+                        gridColumns = 2, gridRows = 1, minimumSamplesPerTile = 1
+                    }), ["$raw"]),
                     new("WeatherCloudOverlay", "weather", 90, JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["preview", "cloud"])
                 ])
             };
@@ -42,18 +45,29 @@ public sealed partial class ProcessingGraphOperationsTests
             foreach (var option in defaults.Options)
                 Assert.AreEqual(runtimeDefaults.Get(option.Descriptor.Key).Value, option.Value, option.Descriptor.Key);
             plan.DisposeSteps();
-            var wrongMetadata = config with { Pipeline = config.Pipeline with
+            var wrongMetadata = config with
             {
-                Steps = [config.Pipeline.Steps[0], new("ImageQuality", "cloud", 20, DependsOn: ["$raw"]), config.Pipeline.Steps[2]]
-            }};
+                Pipeline = config.Pipeline with
+                {
+                    Steps = [config.Pipeline.Steps[0], new("ImageQuality", "cloud", 20, DependsOn: ["$raw"]), config.Pipeline.Steps[2]]
+                }
+            };
             StringAssert.Contains(Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(wrongMetadata)).Message,
                 "required compound inputs", StringComparison.Ordinal);
-            var missingPreview = config with { Pipeline = config.Pipeline with
+            var missingPreview = config with
             {
-                Steps = [.. config.Pipeline.Steps.Select(step => step.Id == "weather" ? step with { DependsOn = ["cloud"] } : step)]
-            }};
+                Pipeline = config.Pipeline with
+                {
+                    Steps = [.. config.Pipeline.Steps.Select(step => step.Id == "weather" ? step with { DependsOn = ["cloud"] } : step)]
+                }
+            };
             StringAssert.Contains(Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(missingPreview)).Message,
                 "required compound inputs", StringComparison.Ordinal);
+            var disabledProducer = config with { Pipeline = config.Pipeline with
+            {
+                Steps = [.. config.Pipeline.Steps.Select(step => step.Id == "cloud" ? step with { Enabled = false } : step)]
+            }};
+            Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(disabledProducer));
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
             async Task<ProcessingGraphExecutionDetail> Capture(int sequence)

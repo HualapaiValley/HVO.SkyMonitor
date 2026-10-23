@@ -62,7 +62,6 @@ public sealed partial class LogicHostProcessingConformanceTests
         var assessmentProduct = assessment.Products.Single();
         var previewProduct = preview.Products.Single();
 
-
         var retainedAssessment = assessmentProduct.Payload.ToArray();
         var retainedPreview = previewProduct.Payload.ToArray();
         var rawIdentity = PayloadChecksum.ComputeSha256(currentPayload);
@@ -79,6 +78,14 @@ public sealed partial class LogicHostProcessingConformanceTests
         var shortLabels = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
         {
             ["maximumLabelCharacters"] = ProcessingOptionValue.FromWholeNumber(4)
+        }).Options!.Value;
+        var noLabels = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
+        {
+            ["drawLabels"] = ProcessingOptionValue.FromToggle(false)
+        }).Options!.Value;
+        var zeroLabels = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
+        {
+            ["maximumLabelCharacters"] = ProcessingOptionValue.FromWholeNumber(0)
         }).Options!.Value;
         async Task<ProcessingProduct> Execute(JsonElement options)
         {
@@ -118,9 +125,15 @@ public sealed partial class LogicHostProcessingConformanceTests
         var original = await Execute(source).ConfigureAwait(false);
         var changed = await Execute(edited).ConfigureAwait(false);
         var shortened = await Execute(shortLabels).ConfigureAwait(false);
+        var hidden = await Execute(noLabels).ConfigureAwait(false);
+        var zero = await Execute(zeroLabels).ConfigureAwait(false);
         var restored = await Execute(source).ConfigureAwait(false);
         Assert.AreNotEqual(original.ChecksumSha256, changed.ChecksumSha256);
         Assert.AreNotEqual(original.ChecksumSha256, shortened.ChecksumSha256);
+        Assert.AreNotEqual(original.ChecksumSha256, hidden.ChecksumSha256);
+        Assert.AreEqual(hidden.ChecksumSha256, zero.ChecksumSha256);
+        if (hasReference)
+            Assert.AreNotEqual(hidden.ChecksumSha256, changed.ChecksumSha256, "Only boundary thickness differs when labels are hidden.");
         Assert.AreNotEqual(original.OutputIdentitySha256, changed.OutputIdentitySha256);
         Assert.AreEqual(original.OutputIdentitySha256, restored.OutputIdentitySha256);
         CollectionAssert.AreEqual(original.Payload.ToArray(), restored.Payload.ToArray());
@@ -131,7 +144,7 @@ public sealed partial class LogicHostProcessingConformanceTests
         Assert.AreEqual(EnvironmentalObservationMatchStatus.Missing, parsed.Environment.PrecipitationStatus);
         if (!hasReference)
         {
-            Assert.AreEqual(CloudAssessmentStatus.Unavailable, parsed.Status);
+            Assert.AreEqual(CloudAssessmentStatus.InsufficientEvidence, parsed.Status);
             Assert.IsNull(parsed.CoverageMillionths);
         }
         Console.WriteLine($"Reference={hasReference}; original/restore={original.ChecksumSha256}; edited={changed.ChecksumSha256}; short labels={shortened.ChecksumSha256}; raw={rawIdentity}");
