@@ -39,6 +39,7 @@ internal sealed partial class JoinedRecoveryFixture
     // Match Program's Identity v3 configuration. A bare DbContext otherwise builds Identity v1
     // and correctly reports a model mismatch against the canonical v3 migration.
     private readonly ServiceProvider identityServices = new ServiceCollection()
+        .AddEntityFrameworkSqlServer()
         .Configure<IdentityOptions>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
         .BuildServiceProvider();
     private MsSqlContainer container = null!;
@@ -382,6 +383,9 @@ internal sealed partial class JoinedRecoveryFixture
     }
 
     private ApplicationDbContext OpenDb(string database) => new(new DbContextOptionsBuilder<ApplicationDbContext>()
+        // Other migration fixtures intentionally construct bare Identity v1 contexts. Their
+        // cached model must not become this fixture's canonical v3 model through a shared EF root.
+        .UseInternalServiceProvider(identityServices)
         .UseApplicationServiceProvider(identityServices)
         .UseSqlServer(new SqlConnectionStringBuilder(connectionString) { InitialCatalog = database }.ConnectionString).Options);
 
