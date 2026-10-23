@@ -359,7 +359,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
     private static string? ValidateOptions(CapturePipelineConfig pipeline)
     {
         var diagnostics = pipeline.Steps.SelectMany((step, index) =>
-            ProcessingNodeOptionsForm.DescriptorFor(step.Type) is { } descriptor
+            ProcessingNodeOptionsForm.DescriptorFor(step.Type, step.Options) is { } descriptor
                 ? ProcessingNodeOptionsCodec.Decode(descriptor,
                     step.Options ?? System.Text.Json.JsonSerializer.SerializeToElement(new { }), $"steps[{index}].options").Diagnostics
                 : System.Collections.Immutable.ImmutableArray<ProcessingGraphDiagnostic>.Empty).ToArray();

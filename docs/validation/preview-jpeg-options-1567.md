@@ -88,3 +88,12 @@ beyond this slice's new cases), without removing tests or weakening selection.
 The runbook total matches the per-project inventories. Unchanged binaries and
 saved discovery diagnostics provide the verification after these count-only
 corrections; no long suite is repeated.
+
+The independent review's F1 service-boundary regression was reproduced by six
+new cases before correction: all three fixed-transfer aliases with quoted
+inactive AsinhStrength or duplicate inactive percentile members. The form and
+runtime binder accepted these retained values, while preview/save selected the
+percentile descriptor and rejected them. The service now resolves with the
+actual step options, matching the form's fixed-transfer descriptor. The
+regressions preserve every untouched byte and exercise authorized preview and
+draft creation; no transfer mode changes.
