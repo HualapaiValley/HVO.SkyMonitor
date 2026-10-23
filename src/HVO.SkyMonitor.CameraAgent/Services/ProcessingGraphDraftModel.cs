@@ -23,6 +23,13 @@ internal sealed class ProcessingGraphDraftModel
     public bool HasGraphChanges(CapturePipelineConfig pipeline)
         => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
 
+    public ProcessingGraphDraftModel WithConvertedPipeline(CapturePipelineConfig pipeline)
+    {
+        var converted = FromPipeline(pipeline, SourceRevisionId, Name, Revision);
+        converted._initialDefinition = _initialDefinition;
+        return converted;
+    }
+
     /// <summary>Carried from the source revision and shown read-only; a new draft uses the current explicit schema.</summary>
     public string SchemaVersion { get; private set; } = CapturePipelineSchemaVersions.ExplicitV2;
 
@@ -167,10 +174,14 @@ internal sealed class ProcessingGraphDraftModel
         }
         if (_sourcePipeline is { } source && StructureMatchesSource(source))
         {
-            // Option-only edits keep even omitted order/id/enabled members and dependency ordering intact.
+            // Options and enable edits keep omitted order/id members and dependency ordering intact.
             pipeline = source with
             {
-                Steps = source.Steps.Select((step, index) => step with { Options = Nodes[index].BuildOptions() }).ToArray()
+                Steps = source.Steps.Select((step, index) => step with
+                {
+                    Options = Nodes[index].BuildOptions(),
+                    Enabled = Nodes[index].Enabled == (step.Enabled ?? true) ? step.Enabled : Nodes[index].Enabled
+                }).ToArray()
             };
             return true;
         }
@@ -192,14 +203,23 @@ internal sealed class ProcessingGraphDraftModel
         {
             var step = source.Steps[index];
             return node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
-                node.Type == step.Type && node.Required == step.Required && node.Enabled == (step.Enabled ?? true) &&
+                node.Type == step.Type && node.Required == step.Required &&
                 node.DependsOn.SetEquals(step.DependsOn ?? []);
         }).All(static same => same);
 
     internal sealed class NodeRow
     {
         public string Id { get; set; } = string.Empty;
-        public string Type { get; set; } = string.Empty;
+        private string _type = string.Empty;
+        public string Type
+        {
+            get => _type;
+            set
+            {
+                if (_type != value) _optionsForm = null;
+                _type = value;
+            }
+        }
         public bool Required { get; set; } = true;
         public bool Enabled { get; set; } = true;
         public HashSet<string> DependsOn { get; set; } = new(StringComparer.Ordinal);

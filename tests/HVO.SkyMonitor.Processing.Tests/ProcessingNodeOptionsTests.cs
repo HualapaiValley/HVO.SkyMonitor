@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [TestCategory("Unit")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Single-use expected test values are clearer inline.")]
-public sealed class ProcessingNodeOptionsTests
+public sealed partial class ProcessingNodeOptionsTests
 {
     private const string SceneVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
     private const string Color = "constellationLineColor";
@@ -59,7 +59,7 @@ public sealed class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(3, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(6, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades, "No upgrade ships, so no saved pipeline changes.");
     }
 

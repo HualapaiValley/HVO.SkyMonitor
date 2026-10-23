@@ -19,6 +19,40 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
+    public async Task QualityDraftAuthorizationAndIdentifierValidationPrecedePersistence()
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var pipeline = new CapturePipelineConfig([
+            new("ImageQuality", "quality", 17, JsonSerializer.SerializeToElement(new { outputVariant = " " }), ["$raw"])
+        ]);
+        var denied = await CreateService(operations.Object, authorized: false)
+            .CreateRevisionAsync("quality", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
+        var invalid = await CreateService(operations.Object, authorized: true)
+            .CreateRevisionAsync("quality", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        StringAssert.Contains(invalid.Message!, "processing.options.not-allowed", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task FrameFactsDraftAuthorizationAndSemanticValidationStayAtTheServiceBoundary()
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(
+            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias, "facts", 70,
+            JsonSerializer.SerializeToElement(new { topLeftTemplate = "{{unknown.token}}" }), ["$raw"])]);
+        var denied = CreateService(operations.Object, authorized: false);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await denied.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await denied.CreateRevisionAsync("facts", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false)).Kind);
+        var allowed = CreateService(operations.Object, authorized: true);
+        var invalid = await allowed.CreateRevisionAsync("facts", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        StringAssert.Contains(invalid.Message!, "frame-facts.unknown-token", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
     public async Task GetExecutions_ReadsBothClassesWithinTheBoundAndSummarizesAsync()
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);

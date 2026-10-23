@@ -1,0 +1,159 @@
+{
+  "version": "frame-facts-editor-local-gate-v1",
+  "base": "3686e19a57b4c9c9ea0d4324755278c288827661",
+  "sourceCandidate": "ab869b16416934387b8c7675c167e9973999d44c",
+  "initialCandidate": "5b904d5dd8cef6773367fb8f53d8e14da3ccf000",
+  "target": "development/v1",
+  "profile": [
+    "Development v1 / Preflight",
+    "Development v1 / Build and Unit"
+  ],
+  "riskTier": "B",
+  "requestedReview": "deep",
+  "sdk": "10.0.402",
+  "fullClassifier": [
+    "mode=full",
+    "deployment=false",
+    "deployment_catalog=false",
+    "deployment_shards=false",
+    "deployment_installer=false",
+    "complete=false",
+    "shared=true",
+    "cameraagent=true",
+    "logichost=true",
+    "combined=true",
+    "delivery=true",
+    "secret_scan_contract=false",
+    "release_scripts=false"
+  ],
+  "correctionClassifier": [
+    "mode=full",
+    "deployment=false",
+    "deployment_catalog=false",
+    "deployment_shards=false",
+    "deployment_installer=false",
+    "complete=false",
+    "shared=false",
+    "cameraagent=true",
+    "logichost=false",
+    "combined=false",
+    "delivery=false",
+    "secret_scan_contract=false",
+    "release_scripts=false"
+  ],
+  "gates": {
+    "solutionRelease": "passed at 5b904d5d, warning-clean",
+    "affectedReleaseBuild": "passed at ab869b16 through dotnet test -warnaserror",
+    "solutionFormat": "passed at 5b904d5d",
+    "affectedFormat": "passed at ab869b16",
+    "ciControlGuards": "4/4 passed at both candidates",
+    "docsAudit": "passed"
+  },
+  "tests": {
+    "final-editor.trx": {
+      "total": 80,
+      "passed": 80,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    "candidate-shared.trx": {
+      "total": 201,
+      "passed": 201,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    "candidate-combined.trx": {
+      "total": 74,
+      "passed": 74,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    "candidate-lineage.trx": {
+      "total": 20,
+      "passed": 20,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    "browser-host-final.trx": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    "browser-screens.trx": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "notExecuted": 0
+    }
+  },
+  "reproducedBeforeFix": {
+    "rollback-red.trx": {
+      "total": 1,
+      "passed": 0,
+      "failed": 1,
+      "notExecuted": 0
+    },
+    "upload-red.trx": {
+      "total": 1,
+      "passed": 0,
+      "failed": 1,
+      "notExecuted": 0
+    },
+    "compilation-red.trx": {
+      "total": 2,
+      "passed": 0,
+      "failed": 2,
+      "notExecuted": 0
+    }
+  },
+  "executableSourceSha256": {
+    "src/HVO.SkyMonitor.CameraAgent/Components/Operations/FrameFactsOptionsEditor.razor": "9104BC8A2D96FA34A706C0B07B66B247D94C8FD052B3DDCA62501F5367B7C00E",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Operations/FrameFactsOptionsEditor.razor.cs": "B1EE798A3E82DD0D538D5AAAAF9EFA7527F64F7636DB51F3F84474FB9008EF06",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Operations/FrameFactsOptionsEditor.razor.css": "B7291AFD280950DFFB98F8C946862DDB23E5742AFC3D51A9C28CF803E4A2A837",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Operations/ProcessingNodeOptionsEditor.razor": "19FEC7DC842C7DBB12B4E45521A9A36CD00BC50A0041A29BF25230EEA51069F8",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/CurrentSkyPage.razor": "17D323B2C8B7B8C5623C2F02D6A9F1E441B7803B2BF1E3716F978585C984B8BA",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphEditorPage.razor": "42AE9564B145CC3FA6295DD5B815276B73510781877FEC4CC2B3D9EA250988CA",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphEditorPage.razor.cs": "B12AB4E43CD356F020E2F50B204B47751C5314BC1701560B1DF1191C6E6E2C34",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphEditorPage.razor.css": "23570060C3E59915528B577B82D577C8A67106E7A6B87327170306C0EC741DCD",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphsPage.razor": "75491FAADA9EB1CBEA42582294FADBAAE7FB4A5F8CBF1A788869AA031D17A397",
+    "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphsPage.razor.cs": "559C73C7D7E6D268B1FD9B84371DDC5807336A8BD825791E6F5A6FDF8434267B",
+    "src/HVO.SkyMonitor.CameraAgent/Services/FrameFactsDraftConversion.cs": "4C4F402DB8ED36ED5288270506EBDCD20B91A124073F1313E6A0FCBD01B43D8A",
+    "src/HVO.SkyMonitor.CameraAgent/Services/FrameFactsEditorPreview.cs": "C61006750FBCD7DC73CDBC1904CBEC937EAD10367FAF7626E8E8FFB0F1561B05",
+    "src/HVO.SkyMonitor.CameraAgent/Services/ProcessingGraphDraftModel.cs": "93C04AC6A471B996EA55B62DF54A1F21984C7FB74E8C56A603AB19CD83FA2093",
+    "src/HVO.SkyMonitor.CameraAgent/Services/ProcessingNodeOptionsForm.cs": "3412ADF3ED5CE6EA96B716C6557C58E350D8E47CDC5A43046C23F582EF8E6A2D",
+    "src/HVO.SkyMonitor.Processing/FrameFactsCornerPresets.cs": "011C593375AF0D473D6CFC315AED2AF0D36BFCBBC2E6E9720FF7B8ABD8E52986",
+    "src/HVO.SkyMonitor.Processing/FrameFactsPresentationOptions.cs": "80E57A649FCBAFC42D2D6D516D66DEF044B21F284FD289FB7B407FA471C4B22F",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/FrameFactsEditorPreviewHostTests.cs": "8FC51F21E385880AEF21BF7C0EACA3E93EA6CAFD66217046800E30589749F1C1",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/test-categories.json": "CDDE306E0B9515100FC9BFF246CE8753D5A2022C992D5731E3F82094FFFD4B3F",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/ConstellationOptionsEditorTests.cs": "EFA919A4FEFF5475A4525DAAD9B8FD8DE5E878A645ADDE142AF0A049E19B579D",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/FrameFactsOptionsEditorTests.cs": "F895BAC53CDD67E147B63586F6005A8205B67636AA6770F04E52BB2597F1F3A8",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/ProcessingExecutionPagesTests.cs": "C9CE000D3D03DE8BBBBE7A7695A6AC11CF7216F95708D10707CDAA43613DB44B",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/ProcessingGraphPagesTests.cs": "43B4A0C6CEDD892A64DDDC3146C79A493B32A9B6D718B0EDF61060237AD40D16",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Services/CameraAgentProcessingGraphUiServiceTests.cs": "74777FDBF6232EEDCC09883AB3E2868E19B4B6C36D84D3B924CA6C7E9F664A8E",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Services/FrameFactsDraftConversionTests.cs": "AB2E4405CEFB840A079818FFD87BDF8E2C66330336B19508954E85C8AA43B86D",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json": "D94FF1D59F7C58973A051B45C1B22883C0C7CE7FE0E892A64ED4EB2140BB9C6E",
+    "tests/HVO.SkyMonitor.Processing.Tests/FrameFactsCornerPresetsTests.cs": "BC181CF96C3C4FB082161731B4A1237532D94932D3C7C57BA6CD355EBA7FDBA0",
+    "tests/HVO.SkyMonitor.Processing.Tests/test-categories.json": "3C5BE4A415A8C49C299CDC6F64E48B4A6250F59F1EA2FE7A862EC088FB0F5856"
+  },
+  "retainedEvidence": {
+    "primaryScratch": "/tmp/hvo-skymonitor-1553-implementation.RuxHYi",
+    "browserScratch": [
+      "/tmp/hvo-skymonitor-1553-b.WFNc2T",
+      "/tmp/hvo-skymonitor-1553-c.QYQ6Fe",
+      "/tmp/hvo-skymonitor-1553-d.tLgfzt"
+    ]
+  },
+  "resources": {
+    "runtimeFixtureDirectoriesDisposed": true,
+    "browserTabsClosed": 2,
+    "issueOwnedContainersCreated": 0,
+    "remainingHostProcesses": 0
+  },
+  "limits": [
+    "Full protected development-v1 CI and independent review belong to the parent.",
+    "No full qualification workflow, deployment, hardware or main promotion ran.",
+    "Slice C central ingest/retrieval and performance receipts are reused; their production source is unchanged.",
+    "Slice C native full-qualification/coverage limitations remain recorded, not recertified by this UI gate."
+  ]
+}

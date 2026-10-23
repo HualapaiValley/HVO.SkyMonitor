@@ -9,6 +9,11 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+
+### Changed
+
+- The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
+
 - An optional, off-by-default **Time-data refresh** (`timeDataRefresh.enabled` in the web UI and `hvo-sky config`) keeps satellite planning's Earth-orientation and leap-second pair current between releases. The reserved daily `time-data-refresh` automation downloads the files from IERS/USNO over HTTPS at most once a day, checks the providers' SHA-512 and `#h` checksums, parses the pair and adopts it atomically under `state/raw/.time-data/`; any failure keeps the current pair. Without an override, planning uses whichever verified pair (refreshed, its intact retained predecessor, or bundled) covers the planned time and covers later (the bundled pair on a tie), so a refresh never takes away coverage of the current day. The setup panel, the new read-only `GET /api/v1/operations/time-data` and `hvo-sky time-data` show the active source, coverage and expiry, whether any pair covers the current time, the last refresh attempt and the last adoption. (#1474)
 
 - Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. (#1474)
@@ -53,6 +58,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- CameraAgent graph drafts expose image-quality routing and enable switches for image quality, capture telemetry and explicitly simulated VirtualSky cloud observations, using the existing validate, activate and rollback flow. (#1563)
+- The scene overlay node panel now edits existing marker/label visibility, sizes and limits, constellation/image-circle visibility, and cardinal visibility/scale through immutable graph drafts, validation, activation and rollback. Current Sky links directly to the panel; legacy and unknown options remain intact. (#1562)
+
+- Edit four independent Frame Facts corner templates, packaged fonts, colours, sizes and missing-fact policies; preview frozen retained facts and explicitly convert legacy presets into a new draft before validation and activation. #1553
 
 - Inspect and clean up a failed split-host prepare with `hvo-sky-install partial-prepare-cleanup`, preserving private evidence, retained schema 7 recovery and resumable cleanup without creating containers. (#1588)
 - Explicitly selected Frame Facts graphs can retain and reproduce four independent corner templates with packaged fonts, colour, size and bold/italic/underline on either host; existing graphs and historical annotations keep their current version and defaults. #1552

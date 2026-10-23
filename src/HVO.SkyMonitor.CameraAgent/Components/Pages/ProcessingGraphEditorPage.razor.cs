@@ -1,7 +1,9 @@
 using System.Globalization;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -23,6 +25,12 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private string? _savePayload;
     private IJSObjectReference? _module;
     private bool _graphChanged;
+    private long _draftGeneration;
+    private CapturePipelineConfig? _conversion;
+    private string? _conversionBefore;
+    private ElementReference _conversionReview;
+    private ElementReference _conversionTrigger;
+    private string? _focusConvertedNode;
 
     [SupplyParameterFromQuery(Name = "from")]
     public string? From { get; set; }
@@ -39,7 +47,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section == "constellations")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -82,12 +90,103 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private void FormChanged()
     {
+        _draftGeneration++;
         _plan = null;
         _previewedPipeline = null;
         _message = null;
         _savedRevisionId = null;
         _graphChanged = false;
+        _conversion = null;
+        _conversionBefore = null;
     }
+
+    private async Task ReviewConversionAsync()
+    {
+        FormChanged();
+        if (!_model.TryBuild(out var pipeline, out var errors))
+        {
+            SetMessage(string.Join(' ', errors), true);
+            return;
+        }
+        _busy = true;
+        var generation = _draftGeneration;
+        try
+        {
+            var converted = FrameFactsDraftConversion.Convert(pipeline);
+            var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(true);
+            if (preview.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+                return;
+            }
+            if (generation != _draftGeneration) return;
+            if (!preview.IsSuccess)
+            {
+                SetMessage(preview.Message ?? "The converted draft could not compile.", true);
+                return;
+            }
+            _conversionBefore = JsonSerializer.Serialize(pipeline, DisplayJson);
+            _conversion = converted;
+            _focusConversion = true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or JsonException)
+        {
+            SetMessage("Conversion rejected: " + exception.Message, true);
+        }
+        finally { _busy = false; }
+    }
+
+    private static readonly JsonSerializerOptions DisplayJson = new() { WriteIndented = true };
+
+    private void AcceptConversion()
+    {
+        if (_conversion is null) return;
+        _model = _model.WithConvertedPipeline(_conversion);
+        _focusConvertedNode = _model.Nodes.First(node => node.OptionsForm?.Descriptor.StepAlias == HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias).Id;
+        FormChanged();
+        SetMessage("Frame Facts conversion applied to this draft only. Review the templates and render frozen facts, then preview the plan and save a new revision. Validate and activate separately.", false);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_conversion is not null && _focusConversion)
+        {
+            _focusConversion = false;
+            await _conversionReview.FocusAsync().ConfigureAwait(false);
+        }
+        if (_focusConvertedNode is { } nodeId)
+        {
+            _focusConvertedNode = null;
+            await FocusRowAsync(nodeId).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CancelConversionAsync()
+    {
+        FormChanged();
+        await _conversionTrigger.FocusAsync().ConfigureAwait(false);
+    }
+
+    private bool _focusConversion;
+
+    private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
+    {
+        var section = node.OptionsForm?.Descriptor.StepAlias switch
+        {
+            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias => "frame-facts",
+            "ImageQuality" => "image-quality",
+            "Telemetry" => "capture-telemetry",
+            "VirtualSkyCloudObservation" => "simulated-cloud-observations",
+            _ => "constellations"
+        };
+        var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
+        return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
+    }
+
+    private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
+        => node.OptionsForm?.Descriptor.StepAlias == ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias
+            ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
+            : null;
 
     private void AddNode()
     {
@@ -127,14 +226,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             return;
         }
         _busy = true;
+        var generation = _draftGeneration;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(true);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
+            if (generation != _draftGeneration) return;
             if (result.IsSuccess && result.Value is not null)
             {
                 _plan = result.Value;

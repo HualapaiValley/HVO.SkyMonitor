@@ -116,7 +116,8 @@ public sealed class ProcessingOptionDescriptor
         double? minimumRealNumber = null,
         double? maximumRealNumber = null,
         int? maximumLength = null,
-        ImmutableArray<string> allowedValues = default)
+        ImmutableArray<string> allowedValues = default,
+        bool isIdentifier = false)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -145,6 +146,7 @@ public sealed class ProcessingOptionDescriptor
         MinimumRealNumber = minimumRealNumber;
         MaximumRealNumber = maximumRealNumber;
         MaximumLength = maximumLength;
+        IsIdentifier = isIdentifier;
         AllowedValues = allowedValues.IsDefault ? [] : allowedValues;
         if (Check(defaultValue) is { } reason)
         {
@@ -177,6 +179,9 @@ public sealed class ProcessingOptionDescriptor
     public double? MaximumRealNumber { get; }
 
     public int? MaximumLength { get; }
+
+    /// <summary>Text must be non-empty, trimmed and contain no control characters, as graph identities require.</summary>
+    public bool IsIdentifier { get; }
 
     /// <summary>The closed set of a choice, font or glyph option, compared ordinally.</summary>
     public ImmutableArray<string> AllowedValues { get; }
@@ -228,11 +233,12 @@ public sealed class ProcessingOptionDescriptor
         string label,
         string help,
         string defaultValue,
-        int maximumLength)
+        int maximumLength,
+        bool isIdentifier = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumLength);
         return new(key, ProcessingOptionKind.Text, label, help, [member],
-            ProcessingOptionValue.FromText(defaultValue), maximumLength: maximumLength);
+            ProcessingOptionValue.FromText(defaultValue), maximumLength: maximumLength, isIdentifier: isIdentifier);
     }
 
     public static ProcessingOptionDescriptor Choice(
@@ -296,6 +302,9 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionKind.Text when value.AsText().Length > MaximumLength
                 => (ProcessingOptionReasonCodes.TooLong, string.Create(CultureInfo.InvariantCulture,
                     $"Option '{Key}' must not exceed {MaximumLength} characters.")),
+            ProcessingOptionKind.Text when IsIdentifier && (string.IsNullOrWhiteSpace(value.AsText()) ||
+                value.AsText() != value.AsText().Trim() || value.AsText().Any(char.IsControl))
+                => (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' must be non-empty, trimmed and contain no control characters."),
             ProcessingOptionKind.Choice or ProcessingOptionKind.Font or ProcessingOptionKind.Glyph
                 when !AllowedValues.Contains(value.AsText(), StringComparer.Ordinal)
                 => (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' must be one of its allowed values."),
@@ -434,7 +443,7 @@ public static class ProcessingNodeOptionsDescriptors
     public const string ScenePresentationLayerStepAlias = "ScenePresentationLayer";
 
     /// <summary>
-    /// The scene presentation layer's constellation line colour and thickness. The defaults are CameraAgent's
+    /// The scene presentation layer's existing visibility and scalar controls. The defaults are CameraAgent's
     /// <c>ScenePresentationLayerProcessingStepOptions</c> defaults, the overlay defaults #1383 restored.
     /// </summary>
     public static ProcessingNodeOptionsDescriptor ScenePresentationLayerV12 { get; } = new(
@@ -444,6 +453,20 @@ public static class ProcessingNodeOptionsDescriptors
         "Scene overlay",
         "Stars, constellations, the image circle and the cardinal directions drawn over the sky.",
         [
+            ProcessingOptionDescriptor.Toggle("drawMarkers", "drawMarkers", "Show markers",
+                "Draw markers and resolved solar-system outlines at the existing scene positions.", true),
+            ProcessingOptionDescriptor.WholeNumber("markerRadius", "markerRadius", "Marker radius",
+                "The radius of point markers; resolved bodies retain their existing outline rules.", 6, 0, 32, "px"),
+            ProcessingOptionDescriptor.Toggle("drawLabels", "drawLabels", "Show labels",
+                "Draw eligible labels using the existing measured/expected qualification rules.", true),
+            ProcessingOptionDescriptor.WholeNumber("labelScale", "labelScale", "Label scale",
+                "The existing label size multiplier.", 2, 1, 8, "×"),
+            ProcessingOptionDescriptor.WholeNumber("maximumLabelCharacters", "maximumLabelCharacters", "Maximum label length",
+                "The total label character budget; zero hides object labels. Expected markers stay complete or the label is suppressed.", 24, 0, 64, "characters"),
+            ProcessingOptionDescriptor.RealNumber("maximumLabelMagnitude", "maximumLabelMagnitude", "Maximum label magnitude",
+                "Select named stellar markers and labels through this magnitude; solar-system bodies keep their existing rules.", 2.5, -30, 30, "mag"),
+            ProcessingOptionDescriptor.Toggle("drawConstellationLines", "drawConstellationLines", "Show constellation lines",
+                "Draw the retained constellation selection with its existing colour and thickness.", true),
             ProcessingOptionDescriptor.Color(
                 "constellationLineColor",
                 "constellationLineRed",
@@ -460,10 +483,16 @@ public static class ProcessingNodeOptionsDescriptors
                 2,
                 1,
                 8,
-                "px")
+                "px"),
+            ProcessingOptionDescriptor.Toggle("drawImageCircle", "drawImageCircle", "Show image circle",
+                "Draw the existing projection image circle when the scene supplies one.", true),
+            ProcessingOptionDescriptor.Toggle("drawCardinalDirections", "drawCardinalDirections", "Show cardinal directions",
+                "Draw the available N, E, S and W landmarks using the existing layout.", true),
+            ProcessingOptionDescriptor.WholeNumber("cardinalScale", "cardinalScale", "Cardinal scale",
+                "The existing cardinal-direction size multiplier.", 2, 1, 8, "×")
         ]);
 
-    /// <summary>The measured-label producer keeps the same colour/thickness fields at its own exact version.</summary>
+    /// <summary>The measured-label producer keeps the same scalar controls at its own exact version.</summary>
     public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
         "scene-presentation-layer-options-v2",
         ScenePresentationLayerStepAlias,
@@ -473,5 +502,7 @@ public static class ProcessingNodeOptionsDescriptors
         ScenePresentationLayerV12.Options);
 
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
-        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor];
+        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
+            CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
+            CaptureScalarOptionDescriptors.VirtualSkyCloudObservation];
 }

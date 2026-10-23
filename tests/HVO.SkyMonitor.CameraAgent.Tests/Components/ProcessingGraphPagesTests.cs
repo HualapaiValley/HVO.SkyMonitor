@@ -29,7 +29,7 @@ public sealed class ProcessingGraphPagesTests
         Assert.HasCount(4, cut.FindAll(".revision-table tbody tr"));
         Assert.IsNotNull(cut.Find("#graph-VALIDATE-rev-draft"));
         Assert.IsNotNull(cut.Find("#graph-ACTIVATE-rev-validated"));
-        Assert.IsNotNull(cut.Find("#graph-ROLLBACK-rev-retired"));
+        Assert.IsEmpty(cut.FindAll("#graph-ROLLBACK-rev-retired"));
         Assert.IsEmpty(cut.FindAll("#graph-RETIRE-rev-active"));
         Assert.IsEmpty(cut.FindAll("#graph-ACTIVATE-rev-active"));
         Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new']"));

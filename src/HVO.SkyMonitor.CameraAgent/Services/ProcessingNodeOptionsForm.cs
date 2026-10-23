@@ -20,7 +20,7 @@ public sealed class ProcessingNodeOptionsForm
         foreach (var option in descriptor.Options)
         {
             // One bad field must not replace the other displayed values with defaults.
-            var single = new ProcessingNodeOptionsDescriptor(descriptor.DescriptorId, descriptor.StepAlias,
+            var single = new ProcessingNodeOptionsDescriptor(descriptor.DescriptorId, descriptor.StepAlias + ".field",
                 descriptor.StepVersion, descriptor.Title, descriptor.Help, [option]);
             var decoded = ProcessingNodeOptionsCodec.Decode(single, Source);
             _inputs[option.Key] = Format(decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue);
@@ -34,7 +34,18 @@ public sealed class ProcessingNodeOptionsForm
 
     // The descriptor is bound to the actual producer version. A future producer cannot silently reuse this panel.
     public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias)
-        => ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PresentationLayerProducers.SceneProducerVersion).Descriptor;
+    {
+        ArgumentNullException.ThrowIfNull(alias);
+        var version = alias.ToUpperInvariant() switch
+        {
+            "IMAGEQUALITY" => CaptureScalarOptionDescriptors.ImageQuality.StepVersion,
+            "TELEMETRY" => CaptureScalarOptionDescriptors.Telemetry.StepVersion,
+            "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
+            _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
+                ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
+        };
+        return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, version).Descriptor;
+    }
 
     public string Get(string key) => _inputs[key];
 
@@ -79,6 +90,7 @@ public sealed class ProcessingNodeOptionsForm
         ProcessingOptionKind.RealNumber when double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var real) && double.IsFinite(real) => ProcessingOptionValue.FromRealNumber(real),
         ProcessingOptionKind.Text => ProcessingOptionValue.FromText(input),
         ProcessingOptionKind.Choice => ProcessingOptionValue.FromChoice(input),
+        ProcessingOptionKind.Font => ProcessingOptionValue.FromFont(input),
         ProcessingOptionKind.Color when input.Length == 7 && input[0] == '#' && uint.TryParse(input.AsSpan(1), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var rgb)
             => ProcessingOptionValue.FromColor(new PresentationColor((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)),
         _ => null
