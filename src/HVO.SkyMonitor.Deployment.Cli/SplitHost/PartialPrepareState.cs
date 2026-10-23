@@ -51,7 +51,10 @@ internal sealed class PartialPrepareState : IDisposable
     }
     public static string ReadPrivate(string path)
     {
+        var identity = NativeLinux.GetNodeIdentity(path);
+        Require(identity.Type == NativeLinux.RegularFileNodeType, "unsafe-state-entry");
         using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+        Require(NativeLinux.GetOpenNodeIdentity(stream.SafeFileHandle, path) == identity, "state-entry-changed");
         Require(stream.Length <= 4 * 1024 * 1024, "state-too-large");
         using var reader = new StreamReader(stream); return reader.ReadToEnd();
     }

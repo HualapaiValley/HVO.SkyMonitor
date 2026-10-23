@@ -28,6 +28,7 @@ internal sealed record SplitHostInventory(JsonObject Document, string Sha256, st
     {
         Require(mode is "isolated" or "persistent", "invalid-mode");
         Require(new FileInfo(path).LinkTarget is null && File.Exists(path), "inventory-missing-or-symlink");
+        Require(NativeLinux.GetNodeIdentity(path).Type == NativeLinux.RegularFileNodeType, "inventory-not-regular");
         using var input = SafeFileSystem.OpenRegularFileRead(path);
         Require(input.Length <= 4 * 1024 * 1024, "inventory-too-large");
         using var reader = new StreamReader(input);

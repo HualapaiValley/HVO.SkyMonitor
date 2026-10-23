@@ -264,11 +264,15 @@ public sealed class PartialPrepareRecoveryTests
         await Reject(host, "unexpected-deployment-resource");
     }
     [TestMethod]
-    public async Task UnsafeLocalEvidenceAndRegistry_AreRejectedWithoutFollowingLinks()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UnsafeLocalEvidenceAndRegistry_AreRejectedWithoutFollowingLinks(bool fifo)
     {
         using var host = new DeploymentFakeHost(); await host.StageAsync();
         var sentinel = host.Directory + "/sentinel"; DeploymentFakeHost.Write(sentinel, "preserve\n");
-        var registry = host.StateRoot + "/private-upload-registry.json"; File.Delete(registry); File.CreateSymbolicLink(registry, sentinel);
+        var registry = host.StateRoot + "/private-upload-registry.json"; File.Delete(registry);
+        if (fifo) { var result = await new ProcessRunner().RunAsync("mkfifo", [registry], CancellationToken.None); Assert.AreEqual(0, result.ExitCode); }
+        else File.CreateSymbolicLink(registry, sentinel);
         await Assert.ThrowsExactlyAsync<InstallerException>(() => host.RunAsync()); Assert.AreEqual("preserve\n", DeploymentFakeHost.Read(sentinel));
     }
     [TestMethod]
