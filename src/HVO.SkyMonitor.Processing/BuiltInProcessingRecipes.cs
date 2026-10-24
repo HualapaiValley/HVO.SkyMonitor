@@ -19,6 +19,7 @@ public static class BuiltInProcessingRecipes
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
     public const string ReferenceCalibration = "reference-calibration";
     public const string ProjectedScene = "projected-scene";
+    public const string MeasuredAstrometry = "measured-astrometry";
     public const string MeasuredStellarAssociations = "measured-stellar-associations";
     public const string Keogram = "keogram";
     public const string StarTrail = "star-trail";
@@ -119,6 +120,7 @@ public static class BuiltInProcessingRecipes
         new ReferenceCalibrationRecipe(),
         new ProjectedSceneRecipe(),
         new MeasuredStellarAssociationRecipe(),
+        new MeasuredAstrometryRecipe(),
         new KeogramRecipe(),
         new StarTrailRecipe(),
         new KeogramAssemblyRecipe(),
