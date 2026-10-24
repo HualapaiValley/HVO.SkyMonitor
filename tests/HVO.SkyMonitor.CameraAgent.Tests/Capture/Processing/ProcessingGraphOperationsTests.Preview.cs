@@ -31,7 +31,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Rig = baseline.Rig with { Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 } },
                 Pipeline = new CapturePipelineConfig([
-                    new("Preview", "preview", 17, fixedTransfer ? JsonSerializer.Deserialize<JsonElement>("{\"FixedTransfer\":{\"future\":[1e+02]},\"future\":{\"keep\":17}}") : JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["$raw"]),
+                    new("Preview", "preview", 17, fixedTransfer ? JsonSerializer.Deserialize<JsonElement>("{\"FixedTransfer\":{\"BlackLevel\":0,\"WhiteLevel\":4,\"future\":[1e+02]},\"future\":{\"keep\":17}}") : JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["$raw"]),
                     new("CloudAssessment", "cloud", 20, JsonSerializer.SerializeToElement(new { gridColumns = 2, gridRows = 1, minimumSamplesPerTile = 1 }), ["$raw"]),
                     new("WeatherCloudOverlay", "weather", 30, DependsOn: ["preview", "cloud"]),
                     new("JpegEncoding", "jpeg", 40, JsonSerializer.SerializeToElement(new { MaximumDimension = initialLimit, future = new { keep = 100 } }), ["weather"])
