@@ -182,6 +182,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "Calibration" => "calibration",
             "ProjectedScene" => "projected-scene",
             "Annotation" => "legacy-annotation",
+            "PresentationMaterializer" => "presentation-materializer",
             "CloudPresentationLayer" => "cloud-layer",
             "EnvironmentPresentationLayer" => "environment-layer",
             "Preview" => "preview",

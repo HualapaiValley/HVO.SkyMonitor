@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Choose existing materializer layer kinds or restore manifest defaults in CameraAgent graph drafts, preserving aliases and producer bindings until explicit validation and activation. #1627
+
 - CameraAgent's graph editor can add, remove and reorder existing projected-scene constellation and solar-system selections and scene-overlay constellation IDs, preserving retained values and unchanged saves; activation remains explicit (#1626).
 
 - Tune native black/white levels and gamma in existing fixed-transfer preview graph drafts, with bounded validation and explicit activation. (#1625)

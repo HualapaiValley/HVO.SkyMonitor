@@ -3285,7 +3285,7 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
     }
 
-    private static async Task<CaptureProcessingGraph> CreateProductionLayeredGraphAsync(Fixture fixture, string root)
+    private static async Task<CaptureProcessingGraph> CreateProductionLayeredGraphAsync(Fixture fixture, string root, IReadOnlyList<PresentationLayerSelectionOptions>? layerDefaults = null)
     {
         var descriptor = fixture.Manifest.Descriptor;
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(
@@ -3344,6 +3344,7 @@ public sealed partial class DurableCaptureProcessingTests
             new CaptureProcessingStepMetadata("overlay-manifest", "OverlayManifest", 80),
             new OverlayManifestProcessingStepOptions
             {
+                Layers = layerDefaults ?? [],
                 OutputVariant = "overlay-manifest",
                 BasePreviewVariant = "combined-preview",
                 SceneAnnotationVariant = "scene-layer",
