@@ -28,7 +28,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         SaveFixture("scene-style-editor-default.html", cut.Markup);
         cut.Find("#node-options-0-pointGlyph").Change("Crosshair");
         cut.Find("#node-options-0-labelFont").Change("PlexRegular");
-        cut.Find("#node-options-0-cardinalFont").Change("MonoRegular");
+        cut.Find("#node-options-0-cardinalFont").Change("PlexRegular");
         cut.Find("#node-options-0-markerColor").Change("#ff8000");
         cut.Find("#node-options-0-labelColor").Change("#50f08c");
         cut.Find("#node-options-0-cardinalColor").Change("#78b4ff");
@@ -40,6 +40,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         Assert.AreEqual(SceneStylePresentation.StepAlias, step.Type);
         Assert.AreEqual("Crosshair", step.Options!.Value.GetProperty("pointGlyph").GetString());
         Assert.AreEqual("PlexRegular", step.Options.Value.GetProperty("labelFont").GetString());
+        Assert.AreEqual("PlexRegular", step.Options.Value.GetProperty("cardinalFont").GetString());
         Assert.AreEqual(255, step.Options.Value.GetProperty("markerRed").GetInt32());
         Assert.AreEqual(80, step.Options.Value.GetProperty("labelRed").GetInt32());
         Assert.AreEqual(180, step.Options.Value.GetProperty("cardinalGreen").GetInt32());
