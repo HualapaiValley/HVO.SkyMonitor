@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.AgentCore;
+
 namespace HVO.SkyMonitor.Processing.Tests;
 
 public sealed partial class ProcessingNodeOptionsTests
@@ -49,14 +51,17 @@ public sealed partial class ProcessingNodeOptionsTests
                 ProcessingNodeOptionsCodec.Decode(descriptor, Json("{\"" + key + "\":null,\"" + key.ToUpperInvariant() + "\":1}")).Diagnostics.Single().Code);
         }
         foreach (var json in new[] { "{\"windowSize\":0}", "{\"windowSize\":101}", "{\"windowSize\":1.5}",
-            "{\"windowKind\":2}", "{\"windowKind\":\"Other\"}", "{\"enabled\":null}",
+            "{\"windowKind\":2}", "{\"windowKind\":\"Other\"}", "{\"enabled\":null}", "{\"windowKind\":\"Centered\",\"windowSize\":65}",
             "{\"Recipe\":\"mixed-gain-normalized-mean\",\"normalizationPlan\":{\"keep\":true}}" })
         {
             var source = Json(json);
             Assert.IsFalse(ProcessingNodeOptionsCodec.Decode(descriptor, source).IsValid);
             Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor, source,
-                new Dictionary<string, ProcessingOptionValue> { ["windowSize"] = ProcessingOptionValue.FromWholeNumber(3) }).IsValid);
+                new Dictionary<string, ProcessingOptionValue>()).IsValid);
         }
+        Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor,
+            Json("{\"Recipe\":\"mixed-gain-normalized-mean\"}"),
+            new Dictionary<string, ProcessingOptionValue> { ["windowSize"] = ProcessingOptionValue.FromWholeNumber(3) }).IsValid);
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ProcessingOptionValue.FromNullableRealNumber(double.NaN));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ProcessingOptionValue.FromNullableRealNumber(double.PositiveInfinity));
     }
@@ -70,16 +75,24 @@ public sealed partial class ProcessingNodeOptionsTests
             {
                 var window = new ProcessingGraphWindowRequirement(kind,
                     kind == ProcessingGraphWindowKind.Centered ? size : 1, size,
-                    kind == ProcessingGraphWindowKind.Centered ? [.. Enumerable.Range(-(size / 2), size)] : [], []);
+                    kind == ProcessingGraphWindowKind.Centered ? [.. Enumerable.Range(-(size / 2), size)] : [], ["rig"]);
                 var template = Node("rolling", descriptor.StepAlias, descriptor.StepVersion,
                     "{\"windowSize\":" + size + ",\"windowKind\":\"" + kind + "\"}");
                 ProcessingGraphNodeDefinition WithWindow(ProcessingGraphWindowRequirement requirement) => new(
                     template.Id, template.StepAlias, template.StepVersion, ProcessingOperationKind.Window,
                     template.Enabled, template.FailurePolicy, template.Order, template.EffectiveOptions,
-                    template.Dependencies, template.Inputs, template.Outputs, requirement,
+                    template.Dependencies, template.Inputs,
+                    [new(FrameArtifactRole.Combined, "rolling-mean", ProcessingProductKind.PixelData,
+                        new(BuiltInProcessingRecipes.RollingMean, "1.0.0", descriptor.StepVersion, ProcessingOperationKind.Window))], requirement,
                     template.CapabilityLabels, template.HostApplicability);
                 var node = WithWindow(window);
                 var graph = Graph(node);
+                if (kind == ProcessingGraphWindowKind.Centered && size > ProcessingGraphCompiler.MaximumContractsPerNode)
+                {
+                    Assert.IsNotEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(graph));
+                    Assert.IsFalse(ProcessingGraphCompiler.Compile(graph).IsValid);
+                    continue;
+                }
                 Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(graph));
                 foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
                 {
