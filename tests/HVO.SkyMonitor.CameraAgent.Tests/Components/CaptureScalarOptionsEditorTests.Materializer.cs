@@ -7,6 +7,34 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 public sealed partial class CaptureScalarOptionsEditorTests
 {
+    private static readonly string[] ExpectedMaterializerPanelAnchors = ["constellations", "presentation-materializer", "presentation-materializer-2"];
+
+    [TestMethod]
+    public void MaterializerPanelAnchorsAreDistinctFromSceneAndSuffixRepeatedNodes()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "ScenePresentationLayer", null);
+        var source = service.RevisionDetail!.Pipeline.Steps[0];
+        service.StepAliases = ["ScenePresentationLayer", "PresentationMaterializer"];
+        service.RevisionDetail = service.RevisionDetail with
+        {
+            Pipeline = service.RevisionDetail.Pipeline with
+            {
+                Steps = [source with { Id = "scene", Order = 10 },
+                    source with { Type = "PresentationMaterializer", Id = "materializer", Order = 20 },
+                    source with { Type = "PresentationMaterializer", Id = "second-materializer", Order = 30 }]
+            }
+        };
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var anchors = cut.FindAll(".node-options-section").Select(static section => section.Id).ToArray();
+        Assert.AreEqual(3, anchors.Distinct(StringComparer.Ordinal).Count(), "Scene and materializer panels need distinct fragment targets.");
+        CollectionAssert.AreEqual(ExpectedMaterializerPanelAnchors, anchors);
+        Assert.AreEqual("Presentation materializer", cut.Find("#presentation-materializer").GetAttribute("aria-label"));
+        Assert.AreEqual("Presentation materializer", cut.Find("#presentation-materializer-2").GetAttribute("aria-label"));
+        Assert.IsEmpty(service.Created);
+        Assert.IsEmpty(service.Commands);
+    }
+
     [TestMethod]
     public void MaterializerPanelDistinguishesManifestDefaultsAndExplicitSelectionAndSavesDraftOnly()
     {
