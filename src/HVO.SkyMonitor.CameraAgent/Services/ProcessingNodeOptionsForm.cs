@@ -48,6 +48,7 @@ public sealed class ProcessingNodeOptionsForm
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
+            "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "JPEGENCODING" => "packed-jpeg-v1",
             _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
                 ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
