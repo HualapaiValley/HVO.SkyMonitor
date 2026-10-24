@@ -50,6 +50,8 @@ public sealed class ProcessingNodeOptionsForm
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "ANNOTATION" => "projected-annotation-v4",
+            "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,
+            "ENVIRONMENTPRESENTATIONLAYER" => PresentationLayerProducers.MetadataProducerVersion,
             "JPEGENCODING" => "packed-jpeg-v1",
             _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
                 ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
