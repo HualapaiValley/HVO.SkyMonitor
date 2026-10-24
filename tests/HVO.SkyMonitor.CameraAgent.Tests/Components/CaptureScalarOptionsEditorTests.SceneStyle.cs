@@ -30,6 +30,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
         cut.Find("#node-options-0-labelFont").Change("PlexRegular");
         cut.Find("#node-options-0-cardinalFont").Change("MonoRegular");
         cut.Find("#node-options-0-markerColor").Change("#ff8000");
+        cut.Find("#node-options-0-labelColor").Change("#50f08c");
+        cut.Find("#node-options-0-cardinalColor").Change("#78b4ff");
+        cut.Find("#node-options-0-imageCircleColor").Change("#dc78c8");
         SaveFixture("scene-style-editor-changed.html", cut.Markup);
         cut.Find("form").Submit();
         cut.Find("button.btn-primary").Click();
@@ -38,6 +41,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
         Assert.AreEqual("Crosshair", step.Options!.Value.GetProperty("pointGlyph").GetString());
         Assert.AreEqual("PlexRegular", step.Options.Value.GetProperty("labelFont").GetString());
         Assert.AreEqual(255, step.Options.Value.GetProperty("markerRed").GetInt32());
+        Assert.AreEqual(80, step.Options.Value.GetProperty("labelRed").GetInt32());
+        Assert.AreEqual(180, step.Options.Value.GetProperty("cardinalGreen").GetInt32());
+        Assert.AreEqual(200, step.Options.Value.GetProperty("imageCircleBlue").GetInt32());
         Assert.AreEqual("[1e+02]", step.Options.Value.GetProperty("future").GetRawText());
         Assert.IsEmpty(service.Commands);
         Assert.AreEqual("ScenePresentationLayer", service.RevisionDetail!.Pipeline.Steps.Single().Type);
