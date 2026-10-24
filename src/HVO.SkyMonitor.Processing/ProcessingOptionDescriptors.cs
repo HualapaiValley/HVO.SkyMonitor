@@ -823,8 +823,8 @@ public static class ProcessingNodeOptionsDescriptors
             "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
             "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star labels.", true)));
 
-    public static ImmutableArray<ProcessingNodeOptionsDescriptor> All { get; } =
-        [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
+    public static ImmutableArray<ProcessingNodeOptionsDescriptor> All =>
+        [ScenePresentationLayerV12, ScenePresentationLayer, SceneStylePresentation.Descriptor, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
             CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,

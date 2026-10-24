@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Explicitly upgrade scene-overlay graph drafts to choose RGB colours, packaged label/cardinal fonts and circle/crosshair markers, with validated activation, rollback and retained styling on both hosts. #1660
+
 - Edit existing manifest layer enabled flags, optional ordering and constellation opacity in CameraAgent graph drafts, preserving producer defaults and retained revisions until explicit validation and activation. #1628
 
 - Choose existing materializer layer kinds or restore manifest defaults in CameraAgent graph drafts, preserving aliases and producer bindings until explicit validation and activation. #1627

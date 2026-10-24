@@ -121,6 +121,7 @@ public static class StructuredProcessingProductContracts
             (MeasuredAstrometryJson.ContextMediaType, MeasuredAstrometryContextV1.CurrentSchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
+            (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SceneStyleSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.RichTextSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SemanticSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.PreviousSchemaVersion) => true,

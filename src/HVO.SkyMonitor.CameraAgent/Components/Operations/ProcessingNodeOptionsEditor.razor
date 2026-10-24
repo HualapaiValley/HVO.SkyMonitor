@@ -87,6 +87,7 @@
                     break;
                 case ProcessingOptionKind.Choice:
                 case ProcessingOptionKind.Font:
+                case ProcessingOptionKind.Glyph:
                     <select id="@inputId" class="form-select" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)">
                         @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
                     </select>

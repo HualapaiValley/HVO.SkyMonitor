@@ -529,6 +529,7 @@ public sealed partial class ArtifactIngestTests
     [DataRow("v2", PresentationLayerCompositor.SemanticAlgorithmVersion)]
     [DataRow("mixed-v1-v2", PresentationLayerCompositor.SemanticAlgorithmVersion)]
     [DataRow("v3", PresentationLayerCompositor.AlgorithmVersion)]
+    [DataRow("v5", PresentationLayerCompositor.SceneStyleAlgorithmVersion)]
     public async Task CentralPresentation_RendersCachesAndMaterializesSelectedStack(string versions, string expectedCompositorVersion)
     {
         var fixture = AssemblyHooks.Fixture;
@@ -654,11 +655,13 @@ public sealed partial class ArtifactIngestTests
             sourceIdentity,
             2,
             2,
-            markers: [new(new(0, 0), 0, new(255, 255, 255))]);
+            markers: [new(new(0, 0), 0, new(255, 255, 255))],
+            sceneStyleIdentitySha256: versions == "v5" ? new string('A', 64) : null);
         var schema = versions switch
         {
             "v1" or "mixed-v1-v2" => PresentationLayerPayloadV1.PreviousSchemaVersion,
             "v2" => PresentationLayerPayloadV1.SemanticSchemaVersion,
+            "v5" => PresentationLayerPayloadV1.SceneStyleSchemaVersion,
             _ => PresentationLayerPayloadV1.CurrentSchemaVersion
         };
         layer = layer with { SchemaVersion = schema };
@@ -710,7 +713,7 @@ public sealed partial class ArtifactIngestTests
             sourceIdentity,
             PresentationCoordinateSpace.ScenePixels,
             rendererVersion,
-            "integration-style-v1",
+            versions == "v5" ? SceneStylePresentation.ProducerVersion : "integration-style-v1",
             10,
             PresentationBlendMode.Normal,
             1_000_000,
@@ -969,12 +972,12 @@ public sealed partial class ArtifactIngestTests
             sourceIdentity,
             PresentationCoordinateSpace.ScenePixels,
             rendererVersion,
-            "integration-style-v2",
+            versions == "v5" ? SceneStylePresentation.ProducerVersion : "integration-style-v2",
             10,
             PresentationBlendMode.Normal,
             1_000_000,
             true,
-            JsonSerializer.SerializeToElement(new { }));
+            JsonSerializer.SerializeToElement(new { revision = 2 }));
         var latestOverlay = LayeredPresentationJson.CreateManifest(
             new(baseArtifactId, baseOutputIdentity, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
             sourceIdentity,
