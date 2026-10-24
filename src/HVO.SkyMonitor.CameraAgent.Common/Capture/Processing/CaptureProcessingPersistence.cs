@@ -1247,7 +1247,7 @@ internal sealed partial class CaptureProcessingPersistence(
         return bytes;
     }
 
-    private static async Task WriteAtomicallyAsync(
+    internal static async Task WriteAtomicallyAsync(
         string storageRoot,
         string destinationPath,
         ReadOnlyMemory<byte> content,

@@ -31,7 +31,11 @@ public sealed record CameraAgentPresentationLayer(
     bool EnabledByDefault,
     int OpacityMillionths,
     string RendererVersion,
-    string StyleVersion);
+    string StyleVersion)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureSatelliteStatusV1? Satellite { get; init; }
+}
 
 public sealed record CameraAgentLayeredPresentation(
     Guid CaptureId,
@@ -333,7 +337,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                 rendered.SvgChecksumSha256,
                 rendered.WidthPixels,
                 rendered.HeightPixels,
-                rendered.Layers.Select(static layer => new CameraAgentPresentationLayer(
+                rendered.Layers.Select(layer => new CameraAgentPresentationLayer(
                     layer.IdentitySha256,
                     layer.Kind,
                     layer.DomGroupId,
@@ -341,7 +345,12 @@ internal sealed class CameraAgentLayeredPresentationService(
                     layer.EnabledByDefault,
                     layer.OpacityMillionths,
                     layer.RendererVersion,
-                    layer.StyleVersion)).ToArray(),
+                    layer.StyleVersion)
+                {
+                    Satellite = manifest.Layers.Single(source => source.LayerIdentitySha256 == layer.IdentitySha256).Options
+                        is var layerOptions && layerOptions.TryGetProperty("Satellite", out var status)
+                        ? CaptureSatelliteProducts.ParseStatus(HVO.SkyMonitor.Astronomy.OrbitalContract.SerializeCanonical(status)) : null
+                }).ToArray(),
                 rendered.Svg));
         }
         catch (InvalidDataException)

@@ -404,6 +404,6 @@
 
     private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
     {
-        <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>
+        <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive || layer.Satellite is { Renderable: false })" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind) @SatelliteDescription(layer.Satellite)</small></span></label>
     };
 }
