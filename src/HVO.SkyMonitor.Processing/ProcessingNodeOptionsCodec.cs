@@ -40,7 +40,8 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// Typed reading and editing of a node's effective options against its descriptor (#1532). Members match ignoring
 /// case, as CameraAgent's options binding does. Values are strict JSON types: a whole number is an integer token, a
 /// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable number accepts
-/// <c>null</c>. Members the descriptor does not describe are never read or rewritten.
+/// <c>null</c>. Enum collections use the consumer's string-enum binding, including defined numeric values.
+/// Members the descriptor does not describe are never read or rewritten.
 /// </summary>
 /// <remarks>
 /// The declared differences from CameraAgent's options binding: a quoted number, which the binder reads, is the wrong
@@ -83,23 +84,14 @@ public static class ProcessingNodeOptionsCodec
             return new([], [new(ProcessingOptionReasonCodes.NotAllowed, path,
                 "This panel only edits the same-gain rolling mean; recipe and normalization bindings remain opaque.")]);
         }
-        var described = descriptor.Options.SelectMany(static option => option.Members)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var members = new Dictionary<string, JsonProperty>(StringComparer.OrdinalIgnoreCase);
-        foreach (var property in options.EnumerateObject())
-        {
-            if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
-            {
-                diagnostics.Add(new(
-                    ProcessingOptionReasonCodes.DuplicateMember,
-                    MemberPath(path, property.Name),
-                    $"Member '{property.Name}' appears more than once, ignoring case."));
-            }
-        }
-
+        var scopes = ReadScopes(descriptor, options, path, diagnostics);
         var decoded = ImmutableArray.CreateBuilder<ProcessingDecodedOption>(descriptor.Options.Length);
         foreach (var option in descriptor.Options)
         {
+            var scope = option.ParentMember ?? string.Empty;
+            if (!scopes.TryGetValue(scope, out var members))
+                continue;
+            var optionPath = option.ParentMember is null ? path : MemberPath(path, option.ParentMember);
             var defaults = MemberValues(option.DefaultValue);
             var values = new ProcessingOptionValue[option.Members.Length];
             var isExplicit = false;
@@ -112,7 +104,7 @@ public static class ProcessingNodeOptionsCodec
                     continue;
                 }
                 isExplicit = true;
-                if (ReadMember(option, member, path) is { } failure)
+                if (ReadMember(option, member, optionPath) is { } failure)
                 {
                     diagnostics.Add(failure);
                     valid = false;
@@ -130,7 +122,7 @@ public static class ProcessingNodeOptionsCodec
                 : values[0];
             if (option.Check(value) is { } invalid)
             {
-                diagnostics.Add(new(invalid.Code, MemberPath(path, members[option.Members[0]].Name), invalid.Message));
+                diagnostics.Add(new(invalid.Code, MemberPath(optionPath, members[option.Members[0]].Name), invalid.Message));
                 continue;
             }
             decoded.Add(new(option, value, isExplicit));
@@ -143,6 +135,15 @@ public static class ProcessingNodeOptionsCodec
         {
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "blackPercentile"),
                 "BlackPercentile must be less than WhitePercentile."));
+        }
+        if (diagnostics.Count == 0 && PreviewOptionDescriptors.IsPreviewAlias(descriptor.StepAlias) &&
+            descriptor.StepVersion == PreviewOptionDescriptors.FixedVersion &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "blackLevel") is { } fixedBlack &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "whiteLevel") is { } fixedWhite &&
+            fixedBlack.Value.AsRealNumber() >= fixedWhite.Value.AsRealNumber())
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "fixedTransfer.blackLevel"),
+                "FixedTransfer BlackLevel must be less than WhiteLevel."));
         }
         if (diagnostics.Count == 0 && RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
             decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowKind") is { } windowKind &&
@@ -211,17 +212,81 @@ public static class ProcessingNodeOptionsCodec
             return new(null, diagnostics.ToImmutable());
         }
 
+        // Validate object shape and duplicate bindings before splicing. Invalid scalars can still be repaired.
+        var shapeDiagnostics = ImmutableArray.CreateBuilder<ProcessingGraphDiagnostic>();
+        ReadScopes(descriptor, source, path, shapeDiagnostics);
+        if (shapeDiagnostics.Count > 0)
+            return new(null, shapeDiagnostics.ToImmutable());
+        var result = EditScope(source, descriptor.Options.Where(static option => option.ParentMember is null), edits, path);
+        foreach (var group in descriptor.Options.Where(static option => option.ParentMember is not null)
+            .GroupBy(static option => option.ParentMember!, StringComparer.OrdinalIgnoreCase))
+        {
+            var properties = result.EnumerateObject().ToArray();
+            var at = Array.FindIndex(properties, property => string.Equals(property.Name, group.Key, StringComparison.OrdinalIgnoreCase));
+            var nested = properties[at].Value;
+            var changed = EditScope(nested, group, edits, MemberPath(path, properties[at].Name));
+            if (changed.GetRawText() != nested.GetRawText())
+            {
+                var raw = JsonMarshal.GetRawUtf8Value(result);
+                var spans = ValueSpans(raw);
+                result = Splice(raw, spans, [(spans[at].Start, spans[at].End, JsonMarshal.GetRawUtf8Value(changed).ToArray())], []);
+            }
+        }
+        var decoded = Decode(descriptor, result, path);
+        return decoded.IsValid ? new(result, []) : new(null, decoded.Diagnostics);
+    }
+
+    private static Dictionary<string, Dictionary<string, JsonProperty>> ReadScopes(
+        ProcessingNodeOptionsDescriptor descriptor, JsonElement source, string path,
+        ImmutableArray<ProcessingGraphDiagnostic>.Builder diagnostics)
+    {
+        var scopes = new Dictionary<string, Dictionary<string, JsonProperty>>(StringComparer.OrdinalIgnoreCase);
+        var parents = descriptor.Options.Select(static option => option.ParentMember).OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var rootMembers = descriptor.Options.Where(static option => option.ParentMember is null)
+            .SelectMany(static option => option.Members).Concat(parents);
+        scopes[string.Empty] = ReadMembers(source, rootMembers, path, diagnostics);
+        foreach (var parent in parents)
+        {
+            if (!scopes[string.Empty].TryGetValue(parent, out var member) || member.Value.ValueKind != JsonValueKind.Object)
+            {
+                diagnostics.Add(new(ProcessingOptionReasonCodes.NotAnObject, MemberPath(path, parent),
+                    $"An existing {parent} object is required; this panel cannot create it or switch transfer modes."));
+                continue;
+            }
+            scopes[parent] = ReadMembers(member.Value, descriptor.Options
+                .Where(option => string.Equals(option.ParentMember, parent, StringComparison.OrdinalIgnoreCase))
+                .SelectMany(static option => option.Members), MemberPath(path, member.Name), diagnostics);
+        }
+        return scopes;
+    }
+
+    private static Dictionary<string, JsonProperty> ReadMembers(JsonElement source, IEnumerable<string> describedMembers,
+        string path, ImmutableArray<ProcessingGraphDiagnostic>.Builder diagnostics)
+    {
+        var described = describedMembers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var members = new Dictionary<string, JsonProperty>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in source.EnumerateObject())
+        {
+            if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
+                diagnostics.Add(new(ProcessingOptionReasonCodes.DuplicateMember, MemberPath(path, property.Name),
+                    $"Member '{property.Name}' appears more than once, ignoring case."));
+        }
+        return members;
+    }
+
+    private static JsonElement EditScope(JsonElement source, IEnumerable<ProcessingOptionDescriptor> options,
+        IReadOnlyDictionary<string, ProcessingOptionValue> edits, string path)
+    {
         var raw = JsonMarshal.GetRawUtf8Value(source);
         var properties = source.EnumerateObject().ToArray();
         var spans = ValueSpans(raw);
         var replacements = new List<(int Start, int End, byte[] Bytes)>();
         var appended = new List<(string Member, byte[] Bytes)>();
-        foreach (var option in descriptor.Options)
+        foreach (var option in options)
         {
             if (!edits.TryGetValue(option.Key, out var edit))
-            {
                 continue;
-            }
             var values = MemberValues(edit);
             var defaults = MemberValues(option.DefaultValue);
             for (var index = 0; index < option.Members.Length; index++)
@@ -230,32 +295,83 @@ public static class ProcessingNodeOptionsCodec
                     string.Equals(property.Name, option.Members[index], StringComparison.OrdinalIgnoreCase));
                 if (at >= 0)
                 {
-                    // A member is unchanged only when it is valid as written and reads as the edited value, so an
-                    // invalid spelling of that value, such as a signed-zero channel, is rewritten rather than kept.
                     if (ReadMember(option, properties[at], path) is not null ||
                         ReadOptionToken(option, properties[at].Value, out _) != values[index])
-                    {
-                        replacements.Add((spans[at].Start, spans[at].End, WriteValue(values[index])));
-                    }
+                        replacements.Add((spans[at].Start, spans[at].End, WriteEditedValue(option, properties[at].Value, values[index])));
                 }
                 else if (values[index] != defaults[index])
+                    appended.Add((option.Members[index], WriteEditedValue(option, default, values[index])));
+            }
+        }
+        return replacements.Count == 0 && appended.Count == 0 ? source : Splice(raw, spans, replacements, appended);
+    }
+
+    private static byte[] WriteEditedValue(ProcessingOptionDescriptor option, JsonElement source, ProcessingOptionValue value)
+    {
+        if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection))
+            return WriteValue(value);
+        if (ReadOptionToken(option, source, out _) is not { } previous)
+            return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(value.AsCollection().Items)));
+
+        var old = previous.AsCollection();
+        var edited = value.AsCollection();
+        var tokens = new string?[edited.Items.Length];
+        var used = new HashSet<int>();
+        // First reserve the exact occurrences carried by the editor, then match unannotated typed edits.
+        // A source token from another option cannot smuggle a different enum binding into this one.
+        for (var index = 0; index < edited.Items.Length; index++)
+        {
+            if (edited.SourceTokens[index] is not { } token) continue;
+            for (var prior = 0; prior < old.Items.Length; prior++)
+            {
+                if (old.Items[prior] == edited.Items[index] && old.SourceTokens[prior] == token && used.Add(prior))
                 {
-                    appended.Add((option.Members[index], WriteValue(values[index])));
+                    tokens[index] = token;
+                    break;
                 }
             }
         }
-
-        var result = replacements.Count == 0 && appended.Count == 0
-            ? source
-            : Splice(raw, spans, replacements, appended);
-        var decoded = Decode(descriptor, result, path);
-        return decoded.IsValid ? new(result, []) : new(null, decoded.Diagnostics);
+        for (var index = 0; index < edited.Items.Length; index++)
+        {
+            if (tokens[index] is not null) continue;
+            for (var prior = 0; prior < old.Items.Length; prior++)
+            {
+                if (old.Items[prior] == edited.Items[index] && used.Add(prior))
+                {
+                    tokens[index] = old.SourceTokens[prior];
+                    break;
+                }
+            }
+        }
+        return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(edited.Items, tokens)));
     }
 
     // WindowKind already accepts both enum numbers and names. Read its effective choice without rewriting
     // an untouched numeric token or its casing when the operator opens and saves an existing graph.
     private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
     {
+        if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+        {
+            outOfRange = false;
+            if (token.ValueKind != JsonValueKind.Array) return null;
+            if (token.GetArrayLength() > option.MaximumItems)
+            {
+                outOfRange = true;
+                return null;
+            }
+            var items = new List<string>();
+            var tokens = new List<string?>();
+            foreach (var item in token.EnumerateArray())
+            {
+                var value = option.Kind == ProcessingOptionKind.EnumCollection
+                    ? option.ReadEnumItem!(item)
+                    : item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+                if (value is null) return null;
+                items.Add(value);
+                tokens.Add(item.GetRawText());
+            }
+            return ProcessingOptionValue.FromCollection(option.Kind, new(items, tokens));
+        }
         if (ReferenceEquals(option, RollingCombinationOptionDescriptors.Descriptor.Find("windowKind")))
         {
             outOfRange = false;
@@ -383,6 +499,8 @@ public static class ProcessingNodeOptionsCodec
         ProcessingOptionKind.NullableWholeNumber => "a whole JSON number or null",
         ProcessingOptionKind.RealNumber => "a JSON number",
         ProcessingOptionKind.NullableRealNumber => "a JSON number or null",
+        ProcessingOptionKind.TextCollection => "an array of nonblank strings",
+        ProcessingOptionKind.EnumCollection => "an array of defined enum names or numbers",
         _ => "a JSON string"
     };
 
@@ -395,6 +513,19 @@ public static class ProcessingNodeOptionsCodec
         {
             switch (value.Kind)
             {
+                case ProcessingOptionKind.TextCollection:
+                case ProcessingOptionKind.EnumCollection:
+                    writer.WriteStartArray();
+                    var collection = value.AsCollection();
+                    for (var index = 0; index < collection.Items.Length; index++)
+                    {
+                        if (collection.SourceTokens[index] is { } token)
+                            writer.WriteRawValue(token);
+                        else
+                            writer.WriteStringValue(collection.Items[index]);
+                    }
+                    writer.WriteEndArray();
+                    break;
                 case ProcessingOptionKind.Toggle:
                     writer.WriteBooleanValue(value.AsToggle());
                     break;

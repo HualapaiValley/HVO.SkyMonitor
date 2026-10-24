@@ -50,7 +50,7 @@ public static class PreviewOptionDescriptors
     {
         var version = fixedTransfer ? FixedVersion : PercentileVersion;
         var mode = fixedTransfer
-            ? "Fixed transfer is active. Nested FixedTransfer levels and gamma are preserved; percentile/asinh controls do not affect this mode and are not offered."
+            ? "Fixed transfer is active. Edit the existing native black/white levels and gamma. Black level must be less than white level. Percentile/asinh controls do not affect this mode and are not offered; this panel cannot change transfer modes."
             : "Percentile/asinh transfer is active. Black percentile must be less than white percentile. FixedTransfer remains absent or null; this panel cannot change transfer modes.";
         return new(id, alias, version, title,
             $"{mode} The existing shared recipe remains semantic version 1.0.0, implementation {version}, with packed output.",
@@ -61,7 +61,16 @@ public static class PreviewOptionDescriptors
                     "Retained artifact recipe label, not an implementation or transfer-mode selector. Existing custom labels are preserved.", "mono16-asinh-v2", null, isRequired: true),
                 ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "Preview output variant",
                     "Packed-preview output route. Update variant-specific dependent inputs separately.", variant, 128, isIdentifier: true),
-                .. fixedTransfer ? ImmutableArray<ProcessingOptionDescriptor>.Empty :
+                .. fixedTransfer ?
+                (ImmutableArray<ProcessingOptionDescriptor>)
+                [
+                    ProcessingOptionDescriptor.NestedRealNumber("blackLevel", "fixedTransfer", "blackLevel", "Fixed black level",
+                        "Native sample level mapped to black; must be less than white level. Use the input's native sample scale.", new FixedDisplayTransferOptions().BlackLevel, 0, ushort.MaxValue, "native levels"),
+                    ProcessingOptionDescriptor.NestedRealNumber("whiteLevel", "fixedTransfer", "whiteLevel", "Fixed white level",
+                        "Native sample level mapped to white; must exceed black level. Use the input's native sample scale.", new FixedDisplayTransferOptions().WhiteLevel, 0, ushort.MaxValue, "native levels"),
+                    ProcessingOptionDescriptor.NestedRealNumber("gamma", "fixedTransfer", "gamma", "Fixed gamma",
+                        "Gamma of the existing fixed display transfer.", new FixedDisplayTransferOptions().Gamma, 0.1, 10)
+                ] :
                 [
                     ProcessingOptionDescriptor.RealNumber("blackPercentile", "blackPercentile", "Black percentile",
                         "Per-frame black-point percentile, expressed as a fraction; must be less than the white percentile.", 0.5, 0, 0.999999),

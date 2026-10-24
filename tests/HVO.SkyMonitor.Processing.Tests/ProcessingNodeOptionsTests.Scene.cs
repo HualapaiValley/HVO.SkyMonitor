@@ -11,7 +11,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("""{ "DrawMarkers" : true, "constellationIds": [ "Ori", "UMa" ], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "expectedPositionDiagnostics":true, "future":{"x":1e+02} }""");
         var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(decoded.IsValid);
-        Assert.HasCount(version == SceneVersion ? 17 : 16, decoded.Options);
+        Assert.HasCount(version == SceneVersion ? 18 : 17, decoded.Options);
         Assert.AreEqual(6, decoded.Get("markerRadius").Value.AsWholeNumber());
         Assert.AreEqual(2, decoded.Get("labelScale").Value.AsWholeNumber());
         Assert.AreEqual(24, decoded.Get("maximumLabelCharacters").Value.AsWholeNumber());

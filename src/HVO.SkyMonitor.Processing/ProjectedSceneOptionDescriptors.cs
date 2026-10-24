@@ -20,6 +20,10 @@ public static class ProjectedSceneOptionDescriptors
                 2000, 1, ProjectedSceneJson.MaximumObjectCount, "stars"),
             ProcessingOptionDescriptor.Toggle("includeConstellationEndpointStars", "includeConstellationEndpointStars", "Include constellation endpoint stars",
                 "Also include available endpoint stars for the graph's existing constellation selection, even beyond the magnitude and result limits. This does not select constellations.",
-                false)
+                false),
+            ProcessingOptionDescriptor.TextCollection("constellationIds", "constellationIds", "Constellation IDs",
+                "Request these existing constellation figures. Empty selects no figures or endpoint stars. Nonblank IDs, duplicates and source order are retained without consulting installed display choices.", 128, 16),
+            ProcessingOptionDescriptor.EnumCollection<SolarSystemBody>("solarSystemBodies", "solarSystemBodies", "Solar-system bodies",
+                "Request these defined solar-system bodies. Empty selects none. Duplicates and source order are allowed; existing numeric and named values keep their source spelling.")
         ]);
 }

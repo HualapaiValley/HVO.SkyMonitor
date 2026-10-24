@@ -101,6 +101,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("drawImageCircle", "False")]
     [DataRow("drawCardinalDirections", "False")]
     [DataRow("cardinalScale", "3")]
+    [DataRow("constellationIds", "retained-id")]
     public async Task SceneScalarEditChangesItsExistingOutputAndRollbackReconstructsOriginal(string member, string input)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-scene-scalar-options");
@@ -122,7 +123,13 @@ public sealed partial class ProcessingGraphOperationsTests
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
             var original = await CaptureConstellationsAsync(provider, config, 0, 512).ConfigureAwait(false);
             var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "sky", "2");
-            model.Nodes[1].OptionsForm!.Set(member, input);
+            var form = model.Nodes[1].OptionsForm!;
+            if (member == "constellationIds")
+            {
+                form.AddCollectionItem(member);
+                form.SetCollectionItem(member, 0, input);
+            }
+            else form.Set(member, input);
             Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
             var draft = await operations.CreateRevisionAsync("sky", "2", pipeline, "create", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
             await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
@@ -131,7 +138,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(draft.RevisionId, changed.RevisionId);
             PresentationLayerPayloadV1 Select(ConstellationCapture capture) => member switch
             {
-                "drawConstellationLines" => capture.Payload,
+                "drawConstellationLines" or "constellationIds" => capture.Payload,
                 "drawImageCircle" => capture.ImageCircle,
                 "drawCardinalDirections" or "cardinalScale" => capture.Cardinals,
                 _ => capture.Annotations
@@ -151,6 +158,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Assert.IsTrue(after.TextBlocks.All(static text => text.Lines.Single().EndsWith(" (expected)", StringComparison.Ordinal)));
                     break;
                 case "maximumLabelMagnitude": Assert.IsEmpty(after.Markers); Assert.IsEmpty(after.TextBlocks); break;
+                case "constellationIds":
                 case "drawConstellationLines": Assert.IsEmpty(after.Segments); break;
                 case "drawImageCircle": Assert.IsEmpty(after.Ellipses); break;
                 case "drawCardinalDirections": Assert.IsEmpty(after.TextBlocks); break;

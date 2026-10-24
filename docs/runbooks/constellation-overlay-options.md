@@ -53,7 +53,7 @@ The shared descriptors in `HVO.SkyMonitor.Processing` resolve the registered ali
 - `projected-scene-presentation-v12-plain-circle-markers` (retained contract)
 - `projected-scene-presentation-v13-plain-circle-bounded-expected-labels` (current runtime)
 
-Both describe the same scalar fields. Resolving a retained descriptor never makes
+Both describe the same scalar fields and constellation selection list. Resolving a retained descriptor never makes
 the current runtime execute an older producer under its old identity. Both hosts
 use the same shared contract; no new producer or recipe version is introduced.
 
@@ -66,6 +66,7 @@ use the same shared contract; no new producer or recipe version is introduced.
 | `maximumLabelCharacters` | `24` | Whole character budget, 0–64; zero hides object labels |
 | `maximumLabelMagnitude` | `2.5` | Finite magnitude, −30–30; selects named stellar markers and labels |
 | `drawConstellationLines` | `true` | Show the retained constellation selection |
+| `constellationIds` | `[]` | Up to 256 nonblank IDs of at most 16 characters; empty draws all retained constellation figures |
 | `constellationLineRed/Green/Blue` | `96/160/255` | Each channel 0–255; one colour control, `#60A0FF` |
 | `constellationLineThickness` | `2` | Whole pixels, 1–8 |
 | `drawImageCircle` | `true` | Show the image circle when supplied by the projection |
@@ -84,8 +85,19 @@ For the separate physical predicted-scene query, use the
 [Projected scene query panel](projected-scene-query-options.md). VirtualSky's
 authoritative rendered-scene query remains in its module settings.
 
-`constellationIds`, nullable legacy `markerValue`, `labelValue`, `imageCircleValue`
-and `cardinalValue`, diagnostic policy and output variants remain preserved JSON
-without editors. Collection/nullable editor design, new fonts/glyphs, producer
-upgrades, general NGC/M/IC configuration and satellite styles remain separate
-work. This is a bounded partial delivery of #1386; Frame Facts has its own panel.
+Use the constellation list's labelled item fields and **Add**, **Remove**, **Up**
+and **Down** buttons with keyboard or touch. Unknown retained IDs, duplicate
+entries, source order and untouched source spelling survive edits. A nonempty
+list filters the retained scene figures case-insensitively; it never queries or
+adds figures absent from that scene. Removing the last entry restores **all**
+retained figures, unlike the ProjectedScene query list where empty selects none.
+The count limit disables Add; invalid items prevent preview/save. Absent and
+explicit empty lists retain their source forms; explicit null is invalid and
+requires an explicit repair (add then remove an item, or edit pipeline JSON).
+Restoring the original values/order leaves saving disabled and source bytes
+unchanged. No display-choice list can discard an existing ID.
+
+The existing nullable intensity controls restore their palettes when cleared.
+Output variants remain preserved JSON without editors. New fonts/glyphs,
+producer upgrades, general NGC/M/IC configuration and satellite styles remain
+separate work. This is a bounded partial delivery of #1386; Frame Facts has its own panel.
