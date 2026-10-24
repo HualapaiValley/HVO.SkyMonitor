@@ -16,7 +16,7 @@ public static class ProjectedSceneOptionDescriptors
                 "Include catalog stars through this magnitude; larger values include fainter stars. Existing constellation endpoint and solar-system selection rules still apply.",
                 6.5, -30, 30, "mag"),
             ProcessingOptionDescriptor.WholeNumber("maximumResults", "maximumResults", "Maximum star results",
-                "Limit the magnitude-selected catalog stars before projection. Requested constellation endpoint stars can be added beyond this query limit.",
+                "Limit magnitude-selected catalog stars after projection. Requested constellation endpoint stars can be added beyond this query limit.",
                 2000, 1, ProjectedSceneJson.MaximumObjectCount, "stars"),
             ProcessingOptionDescriptor.Toggle("includeConstellationEndpointStars", "includeConstellationEndpointStars", "Include constellation endpoint stars",
                 "Also include available endpoint stars for the graph's existing constellation selection, even beyond the magnitude and result limits. This does not select constellations.",

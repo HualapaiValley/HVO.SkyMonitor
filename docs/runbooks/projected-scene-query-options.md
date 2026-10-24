@@ -10,7 +10,7 @@ explicit raw dependency.
 | Control / JSON member | Code default | Existing bound and effect |
 | --- | --- | --- |
 | Maximum star magnitude / `maximumMagnitude` | `6.5` | Finite number, −30–30; larger values include fainter catalog stars. |
-| Maximum star results / `maximumResults` | `2000` | Whole number, 1–10000 (`ProjectedSceneJson.MaximumObjectCount`); limits magnitude-selected catalog stars before projection. |
+| Maximum star results / `maximumResults` | `2000` | Whole number, 1–10000 (`ProjectedSceneJson.MaximumObjectCount`); limits magnitude-selected catalog stars after projection. |
 | Include constellation endpoint stars / `includeConstellationEndpointStars` | `false` | Boolean; adds available endpoints of the existing constellation selection beyond the magnitude/result query limits. |
 
 These controls govern **physical predicted-scene staging**. CameraAgent selects
