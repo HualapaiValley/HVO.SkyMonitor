@@ -1005,6 +1005,42 @@ catalog/projection/algorithm versions. One scene result is the geometry
 authority for rendering and annotation; those paths must not independently
 repeat catalog selection or coordinate conversion.
 
+### Physical capture queries and graph activation
+
+For a newly acquired physical frame, CameraAgent selects the active immutable
+processing graph before optional projected-scene staging. Its enabled
+`ProjectedScene` node supplies `MaximumMagnitude`, `MaximumResults` and
+`IncludeConstellationEndpointStars`, along with its existing astronomy version,
+constellation, solar-system and curated-annotation selections. The result limit
+bounds the magnitude-selected stars after visibility filtering; explicitly
+included constellation endpoints and solar-system bodies are additional objects.
+Draft and validated but inactive revisions have no effect. Activation or rollback
+affects the next selection; activation during staging cannot change that capture's
+selected graph or scene.
+
+The selected revision also governs the durable lane configuration and live
+execution. An optional `captureGraphRevisionId` in the existing raw manifest
+retains this capture-local choice if publication is interrupted before journal
+commit. It is outside the reconstruction descriptor and its hash: capture, raw
+artifact and reconstruction identities retain their existing rules. The manifest
+checksum includes the binding when present, and manifests without it retain their
+existing serialization. A retry adopts an existing sidecar and scene rather than
+staging again; recovery validates its referenced immutable local revision instead
+of choosing the current active revision. A missing or never validated reference
+is refused. No graph registry is required by central consumers to read or
+reconstruct the artifact. Existing manifests without the binding keep their
+existing recovery behavior; there is no layout, database schema or upgrade change.
+This stays on the existing primitives retained by #1607 and the #1615 reassessment
+under #1606; it does not change checkpoint or installation recovery.
+
+VirtualSky selects its render query from **module settings** and the existing
+scene-object bound. Its captured/rendered scene stays authoritative even when
+graph query options differ. The host never requeries or rewrites it. Committed
+projected scenes, central consumers, captions and archived replay consume retained
+scene evidence; replay never makes a new catalog query. The ProjectedScene option
+editor in #1619 must describe this physical-query/module-settings boundary and
+does not edit VirtualSky module settings.
+
 ## Annotation Invariants
 
 - Annotation is a derivative and never alters raw data.
