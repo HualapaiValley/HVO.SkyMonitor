@@ -58,6 +58,13 @@ terminal discriminators. Its changes from recovered v7 are:
   fails, and three cases require known/unknown waits to agree with independent
   observations. Available printed evidence is checked even when raw evidence
   is absent; the original serialization failure and journal remain retained.
+  Fifty-six further fail-first cases check both printed receipts in the named
+  parent-close failure, including missing terminals, unknown waits, raw-terminal
+  disagreement and terminals whose outer receipt marker was removed. A corpus
+  audit applies 183 substitutions across all 39 available terminals in the 48
+  existing afterseal cases. Each printed terminal must pass validation and agree
+  with the raw terminal when present; final-result and close-failure semantics
+  remain unchanged.
 - Reset publication progress per case so an early failure cannot cite the
   previous case's evidence.
 - Encode the complete snapshot JSON with deterministic gzip, then publish

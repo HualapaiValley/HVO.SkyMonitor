@@ -269,13 +269,28 @@ The first correction review found F1 only partially corrected: the available
 printed terminal was still unchecked when raw-terminal serialization failed.
 New fail-first tests reproduce that path with all five original substitutions.
 Twenty printed-only schema/type mutations and three known/unknown wait checks
-now cover it. Every available printed terminal is validated independently of
+now cover it. The selected final printed terminal is validated independently of
 raw-file presence; an observed wait cannot be erased as UNKNOWN, and an
 unobserved wait cannot be asserted as known. The named serialization error,
 missing raw file, journal fallback and retained failure remain unchanged.
 All 23 new checks and the complete affected private suite pass within the same
 caps, including all 90 original controls and 119 ordered fake gate interactions.
 Native receipts, selected executor code, measurements and limits are untouched.
+
+The second correction review found an earlier printed terminal still bypassed
+validation in the existing two-receipt parent-close failure. New fail-first
+`afterseal_all_printed_terminal_regressions` and
+`afterseal_printed_terminal_corpus_regressions` reproduce the original five
+substitutions on that first receipt against the reviewed oracle. The corrected
+oracle validates each available printed terminal, including terminals without
+the outer receipt marker, and compares each against the raw terminal when
+present. All 56 two-receipt checks and 183 substitutions across 39 terminals in
+the 48 existing afterseal cases pass. The provisional first result, actual exit
+1, close diagnostic, raw artifacts and independent wait observations remain
+unchanged. The complete affected suite also passes within the original caps:
+10,346,059 reconstructed snapshot bytes, 2,361,812 logical output bytes and a
+65,536-byte maximum record. This private oracle correction changes no selected
+executor, native packet, numerical acceptance criterion or measurement.
 
 Both 37-file campaign source sets match their recorded manifests. The complete
 original 621/894-entry packets and some dated serialized inventory bindings

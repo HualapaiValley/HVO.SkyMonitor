@@ -1030,15 +1030,21 @@ def strict_oracle(case,state):
    for text in rt.output:
     try:value=json.loads(text)
     except ValueError:continue
-    if isinstance(value,dict) and 'BS-F2' in value:values.append(value)
+    if isinstance(value,dict):
+     # Every available terminal is evidence, including provisional receipts
+     # before an outer failure and terminals without an outer receipt marker.
+     if 'checkerTerminal' in value:
+      afterseal_terminal(rt,value['checkerTerminal'])
+      if terminal is not None:
+       require(same_json_types_and_values(value['checkerTerminal'],terminal),'EXACT_WAIT','each receipt terminal types and values equal raw terminal')
+     if 'BS-F2' in value:
+      require('checkerTerminal' in value,'CHECK_TERMINAL_SHAPE','each checker receipt requires its terminal')
+      values.append(value)
    no_output=failure in ('output-JSON-memory','print','print-flush')
    require(bool(values) or no_output,'OUTPUT_REQUIRED','receipt mandatory except exact reached output fault')
    if values:
     value=values[-1]
     require(value['passed'] is (code==0) or failure=='parent-close' and code==1 and any(v['passed'] is True for v in values),'PRECISE_RESULT','inner zero provisional only named close fault')
-    afterseal_terminal(rt,value['checkerTerminal'])
-    if terminal is not None:
-     require(same_json_types_and_values(value['checkerTerminal'],terminal),'EXACT_WAIT','receipt terminal types and values equal raw terminal')
     charges=value['adjacentRetentionChargedBytes'];components=value['combinedConservativeComponentsBytes']
     metas=[value['retentionJournal']]+list(value['obtainedEvidence']['artifacts'].values())+([value['checksumOutputFallback']] if 'checksumOutputFallback' in value else [])
     require(charges==sum(m['chargedConservativeBytes'] for m in metas) and components['retainedPacketAndBundle']>=charges,'EXACT_CHARGE','every retained artifact once; parent directories common-root sampled separately')

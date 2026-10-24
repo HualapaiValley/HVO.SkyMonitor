@@ -128,6 +128,31 @@ def typed_terminal_regressions():
     return len(mutations)
 
 
+def afterseal_terminal_mutations(pid):
+    return [
+        ("raw-status-bool", lambda v: v["actualWait"].update(rawWaitStatus=False), "CHECK_WAIT_STATUS"),
+        ("exited-int", lambda v: v["actualWait"].update(WIFEXITED=1), "CHECK_WAIT_STATUS"),
+        ("signaled-int", lambda v: v["actualWait"].update(WIFSIGNALED=0), "CHECK_WAIT_STATUS"),
+        ("return-code-bool", lambda v: v.update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
+        ("usage-bool", lambda v: v["actualWait"]["wait4usage"].update(ru_utime=False), "CHECK_USAGE"),
+        ("nested-return-code-bool", lambda v: v["actualWait"].update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
+        ("exit-status-bool", lambda v: v["actualWait"].update(WEXITSTATUS=False), "CHECK_WAIT_STATUS"),
+        ("wrong-pid", lambda v: v["actualWait"].update(pid=pid + 1), "CHECK_WAIT_STATUS"),
+        ("signal-zero", lambda v: v["actualWait"].update(WTERMSIG=0), "CHECK_WAIT_STATUS"),
+        ("usage-wrong-value", lambda v: v["actualWait"]["wait4usage"].update(ru_maxrss=1), "CHECK_USAGE"),
+        ("usage-missing-field", lambda v: v["actualWait"]["wait4usage"].pop("ru_stime"), "CHECK_USAGE"),
+        ("usage-extra-field", lambda v: v["actualWait"]["wait4usage"].update(extra=0), "CHECK_USAGE"),
+        ("wait-provenance-int", lambda v: v["actualWait"].update(rawWait4NotOwnRSS=1), "CHECK_WAIT_SHAPE"),
+        ("wait-extra-field", lambda v: v["actualWait"].update(extra=0), "CHECK_WAIT_SHAPE"),
+        ("wait-missing-field", lambda v: v["actualWait"].pop("WEXITSTATUS"), "CHECK_WAIT_SHAPE"),
+        ("terminal-missing-field", lambda v: v.pop("actualReturnCode"), "CHECK_TERMINAL_SHAPE"),
+        ("eof-int", lambda v: v["eof"].update(stderr=1), "CHECK_TERMINAL_SHAPE"),
+        ("capture-int", lambda v: v.update(captureComplete=1), "CHECK_TERMINAL_SHAPE"),
+        ("no-retry-int", lambda v: v.update(noRetry=1), "CHECK_TERMINAL_SHAPE"),
+        ("timeout-float", lambda v: v.update(timeoutSeconds=30.0), "CHECK_TERMINAL_SHAPE"),
+    ]
+
+
 def afterseal_terminal_regressions(case_id="v5-normal-complete-owned-barrier-and-retention"):
     target = next(c for c in controls.V7_CASES
                   if c["id"] == case_id)
@@ -142,28 +167,7 @@ def afterseal_terminal_regressions(case_id="v5-normal-complete-owned-barrier-and
     original_terminal = (json.loads(original_node["raw"]) if original_node is not None
                          else json.loads(original_output[-1])["checkerTerminal"])
     channels = ("raw", "receipt", "both") if original_node is not None else ("receipt",)
-    mutations = [
-        ("raw-status-bool", lambda v: v["actualWait"].update(rawWaitStatus=False), "CHECK_WAIT_STATUS"),
-        ("exited-int", lambda v: v["actualWait"].update(WIFEXITED=1), "CHECK_WAIT_STATUS"),
-        ("signaled-int", lambda v: v["actualWait"].update(WIFSIGNALED=0), "CHECK_WAIT_STATUS"),
-        ("return-code-bool", lambda v: v.update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
-        ("usage-bool", lambda v: v["actualWait"]["wait4usage"].update(ru_utime=False), "CHECK_USAGE"),
-        ("nested-return-code-bool", lambda v: v["actualWait"].update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
-        ("exit-status-bool", lambda v: v["actualWait"].update(WEXITSTATUS=False), "CHECK_WAIT_STATUS"),
-        ("wrong-pid", lambda v: v["actualWait"].update(pid=rt.pid + 1), "CHECK_WAIT_STATUS"),
-        ("signal-zero", lambda v: v["actualWait"].update(WTERMSIG=0), "CHECK_WAIT_STATUS"),
-        ("usage-wrong-value", lambda v: v["actualWait"]["wait4usage"].update(ru_maxrss=1), "CHECK_USAGE"),
-        ("usage-missing-field", lambda v: v["actualWait"]["wait4usage"].pop("ru_stime"), "CHECK_USAGE"),
-        ("usage-extra-field", lambda v: v["actualWait"]["wait4usage"].update(extra=0), "CHECK_USAGE"),
-        ("wait-provenance-int", lambda v: v["actualWait"].update(rawWait4NotOwnRSS=1), "CHECK_WAIT_SHAPE"),
-        ("wait-extra-field", lambda v: v["actualWait"].update(extra=0), "CHECK_WAIT_SHAPE"),
-        ("wait-missing-field", lambda v: v["actualWait"].pop("WEXITSTATUS"), "CHECK_WAIT_SHAPE"),
-        ("terminal-missing-field", lambda v: v.pop("actualReturnCode"), "CHECK_TERMINAL_SHAPE"),
-        ("eof-int", lambda v: v["eof"].update(stderr=1), "CHECK_TERMINAL_SHAPE"),
-        ("capture-int", lambda v: v.update(captureComplete=1), "CHECK_TERMINAL_SHAPE"),
-        ("no-retry-int", lambda v: v.update(noRetry=1), "CHECK_TERMINAL_SHAPE"),
-        ("timeout-float", lambda v: v.update(timeoutSeconds=30.0), "CHECK_TERMINAL_SHAPE"),
-    ]
+    mutations = afterseal_terminal_mutations(rt.pid)
     failures = []
     for name, mutate, predicate in mutations:
         # Exercise raw-only, receipt-only and mutually agreeing substitutions.
@@ -232,6 +236,91 @@ def afterseal_wait_presence_regressions():
             failures.append([name, str(error)])
     check(not failures, "afterseal wait-presence regressions: " + json.dumps(failures))
     return len(actions)
+
+
+def reject_printed_terminal(case, state, index, mutate, predicate):
+    rt = state["rt"]
+    original_output = list(rt.output)
+    preserved = copy.deepcopy((rt.fs.nodes, rt.wait_observations, rt.diagnostics,
+                               state["code"], state["error"]))
+    receipt = json.loads(original_output[index])
+    mutate(receipt)
+    rt.output[index] = json.dumps(receipt)
+    try:
+        reject(lambda: controls.strict_oracle(case, state), predicate)
+    finally:
+        check(all(text == rt.output[i] for i, text in enumerate(original_output) if i != index),
+              "other printed receipts unchanged")
+        check((rt.fs.nodes, rt.wait_observations, rt.diagnostics, state["code"], state["error"])
+              == preserved, "raw artifacts, independent wait, exit and diagnostics unchanged")
+        rt.output[:] = original_output
+
+
+def afterseal_all_printed_terminal_regressions():
+    target = next(c for c in controls.V7_CASES if c.get("failure") == "parent-close")
+    state = controls.exercise(target)
+    controls.strict_oracle(target, state)
+    rt = state["rt"]
+    check(len(rt.output) == 2 and json.loads(rt.output[0])["passed"] is True
+          and state["code"] == 1 and state["error"] is None,
+          "existing provisional first receipt and actual outer failure")
+    check(any(any(e["phase"] == "publication-parent-close" and e["type"] == "OSError"
+                  and e["errno"] == 5 for e in json.loads(text)["publicationCloseErrors"])
+              for text in rt.diagnostics), "selected close diagnostic retained")
+    failures, count = [], 0
+    for index in range(len(rt.output)):
+        mutations = [(name, lambda receipt, m=mutate: m(receipt["checkerTerminal"]), predicate)
+                     for name, mutate, predicate in afterseal_terminal_mutations(rt.pid)]
+        mutations += [
+            ("observed-wait-erased", lambda r: r["checkerTerminal"].update(
+                actualWait=None, actualReturnCode=None), "WAIT_REQUIRED"),
+            ("terminal-removed", lambda r: r.pop("checkerTerminal"), "CHECK_TERMINAL_SHAPE"),
+            ("nested-identity-bool", lambda r: r["checkerTerminal"]["childIdentity"].update(
+                completeBarrierEvidence=1), "EXACT_WAIT"),
+        ]
+        # Available wait evidence cannot hide by losing its outer receipt marker.
+        for name, mutate, predicate in afterseal_terminal_mutations(rt.pid)[:5]:
+            def unmarked(receipt, mutate=mutate):
+                receipt.pop("BS-F2")
+                mutate(receipt["checkerTerminal"])
+            mutations.append(("unmarked-" + name, unmarked, predicate))
+        for name, mutate, predicate in mutations:
+            count += 1
+            try:
+                reject_printed_terminal(target, state, index, mutate, predicate)
+            except Exception as error:
+                failures.append([index, name, type(error).__name__, str(error)])
+    check(not failures, "all printed terminal regressions: " + json.dumps(failures))
+    controls.strict_oracle(target, state)
+    return count
+
+
+def afterseal_printed_terminal_corpus_regressions():
+    failures, cases, receipts, count = [], 0, 0, 0
+    for target in controls.V7_CASES:
+        if target.get("route") != "afterseal":
+            continue
+        state = controls.exercise(target)
+        controls.strict_oracle(target, state)
+        cases += 1
+        rt = state["rt"]
+        for index, text in enumerate(rt.output):
+            value = json.loads(text)
+            if type(value) is not dict or "checkerTerminal" not in value:
+                continue
+            receipts += 1
+            for name, mutate, predicate in afterseal_terminal_mutations(rt.pid)[:5]:
+                if value["checkerTerminal"]["actualWait"] is None and name != "return-code-bool":
+                    continue
+                count += 1
+                try:
+                    reject_printed_terminal(target, state, index,
+                                            lambda r, m=mutate: m(r["checkerTerminal"]), predicate)
+                except Exception as error:
+                    failures.append([target["id"], index, name, type(error).__name__, str(error)])
+        controls.strict_oracle(target, state)
+    check(not failures, "printed terminal corpus regressions: " + json.dumps(failures))
+    return {"cases": cases, "receipts": receipts, "rejections": count}
 
 
 def codec_regressions(root):
@@ -382,6 +471,8 @@ def main(output_root):
     summary["aftersealTypedTerminalRejections"] = afterseal_terminal_regressions()
     summary["aftersealUnretainedTerminalRejections"] = afterseal_unretained_terminal_regressions()
     summary["aftersealWaitPresenceRejections"] = afterseal_wait_presence_regressions()
+    summary["aftersealAllPrintedTerminalRejections"] = afterseal_all_printed_terminal_regressions()
+    summary["aftersealPrintedTerminalCorpus"] = afterseal_printed_terminal_corpus_regressions()
     summary["roundtripChunkCount"] = codec_regressions(root / "codec")
     summary["failurePreservationCases"] = failure_regressions(root / "failures")
     files = [p for p in root.rglob("*") if p.is_file()]
