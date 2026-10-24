@@ -101,6 +101,11 @@ public sealed partial class ProcessingGraphOperationsTests
             var originalOutput = (await store.ReadNodeAsync(original.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
             Assert.AreEqual(TimeSpan.FromSeconds(3), originalOutput.TotalIntegration);
             var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "rolling", "2");
+            Assert.IsTrue(model.TryBuild(out var unchanged, out _));
+            Assert.IsFalse(model.HasGraphChanges(unchanged));
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            Assert.AreEqual(factory.PreviewPlan(config).EffectiveSha256,
+                factory.PreviewPlan(config with { Pipeline = unchanged }).EffectiveSha256);
             model.Nodes[0].OptionsForm!.Set(key, limit);
             Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
             var draft = await operations.CreateRevisionAsync("rolling", "2", pipeline, "create", "test", null, CancellationToken.None).ConfigureAwait(false);
@@ -119,6 +124,12 @@ public sealed partial class ProcessingGraphOperationsTests
                 Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath)));
             var retained = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(config.Pipeline.Steps[0].Options!.Value.GetRawText(), retained!.Steps[0].Options!.Value.GetRawText());
+            var replay = await operations.SubmitReplayAsync(new ProcessingReplaySubmission(original.Execution.CaptureId,
+                initial.ActiveRevisionId, original.Execution.PrimaryArtifactId), "old-revision-replay", "test", CancellationToken.None).ConfigureAwait(false);
+            var reconstructed = await RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, reconstructed.Execution.Status);
+            Assert.AreEqual(originalOutput.OutputIdentitySha256, reconstructed.Nodes.Single().Outputs.Single().OutputIdentitySha256);
+            Assert.IsFalse(reconstructed.Nodes.Single().Outputs.Single().Published);
             await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
             var restored = await Capture(5).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, restored.Execution.GraphRevisionId);
