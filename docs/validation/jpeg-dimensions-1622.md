@@ -63,5 +63,22 @@ An initial default temporary directory traversed a macOS symlink; using
 `TMPDIR=/private/tmp` makes the unchanged base's 40 nominal-evaluation tests pass.
 The three byte-pinned orbital prediction cases still fail on untouched base
 `097136be`, with the same byte mismatch positions as the candidate. They are
-outside the edited option path. Final counts and gate outcomes are recorded in
-the PR ledger; the Linux protected profile remains mandatory.
+outside the edited option path. The physical-temp broad results are:
+
+| Project | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Processing | 971 | 3 | 0 |
+| CameraAgent | 7248 | 5 | 65 |
+| Combined host | 87 | 0 | 0 |
+| LogicHost | 949 | 10 | 5 |
+
+All 18 failures reproduce on untouched base `097136be`: three orbital byte
+fixtures, one virtual-camera checksum, one Linux-only ZWO initialization case,
+three platform-specific CLI credential cases, two annotation byte fixtures and
+eight Linux-only filesystem restore cases. The base's
+[Development v1 Linux run](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/40097710468)
+is green. Focused option tests pass (194 shared codec, 163 CameraAgent
+editor/service/revision cases, and 40 host contract cases in each host lane).
+No affected option/graph/JPEG case failed in the broader runs. The PR ledger
+records final formatting and CI-control results; Linux protected CI remains
+mandatory for the candidate.

@@ -75,8 +75,11 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(option.DefaultValue, runtime.Get(option.Key).Value);
             foreach (var token in new[] { "0", "16385", "1.5", "1e400", "true" })
             {
-                var bad = config.Pipeline with { Steps = config.Pipeline.Steps.Select(step => step.Id == "jpeg" ? step with
-                    { Options = JsonSerializer.Deserialize<JsonElement>("{\"MaximumDimension\":" + token + "}") } : step).ToArray() };
+                var bad = config.Pipeline with
+                {
+                    Steps = config.Pipeline.Steps.Select(step => step.Id == "jpeg" ? step with
+                    { Options = JsonSerializer.Deserialize<JsonElement>("{\"MaximumDimension\":" + token + "}") } : step).ToArray()
+                };
                 try
                 {
                     await operations.CreateRevisionAsync("invalid", "invalid", bad, "invalid-" + token, "test", null, CancellationToken.None).ConfigureAwait(false);
