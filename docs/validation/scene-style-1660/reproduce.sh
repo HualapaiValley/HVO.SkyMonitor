@@ -24,7 +24,8 @@ for lane in ('baseline', 'candidate'):
     project = (root / 'baseline-source' if lane == 'baseline' else repo) / 'src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj'
     directory = root / 'measure' / lane
     flags = 'SCENE_STYLE' if lane == 'candidate' else ''
-    (directory / 'Measure.csproj').write_text(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><DefineConstants>{flags}</DefineConstants></PropertyGroup><ItemGroup><ProjectReference Include="{escape(str(project))}" /></ItemGroup></Project>')
+    shutil.copyfile((root / 'baseline-source' if lane == 'baseline' else repo) / 'Directory.Packages.props', directory / 'Directory.Packages.props')
+    (directory / 'Measure.csproj').write_text(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><DefineConstants>{flags}</DefineConstants></PropertyGroup><ItemGroup><ProjectReference Include="{escape(str(project))}" /><PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" /></ItemGroup></Project>')
     shutil.copyfile(source / 'Measure.cs.txt', directory / 'Program.cs')
 PY
 export DOTNET_PROCESSOR_COUNT=2 MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false

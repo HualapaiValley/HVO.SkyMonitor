@@ -13,7 +13,8 @@ The upgrade preserves constellation controls and maps non-null grayscale
 intensities to equal RGB channels. Absent/null intensities select the previous
 palette: marker 144/144/144, label and cardinal 255/255/255, image circle
 96/96/96. Labels/cardinals default to MonoBold; point markers default to Circle.
-The v12 portable upgrade retains its strict expected-label setting when absent.
+The portable v12 upgrade explicitly disables expected-position diagnostic labels
+when that flag is absent; it never reintroduces historical unqualified star names.
 The installed legacy alias continues to bind its existing v13 producer.
 
 Choose marker, label, cardinal and image-circle RGB colours, independent label
