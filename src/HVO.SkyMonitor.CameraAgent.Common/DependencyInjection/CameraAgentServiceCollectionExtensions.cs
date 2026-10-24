@@ -345,7 +345,8 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
                 provider.GetService<IAcceptanceRetentionControl>(),
                 provider.GetRequiredService<SqliteTimeLapseStore>(),
-                provider.GetRequiredService<SqliteCalibrationFamilyStore>()));
+                provider.GetRequiredService<SqliteCalibrationFamilyStore>(),
+                provider.GetRequiredService<CaptureSatelliteWorkStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         services.AddSingleton<ActiveCalibrationFamilySelector>();
         services.AddSingleton<NormalizationPlanFreezer>();
@@ -412,6 +413,13 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "MeasuredStellarAssociations", typeof(MeasuredStellarAssociationCaptureProcessingStep),
             typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
+        services.AddSingleton<CaptureSatelliteWorkStore>();
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            CaptureSatelliteTracksProcessingStep.Alias, typeof(CaptureSatelliteTracksProcessingStep),
+            typeof(CaptureSatelliteTracksOptions), 17, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            CaptureSatelliteLayerProcessingStep.Alias, typeof(CaptureSatelliteLayerProcessingStep),
+            typeof(CaptureSatelliteLayerOptions), 18, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "CloudAssessment", typeof(CloudAssessmentCaptureProcessingStep),
             typeof(CloudAssessmentProcessingStepOptions), 80, AutoInclude: false));

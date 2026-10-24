@@ -837,6 +837,27 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _ => "Diagnostics"
     };
 
+    private static string SatelliteDescription(CaptureSatelliteStatusV1? status)
+    {
+        if (status is null) return string.Empty;
+        var reason = status.Reason switch
+        {
+            "NoActiveSnapshot" => "no installed orbital snapshot",
+            "TimeCoverageUnavailable" => "time inputs do not cover this exposure",
+            "TimeAvailabilityUnknown" => "time-input availability is unknown",
+            "SnapshotRetiredBeforePin" => "source retired before prediction could be retained",
+            "NoExposureSegments" => "no predicted exposure segment in this image",
+            "SelectionWithheld" => "source selection withheld",
+            "ObjectMissing" => "requested object missing",
+            "TimeInputsUnavailable:Disabled" => "time inputs disabled",
+            _ => status.Reason
+        };
+        var retrieved = status.SourceRetrievedUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+        var age = status.MaximumEpochAgeHours is { } hours
+            ? (Math.Ceiling(hours * 10) / 10).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : "unknown";
+        return FormattableString.Invariant($"{status.Status}: {reason}; {status.TrackCount} tracks; population {status.Coverage.Completeness}; source retrieved {retrieved}; epoch age <= {age} h; freshness {status.ElementFreshness}; configured geometry; {status.TimeSource} time inputs.");
+    }
+
     private static string LayerDescription(string kind) => kind switch
     {
         "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",

@@ -62,6 +62,12 @@ public static class OrbitalTrackPresentation
     public static (PresentationLayerPayloadV1 Payload, byte[] SourceFactsJson) CreatePayloadAndSourceFacts(
         int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
         IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames = null)
+        => CreatePayloadAndSourceFacts(sourceWidth, sourceHeight, tracks, displayNames, false);
+
+    /// <summary>Also retains query-level incompleteness when the useful prefix has complete child tracks.</summary>
+    public static (PresentationLayerPayloadV1 Payload, byte[] SourceFactsJson) CreatePayloadAndSourceFacts(
+        int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
+        IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames, bool queryIncomplete)
     {
         ArgumentNullException.ThrowIfNull(tracks);
         if (sourceWidth is < 1 or > 65_536 || sourceHeight is < 1 or > 65_536 ||
@@ -94,7 +100,7 @@ public static class OrbitalTrackPresentation
         var ordered = frozen.OrderBy(static t => t.Lineage.ObjectIdentity.CatalogNumber, StringComparer.Ordinal).ToArray();
         var names = FreezeNames(displayNames, objects);
         var scale = Math.Min(3, PresentationFont.StarFrameScale(sourceWidth, sourceHeight));
-        var caption = Caption(sourceWidth, sourceHeight, scale, ordered);
+        var caption = Caption(sourceWidth, sourceHeight, scale, ordered, queryIncomplete);
         var texts = new List<PresentationTextBlockV1> { caption };
         var markers = new List<PresentationMarkerV1>();
         var segments = new List<PresentationSegmentV1>();
@@ -176,6 +182,21 @@ public static class OrbitalTrackPresentation
             }).ToArray()
         });
         var sourceIdentity = Convert.ToHexString(SHA256.HashData(sourceFacts));
+        if (queryIncomplete)
+        {
+            // A bounded query may stop after complete child tracks. Retain that query qualification too.
+            sourceFacts = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                ProducerVersion,
+                LayerKind,
+                sourceWidth,
+                sourceHeight,
+                QueryIncomplete = true,
+                Tracks = ordered.Select(track => new
+                { track.ProductSha256, DisplayName = names.GetValueOrDefault(track.Lineage.ObjectIdentity) }).ToArray()
+            });
+            sourceIdentity = Convert.ToHexString(SHA256.HashData(sourceFacts));
+        }
         return (PresentationLayerPayloadJson.Create(sourceIdentity, sourceWidth, sourceHeight,
             markers: markers, segments: segments, textBlocks: texts), sourceFacts);
     }
@@ -208,12 +229,13 @@ public static class OrbitalTrackPresentation
         return names;
     }
 
-    private static PresentationTextBlockV1 Caption(int width, int height, int scale, IReadOnlyList<OrbitalExposureTrackV1> tracks)
+    private static PresentationTextBlockV1 Caption(int width, int height, int scale, IReadOnlyList<OrbitalExposureTrackV1> tracks,
+        bool queryIncomplete)
     {
         // At most eight fixed lines, independent of object count, names and optional label placement.
         // Do not infer additional physical or freshness facts from source validity or geometry provenance.
         var lines = new List<string> { Legend };
-        if (tracks.Any(static t => t.Status == OrbitalExecutionStatus.Partial)) lines.Add(PartialLegend);
+        if (queryIncomplete || tracks.Any(static t => t.Status == OrbitalExecutionStatus.Partial)) lines.Add(PartialLegend);
         lines.Add(UncertaintyLegend);
         if (tracks.Any(static t => t.Lineage.Freshness == OrbitalElementFreshness.Stale)) lines.Add(StaleLegend);
         if (tracks.Any(static t => t.Lineage.SourceValidity == OrbitalSourceValidity.Unknown)) lines.Add(UnknownSourceValidityLegend);

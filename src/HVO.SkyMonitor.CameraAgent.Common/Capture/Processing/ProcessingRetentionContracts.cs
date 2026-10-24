@@ -40,7 +40,8 @@ internal sealed class CompositeProcessingRetentionHolds(
     SqliteCalibrationLibraryStore calibrationLibrary,
     IAcceptanceRetentionControl? acceptanceControl = null,
     TimeLapses.SqliteTimeLapseStore? timeLapses = null,
-    SqliteCalibrationFamilyStore? calibrationFamilies = null) :
+    SqliteCalibrationFamilyStore? calibrationFamilies = null,
+    CaptureSatelliteWorkStore? satelliteWork = null) :
     IProcessingRetentionHolds,
     IRawIngressLifecycleProcessingRetentionHolds,
     IProcessingOutputExpiration
@@ -70,6 +71,8 @@ internal sealed class CompositeProcessingRetentionHolds(
             ? []
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var videos = timeLapses is null ? [] : await timeLapses.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+        var satellite = satelliteWork is null ? [] :
+            await satelliteWork.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         // The masters of every active calibration family stay held whatever their bundle's own retention_hold, until the
         // family is deactivated. So do the masters a frozen normalization plan names, even once their family is
         // superseded, while its execution is pending or running and then while its node's outputs are kept (#1475).
@@ -85,14 +88,20 @@ internal sealed class CompositeProcessingRetentionHolds(
             masters = await calibrationLibrary.GetMasterRetentionHoldsUnderLifecycleLockAsync(
                 storageRoot, [.. familyMasters.Union(planMasters)], cancellationToken).ConfigureAwait(false);
         }
-        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(masters).Distinct().ToArray();
+        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(masters).Concat(satellite).Distinct().ToArray();
     }
 
-    public ValueTask<int> ExpireOutputsAsync(
+    public async ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
         CancellationToken cancellationToken,
         CancellationToken interruptionToken = default)
-        => persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken);
+    {
+        var deleted = await persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken)
+            .ConfigureAwait(false);
+        if (satelliteWork is not null)
+            await satelliteWork.ReconcileAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+        return deleted;
+    }
 }

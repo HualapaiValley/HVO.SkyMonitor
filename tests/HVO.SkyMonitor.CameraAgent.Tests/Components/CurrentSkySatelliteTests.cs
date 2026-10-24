@@ -9,6 +9,39 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
+    [DataRow("Unavailable", "NoActiveSnapshot", "no installed orbital snapshot")]
+    [DataRow("Complete", "NoExposureSegments", "no predicted exposure segment in this image")]
+    public void RetainedUnavailableAndNoResultStatusesDisableGeometryAndExplainCoverage(string state, string reason, string text)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        var presentation = Layered(OperatorUiTestData.CurrentImage().DisplayCapture!.CaptureId, new string('D', 64));
+        presentation = presentation with
+        {
+            Layers = [presentation.Layers[0] with
+            {
+                Kind = OrbitalTrackPresentation.LayerKind, EnabledByDefault = false,
+                Satellite = new(CaptureSatelliteProducts.StatusSchema, new string('A', 64), state, reason, 0,
+                    "ConfiguredRig", new(DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddSeconds(5)),
+                    new("requested", HVO.SkyMonitor.Astronomy.OrbitalPopulationCompleteness.Partial, ["Other objects excluded"]),
+                    null, null, "Bundled", "Unknown", false, "Unknown")
+            }]
+        };
+        service.PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        var label = cut.WaitForElement($"input[data-layer-identity='{presentation.Layers[0].IdentitySha256}']").ParentElement!;
+        Assert.IsTrue(label.QuerySelector("input")!.HasAttribute("disabled"));
+        StringAssert.Contains(label.TextContent, text, StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "population Partial", StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "configured geometry", StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "source retrieved unknown", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void MissingSatellitePredictionIsUnavailableWithoutInventingARecordedLayer()
     {
         using var context = new BunitContext();

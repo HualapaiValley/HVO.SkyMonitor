@@ -262,6 +262,22 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
+            foreach (var satellite in configured.Where(static item => item.Step is CaptureSatelliteTracksProcessingStep))
+            {
+                if (!explicitV2 || satellite.Config.DependsOn?.Count != 1 ||
+                    !IsRawDependency(satellite.Config.DependsOn[0]) ||
+                    satellite.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteTracks requires an explicit v2 raw dependency and durable local publication.");
+            }
+            foreach (var layer in configured.Where(static item => item.Step is CaptureSatelliteLayerProcessingStep))
+            {
+                if (!explicitV2 || layer.Config.DependsOn?.Count != 1 ||
+                    !nodesById.TryGetValue(layer.Config.DependsOn[0], out var producer) || producer.Step is not CaptureSatelliteTracksProcessingStep ||
+                    layer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
+            }
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
