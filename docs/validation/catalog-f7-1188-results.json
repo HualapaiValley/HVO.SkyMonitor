@@ -1,0 +1,1383 @@
+{
+  "schema": "hvo-1188-f7-r7-qualified-summary-v1",
+  "catalogCandidate": "f57dfc1b2ddf0a646f1455a15b4e4eaac4e23c29",
+  "baseline": "764233766a2d42da823241954469f48b086a7e06",
+  "baselineVirtualTree": "3748239be0a938f923d7f75fc610e05190690f69",
+  "actualToolSession": 54662,
+  "actualToolReturnCode": 0,
+  "actualToolElapsedSeconds": 375.43706397293136,
+  "measurementRuntime": {
+    "os": "Ubuntu 24.04.5 LTS",
+    "architecture": "X64",
+    "framework": ".NET 10.0.13",
+    "configuration": "Release",
+    "processorCount": 12,
+    "concurrency": 1,
+    "initialBacklog": 0,
+    "serverGarbageCollection": false,
+    "externalIo": true,
+    "externalIoDescription": "local catalog/evidence filesystem I/O; no measured network I/O"
+  },
+  "acceptedMethodDecisionURL": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1188#issuecomment-6386492204",
+  "methodChangedProspectively": true,
+  "groups": [
+    {
+      "group": "source-baseline-stars",
+      "trials": [
+        "source-t01",
+        "source-t04",
+        "source-t05",
+        "source-t08",
+        "source-t09",
+        "source-t12"
+      ],
+      "startup": {
+        "latencyMilliseconds": {
+          "median": 778.182,
+          "minimum": 716.7437,
+          "maximum": 1271.0862
+        },
+        "cpuMilliseconds": {
+          "median": 829.9325,
+          "minimum": 768.811,
+          "maximum": 1416.38
+        },
+        "allocatedBytes": {
+          "median": 94333796.0,
+          "minimum": 94319888,
+          "maximum": 94380856
+        },
+        "workingSetBytes": {
+          "median": 167749632.0,
+          "minimum": 166748160,
+          "maximum": 169549824
+        },
+        "peakWorkingSetBytes": {
+          "median": 182470656.0,
+          "minimum": 181743616,
+          "maximum": 184262656
+        },
+        "storageReadBytes": {
+          "median": 0.0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "logicalReadBytes": {
+          "median": 32371714.0,
+          "minimum": 32371648,
+          "maximum": 32371714
+        },
+        "readSystemCalls": {
+          "median": 4025.0,
+          "minimum": 4025,
+          "maximum": 4025
+        }
+      },
+      "starQueries": {
+        "starAllSky": {
+          "medianMilliseconds": {
+            "median": 0.0521,
+            "minimum": 0.0501,
+            "maximum": 0.093
+          },
+          "p95Milliseconds": {
+            "median": 0.06035,
+            "minimum": 0.0578,
+            "maximum": 0.1055
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.06057499999999999,
+            "minimum": 0.059369999999999985,
+            "maximum": 0.12335999999999997
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.22438999999999992,
+            "minimum": 0.21023999999999993,
+            "maximum": 0.4380899999999999
+          },
+          "allocatedBytesPerOperation": {
+            "median": 142856.0,
+            "minimum": 142856,
+            "maximum": 142865
+          },
+          "operationsPerSecond": {
+            "median": 17491.27549437707,
+            "minimum": 10123.711757678835,
+            "maximum": 18249.174224866325
+          }
+        },
+        "starBoundedCap": {
+          "medianMilliseconds": {
+            "median": 0.4178,
+            "minimum": 0.3982,
+            "maximum": 0.7463
+          },
+          "p95Milliseconds": {
+            "median": 0.47004999999999997,
+            "minimum": 0.4156,
+            "maximum": 0.7828
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.4292900000000001,
+            "minimum": 0.40750999999999976,
+            "maximum": 0.7665000000000003
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.015449999999999995,
+            "minimum": 0.013609999999999997,
+            "maximum": 0.026929999999999992
+          },
+          "allocatedBytesPerOperation": {
+            "median": 74704.0,
+            "minimum": 74704,
+            "maximum": 74705
+          },
+          "operationsPerSecond": {
+            "median": 2351.3351422453643,
+            "minimum": 1319.7191109844182,
+            "maximum": 2485.620684341087
+          }
+        }
+      }
+    },
+    {
+      "group": "source-candidate-stars",
+      "trials": [
+        "source-t02",
+        "source-t03",
+        "source-t06",
+        "source-t07",
+        "source-t10",
+        "source-t11"
+      ],
+      "startup": {
+        "latencyMilliseconds": {
+          "median": 764.8335999999999,
+          "minimum": 738.4561,
+          "maximum": 917.3083
+        },
+        "cpuMilliseconds": {
+          "median": 828.599,
+          "minimum": 776.765,
+          "maximum": 1027.158
+        },
+        "allocatedBytes": {
+          "median": 94716728.0,
+          "minimum": 94710792,
+          "maximum": 94758208
+        },
+        "workingSetBytes": {
+          "median": 170422272.0,
+          "minimum": 170049536,
+          "maximum": 173305856
+        },
+        "peakWorkingSetBytes": {
+          "median": 184938496.0,
+          "minimum": 184582144,
+          "maximum": 187887616
+        },
+        "storageReadBytes": {
+          "median": 0.0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "logicalReadBytes": {
+          "median": 32371706.5,
+          "minimum": 32371678,
+          "maximum": 32371714
+        },
+        "readSystemCalls": {
+          "median": 275.0,
+          "minimum": 275,
+          "maximum": 275
+        }
+      },
+      "starQueries": {
+        "starAllSky": {
+          "medianMilliseconds": {
+            "median": 0.05405,
+            "minimum": 0.0525,
+            "maximum": 0.0554
+          },
+          "p95Milliseconds": {
+            "median": 0.061950000000000005,
+            "minimum": 0.0588,
+            "maximum": 0.0638
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.06422500000000003,
+            "minimum": 0.06128,
+            "maximum": 0.06942999999999999
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.22321,
+            "minimum": 0.21158000000000005,
+            "maximum": 0.23224
+          },
+          "allocatedBytesPerOperation": {
+            "median": 142856.0,
+            "minimum": 142856,
+            "maximum": 142861
+          },
+          "operationsPerSecond": {
+            "median": 16829.94031750709,
+            "minimum": 15310.887572152556,
+            "maximum": 17466.33364190523
+          }
+        },
+        "starBoundedCap": {
+          "medianMilliseconds": {
+            "median": 0.4102,
+            "minimum": 0.399,
+            "maximum": 0.4114
+          },
+          "p95Milliseconds": {
+            "median": 0.43484999999999996,
+            "minimum": 0.427,
+            "maximum": 0.4457
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.4205,
+            "minimum": 0.4067700000000001,
+            "maximum": 0.4233799999999997
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.015034999999999996,
+            "minimum": 0.01412,
+            "maximum": 0.01691999999999998
+          },
+          "allocatedBytesPerOperation": {
+            "median": 74704.0,
+            "minimum": 74704,
+            "maximum": 74705
+          },
+          "operationsPerSecond": {
+            "median": 2398.748399431535,
+            "minimum": 2393.5928307107533,
+            "maximum": 2475.2291443380373
+          }
+        }
+      }
+    },
+    {
+      "group": "composition-candidate-stars",
+      "trials": [
+        "composition-t01",
+        "composition-t04",
+        "composition-t05",
+        "composition-t08",
+        "composition-t09",
+        "composition-t12"
+      ],
+      "startup": {
+        "latencyMilliseconds": {
+          "median": 795.5255999999999,
+          "minimum": 759.2755,
+          "maximum": 915.7096
+        },
+        "cpuMilliseconds": {
+          "median": 855.5335,
+          "minimum": 799.107,
+          "maximum": 1034.627
+        },
+        "allocatedBytes": {
+          "median": 94714072.0,
+          "minimum": 94708448,
+          "maximum": 94726848
+        },
+        "workingSetBytes": {
+          "median": 170768384.0,
+          "minimum": 170389504,
+          "maximum": 172138496
+        },
+        "peakWorkingSetBytes": {
+          "median": 185327616.0,
+          "minimum": 184930304,
+          "maximum": 186871808
+        },
+        "storageReadBytes": {
+          "median": 0.0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "logicalReadBytes": {
+          "median": 32371706.5,
+          "minimum": 32371684,
+          "maximum": 32371714
+        },
+        "readSystemCalls": {
+          "median": 275.0,
+          "minimum": 275,
+          "maximum": 275
+        }
+      },
+      "starQueries": {
+        "starAllSky": {
+          "medianMilliseconds": {
+            "median": 0.0556,
+            "minimum": 0.0544,
+            "maximum": 0.0639
+          },
+          "p95Milliseconds": {
+            "median": 0.0664,
+            "minimum": 0.0599,
+            "maximum": 0.0739
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.06576499999999996,
+            "minimum": 0.06329000000000001,
+            "maximum": 0.08458000000000002
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.22979,
+            "minimum": 0.21953,
+            "maximum": 0.2378399999999999
+          },
+          "allocatedBytesPerOperation": {
+            "median": 142856.0,
+            "minimum": 142856,
+            "maximum": 142859
+          },
+          "operationsPerSecond": {
+            "median": 16180.840420342947,
+            "minimum": 12895.73795860468,
+            "maximum": 16744.248350691538
+          }
+        },
+        "starBoundedCap": {
+          "medianMilliseconds": {
+            "median": 0.40815,
+            "minimum": 0.3896,
+            "maximum": 0.4241
+          },
+          "p95Milliseconds": {
+            "median": 0.4421,
+            "minimum": 0.4076,
+            "maximum": 0.8001
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.4201149999999999,
+            "minimum": 0.39722,
+            "maximum": 0.53886
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.01590999999999999,
+            "minimum": 0.01475,
+            "maximum": 0.02139999999999999
+          },
+          "allocatedBytesPerOperation": {
+            "median": 74704.0,
+            "minimum": 74704,
+            "maximum": 74705
+          },
+          "operationsPerSecond": {
+            "median": 2412.640426186574,
+            "minimum": 1876.7465472555396,
+            "maximum": 2542.5495670038085
+          }
+        }
+      }
+    },
+    {
+      "group": "composition-candidate-composed",
+      "trials": [
+        "composition-t02",
+        "composition-t03",
+        "composition-t06",
+        "composition-t07",
+        "composition-t10",
+        "composition-t11"
+      ],
+      "startup": {
+        "latencyMilliseconds": {
+          "median": 1200.6649499999999,
+          "minimum": 1124.085,
+          "maximum": 1474.1721
+        },
+        "cpuMilliseconds": {
+          "median": 1308.9650000000001,
+          "minimum": 1235.984,
+          "maximum": 1615.359
+        },
+        "allocatedBytes": {
+          "median": 144186956.0,
+          "minimum": 144130384,
+          "maximum": 144228984
+        },
+        "workingSetBytes": {
+          "median": 199774208.0,
+          "minimum": 198930432,
+          "maximum": 201183232
+        },
+        "peakWorkingSetBytes": {
+          "median": 221145088.0,
+          "minimum": 220393472,
+          "maximum": 222601216
+        },
+        "storageReadBytes": {
+          "median": 0.0,
+          "minimum": 0,
+          "maximum": 0
+        },
+        "logicalReadBytes": {
+          "median": 46540419.0,
+          "minimum": 46540400,
+          "maximum": 46540419
+        },
+        "readSystemCalls": {
+          "median": 376.0,
+          "minimum": 376,
+          "maximum": 376
+        }
+      },
+      "starQueries": {
+        "starAllSky": {
+          "medianMilliseconds": {
+            "median": 0.058050000000000004,
+            "minimum": 0.0553,
+            "maximum": 0.1021
+          },
+          "p95Milliseconds": {
+            "median": 0.10005,
+            "minimum": 0.0888,
+            "maximum": 0.1773
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.33939500000000006,
+            "minimum": 0.28068000000000004,
+            "maximum": 0.4815499999999999
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.3922000000000001,
+            "minimum": 0.36327,
+            "maximum": 0.7147799999999997
+          },
+          "allocatedBytesPerOperation": {
+            "median": 142856.0,
+            "minimum": 142856,
+            "maximum": 142857
+          },
+          "operationsPerSecond": {
+            "median": 6778.816971695613,
+            "minimum": 4815.517523668269,
+            "maximum": 9573.59220326651
+          }
+        },
+        "starBoundedCap": {
+          "medianMilliseconds": {
+            "median": 0.4071,
+            "minimum": 0.3985,
+            "maximum": 0.7605
+          },
+          "p95Milliseconds": {
+            "median": 0.45055,
+            "minimum": 0.4299,
+            "maximum": 0.7848
+          },
+          "cpuMillisecondsPerOperation": {
+            "median": 0.576765,
+            "minimum": 0.4195800000000002,
+            "maximum": 0.7783100000000006
+          },
+          "verificationCpuMillisecondsPerOperation": {
+            "median": 0.020094999999999988,
+            "minimum": 0.014939999999999985,
+            "maximum": 0.037049999999999965
+          },
+          "allocatedBytesPerOperation": {
+            "median": 74725.5,
+            "minimum": 74705,
+            "maximum": 74759
+          },
+          "operationsPerSecond": {
+            "median": 2332.679053371559,
+            "minimum": 1303.476763571474,
+            "maximum": 2444.0018085613383
+          }
+        }
+      }
+    }
+  ],
+  "dsoPinnedMeasurements": [
+    {
+      "trial": "composition-t02",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.1622,
+      "linearP95Milliseconds": 0.1649,
+      "deltaMilliseconds": -0.00269999999999998
+    },
+    {
+      "trial": "composition-t02",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.2123,
+      "linearP95Milliseconds": 0.1422,
+      "deltaMilliseconds": 0.0701
+    },
+    {
+      "trial": "composition-t02",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.1884,
+      "linearP95Milliseconds": 0.1126,
+      "deltaMilliseconds": 0.0758
+    },
+    {
+      "trial": "composition-t02",
+      "query": "type-G",
+      "p95Milliseconds": 0.237,
+      "linearP95Milliseconds": 0.1511,
+      "deltaMilliseconds": 0.08589999999999998
+    },
+    {
+      "trial": "composition-t02",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.2258,
+      "linearP95Milliseconds": 0.1271,
+      "deltaMilliseconds": 0.09870000000000001
+    },
+    {
+      "trial": "composition-t02",
+      "query": "type-PN",
+      "p95Milliseconds": 0.2074,
+      "linearP95Milliseconds": 0.1096,
+      "deltaMilliseconds": 0.0978
+    },
+    {
+      "trial": "composition-t02",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.4466,
+      "linearP95Milliseconds": 0.1156,
+      "deltaMilliseconds": 0.331
+    },
+    {
+      "trial": "composition-t02",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.4859,
+      "linearP95Milliseconds": 0.0958,
+      "deltaMilliseconds": 0.3901
+    },
+    {
+      "trial": "composition-t02",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.2848,
+      "linearP95Milliseconds": 0.0867,
+      "deltaMilliseconds": 0.1981
+    },
+    {
+      "trial": "composition-t02",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.319,
+      "linearP95Milliseconds": 0.0956,
+      "deltaMilliseconds": 0.2234
+    },
+    {
+      "trial": "composition-t02",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3632,
+      "deltaMilliseconds": -0.36310000000000003
+    },
+    {
+      "trial": "composition-t02",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.6736,
+      "deltaMilliseconds": -0.6735
+    },
+    {
+      "trial": "composition-t02",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3408,
+      "deltaMilliseconds": -0.3407
+    },
+    {
+      "trial": "composition-t02",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0012,
+      "linearP95Milliseconds": 0.0066,
+      "deltaMilliseconds": -0.0054
+    },
+    {
+      "trial": "composition-t02",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0012,
+      "linearP95Milliseconds": 0.0209,
+      "deltaMilliseconds": -0.0197
+    },
+    {
+      "trial": "composition-t03",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.1883,
+      "linearP95Milliseconds": 0.1675,
+      "deltaMilliseconds": 0.020799999999999985
+    },
+    {
+      "trial": "composition-t03",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.2471,
+      "linearP95Milliseconds": 0.1666,
+      "deltaMilliseconds": 0.08049999999999999
+    },
+    {
+      "trial": "composition-t03",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.1948,
+      "linearP95Milliseconds": 0.1271,
+      "deltaMilliseconds": 0.06770000000000001
+    },
+    {
+      "trial": "composition-t03",
+      "query": "type-G",
+      "p95Milliseconds": 0.2399,
+      "linearP95Milliseconds": 0.1403,
+      "deltaMilliseconds": 0.0996
+    },
+    {
+      "trial": "composition-t03",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.2202,
+      "linearP95Milliseconds": 0.1191,
+      "deltaMilliseconds": 0.10110000000000001
+    },
+    {
+      "trial": "composition-t03",
+      "query": "type-PN",
+      "p95Milliseconds": 0.2129,
+      "linearP95Milliseconds": 0.1053,
+      "deltaMilliseconds": 0.1076
+    },
+    {
+      "trial": "composition-t03",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.2998,
+      "linearP95Milliseconds": 0.0879,
+      "deltaMilliseconds": 0.2119
+    },
+    {
+      "trial": "composition-t03",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.301,
+      "linearP95Milliseconds": 0.0977,
+      "deltaMilliseconds": 0.20329999999999998
+    },
+    {
+      "trial": "composition-t03",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.2788,
+      "linearP95Milliseconds": 0.0815,
+      "deltaMilliseconds": 0.19729999999999998
+    },
+    {
+      "trial": "composition-t03",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.2846,
+      "linearP95Milliseconds": 0.0843,
+      "deltaMilliseconds": 0.20030000000000003
+    },
+    {
+      "trial": "composition-t03",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3361,
+      "deltaMilliseconds": -0.336
+    },
+    {
+      "trial": "composition-t03",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3733,
+      "deltaMilliseconds": -0.37320000000000003
+    },
+    {
+      "trial": "composition-t03",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3574,
+      "deltaMilliseconds": -0.3573
+    },
+    {
+      "trial": "composition-t03",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0012,
+      "linearP95Milliseconds": 0.0098,
+      "deltaMilliseconds": -0.0086
+    },
+    {
+      "trial": "composition-t03",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0014,
+      "linearP95Milliseconds": 0.0317,
+      "deltaMilliseconds": -0.0303
+    },
+    {
+      "trial": "composition-t06",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.1685,
+      "linearP95Milliseconds": 0.1713,
+      "deltaMilliseconds": -0.002799999999999997
+    },
+    {
+      "trial": "composition-t06",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.2166,
+      "linearP95Milliseconds": 0.1745,
+      "deltaMilliseconds": 0.0421
+    },
+    {
+      "trial": "composition-t06",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.1964,
+      "linearP95Milliseconds": 0.1128,
+      "deltaMilliseconds": 0.0836
+    },
+    {
+      "trial": "composition-t06",
+      "query": "type-G",
+      "p95Milliseconds": 0.256,
+      "linearP95Milliseconds": 0.1562,
+      "deltaMilliseconds": 0.0998
+    },
+    {
+      "trial": "composition-t06",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.2259,
+      "linearP95Milliseconds": 0.1222,
+      "deltaMilliseconds": 0.10369999999999999
+    },
+    {
+      "trial": "composition-t06",
+      "query": "type-PN",
+      "p95Milliseconds": 0.2105,
+      "linearP95Milliseconds": 0.1074,
+      "deltaMilliseconds": 0.1031
+    },
+    {
+      "trial": "composition-t06",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.3026,
+      "linearP95Milliseconds": 0.0887,
+      "deltaMilliseconds": 0.21389999999999998
+    },
+    {
+      "trial": "composition-t06",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.305,
+      "linearP95Milliseconds": 0.094,
+      "deltaMilliseconds": 0.211
+    },
+    {
+      "trial": "composition-t06",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.2974,
+      "linearP95Milliseconds": 0.0809,
+      "deltaMilliseconds": 0.2165
+    },
+    {
+      "trial": "composition-t06",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.3322,
+      "linearP95Milliseconds": 0.0821,
+      "deltaMilliseconds": 0.2501
+    },
+    {
+      "trial": "composition-t06",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0004,
+      "linearP95Milliseconds": 0.3532,
+      "deltaMilliseconds": -0.3528
+    },
+    {
+      "trial": "composition-t06",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3462,
+      "deltaMilliseconds": -0.3461
+    },
+    {
+      "trial": "composition-t06",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3584,
+      "deltaMilliseconds": -0.3583
+    },
+    {
+      "trial": "composition-t06",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0016,
+      "linearP95Milliseconds": 0.0174,
+      "deltaMilliseconds": -0.015799999999999998
+    },
+    {
+      "trial": "composition-t06",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0025,
+      "linearP95Milliseconds": 0.0375,
+      "deltaMilliseconds": -0.034999999999999996
+    },
+    {
+      "trial": "composition-t07",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.1696,
+      "linearP95Milliseconds": 0.1659,
+      "deltaMilliseconds": 0.003700000000000009
+    },
+    {
+      "trial": "composition-t07",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.2161,
+      "linearP95Milliseconds": 0.1484,
+      "deltaMilliseconds": 0.06769999999999998
+    },
+    {
+      "trial": "composition-t07",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.1981,
+      "linearP95Milliseconds": 0.111,
+      "deltaMilliseconds": 0.0871
+    },
+    {
+      "trial": "composition-t07",
+      "query": "type-G",
+      "p95Milliseconds": 0.2366,
+      "linearP95Milliseconds": 0.1413,
+      "deltaMilliseconds": 0.0953
+    },
+    {
+      "trial": "composition-t07",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.2213,
+      "linearP95Milliseconds": 0.1193,
+      "deltaMilliseconds": 0.102
+    },
+    {
+      "trial": "composition-t07",
+      "query": "type-PN",
+      "p95Milliseconds": 0.204,
+      "linearP95Milliseconds": 0.1061,
+      "deltaMilliseconds": 0.09789999999999999
+    },
+    {
+      "trial": "composition-t07",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.299,
+      "linearP95Milliseconds": 0.0866,
+      "deltaMilliseconds": 0.21239999999999998
+    },
+    {
+      "trial": "composition-t07",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.307,
+      "linearP95Milliseconds": 0.1138,
+      "deltaMilliseconds": 0.19319999999999998
+    },
+    {
+      "trial": "composition-t07",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.281,
+      "linearP95Milliseconds": 0.0775,
+      "deltaMilliseconds": 0.20350000000000001
+    },
+    {
+      "trial": "composition-t07",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.4388,
+      "linearP95Milliseconds": 0.077,
+      "deltaMilliseconds": 0.3618
+    },
+    {
+      "trial": "composition-t07",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0002,
+      "linearP95Milliseconds": 0.3726,
+      "deltaMilliseconds": -0.3724
+    },
+    {
+      "trial": "composition-t07",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.4026,
+      "deltaMilliseconds": -0.4025
+    },
+    {
+      "trial": "composition-t07",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.4598,
+      "deltaMilliseconds": -0.4597
+    },
+    {
+      "trial": "composition-t07",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0028,
+      "linearP95Milliseconds": 0.0133,
+      "deltaMilliseconds": -0.010499999999999999
+    },
+    {
+      "trial": "composition-t07",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0017,
+      "linearP95Milliseconds": 0.0331,
+      "deltaMilliseconds": -0.0314
+    },
+    {
+      "trial": "composition-t10",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.2546,
+      "linearP95Milliseconds": 0.2877,
+      "deltaMilliseconds": -0.03310000000000002
+    },
+    {
+      "trial": "composition-t10",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.3142,
+      "linearP95Milliseconds": 0.268,
+      "deltaMilliseconds": 0.04619999999999996
+    },
+    {
+      "trial": "composition-t10",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.2874,
+      "linearP95Milliseconds": 0.2166,
+      "deltaMilliseconds": 0.0708
+    },
+    {
+      "trial": "composition-t10",
+      "query": "type-G",
+      "p95Milliseconds": 0.3616,
+      "linearP95Milliseconds": 0.2322,
+      "deltaMilliseconds": 0.1294
+    },
+    {
+      "trial": "composition-t10",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.3389,
+      "linearP95Milliseconds": 0.1992,
+      "deltaMilliseconds": 0.1397
+    },
+    {
+      "trial": "composition-t10",
+      "query": "type-PN",
+      "p95Milliseconds": 0.3101,
+      "linearP95Milliseconds": 0.1719,
+      "deltaMilliseconds": 0.1382
+    },
+    {
+      "trial": "composition-t10",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.53,
+      "linearP95Milliseconds": 0.1182,
+      "deltaMilliseconds": 0.41180000000000005
+    },
+    {
+      "trial": "composition-t10",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.4961,
+      "linearP95Milliseconds": 0.1293,
+      "deltaMilliseconds": 0.3668
+    },
+    {
+      "trial": "composition-t10",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.481,
+      "linearP95Milliseconds": 0.0928,
+      "deltaMilliseconds": 0.3882
+    },
+    {
+      "trial": "composition-t10",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.4957,
+      "linearP95Milliseconds": 0.1015,
+      "deltaMilliseconds": 0.3942
+    },
+    {
+      "trial": "composition-t10",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0008,
+      "linearP95Milliseconds": 1.1785,
+      "deltaMilliseconds": -1.1777000000000002
+    },
+    {
+      "trial": "composition-t10",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3507,
+      "deltaMilliseconds": -0.3506
+    },
+    {
+      "trial": "composition-t10",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3541,
+      "deltaMilliseconds": -0.35400000000000004
+    },
+    {
+      "trial": "composition-t10",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0014,
+      "linearP95Milliseconds": 0.0104,
+      "deltaMilliseconds": -0.009
+    },
+    {
+      "trial": "composition-t10",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0011,
+      "linearP95Milliseconds": 0.0222,
+      "deltaMilliseconds": -0.0211
+    },
+    {
+      "trial": "composition-t11",
+      "query": "spatial-NGC0224",
+      "p95Milliseconds": 0.1668,
+      "linearP95Milliseconds": 0.1668,
+      "deltaMilliseconds": 0.0
+    },
+    {
+      "trial": "composition-t11",
+      "query": "spatial-Mel022",
+      "p95Milliseconds": 0.2143,
+      "linearP95Milliseconds": 0.1418,
+      "deltaMilliseconds": 0.07249999999999998
+    },
+    {
+      "trial": "composition-t11",
+      "query": "spatial-NGC1976",
+      "p95Milliseconds": 0.1928,
+      "linearP95Milliseconds": 0.1098,
+      "deltaMilliseconds": 0.083
+    },
+    {
+      "trial": "composition-t11",
+      "query": "type-G",
+      "p95Milliseconds": 0.5008,
+      "linearP95Milliseconds": 0.3945,
+      "deltaMilliseconds": 0.1063
+    },
+    {
+      "trial": "composition-t11",
+      "query": "type-OCl",
+      "p95Milliseconds": 0.4488,
+      "linearP95Milliseconds": 0.34,
+      "deltaMilliseconds": 0.10879999999999995
+    },
+    {
+      "trial": "composition-t11",
+      "query": "type-PN",
+      "p95Milliseconds": 0.3983,
+      "linearP95Milliseconds": 0.0938,
+      "deltaMilliseconds": 0.3045
+    },
+    {
+      "trial": "composition-t11",
+      "query": "brightness-Visual-false",
+      "p95Milliseconds": 0.285,
+      "linearP95Milliseconds": 0.0834,
+      "deltaMilliseconds": 0.20159999999999997
+    },
+    {
+      "trial": "composition-t11",
+      "query": "brightness-Visual-true",
+      "p95Milliseconds": 0.2853,
+      "linearP95Milliseconds": 0.0915,
+      "deltaMilliseconds": 0.1938
+    },
+    {
+      "trial": "composition-t11",
+      "query": "brightness-Blue-false",
+      "p95Milliseconds": 0.2653,
+      "linearP95Milliseconds": 0.0722,
+      "deltaMilliseconds": 0.1931
+    },
+    {
+      "trial": "composition-t11",
+      "query": "brightness-Blue-true",
+      "p95Milliseconds": 0.2685,
+      "linearP95Milliseconds": 0.0749,
+      "deltaMilliseconds": 0.19360000000000002
+    },
+    {
+      "trial": "composition-t11",
+      "query": "alias-M31",
+      "p95Milliseconds": 0.0002,
+      "linearP95Milliseconds": 0.9159,
+      "deltaMilliseconds": -0.9157000000000001
+    },
+    {
+      "trial": "composition-t11",
+      "query": "alias-M45",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.375,
+      "deltaMilliseconds": -0.3749
+    },
+    {
+      "trial": "composition-t11",
+      "query": "alias-M102",
+      "p95Milliseconds": 0.0001,
+      "linearP95Milliseconds": 0.3668,
+      "deltaMilliseconds": -0.3667
+    },
+    {
+      "trial": "composition-t11",
+      "query": "outline-Mel022",
+      "p95Milliseconds": 0.0013,
+      "linearP95Milliseconds": 0.0086,
+      "deltaMilliseconds": -0.0073
+    },
+    {
+      "trial": "composition-t11",
+      "query": "outline-NGC1976",
+      "p95Milliseconds": 0.0014,
+      "linearP95Milliseconds": 0.0431,
+      "deltaMilliseconds": -0.0417
+    }
+  ],
+  "dsoWorstP95DeltaMilliseconds": 0.41180000000000005,
+  "quiet": [
+    {
+      "trial": "source-t01",
+      "before": 566570,
+      "after": 566571,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t02",
+      "before": 566571,
+      "after": 566571,
+      "delta": 0,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t03",
+      "before": 566572,
+      "after": 566572,
+      "delta": 0,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t04",
+      "before": 566572,
+      "after": 566579,
+      "delta": 7,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t05",
+      "before": 566579,
+      "after": 566581,
+      "delta": 2,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t06",
+      "before": 566581,
+      "after": 566584,
+      "delta": 3,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t07",
+      "before": 566599,
+      "after": 566613,
+      "delta": 14,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t08",
+      "before": 566613,
+      "after": 566613,
+      "delta": 0,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t09",
+      "before": 566640,
+      "after": 566676,
+      "delta": 36,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t10",
+      "before": 566679,
+      "after": 566693,
+      "delta": 14,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t11",
+      "before": 566696,
+      "after": 566697,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "source-t12",
+      "before": 566700,
+      "after": 566701,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t01",
+      "before": 566702,
+      "after": 566703,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t02",
+      "before": 566720,
+      "after": 566723,
+      "delta": 3,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t03",
+      "before": 566724,
+      "after": 566732,
+      "delta": 8,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t04",
+      "before": 566733,
+      "after": 566739,
+      "delta": 6,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t05",
+      "before": 566741,
+      "after": 566754,
+      "delta": 13,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t06",
+      "before": 566758,
+      "after": 566762,
+      "delta": 4,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t07",
+      "before": 566764,
+      "after": 566771,
+      "delta": 7,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t08",
+      "before": 566771,
+      "after": 566771,
+      "delta": 0,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t09",
+      "before": 566777,
+      "after": 566833,
+      "delta": 56,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t10",
+      "before": 566833,
+      "after": 566834,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t11",
+      "before": 566835,
+      "after": 566836,
+      "delta": 1,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    },
+    {
+      "trial": "composition-t12",
+      "before": 566837,
+      "after": 566839,
+      "delta": 2,
+      "beforeRunqueue": 2,
+      "afterRunqueue": 2
+    }
+  ],
+  "quietDeltaTotalTicks": 181,
+  "quietDeltaMaximumTicks": 56,
+  "quietTrialsWithIncreasedSteal": 20,
+  "maxObservedRunqueue": 2,
+  "processTreeMaximumRSSBytes": 259289088,
+  "all126BoundaryChecksPassed": true,
+  "boundarySampleMaximumCohortRSSBytes": 108593152,
+  "finalComponentsBytes": {
+    "binObj": 816939008,
+    "sourceGit": 234082304,
+    "retainedPacketAndBundle": 425271296,
+    "normalHttpCache": 786432,
+    "privateNugetCache": 1295478784,
+    "evidence": 227024896,
+    "cliHomeTmpAndOther": 0
+  },
+  "finalWorkspaceAllocatedBytes": 2999582720,
+  "postsealFourFileAllocatedBytes": 57344,
+  "comparisonSHA256": "d110cc90d403bccd8130d3229f346f4bd4270e20feae85d74a7dd391d3a56c2a",
+  "requiresExplanation": [],
+  "pairedStarOutputsEqual": true,
+  "comparisonIndependentlyRecomputedExactly": true,
+  "checksums": [
+    {
+      "label": "source",
+      "root": "/home/roys/review-evidence/1188/jobs/F7-native-r7",
+      "manifest": "SOURCE-PREPARED-SHA256SUMS",
+      "sha256": "573a7d227863e4ea2f255b7d260f2ce42e8bc99c22cc572cc1506ded2fc586db",
+      "entries": 7317,
+      "exit": 0,
+      "stdoutSHA256": "3b043f5732b9385a099092cea1244332209a3b7135518c40ae67bdb2a484aa12",
+      "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "executor",
+      "root": "/home/roys/review-evidence/1188/jobs/F7-native-r7/native/executor",
+      "manifest": "SHA256SUMS",
+      "sha256": "4aa68ec125463c1ef72fa52cac89b461d669c64afc73ca9871977078a48a2d3d",
+      "entries": 1415,
+      "exit": 0,
+      "stdoutSHA256": "4043e324c59168b3d8f0cef7690bac76c25eed8212030c985aed76073634c7f7",
+      "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "outer",
+      "root": "/home/roys/review-evidence/1188/jobs/F7-native-r7/native/outer",
+      "manifest": "SHA256SUMS",
+      "sha256": "a5afbebf110fc918ee04919cc9c700d380de650814da3fe4705f876e19860c3b",
+      "entries": 12,
+      "exit": 0,
+      "stdoutSHA256": "4df5ddda55e57674d160db8e55231c22f5d3c2e0935d08ebf24cd471dfe1d440",
+      "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "limits": "Single serial same-host VM/local-filesystem campaign; OS page cache uncontrolled; sampled boundaries do not prove continuous quietness/peaks; no CPU ratios/startup p95/global or production-scientific acceptance; dependencies differ between source arms."
+}
