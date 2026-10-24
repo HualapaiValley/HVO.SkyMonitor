@@ -18,12 +18,12 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.IsNull(resolved.Upgrade);
         }
         var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}"));
-        Assert.HasCount(3, defaults.Options);
+        Assert.HasCount(5, defaults.Options);
         Assert.AreEqual(6.5, defaults.Get("maximumMagnitude").Value.AsRealNumber());
         Assert.AreEqual(2000, defaults.Get("maximumResults").Value.AsWholeNumber());
         Assert.IsFalse(defaults.Get("includeConstellationEndpointStars").Value.AsToggle());
         Assert.AreEqual(ProjectedSceneJson.MaximumObjectCount, descriptor.Find("maximumResults")!.MaximumWholeNumber);
-        foreach (var member in new[] { "outputVariant", "astronomyAlgorithmVersion", "constellationIds", "solarSystemBodies", "curatedAnnotations", "future" })
+        foreach (var member in new[] { "outputVariant", "astronomyAlgorithmVersion", "curatedAnnotations", "future" })
         {
             Assert.IsNull(descriptor.Find(member));
             Assert.AreEqual(ProcessingOptionReasonCodes.UnknownOption, ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"),
@@ -95,6 +95,6 @@ public sealed partial class ProcessingNodeOptionsTests
             .Replace("Stars\": false", "Stars\": true", StringComparison.Ordinal),
             ProcessingNodeOptionsCodec.Encode(descriptor, source, edits).Options!.Value.GetRawText());
         Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"),
-            defaults.Options.ToDictionary(static option => option.Descriptor.Key, static option => option.Value)).Options!.Value.GetRawText());
+            ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}")).Options.ToDictionary(static option => option.Descriptor.Key, static option => option.Value)).Options!.Value.GetRawText());
     }
 }

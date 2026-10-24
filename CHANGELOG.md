@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent's graph editor can add, remove and reorder existing projected-scene constellation and solar-system selections and scene-overlay constellation IDs, preserving retained values and unchanged saves; activation remains explicit (#1626).
+
 - Tune native black/white levels and gamma in existing fixed-transfer preview graph drafts, with bounded validation and explicit activation. (#1625)
 
 - Configure existing same-gain rolling windows with bounded size, trailing/centered selection and optional age/integration limits in graph drafts, with explicit activation and rollback. #1624

@@ -10,6 +10,7 @@ public sealed class ProcessingNodeOptionsForm
 {
     private readonly JsonElement? _source;
     private readonly Dictionary<string, string> _inputs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ProcessingOptionSelection> _collections = new(StringComparer.Ordinal);
     private readonly HashSet<string> _edited = new(StringComparer.Ordinal);
 
     public ProcessingNodeOptionsForm(ProcessingNodeOptionsDescriptor descriptor, JsonElement? source)
@@ -23,7 +24,11 @@ public sealed class ProcessingNodeOptionsForm
             var single = new ProcessingNodeOptionsDescriptor(descriptor.DescriptorId, descriptor.StepAlias + ".field",
                 descriptor.StepVersion, descriptor.Title, descriptor.Help, [option]);
             var decoded = ProcessingNodeOptionsCodec.Decode(single, Source);
-            _inputs[option.Key] = Format(decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue);
+            var value = decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue;
+            if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+                _collections[option.Key] = value.AsCollection();
+            else
+                _inputs[option.Key] = Format(value);
         }
         TryBuild(out _, out _);
     }
@@ -64,6 +69,21 @@ public sealed class ProcessingNodeOptionsForm
 
     public string Get(string key) => _inputs[key];
 
+    public ProcessingOptionSelection Collection(string key) => _collections[key];
+
+    public void SetCollectionItem(string key, int index, string value) => SetCollection(key, Collection(key).Set(index, value));
+    public void AddCollectionItem(string key) => SetCollection(key, Collection(key).Add(
+        Descriptor.Find(key)!.Kind == ProcessingOptionKind.EnumCollection ? Descriptor.Find(key)!.AllowedValues[0] : string.Empty));
+    public void RemoveCollectionItem(string key, int index) => SetCollection(key, Collection(key).RemoveAt(index));
+    public void MoveCollectionItem(string key, int index, int destination) => SetCollection(key, Collection(key).Move(index, destination));
+
+    private void SetCollection(string key, ProcessingOptionSelection value)
+    {
+        _collections[key] = value;
+        _edited.Add(key);
+        TryBuild(out _, out _);
+    }
+
     public string NullableNumberStatus(string key)
     {
         var option = Descriptor.Find(key)!;
@@ -93,7 +113,11 @@ public sealed class ProcessingNodeOptionsForm
         var errors = new List<ProcessingGraphDiagnostic>();
         foreach (var option in Descriptor.Options.Where(option => _edited.Contains(option.Key)))
         {
-            if (Parse(option.Kind, _inputs[option.Key]) is { } value)
+            if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+            {
+                edits.Add(option.Key, ProcessingOptionValue.FromCollection(option.Kind, _collections[option.Key]));
+            }
+            else if (Parse(option.Kind, _inputs[option.Key]) is { } value)
             {
                 edits.Add(option.Key, value);
             }

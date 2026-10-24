@@ -16,7 +16,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=projected-scene#projected-scene");
         var cut = context.Render<ProcessingGraphEditorPage>();
         var panel = cut.Find("#projected-scene[aria-label='Projected scene query']");
-        Assert.HasCount(3, panel.QuerySelectorAll("input"));
+        Assert.HasCount(4, panel.QuerySelectorAll("input"));
         foreach (var field in new[] { "maximumMagnitude", "maximumResults", "includeConstellationEndpointStars" })
         {
             var id = "node-options-0-" + field;
