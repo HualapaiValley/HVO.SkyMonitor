@@ -37,9 +37,16 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsFalse(manifest.Layers.Single(static layer => layer.LayerKind == "cloud-mask").EnabledByDefault);
                 var source = JsonSerializer.SerializeToElement(new PresentationMaterializerProcessingStepOptions
                 {
-                    OutputVariant = "annotated-preview", BasePreviewVariant = "combined-preview", SceneAnnotationVariant = "scene-layer",
-                    SceneCardinalVariant = "cardinal-layer", SceneImageCircleVariant = "image-circle-layer", SceneConstellationVariant = "constellation-layer",
-                    CloudMaskVariant = "cloud-mask", CloudLabelVariant = "cloud-label", EnvironmentFactsVariant = "environment-facts", EnvironmentVariant = "environment-layer"
+                    OutputVariant = "annotated-preview",
+                    BasePreviewVariant = "combined-preview",
+                    SceneAnnotationVariant = "scene-layer",
+                    SceneCardinalVariant = "cardinal-layer",
+                    SceneImageCircleVariant = "image-circle-layer",
+                    SceneConstellationVariant = "constellation-layer",
+                    CloudMaskVariant = "cloud-mask",
+                    CloudLabelVariant = "cloud-label",
+                    EnvironmentFactsVariant = "environment-facts",
+                    EnvironmentVariant = "environment-layer"
                 });
                 var form = new ProcessingNodeOptionsForm(PresentationMaterializerOptionDescriptors.Descriptor, source);
                 form.AddCollectionItem("enabledLayerKinds");
