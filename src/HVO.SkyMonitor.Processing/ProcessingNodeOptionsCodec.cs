@@ -40,7 +40,8 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// Typed reading and editing of a node's effective options against its descriptor (#1532). Members match ignoring
 /// case, as CameraAgent's options binding does. Values are strict JSON types: a whole number is an integer token, a
 /// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable number accepts
-/// <c>null</c>. Members the descriptor does not describe are never read or rewritten.
+/// <c>null</c>. Enum collections use the consumer's string-enum binding, including defined numeric values.
+/// Members the descriptor does not describe are never read or rewritten.
 /// </summary>
 /// <remarks>
 /// The declared differences from CameraAgent's options binding: a quoted number, which the binder reads, is the wrong
@@ -296,19 +297,81 @@ public static class ProcessingNodeOptionsCodec
                 {
                     if (ReadMember(option, properties[at], path) is not null ||
                         ReadOptionToken(option, properties[at].Value, out _) != values[index])
-                        replacements.Add((spans[at].Start, spans[at].End, WriteValue(values[index])));
+                        replacements.Add((spans[at].Start, spans[at].End, WriteEditedValue(option, properties[at].Value, values[index])));
                 }
                 else if (values[index] != defaults[index])
-                    appended.Add((option.Members[index], WriteValue(values[index])));
+                    appended.Add((option.Members[index], WriteEditedValue(option, default, values[index])));
             }
         }
         return replacements.Count == 0 && appended.Count == 0 ? source : Splice(raw, spans, replacements, appended);
+    }
+
+    private static byte[] WriteEditedValue(ProcessingOptionDescriptor option, JsonElement source, ProcessingOptionValue value)
+    {
+        if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection))
+            return WriteValue(value);
+        if (ReadOptionToken(option, source, out _) is not { } previous)
+            return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(value.AsCollection().Items)));
+
+        var old = previous.AsCollection();
+        var edited = value.AsCollection();
+        var tokens = new string?[edited.Items.Length];
+        var used = new HashSet<int>();
+        // First reserve the exact occurrences carried by the editor, then match unannotated typed edits.
+        // A source token from another option cannot smuggle a different enum binding into this one.
+        for (var index = 0; index < edited.Items.Length; index++)
+        {
+            if (edited.SourceTokens[index] is not { } token) continue;
+            for (var prior = 0; prior < old.Items.Length; prior++)
+            {
+                if (old.Items[prior] == edited.Items[index] && old.SourceTokens[prior] == token && used.Add(prior))
+                {
+                    tokens[index] = token;
+                    break;
+                }
+            }
+        }
+        for (var index = 0; index < edited.Items.Length; index++)
+        {
+            if (tokens[index] is not null) continue;
+            for (var prior = 0; prior < old.Items.Length; prior++)
+            {
+                if (old.Items[prior] == edited.Items[index] && used.Add(prior))
+                {
+                    tokens[index] = old.SourceTokens[prior];
+                    break;
+                }
+            }
+        }
+        return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(edited.Items, tokens)));
     }
 
     // WindowKind already accepts both enum numbers and names. Read its effective choice without rewriting
     // an untouched numeric token or its casing when the operator opens and saves an existing graph.
     private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
     {
+        if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+        {
+            outOfRange = false;
+            if (token.ValueKind != JsonValueKind.Array) return null;
+            if (token.GetArrayLength() > option.MaximumItems)
+            {
+                outOfRange = true;
+                return null;
+            }
+            var items = new List<string>();
+            var tokens = new List<string?>();
+            foreach (var item in token.EnumerateArray())
+            {
+                var value = option.Kind == ProcessingOptionKind.EnumCollection
+                    ? option.ReadEnumItem!(item)
+                    : item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+                if (value is null) return null;
+                items.Add(value);
+                tokens.Add(item.GetRawText());
+            }
+            return ProcessingOptionValue.FromCollection(option.Kind, new(items, tokens));
+        }
         if (ReferenceEquals(option, RollingCombinationOptionDescriptors.Descriptor.Find("windowKind")))
         {
             outOfRange = false;
@@ -436,6 +499,8 @@ public static class ProcessingNodeOptionsCodec
         ProcessingOptionKind.NullableWholeNumber => "a whole JSON number or null",
         ProcessingOptionKind.RealNumber => "a JSON number",
         ProcessingOptionKind.NullableRealNumber => "a JSON number or null",
+        ProcessingOptionKind.TextCollection => "an array of nonblank strings",
+        ProcessingOptionKind.EnumCollection => "an array of defined enum names or numbers",
         _ => "a JSON string"
     };
 
@@ -448,6 +513,19 @@ public static class ProcessingNodeOptionsCodec
         {
             switch (value.Kind)
             {
+                case ProcessingOptionKind.TextCollection:
+                case ProcessingOptionKind.EnumCollection:
+                    writer.WriteStartArray();
+                    var collection = value.AsCollection();
+                    for (var index = 0; index < collection.Items.Length; index++)
+                    {
+                        if (collection.SourceTokens[index] is { } token)
+                            writer.WriteRawValue(token);
+                        else
+                            writer.WriteStringValue(collection.Items[index]);
+                    }
+                    writer.WriteEndArray();
+                    break;
                 case ProcessingOptionKind.Toggle:
                     writer.WriteBooleanValue(value.AsToggle());
                     break;
