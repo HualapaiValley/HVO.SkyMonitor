@@ -142,6 +142,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("CalibratedPreview")]
     [DataRow("CombinedPreview")]
     [DataRow("JpegEncoding")]
+    [DataRow("ProjectedScene")]
     public void DeniedRevisionShowsNoOptionsOrSave(string alias)
     {
         using var context = new BunitContext();
