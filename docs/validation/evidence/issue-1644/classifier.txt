@@ -1,0 +1,13 @@
+mode=full
+deployment=false
+deployment_catalog=false
+deployment_shards=false
+deployment_installer=false
+complete=false
+shared=false
+cameraagent=true
+logichost=false
+combined=false
+delivery=false
+secret_scan_contract=false
+release_scripts=false

@@ -32,7 +32,7 @@ public sealed partial class DurableCaptureProcessingTests
         }
         try
         {
-            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario == "no-data" ? "accepted" : scenario).ConfigureAwait(false);
+            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario == "no-data" ? "accepted" : scenario, hostCompatible: true).ConfigureAwait(false);
             var descriptor = f.Fixture.Manifest.Descriptor;
             var id = descriptor.Capture.CaptureId;
             using var telemetry = new CaptureProcessingTelemetry();
@@ -44,7 +44,7 @@ public sealed partial class DurableCaptureProcessingTests
                 enabled: scenario != "no-data", persistence: persistence);
             var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
                 ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256, descriptor.Artifact.MediaType,
-                descriptor.Layout, await File.ReadAllBytesAsync(Path.Combine(root, "raw.bin")).ConfigureAwait(false), descriptor.Artifact.CreatedUtc,
+                descriptor.Layout, await File.ReadAllBytesAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false), descriptor.Artifact.CreatedUtc,
                 descriptor.Controls.EffectiveExposure, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor), descriptor.Capture.CaptureSequence,
                 descriptor.Artifact.SourceArtifactIds, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc)
             { CaptureId = id, DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
@@ -125,7 +125,7 @@ public sealed partial class DurableCaptureProcessingTests
             var baseOutput = await store.ReadOutputByArtifactIdAsync(previewArtifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(baseOutput);
             CollectionAssert.AreEqual(preview.Payload.ToArray(), await File.ReadAllBytesAsync(Path.Combine(root, baseOutput.PayloadRelativePath)).ConfigureAwait(false));
-            Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(raw.Payload), ProcessingIdentity.ComputePayloadSha256(await File.ReadAllBytesAsync(Path.Combine(root, "raw.bin")).ConfigureAwait(false)));
+            Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(raw.Payload), ProcessingIdentity.ComputePayloadSha256(await File.ReadAllBytesAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false)));
             if (evidenceRoot is not null)
                 await File.WriteAllTextAsync(Path.Combine(root, "viewer-fixture.json"), JsonSerializer.Serialize(new
                 {
@@ -136,6 +136,9 @@ public sealed partial class DurableCaptureProcessingTests
                     shown.ManifestIdentitySha256,
                     BaseChecksum = baseOutput.Artifact.ChecksumSha256,
                     RawChecksum = descriptor.Artifact.ChecksumSha256,
+                    RawRelativePath = f.Fixture.Manifest.RelativeArtifactPath,
+                    DescriptorSha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                    HostCompatible = true,
                     Root = root
                 }, AstrometryEvidenceJson)).ConfigureAwait(false);
             else if (scenario == "accepted")
@@ -163,7 +166,7 @@ public sealed partial class DurableCaptureProcessingTests
                     3, CancellationToken.None).ConfigureAwait(false)).Count);
                 Assert.AreEqual(2, (await store.ReadCaptureProductsAsync(id, HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.CurrentSchemaVersion,
                     3, CancellationToken.None).ConfigureAwait(false)).Count, "A new parent revision reuses the existing diagnostic payloads.");
-                await File.AppendAllTextAsync(Path.Combine(root, "raw.bin"), " ").ConfigureAwait(false);
+                await File.AppendAllTextAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath), " ").ConfigureAwait(false);
                 var invalidated = await layers.GetCurrentAsync(id, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, invalidated.Status);
                 Assert.IsEmpty(invalidated.Presentation!.Layers, "A cached measured SVG must disappear after its source becomes invalid.");
