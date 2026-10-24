@@ -247,6 +247,7 @@ public static class ProcessingGraphCompiler
             ValidateOutputs(node.Outputs, $"{path}.outputs", diagnostics, node.OperationKind);
             ValidateInputs(node.Inputs, $"{path}.inputs", diagnostics);
             ValidateWindow(node.Window, $"{path}.window", diagnostics);
+            diagnostics.AddRange(RollingCombinationOptionDescriptors.ValidateWindow(node, path));
             ValidateGainNormalizationWindow(node, $"{path}.window", diagnostics);
             if ((node.OperationKind == ProcessingOperationKind.Window) != (node.Window is not null))
             {

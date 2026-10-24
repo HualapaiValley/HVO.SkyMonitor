@@ -297,16 +297,40 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     [TestMethod]
-    [DataRow("{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
-    [DataRow("{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
-    [DataRow("{\"constellationLineRed\":256}", "processing.options.out-of-range")]
-    [DataRow("{\"constellationLineRed\":96,\"CONSTELLATIONLINERED\":96}", "processing.options.duplicate-member")]
-    public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string json, string code)
+    [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":256}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":96,\"CONSTELLATIONLINERED\":96}", "processing.options.duplicate-member")]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":-30.01}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":30.01}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":0}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":\"1\"}", "processing.options.wrong-type")]
+    [DataRow("ProjectedScene", "{\"includeConstellationEndpointStars\":null}", "processing.options.wrong-type")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":1,\"MAXIMUMRESULTS\":1}", "processing.options.duplicate-member")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":0}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":16385}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1.5}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1e400}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":\"4\"}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":true}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":null,\"maximumDimension\":4}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":256}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-1}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":true}", "processing.options.wrong-type")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":-0}", "processing.options.out-of-range")]
+    public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
         var service = CreateService(operations.Object, authorized: true, factory.Object);
-        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig("ScenePresentationLayer", "scene",
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(alias, "scene",
             Options: JsonDocument.Parse(json).RootElement.Clone(), DependsOn: ["$raw"], Enabled: false)]);
 
         var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
@@ -317,6 +341,24 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual(preview.Message, created.Message);
         StringAssert.Contains(preview.Message!, code, StringComparison.Ordinal);
         StringAssert.Contains(preview.Message!, "steps[0].options", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
+    [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
+    public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: false, factory.Object);
+        var pipeline = new CapturePipelineConfig([new(alias, "scene", Options:
+            JsonSerializer.Deserialize<JsonElement>(json), DependsOn: ["$raw"])]);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.CreateRevisionAsync("query", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false)).Kind);
         operations.VerifyNoOtherCalls();
         factory.VerifyNoOtherCalls();
     }

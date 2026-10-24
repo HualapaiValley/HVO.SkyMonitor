@@ -146,8 +146,9 @@ public sealed class ProcessingNodeOptionsCatalog
             var node = definition.Nodes[index];
             if (Resolve(node.StepAlias, node.StepVersion).Descriptor is { } descriptor)
             {
-                diagnostics.AddRange(ProcessingNodeOptionsCodec.Decode(
-                    descriptor, node.EffectiveOptions, $"nodes[{index}].effectiveOptions").Diagnostics);
+                diagnostics.AddRange(RollingCombinationOptionDescriptors.IsDescriptor(descriptor)
+                    ? RollingCombinationOptionDescriptors.ValidateWindow(node, $"nodes[{index}]")
+                    : ProcessingNodeOptionsCodec.Decode(descriptor, node.EffectiveOptions, $"nodes[{index}].effectiveOptions").Diagnostics);
             }
         }
         return diagnostics.ToImmutable();

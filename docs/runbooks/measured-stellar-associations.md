@@ -2,7 +2,9 @@
 
 `MeasuredStellarAssociations` measures retained **linear raw** Mono16/CFA
 samples against that capture's own projected scene and emits compact typed
-Metadata. It does not fit a calibration. Shipped profiles do not enable it.
+Metadata. It does not fit a calibration. The explicit downstream
+[measured astrometry recipe](measured-astrometry.md) consumes the retained product
+for bounded post-admission fitting. Shipped profiles do not enable either recipe.
 The [#1541 protocol](../validation/issue-1541-producer-protocol.md) defines the
 bounded software acceptance, configuration and exclusions.
 

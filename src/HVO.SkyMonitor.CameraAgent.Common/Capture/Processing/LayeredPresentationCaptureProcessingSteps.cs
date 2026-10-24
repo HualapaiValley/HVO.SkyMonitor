@@ -50,7 +50,8 @@ internal static class PresentationLayerKinds
     [
         "scene-annotation", "scene-cardinals", "scene-image-circle", "scene-constellations",
         "cloud-mask", "cloud-labels", "environment",
-        "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations"
+        "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations",
+        OrbitalTrackPresentation.LayerKind
     ], StringComparer.Ordinal);
 
     internal static bool IsSupported(string kind) => Supported.Contains(kind);
@@ -359,7 +360,15 @@ internal sealed class OverlayManifestCaptureProcessingStep(
             : new HashSet<string> { PresentationMetadataFactsProductV1.CurrentSchemaVersion }, Options.EnvironmentFactsVariant),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, Options.UseRichFrameFacts
             ? new HashSet<string> { PresentationLayerPayloadV1.RichTextSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
-            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant)
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant),
+        .. (Options.SatelliteVariant is null ? Array.Empty<CaptureProcessingDependencyRequirement>() :
+        [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+            new HashSet<string> { PresentationProcessingProducts.LayerRecipeName },
+            new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion,
+                PresentationLayerPayloadV1.RichTextSchemaVersion }, Options.SatelliteVariant, Required: false),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+            new HashSet<string> { "capture-satellite-status" }, new HashSet<string> { CaptureSatelliteProducts.StatusSchema },
+            Options.SatelliteStatusVariant, Required: false)])
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -385,6 +394,23 @@ internal sealed class OverlayManifestCaptureProcessingStep(
         {
             layerProducts.Add(CreateLayer(cloudMask, "cloud-mask", 30, PresentationBlendMode.Normal, 1_000_000));
             layerProducts.Add(CreateLayer(cloudLabels, "cloud-labels", 40, PresentationBlendMode.Lighten, 1_000_000));
+        }
+        if (products.SingleOrDefault(product => product.Variant == Options.SatelliteVariant) is { } satellite &&
+            products.SingleOrDefault(product => product.Variant == Options.SatelliteStatusVariant) is { } satelliteStatus)
+        {
+            var status = CaptureSatelliteProducts.ParseStatus(satelliteStatus.Payload.Span);
+            using var statusDocument = JsonDocument.Parse(OrbitalContract.SerializeCanonical(status));
+            var payload = PresentationLayerPayloadJson.Parse(satellite.Payload).Payload!;
+            var artifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, satellite);
+            var source = new PresentationProductReference(artifact.ArtifactId, payload.ContentIdentitySha256,
+                artifact.MediaType, reference.Compatibility);
+            var selection = Options.Layers.FirstOrDefault(item => item.Kind == OrbitalTrackPresentation.LayerKind);
+            var layer = LayeredPresentationJson.CreateLayer(OrbitalTrackPresentation.LayerKind, source,
+                scenePayload.SourceIdentitySha256, PresentationCoordinateSpace.ScenePixels,
+                PresentationLayerCompositor.AlgorithmVersion, OrbitalTrackPresentation.ProducerVersion, selection?.ZOrder ?? 45,
+                PresentationBlendMode.Normal, 1_000_000, selection?.Enabled ?? false,
+                JsonSerializer.SerializeToElement(new { Satellite = statusDocument.RootElement }));
+            layerProducts.Add(new(layer, artifact));
         }
         var manifest = PresentationProcessingProducts.CreateManifestProduct(
             reference, scenePayload.SourceIdentitySha256, layerProducts, Options.OutputVariant, baseArtifact);
@@ -558,6 +584,10 @@ internal sealed class EnvironmentPresentationLayerProcessingStepOptions
 
 internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SatelliteVariant { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SatelliteStatusVariant { get; init; }
     /// <summary>Explicit graph opt-in; omitted false preserves legacy effective options and input-contract identities.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool UseRichFrameFacts { get; init; }
@@ -577,6 +607,9 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if ((SatelliteVariant is null) != (SatelliteStatusVariant is null) ||
+            SatelliteVariant is { Length: < 1 or > 128 } || SatelliteStatusVariant is { Length: < 1 or > 128 })
+            yield return new ValidationResult("Satellite layer and status variants must be supplied together.");
         if (Layers.Count > 10 || Layers.Any(item => item is null || !PresentationLayerKinds.IsSupported(item.Kind)) ||
             Layers.Select(static item => PresentationLayerKinds.Canonicalize(item.Kind)).Distinct(StringComparer.Ordinal).Count() != Layers.Count)
             yield return new ValidationResult("Layer overrides must be unique supported layer kinds.", [nameof(Layers)]);

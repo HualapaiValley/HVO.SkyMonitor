@@ -36,6 +36,9 @@ public sealed class ProcessingNodeOptionsForm
     public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias, JsonElement? options = null)
     {
         ArgumentNullException.ThrowIfNull(alias);
+        if (string.Equals(alias, "RollingCombination", StringComparison.OrdinalIgnoreCase))
+            return options is null || RollingCombinationOptionDescriptors.IsSameGain(options.Value)
+                ? RollingCombinationOptionDescriptors.Descriptor : null;
         if (PreviewOptionDescriptors.IsPreviewAlias(alias))
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
@@ -48,6 +51,10 @@ public sealed class ProcessingNodeOptionsForm
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
+            "PROJECTEDSCENE" => "canonical-projected-scene-v1",
+            "ANNOTATION" => "projected-annotation-v4",
+            "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,
+            "ENVIRONMENTPRESENTATIONLAYER" => PresentationLayerProducers.MetadataProducerVersion,
             "JPEGENCODING" => "packed-jpeg-v1",
             _ => string.Equals(alias, FrameFactsPresentation.StepAlias, StringComparison.OrdinalIgnoreCase)
                 ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion
@@ -56,6 +63,22 @@ public sealed class ProcessingNodeOptionsForm
     }
 
     public string Get(string key) => _inputs[key];
+
+    public string NullableNumberStatus(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        if (_edited.Contains(key))
+            return Get(key).Length == 0 ? $"{option.NullValueLabel} (cleared)." : "Value edited.";
+        var single = new ProcessingNodeOptionsDescriptor(Descriptor.DescriptorId, Descriptor.StepAlias + ".field",
+            Descriptor.StepVersion, Descriptor.Title, Descriptor.Help, [option]);
+        var result = ProcessingNodeOptionsCodec.Decode(single, Source);
+        if (!result.IsValid)
+            return "Correct the invalid value before saving.";
+        var decoded = result.Get(key);
+        return !decoded.IsExplicit ? "Not specified; using default." : (option.Kind == ProcessingOptionKind.NullableRealNumber
+            ? decoded.Value.AsNullableRealNumber() is null : decoded.Value.AsNullableWholeNumber() is null)
+            ? $"{option.NullValueLabel} (explicitly selected)." : "Value set.";
+    }
 
     public void Set(string key, string value)
     {
@@ -95,6 +118,10 @@ public sealed class ProcessingNodeOptionsForm
     {
         ProcessingOptionKind.Toggle when bool.TryParse(input, out var toggle) => ProcessingOptionValue.FromToggle(toggle),
         ProcessingOptionKind.WholeNumber when long.TryParse(input, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var whole) => ProcessingOptionValue.FromWholeNumber(whole),
+        ProcessingOptionKind.NullableWholeNumber when input.Length == 0 => ProcessingOptionValue.FromNullableWholeNumber(null),
+        ProcessingOptionKind.NullableWholeNumber when long.TryParse(input, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var nullableWhole) => ProcessingOptionValue.FromNullableWholeNumber(nullableWhole),
+        ProcessingOptionKind.NullableRealNumber when input.Length == 0 => ProcessingOptionValue.FromNullableRealNumber(null),
+        ProcessingOptionKind.NullableRealNumber when double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var nullableReal) && double.IsFinite(nullableReal) => ProcessingOptionValue.FromNullableRealNumber(nullableReal),
         ProcessingOptionKind.RealNumber when double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var real) && double.IsFinite(real) => ProcessingOptionValue.FromRealNumber(real),
         ProcessingOptionKind.Text => ProcessingOptionValue.FromText(input),
         ProcessingOptionKind.Choice => ProcessingOptionValue.FromChoice(input),
@@ -108,6 +135,8 @@ public sealed class ProcessingNodeOptionsForm
     {
         ProcessingOptionKind.Toggle => value.AsToggle().ToString(CultureInfo.InvariantCulture),
         ProcessingOptionKind.WholeNumber => value.AsWholeNumber().ToString(CultureInfo.InvariantCulture),
+        ProcessingOptionKind.NullableWholeNumber => value.AsNullableWholeNumber()?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+        ProcessingOptionKind.NullableRealNumber => value.AsNullableRealNumber()?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
         ProcessingOptionKind.RealNumber => value.AsRealNumber().ToString("R", CultureInfo.InvariantCulture),
         ProcessingOptionKind.Color => string.Create(CultureInfo.InvariantCulture,
             $"#{value.AsColor().Red:x2}{value.AsColor().Green:x2}{value.AsColor().Blue:x2}"),

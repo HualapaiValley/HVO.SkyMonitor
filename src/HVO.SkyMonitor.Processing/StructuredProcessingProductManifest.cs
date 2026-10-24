@@ -117,6 +117,7 @@ public static class StructuredProcessingProductContracts
             (ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion) => true,
             (ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion) => true,
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
+            (MeasuredAstrometryJson.MediaType, MeasuredAstrometrySolutionV1.CurrentSchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.RichTextSchemaVersion) => true,
@@ -143,7 +144,7 @@ public static class StructuredProcessingProductContracts
                 string.Equals(productSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion, StringComparison.Ordinal));
 
     public static bool IsSupportedMediaType(string mediaType)
-        => mediaType is ProjectedSceneMediaType or CloudAssessmentMediaType or MeasuredStellarAssociationsMediaType or
+        => mediaType is MeasuredAstrometryJson.MediaType or ProjectedSceneMediaType or CloudAssessmentMediaType or MeasuredStellarAssociationsMediaType or
             PresentationLayerPayloadJson.MediaType or PresentationProcessingProducts.ManifestMediaType or
             PresentationMetadataFactsProductV1.MediaType;
 }

@@ -59,7 +59,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(17, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(22, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades, "No upgrade ships, so no saved pipeline changes.");
     }
 
@@ -360,7 +360,7 @@ public sealed partial class ProcessingNodeOptionsTests
             builtIn.Resolve("ScenePresentationLayer", SceneVersion).Status);
         Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.UnsupportedVersion,
             builtIn.Resolve("ScenePresentationLayer", SceneVersion.ToUpperInvariant()).Status);
-        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Opaque, builtIn.Resolve("annotation", SceneVersion).Status);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Opaque, builtIn.Resolve("opaque-example", SceneVersion).Status);
 
         var catalog = UpgradeCatalog(new WidthToThicknessUpgrade());
         var legacy = catalog.Resolve("Example", "example-v1");

@@ -10,7 +10,23 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Configure existing same-gain rolling windows with bounded size, trailing/centered selection and optional age/integration limits in graph drafts, with explicit activation and rollback. #1624
+
+- Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
+
 ### Changed
+
+- Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
+
+- Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
+
+- Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621
+
+- Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620
+
+- Edit physical projected-scene magnitude, result limit and constellation endpoint stars in the processing graph editor, then explicitly validate and activate a revision; VirtualSky module settings and retained scenes keep their existing authority. #1619
 
 - The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
 
@@ -28,6 +44,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
 
 - Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
 - Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
@@ -61,6 +79,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- Explicit post-admission processing can retain measured astrometric solutions with pinned capture/catalog/calibration lineage, fit quality, failure outcomes and uncertainty withhold reasons; applying an accepted mapping is a separate bounded operation. (#1642)
+
+- Explicitly constructed Processing recipes can produce retained satellite predictions for one capture's exact exposure, with pinned source/time/configured geometry, original versus retrospective identities, and truthful unavailable, partial and budget states. Host publication and viewer integration follow separately. (#1640)
 
 - CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
 - CameraAgent graph drafts expose preview recipe labels, output routes, active percentile/asinh controls and JPEG quality, preserving fixed-transfer modes and resize settings through explicit activation and rollback. (#1567)

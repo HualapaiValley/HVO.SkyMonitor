@@ -106,7 +106,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         File.WriteAllText(fixturePath, "<!doctype html><html lang='en' data-theme='hvo-dark'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>JPEG options fixture</title><body data-theme='hvo-dark'>" + cut.Markup + "</body></html>");
         TestContext.AddResultFile(fixturePath);
         Assert.IsNotNull(cut.Find("#jpeg-encoding"));
-        Assert.IsEmpty(cut.FindAll("input[id*='maximumDimension'],input[id*='enabled']"));
+        Assert.IsEmpty(cut.FindAll("input[id*='enabled']"));
         Assert.IsNotEmpty(cut.Find("label[for='node-options-0-jpegQuality']").TextContent);
         cut.Find("#node-options-0-jpegQuality").Change("60");
         cut.Find("#node-options-0-jpegQuality").Change("80");

@@ -24,6 +24,12 @@
                         @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
                     </select>
                     break;
+                case ProcessingOptionKind.NullableWholeNumber:
+                case ProcessingOptionKind.NullableRealNumber:
+                    <input id="@inputId" class="form-control" type="text" inputmode="@(option.Kind == ProcessingOptionKind.NullableRealNumber ? "decimal" : "numeric")" aria-describedby="@(inputId + "-help " + inputId + "-status")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" aria-describedby="@(inputId + "-help")" @onclick="() => ChangedAsync(option.Key, string.Empty)">@option.NullActionLabel</button>
+                    <p id="@(inputId + "-status")" role="status">@Form.NullableNumberStatus(option.Key)</p>
+                    break;
                 case ProcessingOptionKind.WholeNumber:
                 case ProcessingOptionKind.RealNumber:
                 case ProcessingOptionKind.Text:

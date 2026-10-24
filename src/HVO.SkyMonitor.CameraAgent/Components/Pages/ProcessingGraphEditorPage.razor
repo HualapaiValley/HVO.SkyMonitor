@@ -140,6 +140,22 @@
             <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
         }
 
+        @if (Section == "cloud-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudPresentationLayer"))
+        {
+            <p role="status">This graph has no supported cloud layer node. Select a retained graph with CloudPresentationLayer to edit labels and line thickness. Dimensions and assessment bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "environment-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "EnvironmentPresentationLayer"))
+        {
+            <p role="status">This graph has no supported environment layer node. Select a retained graph with EnvironmentPresentationLayer to edit scale, inset and line spacing. Dimensions and source/stack bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "legacy-annotation" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Annotation"))
+        {
+            <p role="status">This graph has no supported legacy Annotation node. Select a retained graph with Annotation to edit its existing styling. Missing or unsupported nodes are not replaced or upgraded; saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "projected-scene" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ProjectedScene"))
+        {
+            <p role="status">This graph has no supported projected scene node. Add ProjectedScene with an explicit raw dependency to configure physical predicted-scene queries. VirtualSky keeps its separate module settings and authoritative rendered scene; saving, validation and activation remain separate.</p>
+        }
         @if (Section == "calibration" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Calibration"))
         {
             <p role="note">This graph has no calibration node. Add Calibration with an explicit raw dependency to configure it. Existing models and master provisioning stay unchanged; saving, validation and activation remain separate.</p>

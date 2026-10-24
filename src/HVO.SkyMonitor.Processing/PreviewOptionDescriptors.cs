@@ -19,12 +19,15 @@ public static class PreviewOptionDescriptors
         Preview("combined-preview-options-v1", "CombinedPreview", "Combined preview", "combined-preview", false),
         Preview("fixed-combined-preview-options-v1", "CombinedPreview", "Combined preview", "combined-preview", true),
         new("jpeg-encoding-options-v1", "JpegEncoding", "packed-jpeg-v1", "JPEG encoding",
-            "Encode the existing packed annotated preview with JPEG encoding recipe 1.0.0 (packed-jpeg-v1). MaximumDimension and nullable/absent resize settings are preserved; resizing is outside this panel.",
+            "Encode the existing packed annotated preview with JPEG encoding recipe 1.0.0 (packed-jpeg-v1). Keep original dimensions or explicitly set a maximum dimension; quality, routing and preview transfer remain separate settings.",
             [
                 ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "JPEG output variant",
                     "Final JPEG output route. Update variant-specific dependent inputs separately.", "annotated-final-jpeg", 128, isIdentifier: true),
                 ProcessingOptionDescriptor.WholeNumber("jpegQuality", "jpegQuality", "JPEG quality",
-                    "Quality of the existing JPEG encoder; higher values retain more detail and usually use more bytes.", JpegImageCodec.DefaultQuality, 1, 100)
+                    "Quality of the existing JPEG encoder; higher values retain more detail and usually use more bytes.", JpegImageCodec.DefaultQuality, 1, 100),
+                ProcessingOptionDescriptor.NullableWholeNumber("maximumDimension", "maximumDimension", "Maximum JPEG dimension",
+                    "Optional limit on the longest side. Leave blank or use original dimensions to clear the limit; smaller images are not enlarged.",
+                    null, 1, 16384, "pixels", nullValueLabel: "No limit", nullActionLabel: "Use original dimensions")
             ])
     ];
 
