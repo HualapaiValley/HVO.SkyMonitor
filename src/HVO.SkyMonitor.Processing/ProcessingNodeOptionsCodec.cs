@@ -350,6 +350,12 @@ public static class ProcessingNodeOptionsCodec
     // an untouched numeric token or its casing when the operator opens and saves an existing graph.
     private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
     {
+        if (option.Kind == ProcessingOptionKind.RowCollection)
+        {
+            outOfRange = token.ValueKind == JsonValueKind.Array && token.GetArrayLength() > option.MaximumItems;
+            if (token.ValueKind != JsonValueKind.Array || outOfRange) return null;
+            return ProcessingOptionValue.FromCollection(option.Kind, new(token.EnumerateArray().Select(static row => row.GetRawText())));
+        }
         if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
         {
             outOfRange = false;
@@ -502,6 +508,7 @@ public static class ProcessingNodeOptionsCodec
         ProcessingOptionKind.TextCollection => "an array of nonblank strings",
         ProcessingOptionKind.EnumCollection => "an array of defined enum names or numbers",
         ProcessingOptionKind.ChoiceCollection => "an array of supported string choices",
+        ProcessingOptionKind.RowCollection => "an array of layer override objects",
         _ => "a JSON string"
     };
 
@@ -514,6 +521,11 @@ public static class ProcessingNodeOptionsCodec
         {
             switch (value.Kind)
             {
+                case ProcessingOptionKind.RowCollection:
+                    writer.WriteStartArray();
+                    foreach (var row in value.AsCollection().Items) writer.WriteRawValue(row);
+                    writer.WriteEndArray();
+                    break;
                 case ProcessingOptionKind.TextCollection:
                 case ProcessingOptionKind.EnumCollection:
                 case ProcessingOptionKind.ChoiceCollection:

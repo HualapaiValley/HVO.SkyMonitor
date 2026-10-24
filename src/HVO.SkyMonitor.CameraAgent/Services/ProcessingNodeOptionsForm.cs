@@ -11,6 +11,7 @@ public sealed class ProcessingNodeOptionsForm
     private readonly JsonElement? _source;
     private readonly Dictionary<string, string> _inputs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ProcessingOptionSelection> _collections = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ProcessingNodeOptionsForm>> _rows = new(StringComparer.Ordinal);
     private readonly HashSet<string> _edited = new(StringComparer.Ordinal);
 
     public ProcessingNodeOptionsForm(ProcessingNodeOptionsDescriptor descriptor, JsonElement? source)
@@ -25,7 +26,9 @@ public sealed class ProcessingNodeOptionsForm
                 descriptor.StepVersion, descriptor.Title, descriptor.Help, [option]);
             var decoded = ProcessingNodeOptionsCodec.Decode(single, Source);
             var value = decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue;
-            if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+            if (option.Kind == ProcessingOptionKind.RowCollection)
+                _rows[option.Key] = value.AsCollection().Items.Select(row => new ProcessingNodeOptionsForm(option.RowDescriptor!, JsonSerializer.Deserialize<JsonElement>(row))).ToList();
+            else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
                 _collections[option.Key] = value.AsCollection();
             else
                 _inputs[option.Key] = Format(value);
@@ -58,6 +61,7 @@ public sealed class ProcessingNodeOptionsForm
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "ANNOTATION" => "projected-annotation-v4",
+            "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,
             "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,
             "ENVIRONMENTPRESENTATIONLAYER" => PresentationLayerProducers.MetadataProducerVersion,
@@ -85,6 +89,30 @@ public sealed class ProcessingNodeOptionsForm
         _edited.Add(key);
         TryBuild(out _, out _);
     }
+
+    public IReadOnlyList<ProcessingNodeOptionsForm> Rows(string key) => _rows[key];
+
+    public void AddRow(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        if (_rows[key].Count >= option.MaximumItems) return;
+        var identity = option.RowDescriptor!.Find(option.RowIdentityKey!)!;
+        var source = JsonSerializer.SerializeToElement(new Dictionary<string, string> { [identity.Members[0]] = identity.DefaultValue.AsText() });
+        _rows[key].Add(new(option.RowDescriptor, source));
+        RowsChanged(key);
+    }
+
+    public void RemoveRow(string key, int index) { _rows[key].RemoveAt(index); RowsChanged(key); }
+    public void ClearRows(string key) { _rows[key].Clear(); RowsChanged(key); }
+    public void MoveRow(string key, int index, int destination)
+    {
+        var row = _rows[key][index];
+        _rows[key].RemoveAt(index);
+        _rows[key].Insert(destination, row);
+        RowsChanged(key);
+    }
+
+    public void RowsChanged(string key) { _edited.Add(key); TryBuild(out _, out _); }
 
     public string NullableNumberStatus(string key)
     {
@@ -115,7 +143,17 @@ public sealed class ProcessingNodeOptionsForm
         var errors = new List<ProcessingGraphDiagnostic>();
         foreach (var option in Descriptor.Options.Where(option => _edited.Contains(option.Key)))
         {
-            if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+            if (option.Kind == ProcessingOptionKind.RowCollection)
+            {
+                var rows = new List<string>();
+                for (var index = 0; index < _rows[option.Key].Count; index++)
+                {
+                    if (_rows[option.Key][index].TryBuild(out var row, out var rowErrors)) rows.Add(row!.Value.GetRawText());
+                    else errors.AddRange(rowErrors.Select(error => error with { Path = $"effectiveOptions.{option.Key}[{index}].{error.Path}" }));
+                }
+                edits.Add(option.Key, ProcessingOptionValue.FromRows(rows));
+            }
+            else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
             {
                 edits.Add(option.Key, ProcessingOptionValue.FromCollection(option.Kind, _collections[option.Key]));
             }
