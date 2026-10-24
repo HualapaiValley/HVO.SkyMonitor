@@ -143,7 +143,8 @@ public sealed class ProcessingOptionDescriptor
         bool isRequired = false,
         string nullValueLabel = "Default",
         string nullActionLabel = "Use default",
-        bool isUnsignedByte = false)
+        bool isUnsignedByte = false,
+        string? parentMember = null)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -152,6 +153,8 @@ public sealed class ProcessingOptionDescriptor
         {
             RequireName(member, nameof(members), lowerCamel: false);
         }
+        if (parentMember is not null)
+            RequireName(parentMember, nameof(parentMember), lowerCamel: false);
         if (members.Distinct(StringComparer.OrdinalIgnoreCase).Count() != members.Length)
         {
             throw new ArgumentException("Option members must be distinct.", nameof(members));
@@ -167,6 +170,7 @@ public sealed class ProcessingOptionDescriptor
         NullValueLabel = nullValueLabel;
         NullActionLabel = nullActionLabel;
         Members = members;
+        ParentMember = parentMember;
         DefaultValue = defaultValue;
         Unit = unit;
         MinimumWholeNumber = minimumWholeNumber;
@@ -203,6 +207,9 @@ public sealed class ProcessingOptionDescriptor
 
     /// <summary>The effective-options members, one per value or red, green and blue for a colour.</summary>
     public ImmutableArray<string> Members { get; }
+
+    /// <summary>An existing object containing these members; null binds at the options root.</summary>
+    public string? ParentMember { get; }
 
     public ProcessingOptionValue DefaultValue { get; }
 
@@ -325,6 +332,18 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionValue.FromNullableRealNumber(defaultValue), unit,
             minimumRealNumber: minimum, maximumRealNumber: maximum,
             nullValueLabel: nullValueLabel, nullActionLabel: nullActionLabel);
+    }
+
+    /// <summary>A bounded scalar inside an existing object. Editing cannot create or remove the object.</summary>
+    public static ProcessingOptionDescriptor NestedRealNumber(
+        string key, string parentMember, string member, string label, string help,
+        double defaultValue, double minimum, double maximum, string? unit = null)
+    {
+        if (!double.IsFinite(minimum) || !double.IsFinite(maximum) || minimum > maximum)
+            throw new ArgumentException("The range must be finite and ordered.", nameof(minimum));
+        return new(key, ProcessingOptionKind.RealNumber, label, help, [member],
+            ProcessingOptionValue.FromRealNumber(defaultValue), unit,
+            minimumRealNumber: minimum, maximumRealNumber: maximum, parentMember: parentMember);
     }
 
     public static ProcessingOptionDescriptor Text(
@@ -494,11 +513,15 @@ public sealed class ProcessingNodeOptionsDescriptor
         {
             throw new ArgumentException("Option keys must be distinct.", nameof(options));
         }
-        var members = described.SelectMany(static option => option.Members).ToArray();
+        var members = described.SelectMany(static option => option.Members.Select(member =>
+            option.ParentMember is null ? member : $"{option.ParentMember}.{member}")).ToArray();
         if (members.Distinct(StringComparer.OrdinalIgnoreCase).Count() != members.Length)
         {
             throw new ArgumentException("No two options may bind the same member.", nameof(options));
         }
+        if (described.Where(static option => option.ParentMember is null).SelectMany(static option => option.Members)
+            .Intersect(described.Select(static option => option.ParentMember).OfType<string>(), StringComparer.OrdinalIgnoreCase).Any())
+            throw new ArgumentException("An object cannot also bind a scalar option.", nameof(options));
         DescriptorId = descriptorId;
         StepAlias = stepAlias;
         StepVersion = stepVersion;

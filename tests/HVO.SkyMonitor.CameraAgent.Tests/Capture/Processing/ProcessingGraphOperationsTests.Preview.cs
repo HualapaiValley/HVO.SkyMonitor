@@ -15,9 +15,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    [DataRow(null, "1", 1)]
-    [DataRow(1, "", 2)]
-    public async Task PreviewAndJpegDraftRequiresValidationActivationAndRollback(int? initialLimit, string edit, int expectedWidth)
+    [DataRow(null, "1", 1, false)]
+    [DataRow(1, "", 2, false)]
+    [DataRow(null, "1", 2, true)]
+    public async Task PreviewAndJpegDraftRequiresValidationActivationAndRollback(int? initialLimit, string edit, int expectedWidth, bool fixedTransfer)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-preview-options");
         try
@@ -30,7 +31,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Rig = baseline.Rig with { Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 } },
                 Pipeline = new CapturePipelineConfig([
-                    new("Preview", "preview", 17, JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["$raw"]),
+                    new("Preview", "preview", 17, fixedTransfer ? JsonSerializer.Deserialize<JsonElement>("{\"FixedTransfer\":{\"future\":[1e+02]},\"future\":{\"keep\":17}}") : JsonSerializer.SerializeToElement(new { future = new { keep = 17 } }), ["$raw"]),
                     new("CloudAssessment", "cloud", 20, JsonSerializer.SerializeToElement(new { gridColumns = 2, gridRows = 1, minimumSamplesPerTile = 1 }), ["$raw"]),
                     new("WeatherCloudOverlay", "weather", 30, DependsOn: ["preview", "cloud"]),
                     new("JpegEncoding", "jpeg", 40, JsonSerializer.SerializeToElement(new { MaximumDimension = initialLimit, future = new { keep = 100 } }), ["weather"])
@@ -90,9 +91,30 @@ public sealed partial class ProcessingGraphOperationsTests
                     StringAssert.Contains(exception.Message.ToUpperInvariant(), "MAXIMUMDIMENSION", StringComparison.Ordinal);
                 }
             }
+            if (fixedTransfer)
+            {
+                foreach (var invalid in new[] { "{\"Gamma\":0.09}", "{\"BlackLevel\":4095}", "{\"WhiteLevel\":65536}", "{\"Gamma\":null}" })
+                {
+                    var bad = config.Pipeline with
+                    {
+                        Steps = config.Pipeline.Steps.Select(step => step.Id == "preview" ? step with
+                        { Options = JsonSerializer.Deserialize<JsonElement>("{\"FixedTransfer\":" + invalid + "}") } : step).ToArray()
+                    };
+                    try
+                    {
+                        await operations.CreateRevisionAsync("invalid", "invalid", bad, "invalid-" + invalid, "test", null, CancellationToken.None).ConfigureAwait(false);
+                        Assert.Fail("Invalid FixedTransfer accepted: " + invalid);
+                    }
+                    catch (Exception exception) when (exception is ValidationException or InvalidOperationException or JsonException)
+                    {
+                        StringAssert.Contains(exception.Message, "FixedTransfer", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
             model.Nodes[0].OptionsForm!.Set("outputVariant", "preview-custom");
-            model.Nodes[0].OptionsForm!.Set("asinhStrength", "12");
-            model.Nodes[3].OptionsForm!.Set("maximumDimension", edit);
+            model.Nodes[0].OptionsForm!.Set(fixedTransfer ? "gamma" : "asinhStrength", fixedTransfer ? "1" : "12");
+            if (!fixedTransfer)
+                model.Nodes[3].OptionsForm!.Set("maximumDimension", edit);
             Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
             Assert.AreEqual(17, pipeline.Steps[0].Order);
             var draft = await operations.CreateRevisionAsync("preview", "2", pipeline, "create", "test", null, CancellationToken.None).ConfigureAwait(false);
@@ -169,14 +191,17 @@ public sealed partial class ProcessingGraphOperationsTests
             var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(node.StepAlias, node.StepVersion).Descriptor!;
             Assert.IsNotNull(descriptor);
             Assert.AreEqual(fixedTransfer ? "fixed-preview-v1" : "encoded-preview-v1", node.StepVersion);
-            var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new { }));
+            var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, fixedTransfer ? JsonSerializer.Deserialize<JsonElement>("{\"FixedTransfer\":{}}") : JsonSerializer.SerializeToElement(new { }));
             PreviewProcessingStepOptions runtimeOptions = alias switch
             {
                 "CalibratedPreview" => new CalibratedPreviewProcessingStepOptions(),
                 "CombinedPreview" => new CombinedPreviewProcessingStepOptions(),
                 _ => new PreviewProcessingStepOptions()
             };
-            var runtime = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(runtimeOptions));
+            var runtimeJson = fixedTransfer
+                ? JsonSerializer.SerializeToElement(new { runtimeOptions.Enabled, runtimeOptions.RecipeVersion, runtimeOptions.OutputVariant, FixedTransfer = new HVO.SkyMonitor.Imaging.FixedDisplayTransferOptions() })
+                : JsonSerializer.SerializeToElement(runtimeOptions);
+            var runtime = ProcessingNodeOptionsCodec.Decode(descriptor, runtimeJson);
             foreach (var option in defaults.Options)
                 Assert.AreEqual(option.Value, runtime.Get(option.Descriptor.Key).Value);
             graph.DisposeSteps();

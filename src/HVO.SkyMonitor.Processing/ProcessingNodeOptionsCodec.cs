@@ -83,23 +83,14 @@ public static class ProcessingNodeOptionsCodec
             return new([], [new(ProcessingOptionReasonCodes.NotAllowed, path,
                 "This panel only edits the same-gain rolling mean; recipe and normalization bindings remain opaque.")]);
         }
-        var described = descriptor.Options.SelectMany(static option => option.Members)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var members = new Dictionary<string, JsonProperty>(StringComparer.OrdinalIgnoreCase);
-        foreach (var property in options.EnumerateObject())
-        {
-            if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
-            {
-                diagnostics.Add(new(
-                    ProcessingOptionReasonCodes.DuplicateMember,
-                    MemberPath(path, property.Name),
-                    $"Member '{property.Name}' appears more than once, ignoring case."));
-            }
-        }
-
+        var scopes = ReadScopes(descriptor, options, path, diagnostics);
         var decoded = ImmutableArray.CreateBuilder<ProcessingDecodedOption>(descriptor.Options.Length);
         foreach (var option in descriptor.Options)
         {
+            var scope = option.ParentMember ?? string.Empty;
+            if (!scopes.TryGetValue(scope, out var members))
+                continue;
+            var optionPath = option.ParentMember is null ? path : MemberPath(path, option.ParentMember);
             var defaults = MemberValues(option.DefaultValue);
             var values = new ProcessingOptionValue[option.Members.Length];
             var isExplicit = false;
@@ -112,7 +103,7 @@ public static class ProcessingNodeOptionsCodec
                     continue;
                 }
                 isExplicit = true;
-                if (ReadMember(option, member, path) is { } failure)
+                if (ReadMember(option, member, optionPath) is { } failure)
                 {
                     diagnostics.Add(failure);
                     valid = false;
@@ -130,7 +121,7 @@ public static class ProcessingNodeOptionsCodec
                 : values[0];
             if (option.Check(value) is { } invalid)
             {
-                diagnostics.Add(new(invalid.Code, MemberPath(path, members[option.Members[0]].Name), invalid.Message));
+                diagnostics.Add(new(invalid.Code, MemberPath(optionPath, members[option.Members[0]].Name), invalid.Message));
                 continue;
             }
             decoded.Add(new(option, value, isExplicit));
@@ -143,6 +134,15 @@ public static class ProcessingNodeOptionsCodec
         {
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "blackPercentile"),
                 "BlackPercentile must be less than WhitePercentile."));
+        }
+        if (diagnostics.Count == 0 && PreviewOptionDescriptors.IsPreviewAlias(descriptor.StepAlias) &&
+            descriptor.StepVersion == PreviewOptionDescriptors.FixedVersion &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "blackLevel") is { } fixedBlack &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "whiteLevel") is { } fixedWhite &&
+            fixedBlack.Value.AsRealNumber() >= fixedWhite.Value.AsRealNumber())
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "fixedTransfer.blackLevel"),
+                "FixedTransfer BlackLevel must be less than WhiteLevel."));
         }
         if (diagnostics.Count == 0 && RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
             decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowKind") is { } windowKind &&
@@ -211,17 +211,81 @@ public static class ProcessingNodeOptionsCodec
             return new(null, diagnostics.ToImmutable());
         }
 
+        // Validate object shape and duplicate bindings before splicing. Invalid scalars can still be repaired.
+        var shapeDiagnostics = ImmutableArray.CreateBuilder<ProcessingGraphDiagnostic>();
+        ReadScopes(descriptor, source, path, shapeDiagnostics);
+        if (shapeDiagnostics.Count > 0)
+            return new(null, shapeDiagnostics.ToImmutable());
+        var result = EditScope(source, descriptor.Options.Where(static option => option.ParentMember is null), edits, path);
+        foreach (var group in descriptor.Options.Where(static option => option.ParentMember is not null)
+            .GroupBy(static option => option.ParentMember!, StringComparer.OrdinalIgnoreCase))
+        {
+            var properties = result.EnumerateObject().ToArray();
+            var at = Array.FindIndex(properties, property => string.Equals(property.Name, group.Key, StringComparison.OrdinalIgnoreCase));
+            var nested = properties[at].Value;
+            var changed = EditScope(nested, group, edits, MemberPath(path, properties[at].Name));
+            if (changed.GetRawText() != nested.GetRawText())
+            {
+                var raw = JsonMarshal.GetRawUtf8Value(result);
+                var spans = ValueSpans(raw);
+                result = Splice(raw, spans, [(spans[at].Start, spans[at].End, JsonMarshal.GetRawUtf8Value(changed).ToArray())], []);
+            }
+        }
+        var decoded = Decode(descriptor, result, path);
+        return decoded.IsValid ? new(result, []) : new(null, decoded.Diagnostics);
+    }
+
+    private static Dictionary<string, Dictionary<string, JsonProperty>> ReadScopes(
+        ProcessingNodeOptionsDescriptor descriptor, JsonElement source, string path,
+        ImmutableArray<ProcessingGraphDiagnostic>.Builder diagnostics)
+    {
+        var scopes = new Dictionary<string, Dictionary<string, JsonProperty>>(StringComparer.OrdinalIgnoreCase);
+        var parents = descriptor.Options.Select(static option => option.ParentMember).OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var rootMembers = descriptor.Options.Where(static option => option.ParentMember is null)
+            .SelectMany(static option => option.Members).Concat(parents);
+        scopes[string.Empty] = ReadMembers(source, rootMembers, path, diagnostics);
+        foreach (var parent in parents)
+        {
+            if (!scopes[string.Empty].TryGetValue(parent, out var member) || member.Value.ValueKind != JsonValueKind.Object)
+            {
+                diagnostics.Add(new(ProcessingOptionReasonCodes.NotAnObject, MemberPath(path, parent),
+                    $"An existing {parent} object is required; this panel cannot create it or switch transfer modes."));
+                continue;
+            }
+            scopes[parent] = ReadMembers(member.Value, descriptor.Options
+                .Where(option => string.Equals(option.ParentMember, parent, StringComparison.OrdinalIgnoreCase))
+                .SelectMany(static option => option.Members), MemberPath(path, member.Name), diagnostics);
+        }
+        return scopes;
+    }
+
+    private static Dictionary<string, JsonProperty> ReadMembers(JsonElement source, IEnumerable<string> describedMembers,
+        string path, ImmutableArray<ProcessingGraphDiagnostic>.Builder diagnostics)
+    {
+        var described = describedMembers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var members = new Dictionary<string, JsonProperty>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in source.EnumerateObject())
+        {
+            if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
+                diagnostics.Add(new(ProcessingOptionReasonCodes.DuplicateMember, MemberPath(path, property.Name),
+                    $"Member '{property.Name}' appears more than once, ignoring case."));
+        }
+        return members;
+    }
+
+    private static JsonElement EditScope(JsonElement source, IEnumerable<ProcessingOptionDescriptor> options,
+        IReadOnlyDictionary<string, ProcessingOptionValue> edits, string path)
+    {
         var raw = JsonMarshal.GetRawUtf8Value(source);
         var properties = source.EnumerateObject().ToArray();
         var spans = ValueSpans(raw);
         var replacements = new List<(int Start, int End, byte[] Bytes)>();
         var appended = new List<(string Member, byte[] Bytes)>();
-        foreach (var option in descriptor.Options)
+        foreach (var option in options)
         {
             if (!edits.TryGetValue(option.Key, out var edit))
-            {
                 continue;
-            }
             var values = MemberValues(edit);
             var defaults = MemberValues(option.DefaultValue);
             for (var index = 0; index < option.Members.Length; index++)
@@ -230,26 +294,15 @@ public static class ProcessingNodeOptionsCodec
                     string.Equals(property.Name, option.Members[index], StringComparison.OrdinalIgnoreCase));
                 if (at >= 0)
                 {
-                    // A member is unchanged only when it is valid as written and reads as the edited value, so an
-                    // invalid spelling of that value, such as a signed-zero channel, is rewritten rather than kept.
                     if (ReadMember(option, properties[at], path) is not null ||
                         ReadOptionToken(option, properties[at].Value, out _) != values[index])
-                    {
                         replacements.Add((spans[at].Start, spans[at].End, WriteValue(values[index])));
-                    }
                 }
                 else if (values[index] != defaults[index])
-                {
                     appended.Add((option.Members[index], WriteValue(values[index])));
-                }
             }
         }
-
-        var result = replacements.Count == 0 && appended.Count == 0
-            ? source
-            : Splice(raw, spans, replacements, appended);
-        var decoded = Decode(descriptor, result, path);
-        return decoded.IsValid ? new(result, []) : new(null, decoded.Diagnostics);
+        return replacements.Count == 0 && appended.Count == 0 ? source : Splice(raw, spans, replacements, appended);
     }
 
     // WindowKind already accepts both enum numbers and names. Read its effective choice without rewriting

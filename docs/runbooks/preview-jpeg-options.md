@@ -19,9 +19,15 @@ Mono16/BayerRggb16 input. Existing Mono8/Rgb24 input keeps its packed-copy
 behavior.
 
 When `FixedTransfer` is present, the existing `fixed-preview-v1` recipe stays
-active. Its nested levels and gamma are preserved exactly. Percentile/asinh
-controls are omitted because they do not affect that mode. There is no mode
-switch or nested transfer editor in this slice.
+active. The panel edits its existing nested **Fixed black level**, **Fixed white
+level** and **Fixed gamma**. Native levels range from 0 to 65535, and black must
+be less than white; gamma accepts 0.1–10. All values must be finite. Missing
+members use the existing defaults (64, 4095 and 2.2) without writing them into
+JSON. Use the input's native sample scale (for example 0–255 for 8-bit input).
+Percentile/asinh controls are omitted because they do not affect that mode.
+The panel cannot create/remove FixedTransfer or switch modes. Unknown nested
+members and untouched formatting survive edits; restoring the original values
+preserves the exact original bytes.
 
 `JpegEncoding` uses the existing `packed-jpeg-v1` recipe. JPEG quality defaults
 to 80 and accepts integers 1–100. Its output variant defaults to
@@ -42,6 +48,6 @@ Use **Preview plan → Save immutable draft → Validate → Activate**. Saving 
 does not change live capture. **Rollback** restores an eligible retained
 revision. Old graph definitions and retained products remain reconstructable.
 
-This includes the bounded #1567 and #1622 deliveries, Refs #1386. New encoders, display transfers,
+This includes the bounded #1567, #1622 and #1625 deliveries, Refs #1386. New encoders, display transfers,
 precision/retention policy, automatic upgrades and physical qualification are
 outside this slice; #1386 stays open.
