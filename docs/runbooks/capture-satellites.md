@@ -156,9 +156,31 @@ status. The renderer separately enforces 1,024 samples per track,
 8,192 total samples and existing primitive/geometry budgets. A rendering refusal
 preserves canonical numerical output and marks presentation withheld.
 
-Retention discovery is bounded by 131,072 work intents, 4,096 products per
-capture and the existing archive discovery byte/entry/date limits. Crossing a
-bound fails closed; it is not permission to discard evidence.
+New work is admitted under the storage lifecycle barrier only while fewer than
+262,144 intent directories exist, including interrupted preparations. This is
+45.51 days at one capture every 15 seconds (172,800 captures in the default
+30-day retention window), for one satellite node per capture. Multiple nodes,
+faster captures or longer retention consume the same capacity. At capacity,
+the ordinary durable lane retries new work without creating another directory
+or acquiring a source reference. Existing intent/input retries still run.
+Retention reclaims slots; no operator journal deletion is needed.
+
+Hold discovery streams the complete inventory, including an oversized inventory
+created before admission was bounded. It never returns a truncated hold set or
+uses the admission limit to stop retention. Small headers, 4,096 products per
+capture and the existing archive byte/entry/date bounds still apply. Cumulative
+archive discovery budgets renew between captures; the current capture is
+rechecked from scratch. A capture that cannot fit a fresh budget, corrupt or
+unsafe evidence, missing storage or uncertain archive history still fails
+closed. A large inventory can take longer to scan and remains cancellable.
+
+Reconciliation removes empty interrupted directories and reclaims completed
+intents only after proving raw and every canonical/archive consumer absent.
+Nonempty headerless inputs are checked after one day, at most 16 inputs and
+64MiB per sweep. A durable cursor resumes after previously checked candidates,
+including live inputs that must remain; byte-budget exhaustion postpones the
+next input to a fresh sweep. A restarted sweep rechecks absence rather than
+trusting the cursor. Source acquisition/removal remains idempotent.
 
 The node reuses `camera_agent.processing.nodes`, `.outcomes`, `.outputs`,
 `.output.bytes`, `.recipe.duration` and `.persistence.duration`, plus

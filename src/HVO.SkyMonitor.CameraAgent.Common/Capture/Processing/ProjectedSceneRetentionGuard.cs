@@ -14,6 +14,7 @@ internal sealed class ProjectedSceneRetentionGuard(
     private long _readBytes;
     private int _sidecars;
     private int _entries;
+    internal bool DiscoveryBudgetExhausted { get; private set; }
     private const long MaximumSidecarBytes = 16 * 1024 * 1024;
     private static readonly string[] Roles = Enum.GetNames<FrameArtifactRole>();
     private readonly Dictionary<(string Root, DateOnly Date), HashSet<(string AgentId, Guid CaptureId)>> _archiveDates = [];
@@ -97,7 +98,7 @@ internal sealed class ProjectedSceneRetentionGuard(
                 if (!_archiveDates.TryGetValue((root, date), out var captures))
                 {
                     if (_archiveDates.Count >= 4096)
-                        throw new InvalidDataException("Scene archive discovery reached its date budget; retention resumes next pass.");
+                        throw BudgetExceeded("Scene archive discovery reached its date budget; retention resumes next pass.");
                     captures = await ReadArchiveDateAsync(root, date, cancellationToken).ConfigureAwait(false);
                     _archiveDates.Add((root, date), captures);
                 }
@@ -124,9 +125,11 @@ internal sealed class ProjectedSceneRetentionGuard(
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (++_entries > 262144)
-                        throw new InvalidDataException("Scene archive discovery exceeds its directory-entry budget; retention is deferred.");
+                        throw BudgetExceeded("Scene archive discovery exceeds its directory-entry budget; retention is deferred.");
                     if (!path.EndsWith(kind == "frames" ? ".json" : ".manifest.json", StringComparison.Ordinal)) continue;
-                    if (++_sidecars > Math.Clamp(maximumSidecars, 1, 131072) || new FileInfo(path).Length > MaximumSidecarBytes)
+                    if (++_sidecars > Math.Clamp(maximumSidecars, 1, 131072))
+                        throw BudgetExceeded("Scene archive discovery exceeds its sidecar budget; scene retention is deferred.");
+                    if (new FileInfo(path).Length > MaximumSidecarBytes)
                         throw new InvalidDataException("Scene archive discovery exceeds its safety bound; scene retention is deferred.");
                     RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
                     var bytes = await ReadBoundedFileAsync(path, cancellationToken).ConfigureAwait(false);
@@ -170,7 +173,7 @@ internal sealed class ProjectedSceneRetentionGuard(
             {
                 if (!_archiveDates.TryGetValue((root, date), out var captures))
                 {
-                    if (_archiveDates.Count >= 4096) throw new InvalidDataException("Satellite archive discovery exceeds its date bound.");
+                    if (_archiveDates.Count >= 4096) throw BudgetExceeded("Satellite archive discovery exceeds its date bound.");
                     captures = await ReadArchiveDateAsync(root, date, cancellationToken).ConfigureAwait(false);
                     _archiveDates.Add((root, date), captures);
                 }
@@ -197,9 +200,17 @@ internal sealed class ProjectedSceneRetentionGuard(
 
     private void AccountBytes(long bytes)
     {
-        if (bytes < 0 || bytes > MaximumSidecarBytes || _readBytes > Math.Clamp(maximumBytes, 1, 1024L * 1024 * 1024) - bytes)
-            throw new InvalidDataException("Scene consumer discovery exceeds its byte budget; scene retention is deferred.");
+        if (bytes < 0 || bytes > MaximumSidecarBytes)
+            throw new InvalidDataException("Scene consumer evidence exceeds its byte bound; scene retention is deferred.");
+        if (_readBytes > Math.Clamp(maximumBytes, 1, 1024L * 1024 * 1024) - bytes)
+            throw BudgetExceeded("Scene consumer discovery exceeds its byte budget; scene retention is deferred.");
         _readBytes += bytes;
+    }
+
+    private InvalidDataException BudgetExceeded(string message)
+    {
+        DiscoveryBudgetExhausted = true;
+        return new InvalidDataException(message);
     }
 
     private static bool Exists(string path, bool directory)
