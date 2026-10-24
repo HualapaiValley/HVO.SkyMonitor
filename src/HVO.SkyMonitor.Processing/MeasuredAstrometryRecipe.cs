@@ -43,6 +43,22 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         return matches[0];
     }
 
+    internal static bool MeasuredInputIsValid(ProcessingArtifact measuredArtifact, ProcessingArtifact raw)
+    {
+        return measuredArtifact.ProductKind == ProcessingProductKind.Metadata && measuredArtifact.Role == FrameArtifactRole.Metadata &&
+            measuredArtifact.MediaType == StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType &&
+            measuredArtifact.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
+            measuredArtifact.ContentIdentitySha256 is not null && measuredArtifact.SourceArtifactIds is { Count: 1 } &&
+            measuredArtifact.SourceArtifactIds[0] == raw.ArtifactId &&
+            measuredArtifact.RecipeDescriptor is
+            {
+                Name: BuiltInProcessingRecipes.MeasuredStellarAssociations,
+                SemanticVersion: "1.0.0", ImplementationVersion: "measured-stellar-associations-v1"
+            } &&
+            MeasuredAstrometryJson.Same(ProcessingIdentity.CreateRecipeIdentity(measuredArtifact.RecipeDescriptor).IdentitySha256,
+                measuredArtifact.RecipeIdentitySha256);
+    }
+
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request, ProcessingRecipeIdentity identity,
         CancellationToken cancellationToken)
     {
@@ -67,18 +83,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                 return Fail("astrometry.invalid-context");
             context = MeasuredAstrometryJson.ParseContext(contextInput.Payload);
             measuredArtifact = ResolveMeasured(request);
-            if (measuredArtifact.ProductKind != ProcessingProductKind.Metadata || measuredArtifact.Role != FrameArtifactRole.Metadata ||
-                measuredArtifact.MediaType != StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType ||
-                measuredArtifact.SchemaVersion != MeasuredStellarAssociationsV1.CurrentSchemaVersion ||
-                measuredArtifact.ContentIdentitySha256 is null || measuredArtifact.SourceArtifactIds is not { Count: 1 } ||
-                measuredArtifact.SourceArtifactIds[0] != raw.ArtifactId ||
-                measuredArtifact.RecipeDescriptor is not
-                {
-                    Name: BuiltInProcessingRecipes.MeasuredStellarAssociations,
-                    SemanticVersion: "1.0.0", ImplementationVersion: "measured-stellar-associations-v1"
-                } ||
-                !MeasuredAstrometryJson.Same(ProcessingIdentity.CreateRecipeIdentity(measuredArtifact.RecipeDescriptor).IdentitySha256,
-                    measuredArtifact.RecipeIdentitySha256))
+            if (!MeasuredInputIsValid(measuredArtifact, raw))
                 return Fail("astrometry.invalid-measured-input");
             measured = MeasuredStellarAssociationJson.Parse(measuredArtifact.Payload).Associations
                 ?? throw new ArgumentException("Invalid measured associations.");
@@ -101,12 +106,10 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         // fixed-centroid slice even when a presentation policy allows their labels. Preserve original detection IDs.
         cancellationToken.ThrowIfCancellationRequested();
         var qualified = Qualified(measured);
-        var detections = qualified.Select(a => new AstrometricDetection(a.DetectionIndex, new(a.MeasuredX, a.MeasuredY), a.Flux)).OrderBy(a => a.Index).ToArray();
+        var detections = Detections(qualified);
         // The retained producer rounds covariance to six decimals. A rounded zero/singular matrix is missing
         // covariance, never a manufactured positive floor. The shared estimator explicitly withholds incomplete data.
-        var covariances = qualified.Where(a => a.CovarianceXX is > 0 && a.CovarianceYY is > 0 &&
-            a.CovarianceXX * a.CovarianceYY - a.CovarianceXY * a.CovarianceXY > 0).Select(a =>
-            new AstrometricPixelCovariance(a.DetectionIndex, a.CovarianceXX!.Value, a.CovarianceXY!.Value, a.CovarianceYY!.Value)).ToArray();
+        var covariances = Covariances(qualified);
         var solver = options.Solver!;
         AstrometricFrameAssessment assessment;
         MeasuredAstrometryResidualSummaryV1 residuals;
@@ -145,7 +148,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                     var used = fitting.Concat(verification).ToHashSet();
                     residuals = new(detections.Length, fitting, verification, detections.Where(d => !used.Contains(d.Index)).Select(d => d.Index).ToArray(),
                         assessment.Quality!.FittingRmsPixels, assessment.Quality.VerificationRmsPixels,
-                        diagnostics.Residuals.Max(r => r.ResidualPixels), diagnostics.Conditioning, "available");
+                        diagnostics.Residuals.Max(r => r.ResidualPixels), diagnostics.Conditioning, "available", result.Associations);
                     budget.Token.ThrowIfCancellationRequested();
                     return Produce();
                 }
@@ -158,10 +161,10 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         }
         cancellationToken.ThrowIfCancellationRequested();
         residuals = new(Math.Min(detections.Length, AstrometricCatalogData.MaximumEntries), [], [],
-            detections.Take(AstrometricCatalogData.MaximumEntries).Select(d => d.Index).ToArray(), null, null, null, null, assessment.ReasonCode);
+            detections.Take(AstrometricCatalogData.MaximumEntries).Select(d => d.Index).ToArray(), null, null, null, null, assessment.ReasonCode, []);
         // Exceeding the input bound never retains a truncated set as a complete measurement.
         if (detections.Length > AstrometricCatalogData.MaximumEntries)
-            residuals = new(0, [], [], [], null, null, null, null, "measured-entry-bound");
+            residuals = new(0, [], [], [], null, null, null, null, "measured-entry-bound", []);
         return Produce();
 
         ValueTask<ProcessingOutcome> Produce()
@@ -181,6 +184,15 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
 
     internal static MeasuredStellarAssociationV1[] Qualified(MeasuredStellarAssociationsV1 measured) => measured.Associations
         .Where(a => a.LabelEligible && !a.Saturated && !a.Trailed && a.Flux > 0).ToArray();
+
+    internal static AstrometricDetection[] Detections(IEnumerable<MeasuredStellarAssociationV1> qualified) => qualified
+        .Select(a => new AstrometricDetection(a.DetectionIndex, new(a.MeasuredX, a.MeasuredY), a.Flux)).OrderBy(a => a.Index).ToArray();
+
+    internal static AstrometricPixelCovariance[] Covariances(IEnumerable<MeasuredStellarAssociationV1> qualified) => qualified
+        .Where(a => a.CovarianceXX is > 0 && a.CovarianceYY is > 0 &&
+            a.CovarianceXX * a.CovarianceYY - a.CovarianceXY * a.CovarianceXY > 0)
+        .Select(a => new AstrometricPixelCovariance(a.DetectionIndex, a.CovarianceXX!.Value, a.CovarianceXY!.Value, a.CovarianceYY!.Value))
+        .OrderBy(a => a.DetectionIndex).ToArray();
 
     internal static string? LineageFailure(ProcessingArtifact raw, ProcessingArtifact measuredArtifact,
         MeasuredStellarAssociationsV1 measured, ProjectedSceneV1 scene, MeasuredAstrometryContextV1 context,

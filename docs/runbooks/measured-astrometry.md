@@ -91,15 +91,39 @@ recipe, scene, layout/readout and package identities, and embeds the existing
 `AstrometricFrameAssessment` using `AstrometricEvidenceJson`. It retains accepted,
 rejected, unavailable and budget outcomes; accepted fit quality, fit/verification/
 outlier detection-index membership, RMS/maximum residual/conditioning, and the
-existing uncertainty result or a withhold reason. These small membership lists
-refer to the separately retained measured rows; they copy no catalog/centroid
-rows. The native assessment retains the solver's association hash. Failure
-results have no fitted parameters. Malformed or mismatched lineage fails the
+existing uncertainty result or a withhold reason. The membership lists refer to
+the separately retained measured rows. Accepted
+outputs also retain the existing native `AstrometricAssociation` records (catalog
+ID, detection index, full-precision residual and verification flag), in native
+catalog order. Their native hash must equal the assessment's association hash,
+and their fitting/verification split must equal the membership lists. Residuals
+are preserved exactly: recomputing them from the fitted mapping can change their
+last bits and cannot reliably reproduce that hash. Publication and reconstruction
+also require the complete membership to equal qualified measured detections and
+every native catalog/detection pair to agree with its measured row. This compact
+evidence copies no catalog coordinates or centroid rows and requires no refit.
+Failure results have no fitted parameters. Malformed or mismatched lineage fails the
 Processing request without publishing a misleading assessment.
 
 Canonical JSON disallows missing/duplicate/unknown members, validates native
-assessment/uncertainty identities and caps the result at 128 KiB. The semantic
-solution identity is the canonical payload SHA-256. Processing output identity
+assessment/uncertainty identities and caps the result at 128 KiB. Execution and
+publication use the same measured-artifact envelope validator, including kind,
+role, media/schema, supported producer name/version/implementation, recomputed
+producer-descriptor identity and immediate raw parent.
+
+`AstrometricUncertaintyEvidence` validates component status/reason consistency,
+finite symmetric positive-semidefinite 4 x 4 covariances, derived standard errors,
+and the sum required for an available total. Publication binds the native
+measurement identity to the exact sorted qualified centroids and usable retained
+covariances, and binds the native readout identity, exposure/convention tuple,
+clock facts and estimator settings to frozen inputs. The native readout hash
+covers the readout declaration; it is distinct from Processing's full raw-layout
+hash. Explicit absent readouts remain absent. Input-driven withhold reasons are
+preserved. Conditional uncertainty can be available while shared calibration and
+total remain withheld; unavailable clock bounds are independent of that status
+and never enter the total. The native identity algorithms remain unchanged.
+
+The semantic solution identity is the canonical payload SHA-256. Processing output identity
 also binds the recipe and immediate raw/measured source artifact IDs. Timings do
 not enter semantic identity. Keep the measured product for at least as long as
 its solution; ordinary generic metadata publication must preserve both parents.

@@ -48,7 +48,8 @@ public sealed record MeasuredAstrometryResidualSummaryV1(
     [property: JsonRequired] double? VerificationRmsPixels,
     [property: JsonRequired] double? MaximumResidualPixels,
     [property: JsonRequired] AstrometricConditioning? Conditioning,
-    [property: JsonRequired] string ReasonCode);
+    [property: JsonRequired] string ReasonCode,
+    [property: JsonRequired] IReadOnlyList<AstrometricAssociation> NativeAssociations);
 
 /// <summary>
 /// A compact retained proposal, including failures. No calibration is changed. Native assessment bytes are validated
@@ -172,6 +173,7 @@ public static class MeasuredAstrometryJson
             throw new ArgumentException("Invalid catalog package identity.", nameof(value));
         var r = value.Residuals;
         if (r.FittingDetectionIndexes is null || r.VerificationDetectionIndexes is null || r.OutlierDetectionIndexes is null ||
+            r.NativeAssociations is null || r.NativeAssociations.Count > AstrometricCatalogData.MaximumEntries ||
             r.QualifiedCount is < 0 or > AstrometricCatalogData.MaximumEntries || string.IsNullOrWhiteSpace(r.ReasonCode) || r.ReasonCode.Length > 128)
             throw new ArgumentException("Invalid residual evidence.", nameof(value));
         var all = r.FittingDetectionIndexes.Concat(r.VerificationDetectionIndexes).Concat(r.OutlierDetectionIndexes).ToArray();
@@ -183,22 +185,32 @@ public static class MeasuredAstrometryJson
             throw new ArgumentException("Invalid residual membership or values.", nameof(value));
         if (value.Assessment.HasMeasuredMapping)
         {
+            // Keep the native solver records at full residual precision: recomputing residuals from a mapping
+            // can change the last bits and cannot reproduce the native association identity.
+            var associations = r.NativeAssociations;
+            if (associations.Any(a => a is null || string.IsNullOrWhiteSpace(a.CatalogId) || a.CatalogId.Length > 256 ||
+                    a.DetectionIndex is < 0 or >= 4096 || !double.IsFinite(a.ResidualPixels) || a.ResidualPixels < 0) ||
+                associations.Select(a => a.CatalogId).Distinct(StringComparer.Ordinal).Count() != associations.Count ||
+                associations.Select(a => a.DetectionIndex).Distinct().Count() != associations.Count ||
+                !associations.Select(a => a.CatalogId).SequenceEqual(associations.Select(a => a.CatalogId).Order(StringComparer.Ordinal)) ||
+                NativeIdentity(associations) != value.Assessment.AssociationIdentitySha256 ||
+                !r.FittingDetectionIndexes.SequenceEqual(associations.Where(a => !a.Verification).Select(a => a.DetectionIndex).Order()) ||
+                !r.VerificationDetectionIndexes.SequenceEqual(associations.Where(a => a.Verification).Select(a => a.DetectionIndex).Order()))
+                throw new ArgumentException("Retained membership differs from native associations.", nameof(value));
             var q = value.Assessment.Quality!;
             if (r.FittingDetectionIndexes.Count != q.InlierCount || r.VerificationDetectionIndexes.Count != q.VerificationCount ||
                 r.FittingRmsPixels != q.FittingRmsPixels || r.VerificationRmsPixels != q.VerificationRmsPixels ||
                 r.MaximumResidualPixels is null || r.ReasonCode != "available" || value.Uncertainty is null)
                 throw new ArgumentException("Accepted solution lacks fit/uncertainty evidence.", nameof(value));
         }
-        else if (r.FittingDetectionIndexes.Count != 0 || r.VerificationDetectionIndexes.Count != 0 || value.Uncertainty is not null)
+        else if (r.FittingDetectionIndexes.Count != 0 || r.VerificationDetectionIndexes.Count != 0 || r.NativeAssociations.Count != 0 || value.Uncertainty is not null)
             throw new ArgumentException("A failed solution cannot retain accepted fit evidence.", nameof(value));
-        if (value.Uncertainty is { } u && (u.SchemaVersion != AstrometricFrameUncertainty.CurrentSchemaVersion ||
-            u.IdentitySha256 != NativeIdentity(u with { IdentitySha256 = string.Empty }) ||
-            u.AssessmentIdentitySha256 != value.Assessment.IdentitySha256 ||
-            u.CalibrationIdentitySha256 != value.Assessment.CalibrationIdentitySha256 ||
-            u.CatalogIdentitySha256 != value.Assessment.CatalogIdentitySha256 ||
-            u.CatalogSelectionIdentitySha256 != value.Assessment.CatalogSelectionIdentitySha256 ||
-            u.SolverSettingsIdentitySha256 != value.Assessment.SettingsIdentitySha256 || u.ReasonCode != value.UncertaintyReasonCode))
-            throw new ArgumentException("Uncertainty lineage/content mismatch.", nameof(value));
+        if (value.Uncertainty is { } u)
+        {
+            AstrometricUncertaintyEvidence.Validate(u, value.Assessment);
+            if (u.ReasonCode != value.UncertaintyReasonCode)
+                throw new ArgumentException("Uncertainty reason mismatch.", nameof(value));
+        }
     }
 
     internal static bool MatchesContext(MeasuredAstrometrySolutionV1 value, MeasuredAstrometryContextV1 context,
@@ -231,11 +243,21 @@ public static class MeasuredAstrometryJson
             !Same(measured.Scene.SceneIdentitySha256, solution.SceneIdentitySha256) ||
             !Same(calibration.ReadoutIdentitySha256, solution.ReadoutIdentitySha256))
             throw new ArgumentException("Retained mapping input mismatch.", nameof(measured));
-        var qualified = MeasuredAstrometryRecipe.Qualified(measured).Select(a => a.DetectionIndex).Order().ToArray();
-        var retained = solution.Residuals.FittingDetectionIndexes.Concat(solution.Residuals.VerificationDetectionIndexes)
-            .Concat(solution.Residuals.OutlierDetectionIndexes).Order().ToArray();
-        if (!qualified.SequenceEqual(retained)) throw new ArgumentException("Retained membership differs from measured evidence.", nameof(measured));
+        if (!MembershipMatchesMeasured(solution, measured))
+            throw new ArgumentException("Retained membership differs from measured evidence.", nameof(measured));
         return new(calibration, solution.Assessment);
+    }
+
+    internal static bool MembershipMatchesMeasured(MeasuredAstrometrySolutionV1 solution, MeasuredStellarAssociationsV1 measured)
+    {
+        var qualified = MeasuredAstrometryRecipe.Qualified(measured);
+        var r = solution.Residuals;
+        if (qualified.Length > AstrometricCatalogData.MaximumEntries)
+            return !solution.Assessment.HasMeasuredMapping && r.QualifiedCount == 0 && r.ReasonCode == "measured-entry-bound";
+        var retained = r.FittingDetectionIndexes.Concat(r.VerificationDetectionIndexes).Concat(r.OutlierDetectionIndexes).Order();
+        var byIndex = qualified.ToDictionary(a => a.DetectionIndex);
+        return qualified.Select(a => a.DetectionIndex).Order().SequenceEqual(retained) &&
+            r.NativeAssociations.All(a => byIndex.TryGetValue(a.DetectionIndex, out var row) && row.CatalogId == a.CatalogId);
     }
 
     /// <summary>Separate bounded mapping application for at most 4096 points, with cooperative cancellation.</summary>

@@ -212,12 +212,9 @@ public static class AstrometricUncertaintyEstimator
             throw new ArgumentException("Covariances must be unique, positive definite and reference supplied detections.", nameof(covariances));
         covariance = [.. covariance.OrderBy(c => c.DetectionIndex)];
         var covarianceByIndex = covariance.ToDictionary(c => c.DetectionIndex);
-        var measurementIdentity = AstrometricIdentity.Hash(new { schema = "astrometric-uncertainty-measurement-input-v1", measured, covariance });
+        var measurementIdentity = MeasurementIdentity(measured, covariance);
         var frame = assessment.Frame;
-        var conventions = new AstrometricConventionIdentity(frame.ExposureStartUtc, frame.ExposureEndUtc, frame.MidpointUtc, AstrometricConventionIdentity.Utc,
-            AstrometricConventionIdentity.J2000, assessment.CoordinateModel, AstrometricConventionIdentity.NoProperMotion,
-            AstrometricConventionIdentity.TopocentricHorizontal, assessment.RefractionModel, assessment.PixelCoordinateConvention,
-            AstrometricConventionIdentity.RotationVectorLogScale);
+        var conventions = Conventions(assessment);
 
         var readoutIdentity = ReadoutIdentity(readout, calibration.Projection);
 
@@ -314,6 +311,22 @@ public static class AstrometricUncertaintyEstimator
         else total = Component([.. core.Conditional!.Select((v, i) => v + core.Systematic![i] + core.Calibration![i])], core.Rotation, core.Scale);
         return Create(Available, Available, "Measured centroid covariance propagated through a fixed-association generalized least-squares refit; model-validity tests passed.",
             estimate, centroid, conditional, systematic, shared, total, validity);
+    }
+
+    internal static string MeasurementIdentity(IEnumerable<AstrometricDetection> detections, IEnumerable<AstrometricPixelCovariance> covariances)
+    {
+        var measured = detections.OrderBy(d => d.Index).ToArray();
+        var covariance = covariances.OrderBy(c => c.DetectionIndex).ToArray();
+        return AstrometricIdentity.Hash(new { schema = "astrometric-uncertainty-measurement-input-v1", measured, covariance });
+    }
+
+    internal static AstrometricConventionIdentity Conventions(AstrometricFrameAssessment assessment)
+    {
+        var frame = assessment.Frame;
+        return new(frame.ExposureStartUtc, frame.ExposureEndUtc, frame.MidpointUtc, AstrometricConventionIdentity.Utc,
+            AstrometricConventionIdentity.J2000, assessment.CoordinateModel, AstrometricConventionIdentity.NoProperMotion,
+            AstrometricConventionIdentity.TopocentricHorizontal, assessment.RefractionModel, assessment.PixelCoordinateConvention,
+            AstrometricConventionIdentity.RotationVectorLogScale);
     }
 
     /// <summary>
@@ -666,7 +679,7 @@ public static class AstrometricUncertaintyEstimator
 
     private static double Quadratic(PixelCovariance w, double x, double y) => w.Xx * x * x + 2 * w.Xy * x * y + w.Yy * y * y;
 
-    private static AstrometricPoseCovarianceComponent Component(double[] covariance, AstrometricRotation rotation, double scale)
+    internal static AstrometricPoseCovarianceComponent Component(double[] covariance, AstrometricRotation rotation, double scale)
     {
         double Along(EnuVector v) { var sum = 0d; for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) sum += Axis(v, i) * covariance[i * 4 + j] * Axis(v, j); return sum; }
         var degrees = 180 / Math.PI;
@@ -681,7 +694,7 @@ public static class AstrometricUncertaintyEstimator
     /// Binds the supplied readout declaration, including binning operation and CFA origin that leave the projection unchanged, after
     /// checking it is internally consistent and produces the frame calibration's image size.
     /// </summary>
-    private static string? ReadoutIdentity(FrameReadoutDescriptor? readout, ProjectionContext projection)
+    internal static string? ReadoutIdentity(FrameReadoutDescriptor? readout, ProjectionContext projection)
     {
         if (readout is null) return null;
         var binned = readout.BinX != 1 || readout.BinY != 1;
@@ -709,7 +722,7 @@ public static class AstrometricUncertaintyEstimator
             majors.Length == 0 ? null : majors[^1]);
     }
 
-    private static AstrometricClockComponent Clock(AstrometricClockFacts clock) => clock.Synchronization switch
+    internal static AstrometricClockComponent Clock(AstrometricClockFacts clock) => clock.Synchronization switch
     {
         AstrometricClockSynchronization.NotSupplied => new(Withheld, "clock-facts-not-supplied", null, null, false),
         AstrometricClockSynchronization.Unknown => new(Withheld, "clock-synchronization-unknown", null, null, false),

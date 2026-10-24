@@ -36,13 +36,15 @@ Native and recipe cold assessment identities are exactly equal:
 `ba9546bd83dc8e68536b3593729b89de43288d19f3a795ed9e19ac124488c710`.
 Native and recipe warm assessment identities are exactly equal:
 `fde0426eee116baaccf91a0dbd6ebe85c05c6504e3176ba9e0ac8335e3a1f26c`.
-The repeated same-frame warm result used for resource comparison is 7,386 bytes,
+The repeated same-frame warm result used for resource comparison is 18,358 bytes,
 canonical payload/semantic SHA-256
-`11CBFB5ED7810CE19F350C36EFE63A91758AD6325F31FF12F24077BE0337FD50`.
+`61C5B015503F57B411D857484985FFFB685830CA5BD4F68E70AAC9849B92A374`.
 The input context is 111,653 bytes, the separately retained measured product
 77,862 bytes and the raw payload 524,288 bytes. The solution contains no catalog
-rows, full scene, full calibration or copied centroid rows. Caller cancellation
-publishes nothing; rejection/unavailability/budget outputs contain no mapping.
+rows, full scene, full calibration or copied centroid rows. It retains 106 native
+association records, preserving their full-precision residuals and verification
+flags so the native association hash and measured membership can be checked
+without refitting. Caller cancellation publishes nothing; rejection/unavailability/budget outputs contain no mapping.
 
 The missing/rounded covariance is explicitly `centroid-covariance-missing`;
 conditional and total uncertainty are withheld. No shared session calibration
@@ -70,18 +72,23 @@ and are not isolated per-operation peak measurements.
 
 | Path | p50 / sample p95 ms | CPU ms for 10 | Allocated bytes/op |
 | --- | ---: | ---: | ---: |
-| Native cold | 888.69 / 1053.52 | 9172.94 | 1,209,363,387 |
-| Recipe cold + retained parse | 874.67 / 1019.04 | 9109.80 | 1,225,163,957 |
-| Native warm | 1.66 / 9.82 | 25.08 | 1,097,884 |
-| Recipe warm + retained parse | 17.93 / 29.53 | 267.53 | 16,986,084 |
+| Native cold | 913.20 / 1267.76 | 9494.79 | 1,209,368,292 |
+| Recipe cold + retained parse | 901.05 / 1353.33 | 9865.90 | 1,225,876,949 |
+| Native warm | 1.66 / 9.98 | 25.57 | 1,103,787 |
+| Recipe warm + retained parse | 15.22 / 24.57 | 231.74 | 17,701,672 |
 
 Cold timing differences are measurement/GC noise, not a speed-up claim. The
-wrapper adds about 15.8–15.9 MB managed allocation per operation for strict JSON,
-canonicalization and lineage checks. Warm median overhead is about 16.3 ms.
+wrapper adds about 16.5–16.6 MB managed allocation per operation for strict JSON,
+canonicalization and lineage checks. Warm median overhead is about 13.6 ms.
 The inherited cold solver allocates about **1.21 GB/op**; no solver replacement
-or allocation improvement is claimed. The process peak was 256,983,040 bytes
-(about 245 MiB), with sampled working sets from 173,944,832 to 227,151,872 bytes.
+or allocation improvement is claimed. The process peak was 273,903,616 bytes
+(about 261 MiB), with sampled working sets from 168,591,360 to 229,875,712 bytes.
 There is no per-frame host/live default and cold concurrency must remain bounded.
+Retained native association integrity and
+uncertainty validation add about 11 KiB to the reference output and about 0.7 MB
+managed allocation per recipe operation versus the earlier membership-only
+envelope. The software reference remains within its declared byte/work bounds;
+these timings do not establish host throughput or production qualification.
 The current recipe performs no new full-frame decode/copy; its raw work is one
 checksum pass. Input/JSON work is bounded by 16M samples, 2,500 catalog rows and
 the existing measured/scene byte bounds. Existing solver work bounds still own
@@ -98,7 +105,8 @@ flock -o /tmp/hvo-heavy-gate.lock timeout 300 env -u HVO_PRODUCTION_CATALOG_BUND
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
   -c Release --no-restore -nodeReuse:false -p:UseSharedCompilation=false -warnaserror \
-  --filter 'TestCategory=Unit' --logger 'trx;LogFileName=processing-unit.trx' \
+  --filter 'TestCategory=Unit' --settings tests/coverage.runsettings \
+  --collect:'XPlat Code Coverage' --logger 'trx;LogFileName=processing-unit.trx' \
   --results-directory "$EVIDENCE"
 
 flock -o /tmp/hvo-heavy-gate.lock timeout 180 env -u HVO_PRODUCTION_CATALOG_BUNDLE \
@@ -109,24 +117,30 @@ flock -o /tmp/hvo-heavy-gate.lock timeout 180 env -u HVO_PRODUCTION_CATALOG_BUND
   --logger 'trx;LogFileName=resources.trx' --results-directory "$EVIDENCE"
 ```
 
-The final affected Processing Unit selection passed **942/942** in 28 seconds,
-with Release build and warnings-as-errors, including the separate later-capture
-warm fixture and publication-contract source checks. The focused recipe
-selection separately passed **18/18** in 12 seconds. The Manual resource case
-passed and produced the retained report. Focused source and test formatting
-verification passed. There are **18** new Unit acceptance methods and **1**
-Manual resource method. Acceptance includes accepted/rejected/no-data/sparse/clustered/degenerate/
-outlier inputs, incomplete measurements, malformed/mismatched artifacts,
-catalog/time/observer/calibration/readout lineage, changed catalog coordinates,
-canonical/size/native evidence rejection, bounded caller/internal cancellation,
-warm settings/package compatibility and immutable mapping reconstruction.
+The affected Processing Unit selection passed **978/978** and its focused
+measured-astrometry selection passed **54/54**. Astronomy Unit passed **791/791**;
+both complete Unit selections collected XPlat coverage and built Release with
+warnings as errors. Astronomy's separate Integration selection passed **2/2**.
+Changed source/test formatting verification and the operations documentation
+audit passed. The representative resource method passed once and produced the
+report above. Astronomy adds **10** retained
+uncertainty validation cases, including native available/withheld/shared/clock
+combinations and malformed available covariance. Focused acceptance includes membership replacement, fitting/outlier and
+fitting/verification swaps, self-consistent native evidence with nonexistent or
+wrong-catalog measured rows, one-bit residual changes, rehashed uncertainty
+bindings, contradictory contributors and covariance structure, and measured
+producer descriptor/envelope parity between execution and publication.
+The available-conditional/missing-shared/missing-clock case proves legitimate
+partial-withhold output still publishes and reconstructs. Native assessment and
+uncertainty identities preserve their existing algorithms.
 
-Actual `dotnet test --no-build --list-tests --diag <file>` discovery was read
-from `TestDiscovery.TestFound` and `TestDiscovery.Completed` messages, once
-unfiltered and once for each primary category. Processing discovery is
-**All=959, Unit=942, Manual=17, Integration=0, Soak=0, External=0, Hardware=0**;
-category membership is disjoint and its union equals unfiltered discovery.
-The project inventory is updated to those observed counts. The aggregate
-runbook totals become Unit=14003 and Manual=286; other project inventories are
-unchanged. Whole-solution discovery and complete candidate checks remain the
-parent's gate, not evidence inferred from this component run.
+Actual `dotnet test --no-build --list-tests --diag <file>` discovery is read from
+`TestDiscovery.TestFound` and `TestDiscovery.Completed` messages, once unfiltered
+and once for each primary category. Processing discovery is **All=995, Unit=978,
+Manual=17, Integration=0, Soak=0, External=0, Hardware=0**; Astronomy discovery is
+**All=798, Unit=791, Integration=2, Manual=5, Soak=0, External=0, Hardware=0**.
+Category membership is disjoint and its union equals unfiltered discovery.
+The aggregate runbook totals are Unit=14049, Integration=957 and Manual=286;
+other project inventories remain unchanged. Whole-solution discovery, broad
+correction gates and canonical aggregate coverage refresh remain the owner's
+final gate, rather than evidence inferred from these component runs.

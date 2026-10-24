@@ -211,11 +211,20 @@ internal static class BuiltInProcessingProductContracts
                 var measuredPayload = MeasuredStellarAssociationJson.Parse(measured.Payload).Associations;
                 var scenePayload = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Parse(scene.Payload).Scene;
                 if (raw?.Layout is null || measuredPayload is null || scenePayload is null ||
-                    measured.SourceArtifactIds is not { Count: 1 } || measured.SourceArtifactIds[0] != raw.ArtifactId ||
+                    !MeasuredAstrometryRecipe.MeasuredInputIsValid(measured, raw) ||
+                    !MeasuredAstrometryJson.MembershipMatchesMeasured(solution, measuredPayload) ||
                     !MeasuredAstrometryJson.Same(scene.IdentitySha256, scenePayload.SceneIdentitySha256) ||
                     MeasuredAstrometryRecipe.LineageFailure(raw, measured, measuredPayload, scenePayload, frozenContext,
                         new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
                         MeasuredAstrometryJson.Catalog(frozenContext)) is not null) return false;
+                if (solution.Uncertainty is { } uncertainty)
+                {
+                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload);
+                    HVO.SkyMonitor.Astronomy.AstrometricUncertaintyEvidence.ValidateInputs(uncertainty, solution.Assessment,
+                        new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
+                        MeasuredAstrometryRecipe.Detections(qualified), MeasuredAstrometryRecipe.Covariances(qualified),
+                        solution.Residuals.NativeAssociations, frozenContext.Clock, raw.Layout.Readout, normalized.Solver!, normalized.Uncertainty!);
+                }
                 if (solution.RecipeIdentitySha256 != recipeIdentitySha256 ||
                     solution.SolutionIdentitySha256 != contentIdentitySha256 ||
                     !MeasuredAstrometryJson.Same(solution.ContextIdentitySha256, context.IdentitySha256) ||
