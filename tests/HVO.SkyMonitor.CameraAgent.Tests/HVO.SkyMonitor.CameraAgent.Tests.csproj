@@ -48,6 +48,8 @@
 
   <ItemGroup>
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureSatelliteFixture.cs" Link="Capture/Processing/CaptureSatelliteFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredAstrometryFixture.cs" Link="Capture/Processing/MeasuredAstrometryFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredStellarAssociationFixtures.cs" Link="Capture/Processing/MeasuredStellarAssociationFixtures.cs" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/leap-seconds.list" Link="Fixtures/Nominal/leap-seconds.list" CopyToOutputDirectory="PreserveNewest" />

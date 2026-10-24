@@ -43,6 +43,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         builder.Services.AddCameraAgentAuthorization();
         builder.Services.AddAuthentication("satellite-test").AddScheme<AuthenticationSchemeOptions, SatelliteAuthenticationHandler>("satellite-test", _ => { });
         builder.Services.AddSingleton(retained.GetRequiredService<ICameraAgentLayeredPresentationService>());
+        builder.Services.AddSingleton(retained.GetRequiredService<ICameraAgentRetainedAstrometryService>());
         builder.Services.AddSingleton(retained.GetRequiredService<ICameraAgentGallery>());
         builder.Services.AddSingleton(retained.GetRequiredService<ICameraAgentArchive>());
         builder.Services.AddSingleton(retained.GetRequiredService<ICameraAgentCurrentImagePresentationService>());
@@ -56,13 +57,20 @@ public sealed partial class CaptureSatelliteIntegrationTests
         await app.StartAsync().ConfigureAwait(false);
         using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
         var path = $"/api/v1/operations/gallery/{presentation.CaptureId:D}/presentation.svg";
+        var astrometryPath = new Uri($"/api/v1/operations/gallery/{presentation.CaptureId:D}/astrometry", UriKind.Relative);
+        using (var denied = await client.GetAsync(astrometryPath).ConfigureAwait(false))
+            Assert.AreEqual(HttpStatusCode.Unauthorized, denied.StatusCode);
         using (var denied = await client.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false))
             Assert.AreEqual(HttpStatusCode.Unauthorized, denied.StatusCode);
         client.DefaultRequestHeaders.Add("X-Satellite-Test-User", "reader");
+        using (var denied = await client.GetAsync(astrometryPath).ConfigureAwait(false))
+            Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
         using (var denied = await client.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false))
             Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
         client.DefaultRequestHeaders.Remove("X-Satellite-Test-User");
         client.DefaultRequestHeaders.Add("X-Satellite-Test-User", "owner");
+        using (var assessment = await client.GetAsync(astrometryPath).ConfigureAwait(false))
+            Assert.AreEqual(HttpStatusCode.OK, assessment.StatusCode);
         using var read = await client.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, read.StatusCode);
         CollectionAssert.AreEqual(presentation.Svg.ToArray(), await read.Content.ReadAsByteArrayAsync().ConfigureAwait(false));

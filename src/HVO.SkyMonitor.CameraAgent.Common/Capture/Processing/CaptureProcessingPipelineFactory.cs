@@ -262,6 +262,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            if (configured.Count(static item => item.Step is MeasuredAstrometryCaptureProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded astrometry producer.");
+            foreach (var astrometry in configured.Where(static item => item.Step is MeasuredAstrometryCaptureProcessingStep))
+            {
+                if (!explicitV2 || astrometry.Config.Required || astrometry.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal ||
+                    astrometry.Config.DependsOn is not { Count: 2 } || astrometry.Config.DependsOn.Any(id =>
+                        !nodesById.TryGetValue(id, out var producer) ||
+                        producer.Step is not (ProjectedSceneCaptureProcessingStep or MeasuredStellarAssociationCaptureProcessingStep) ||
+                        producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
+                    throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
+            }
             if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
                 throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
             foreach (var satellite in configured.Where(static item => item.Step is CaptureSatelliteTracksProcessingStep))
