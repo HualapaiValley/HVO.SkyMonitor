@@ -11,7 +11,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -167,7 +170,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow(6.5, 1, false, "bright")]
     [DataRow(2.0, 1, false, "bright")]
     [DataRow(2.0, 1, true, "bright,endpoint")]
-    public async Task PhysicalSceneQuery_DraftInactiveActivationAndRollbackUseOneRevision(
+    public async Task PhysicalSceneQuery_EditorDraftInactiveActivationAndRollbackUseOneRevision(
         double magnitude, int limit, bool endpoints, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
@@ -181,8 +184,21 @@ public sealed partial class ProcessingGraphOperationsTests
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
             var catalog = new PhysicalSceneCatalog();
             var original = await CapturePhysicalSceneAsync(provider, config, 0, catalog).ConfigureAwait(false);
-            var pipeline = QueryPipeline(config, magnitude, limit, endpoints);
+            var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "physical-query", "2");
+            var form = model.Nodes[0].OptionsForm!;
+            form.Set("maximumMagnitude", magnitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            form.Set("maximumResults", limit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            form.Set("includeConstellationEndpointStars", endpoints.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Assert.IsTrue(model.TryBuild(out var pipeline, out var errors), string.Join(' ', errors));
+            var expectedOptions = config.Pipeline.Steps[0].Options!.Value.GetRawText()
+                .Replace("\"maximumMagnitude\":6.5", "\"maximumMagnitude\":" + magnitude.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("\"maximumResults\":2000", "\"maximumResults\":" + limit.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("\"includeConstellationEndpointStars\":false", "\"includeConstellationEndpointStars\":" + (endpoints ? "true" : "false"), StringComparison.Ordinal);
+            Assert.AreEqual(expectedOptions, pipeline.Steps[0].Options!.Value.GetRawText());
             var draft = await operations.CreateRevisionAsync("physical-query", "2", pipeline, "create", "test", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, draft.Lifecycle);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "premature", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             var draftCapture = await CapturePhysicalSceneAsync(provider, config, 1, catalog).ConfigureAwait(false);
             await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "test", null, CancellationToken.None).ConfigureAwait(false);
             var inactiveCapture = await CapturePhysicalSceneAsync(provider, config, 2, catalog).ConfigureAwait(false);
@@ -203,6 +219,19 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(limit, changed.Scene.Selection.MaximumResults);
             Assert.AreEqual(endpoints, changed.Scene.Selection.IncludeConstellationEndpointStars);
             CollectionAssert.AreEquivalent(expected.Split(','), StarIds(changed.Scene));
+            var retainedDraft = await operations.ReadRevisionPipelineAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(pipeline.Steps[0].Options!.Value),
+                CaptureContractJson.ComputeCanonicalJsonSha256(retainedDraft!.Steps[0].Options!.Value));
+            Assert.AreEqual(original.Scene.AstronomyAlgorithmVersion, changed.Scene.AstronomyAlgorithmVersion);
+            Assert.AreEqual(original.Scene.Catalog, changed.Scene.Catalog);
+            // Both scene selections remain predictions; catalog names keep the expected-position qualification.
+            foreach (var scene in new[] { original.Scene, changed.Scene })
+            {
+                var labels = StellarLabelPolicy.Apply(ProjectedSceneAnnotation.CreateObjects(scene, 30), null, true)
+                    .Where(static item => item.DrawLabel && !item.Id.StartsWith("solar-system:", StringComparison.Ordinal)).ToArray();
+                Assert.IsNotEmpty(labels);
+                Assert.IsTrue(labels.All(static item => AnnotationLabelFormatter.Format(item, 64)!.EndsWith(" (expected)", StringComparison.Ordinal)));
+            }
             await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
             var rollback = await CapturePhysicalSceneAsync(provider, config, 4, catalog).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, rollback.Execution.Execution.GraphRevisionId);
@@ -210,6 +239,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(JsonSerializer.Serialize(original.Scene.Selection), JsonSerializer.Serialize(rollback.Scene.Selection));
             var retained = await ReadPhysicalSceneOutputAsync(provider, original.Execution).ConfigureAwait(false);
             CollectionAssert.AreEqual(original.Bytes, retained.Bytes);
+            Assert.AreEqual(original.Scene.SceneIdentitySha256, ProjectedSceneJson.Parse(retained.Bytes).Scene!.SceneIdentitySha256);
             Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(config.Pipeline.Steps[0].Options!.Value),
                 CaptureContractJson.ComputeCanonicalJsonSha256((await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[0].Options!.Value));
             Console.WriteLine($"query={magnitude}/{limit}/{endpoints}; selected={string.Join(',', StarIds(changed.Scene))}; revision={draft.RevisionId}; retained={Convert.ToHexString(SHA256.HashData(original.Bytes))}");
