@@ -42,10 +42,12 @@ internal sealed class CaptureHostContext(
         RawCaptureGraphBinding? binding = null;
         if (projectedSceneStager is not null)
         {
+            var bindingPrepared = false;
             try
             {
                 binding = await _rawCaptureIngress.PrepareGraphBindingAsync(
                     _configuration, submission, cancellationToken).ConfigureAwait(false);
+                bindingPrepared = true;
                 if (binding?.AlreadyPublished != true)
                 {
                     var sceneConfiguration = binding is null
@@ -60,9 +62,10 @@ internal sealed class CaptureHostContext(
             {
                 stagingFailed = true;
                 var reason = ClassifyStagingFailure(exception);
-                // A binding lookup failure must not erase VirtualSky's already captured render evidence.
+                // Ingress retries a failed binding lookup and still needs the original supplied scene
+                // to reject conflicting retry evidence. VirtualSky's captured render is always authoritative.
                 if (!string.Equals(_configuration.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
-                    submission = MarkProjectedSceneUnavailable(submission, reason);
+                    submission = MarkProjectedSceneUnavailable(submission, reason, preserveSuppliedScene: !bindingPrepared);
                 ProjectedSceneStagingOutcomes.Add(1, new KeyValuePair<string, object?>("outcome", reason));
                 (logger ?? NullLogger.Instance).ProjectedSceneStagingUnavailable(reason);
             }
@@ -99,7 +102,8 @@ internal sealed class CaptureHostContext(
 
     private static CaptureLoopSubmission MarkProjectedSceneUnavailable(
         CaptureLoopSubmission submission,
-        string reason)
+        string reason,
+        bool preserveSuppliedScene)
     {
         if (submission.Result.Frame is not { } frame) return submission;
         var extra = frame.Metadata.Extra is null
@@ -113,7 +117,7 @@ internal sealed class CaptureHostContext(
             {
                 Frame = frame with
                 {
-                    Metadata = frame.Metadata with { Scene = null, Extra = extra }
+                    Metadata = frame.Metadata with { Scene = preserveSuppliedScene ? frame.Metadata.Scene : null, Extra = extra }
                 }
             }
         };

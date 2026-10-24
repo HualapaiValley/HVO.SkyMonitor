@@ -24,6 +24,143 @@ public sealed partial class ProcessingGraphOperationsTests
     private static readonly string[] PhysicalEndpointStars = ["bright", "endpoint"];
     private static readonly string[] PhysicalConstellations = ["TST"];
     private static readonly SolarSystemBody[] PhysicalSolarBodies = [SolarSystemBody.Mars];
+    private static readonly string[] PhysicalSolarBodyNames = ["Mars"];
+
+    [TestMethod]
+    [DataRow("absent")]
+    [DataRow("null")]
+    public async Task PhysicalSceneQuery_ActivatedStringSolarSelectionStagesAndRetainsScene(string curated)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-physical-query-string-solar");
+        try
+        {
+            using var provider = CreateProvider(root);
+            var config = PhysicalQueryConfiguration(curated);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var pipeline = QueryPipeline(config, 2, 1, true);
+            var options = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(pipeline.Steps[0].Options!.Value.GetRawText())!;
+            options["solarSystemBodies"] = JsonSerializer.SerializeToElement(PhysicalSolarBodyNames);
+            pipeline = pipeline with { Steps = [pipeline.Steps[0] with { Options = JsonSerializer.SerializeToElement(options) }] };
+            var draft = await operations.CreateRevisionAsync("string-solar", "2", pipeline, "create", "test", null, CancellationToken.None).ConfigureAwait(false);
+            await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "test", null, CancellationToken.None).ConfigureAwait(false);
+            await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false);
+
+            var submission = PhysicalQuerySubmission(0);
+            var catalog = new PhysicalSceneCatalog();
+            await PhysicalHost(provider, config, catalog).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
+            var paths = PhysicalRawPaths(provider, config, submission);
+            var manifestBytes = await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false);
+            var manifest = CaptureContractJson.ParseManifest(manifestBytes).Document!.Manifest;
+            Assert.IsNotNull(manifest.Scene, "A validated string-valued solar selection must stage the physical scene.");
+            Assert.AreEqual(draft.RevisionId, manifest.CaptureGraphRevisionId);
+            var stage = await provider.GetRequiredService<IProjectedSceneStagingReader>().ReadAsync(manifest.Scene.ProjectedSceneStageKey!, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(stage);
+            Assert.AreEqual(2, stage.Selection.MaximumMagnitude);
+            Assert.AreEqual(1, stage.Selection.MaximumResults);
+            Assert.IsTrue(stage.Selection.IncludeConstellationEndpointStars);
+            CollectionAssert.AreEquivalent(PhysicalSolarBodies, stage.Selection.SolarSystemBodies.ToArray());
+            Assert.AreEqual(stage.AstronomyAlgorithmVersion, manifest.Scene.AstronomyAlgorithmVersion);
+            Assert.AreEqual(stage.EphemerisModelVersion, manifest.Scene.EphemerisModelVersion);
+            Assert.IsTrue(manifest.Scene.IncludeConstellationEndpointStars);
+
+            await CompleteLiveAsync(provider, config).ConfigureAwait(false);
+            var execution = await PhysicalExecutionAsync(provider, config, submission).ConfigureAwait(false);
+            Assert.AreEqual(draft.RevisionId, execution.Execution.GraphRevisionId);
+            var output = await ReadPhysicalSceneOutputAsync(provider, execution).ConfigureAwait(false);
+            Assert.AreEqual(ProjectedSceneKind.Predicted, output.Scene.Kind);
+            CollectionAssert.AreEqual(ProjectedSceneJson.Serialize(stage.Bind(output.Scene.Source, ProjectedSceneKind.Predicted)), output.Bytes);
+            CollectionAssert.AreEquivalent(PhysicalEndpointStars, StarIds(output.Scene));
+            Assert.IsTrue(output.Scene.Objects.Any(static item => item.Kind == CelestialObjectKind.SolarSystemBody && item.Id == "solar-system:Mars"));
+            Assert.AreEqual("query-fixture-astronomy-v1", output.Scene.AstronomyAlgorithmVersion);
+            Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor), output.Scene.Source.ArtifactIdentitySha256);
+            var retained = (await operations.ReadRevisionPipelineAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
+            Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(pipeline), CaptureContractJson.ComputeCanonicalJsonSha256(retained));
+            Assert.AreEqual("Mars", retained.Steps[0].Options!.Value.GetProperty("solarSystemBodies")[0].GetString());
+            Assert.AreEqual(17, retained.Steps[0].Options!.Value.GetProperty("future").GetProperty("keep").GetInt32());
+            Assert.AreEqual(curated == "null", retained.Steps[0].Options!.Value.TryGetProperty("curatedAnnotations", out var annotations));
+            if (curated == "null") Assert.AreEqual(JsonValueKind.Null, annotations.ValueKind);
+            CollectionAssert.AreEqual(manifestBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(submission.Result.Frame!.PixelData.ToArray(), await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
+            Assert.AreEqual(1, catalog.QueryCount);
+            Console.WriteLine($"string-solar={curated}; revision={draft.RevisionId}; scene-bytes={output.Bytes.Length}; SHA256={Convert.ToHexString(SHA256.HashData(output.Bytes))}");
+        }
+        finally { DeletePhysicalQueryRoot(root); }
+    }
+
+    [TestMethod]
+    [DataRow("scene")]
+    [DataRow("raw")]
+    [DataRow("descriptor")]
+    [DataRow("identical")]
+    public async Task PhysicalSceneQuery_BindingLookupFailurePreservesRetryEvidence(string changed)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-physical-query-binding-retry");
+        try
+        {
+            using var provider = CreateProvider(root);
+            var config = PhysicalQueryConfiguration();
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var catalog = new PhysicalSceneCatalog();
+            var capture = await CapturePhysicalSceneAsync(provider, config, 0, catalog).ConfigureAwait(false);
+            var submission = PhysicalQuerySubmission(0);
+            var frame = submission.Result.Frame!;
+            frame = frame with { Metadata = frame.Metadata with { Scene = capture.Manifest.Scene } };
+            frame = changed switch
+            {
+                "scene" => frame with { Metadata = frame.Metadata with { Scene = capture.Manifest.Scene! with { SceneId = new string('E', 64) } } },
+                "raw" => frame with { PixelData = new byte[] { 9, 0, 2, 0, 3, 0, 4, 0 } },
+                "descriptor" => frame with { Metadata = frame.Metadata with { Exposure = TimeSpan.FromSeconds(2) } },
+                _ => frame
+            };
+            submission = submission with { Result = submission.Result with { Frame = frame } };
+            catalog.DuringQuery = () => throw new AssertFailedException("A retry must consume retained scene evidence.");
+            if (changed == "identical")
+                await PhysicalHost(provider, config, catalog, new PhysicalBindingFailureIngress(ingress)).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
+            else
+            {
+                await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                    await PhysicalHost(provider, config, catalog).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                    await PhysicalHost(provider, config, catalog, new PhysicalBindingFailureIngress(ingress)).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+            var paths = PhysicalRawPaths(provider, config, submission);
+            CollectionAssert.AreEqual(capture.ManifestBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(PhysicalQuerySubmission(0).Result.Frame!.PixelData.ToArray(), await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
+            var output = await ReadPhysicalSceneOutputAsync(provider, capture.Execution).ConfigureAwait(false);
+            CollectionAssert.AreEqual(capture.Bytes, output.Bytes);
+            Assert.AreEqual(1, catalog.QueryCount);
+        }
+        finally { DeletePhysicalQueryRoot(root); }
+    }
+
+    [TestMethod]
+    public async Task PhysicalSceneQuery_BindingLookupFailureCommitsNewRawWithoutScene()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-physical-query-binding-new");
+        try
+        {
+            using var provider = CreateProvider(root);
+            var config = PhysicalQueryConfiguration();
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var submission = PhysicalQuerySubmission(0);
+            var catalog = new PhysicalSceneCatalog();
+            var failingIngress = new PhysicalBindingFailureIngress(ingress);
+            await PhysicalHost(provider, config, catalog, failingIngress).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
+            var paths = PhysicalRawPaths(provider, config, submission);
+            var manifest = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false)).Document!.Manifest;
+            Assert.IsNull(manifest.Scene);
+            CollectionAssert.AreEqual(submission.Result.Frame!.PixelData.ToArray(), await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
+            var observed = failingIngress.Submission!.Result.Frame!;
+            Assert.AreEqual("Unavailable", observed.Metadata.Extra!["projectedSceneAvailability"]);
+            Assert.AreEqual("storage-unavailable", observed.Metadata.Extra["projectedSceneUnavailableReason"]);
+            Assert.AreEqual(0, catalog.QueryCount);
+        }
+        finally { DeletePhysicalQueryRoot(root); }
+    }
 
     [TestMethod]
     [DataRow(2.0, 2000, false, "bright,second")]
@@ -677,6 +814,8 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private sealed class PhysicalBindingFailureIngress(IRawCaptureIngress inner) : IRawCaptureIngress
     {
+        internal CaptureLoopSubmission? Submission { get; private set; }
+
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => inner.InitializeAsync(cancellationToken);
         public ValueTask<RawCaptureReceipt?> AcceptAsync(CameraModuleConfig configuration, CaptureLoopSubmission submission,
             CancellationToken cancellationToken) => inner.AcceptAsync(configuration, submission, cancellationToken);
@@ -685,7 +824,10 @@ public sealed partial class ProcessingGraphOperationsTests
             => ValueTask.FromException<RawCaptureGraphBinding?>(new IOException("fixture transient binding lookup failure"));
         ValueTask<RawCaptureReceipt?> IRawCaptureIngress.AcceptAsync(CameraModuleConfig configuration,
             CaptureLoopSubmission submission, RawCaptureGraphBinding? binding, CancellationToken cancellationToken)
-            => inner.AcceptAsync(configuration, submission, binding, cancellationToken);
+        {
+            Submission = submission;
+            return inner.AcceptAsync(configuration, submission, binding, cancellationToken);
+        }
     }
 
     private sealed class PhysicalQueryFault(RawIngressFaultPoint target) : IRawIngressFaultInjector
