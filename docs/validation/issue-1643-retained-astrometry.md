@@ -125,5 +125,56 @@ Kestrel authorization check is included. Shared measured-astrometry Unit passed
 passed 35/35, with the six affected runner cases rechecked on the final shared
 implementation (6/6). The resource method passed 1/1. Affected Release project
 builds passed with zero warnings/errors, formatting completed successfully, and
-the operations documentation audit passed. The parent still owns exhaustive
-category discovery and the complete candidate gate.
+the operations documentation audit passed.
+
+## Owner candidate and target synchronization
+
+The complete Tier C local block ran on `af0909175956ca00a2caacaee22aedf272fa8556`.
+Selector `scripts/ci:classify pull_request 839e75d4 af090917` returned
+`mode=full complete=false`, all five component lanes selected, and deployment,
+catalog, shards, installer, secret-scan-contract and release-script flags false.
+The target protected profile remains Development v1; no full workflow was dispatched.
+
+Tool/package restore, warning-clean Debug/Release builds, format verification,
+package audit, all four guards, documentation audit, category discovery, both
+canonical migration and pending-model checks passed. Real-Docker Integration
+passed 984/984, including architecture and publish. Four real publish outputs
+have retained checksum manifests. The first Deployment CLI Unit run had 169
+environment-induced failures because the evidence harness supplied an insecure,
+overlong TMPDIR. With TMPDIR/TMP/TEMP unset, the identical project selection
+passed 2,656 cases with zero failures and 121 explicit prerequisite skips.
+Original failures and replacement TRX/coverage remain retained.
+
+Target `70eecaefd27a8e1b5c284a40dfe74ac15bad3851` was merged as
+`e84dd22e553b99f89ff953ce2a010b1935064462`. Conflicts were confined to inventory
+counts and their runbook totals; both branches' deltas were added. The initial
+PR and synchronization classifiers select the same five lanes. Fresh synced
+Debug/Release, format, discovery, all four guards, documentation and pinned
+coverage-policy checks pass. The review-tools guard's temporary-wrapper race
+failed once and passed with a stable wrapper; both receipts remain retained.
+Fresh full CameraAgent, LogicHost, Processing and combined Unit suites, plus
+23 focused capture/runner astrometry cases, cover changed shared options and
+their interactions. Unchanged Integration/publish/migration and other Unit
+evidence is preserved rather than repeated. Composed results are **14,201 Unit
+passes, zero failures and 124 skips** against discovery of 14,325 Unit, 984
+Integration and 288 Manual cases. Of the Unit skips, 122 need the absent
+production catalog bundle; the others are platform/provider conditions.
+
+The refreshed canonical merge uses exactly 23 slots: 18 preserved reports plus
+the five affected replacement Unit reports. Aggregate is 88.7919% line /
+75.0002% branch. Shared, CameraAgent, LogicHost and combined component floors
+pass. **Canonical and Delivery coverage remain failed** solely at unchanged
+`tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs`: 63/155 lines and
+31/88 branches, matching the catalog-absent prerequisite result. Its source,
+all six baselines and coverage tools are byte-identical across original base,
+synced target and candidate. InstallationContracts recovered to 286/286 lines.
+No floor was weakened. Mixed preserved/fresh coverage retains older line
+mappings for unchanged reports; it is not a fresh whole-head qualification.
+
+Complete commands, logs, UTC timing, TRX, hashes and coverage provenance are
+retained in `/tmp/hvo-skymonitor-1643-candidate.J7xjLk/handoff.txt`,
+`/tmp/hvo-skymonitor-1643-sync.LeOJ4c/handoff.txt`, and the Deployment replacement
+under `/tmp/hvo-skymonitor-1643-owner.Y8zsUy/deployment-rerun/`. These registered
+scratch roots are validation evidence to preserve, not runtime state. The
+following documentation-only ledger update does not invalidate executable gates.
+Independent review and fresh target-profile CI remain separate merge gates.
