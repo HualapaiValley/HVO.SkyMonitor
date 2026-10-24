@@ -28,6 +28,7 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("1", null)]
     [DataRow("16384", null)]
     [DataRow("0", ProcessingOptionReasonCodes.OutOfRange)]
+    [DataRow("-0", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("-1", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("16385", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("9223372036854775808", ProcessingOptionReasonCodes.OutOfRange)]
@@ -56,6 +57,13 @@ public sealed partial class ProcessingNodeOptionsTests
     [TestMethod]
     public void NullableJpegDimensionEditsSetClearAndValidateWithoutTouchingOtherSettings()
     {
+        Assert.IsFalse(JpegDimensions.Find("maximumDimension")!.IsUnsignedByte);
+        var signed = new ProcessingNodeOptionsDescriptor("signed-options-v1", "Signed", "v1", "Signed", "Signed integer fixture.",
+            [ProcessingOptionDescriptor.NullableWholeNumber("signed", "signed", "Signed", "Signed fixture.", null, -10, 10)]);
+        var signedSource = Json("{ \"signed\":-0 }");
+        Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(signed, signedSource).IsValid);
+        Assert.AreEqual(signedSource.GetRawText(), ProcessingNodeOptionsCodec.Encode(signed, signedSource,
+            new Dictionary<string, ProcessingOptionValue> { ["signed"] = ProcessingOptionValue.FromNullableWholeNumber(0) }).Options!.Value.GetRawText());
         var source = Json("""{ "MaximumDimension":4096, "JpegQuality":90, "OutputVariant":"retained", "FixedTransfer":{"Gamma":1.20}, "future":[1e+02] }""");
         foreach (var value in new long?[] { null, 1, 16384 })
         {

@@ -10,7 +10,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [TestMethod]
     [DataRow(null, "Not specified")]
     [DataRow("null", "No limit (explicitly selected)")]
-    [DataRow("4096", "Limit set")]
+    [DataRow("4096", "Value set")]
     public void JpegDimensionPanelPreservesNoOpAndSetsOrClearsOnlyTheLimit(string? token, string status)
     {
         using var context = new BunitContext();

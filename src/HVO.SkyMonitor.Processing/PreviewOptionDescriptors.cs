@@ -27,7 +27,7 @@ public static class PreviewOptionDescriptors
                     "Quality of the existing JPEG encoder; higher values retain more detail and usually use more bytes.", JpegImageCodec.DefaultQuality, 1, 100),
                 ProcessingOptionDescriptor.NullableWholeNumber("maximumDimension", "maximumDimension", "Maximum JPEG dimension",
                     "Optional limit on the longest side. Leave blank or use original dimensions to clear the limit; smaller images are not enlarged.",
-                    null, 1, 16384, "pixels")
+                    null, 1, 16384, "pixels", nullValueLabel: "No limit", nullActionLabel: "Use original dimensions")
             ])
     ];
 

@@ -252,6 +252,41 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
             node.HostApplicability);
     }
 
+    [TestMethod]
+    [DataRow("ScenePresentationLayer", "markerValue")]
+    [DataRow("ScenePresentationLayer", "labelValue")]
+    [DataRow("ScenePresentationLayer", "imageCircleValue")]
+    [DataRow("ScenePresentationLayer", "cardinalValue")]
+    [DataRow("EnvironmentPresentationLayer", "value")]
+    public async Task NullableIntensitySignedZeroIsRejectedAndExplicitZeroRepairsProducerBinding(string alias, string key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var baseline = await LoadAsync(W6).ConfigureAwait(false);
+        var originalOptions = baseline.Pipeline!.Steps.Single(step => string.Equals(step.Type, alias, StringComparison.OrdinalIgnoreCase)).Options!.Value.GetRawText();
+        var source = JsonSerializer.Deserialize<JsonElement>(originalOptions[..^1] + ", \"" + key.ToUpperInvariant() + "\" : -0, \"future\":[1e+02] }");
+        CameraModuleConfig Configuration(JsonElement options) => baseline with
+        {
+            Pipeline = baseline.Pipeline! with
+            {
+                Steps = baseline.Pipeline.Steps.Select(step => string.Equals(step.Type, alias, StringComparison.OrdinalIgnoreCase)
+                    ? step with { Options = options } : step).ToArray()
+            }
+        };
+        using var provider = CreateProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<JsonException>(() => factory.CreateGraph(Configuration(source)));
+        var descriptor = alias == "ScenePresentationLayer" ? ProcessingNodeOptionsDescriptors.ScenePresentationLayer : RetainedLayerOptionDescriptors.Environment;
+        var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
+        Assert.IsFalse(decoded.IsValid, "The shared editor must reject the token rejected by the real byte binder.");
+        Assert.AreEqual(ProcessingOptionReasonCodes.OutOfRange, decoded.Diagnostics.Single().Code);
+        Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>()).IsValid);
+        var repaired = ProcessingNodeOptionsCodec.Encode(descriptor, source,
+            new Dictionary<string, ProcessingOptionValue> { [key] = ProcessingOptionValue.FromNullableWholeNumber(0) });
+        Assert.IsTrue(repaired.IsValid);
+        Assert.AreEqual(source.GetRawText().Replace("-0", "0", StringComparison.Ordinal), repaired.Options!.Value.GetRawText());
+        factory.CreateGraph(Configuration(repaired.Options.Value)).DisposeSteps();
+    }
+
     private static bool BinderAccepts(CameraModuleConfig configuration)
     {
         using var provider = CreateProvider();

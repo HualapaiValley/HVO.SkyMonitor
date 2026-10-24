@@ -17,6 +17,13 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("CloudPresentationLayer", "lineThickness", "4", "9")]
     [DataRow("EnvironmentPresentationLayer", "inset", "32", "65")]
+    [DataRow("EnvironmentPresentationLayer", "value", "0", "256")]
+    [DataRow("EnvironmentPresentationLayer", "value", "255", "-1")]
+    [DataRow("EnvironmentPresentationLayer", "value", "", "1.5")]
+    [DataRow("ScenePresentationLayer", "markerValue", "0", "256")]
+    [DataRow("ScenePresentationLayer", "labelValue", "255", "-1")]
+    [DataRow("ScenePresentationLayer", "imageCircleValue", "0", "true")]
+    [DataRow("ScenePresentationLayer", "cardinalValue", "255", "1e400")]
     public async Task RetainedLayerDraftRequiresValidationActivationAndSupportsRollback(string alias, string key, string value, string invalid)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-retained-layer-options");
@@ -33,27 +40,27 @@ public sealed partial class ProcessingGraphOperationsTests
                     new("ProjectedScene", "scene", 40, DependsOn: ["$raw"]),
                     new("CloudAssessment", "assessment", 50, DependsOn: ["calibration"]),
                     new(alias, "layer", 60, JsonDocument.Parse("""{ "WidthPixels":1936, "HeightPixels":1216, "Value":null, "future":[1e+02] }""").RootElement.Clone(),
-                        alias == "CloudPresentationLayer" ? ["assessment"] : ["scene", "preview"])
+                        alias == "CloudPresentationLayer" ? ["assessment"] : alias == "ScenePresentationLayer" ? ["scene"] : ["scene", "preview"])
                 ])
             };
             var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
             var plan = factory.CreateGraph(config);
-            var descriptor = alias == "CloudPresentationLayer" ? RetainedLayerOptionDescriptors.Cloud : RetainedLayerOptionDescriptors.Environment;
+            var descriptor = alias == "CloudPresentationLayer" ? RetainedLayerOptionDescriptors.Cloud : alias == "ScenePresentationLayer" ? ProcessingNodeOptionsDescriptors.ScenePresentationLayer : RetainedLayerOptionDescriptors.Environment;
             try { Assert.AreEqual(descriptor.StepVersion, plan.SharedPlan!.Nodes.Single(static node => node.Definition.Id == "layer").Definition.StepVersion); }
             finally { plan.DisposeSteps(); }
-            var runtimeType = alias == "CloudPresentationLayer" ? typeof(CloudPresentationLayerProcessingStepOptions) : typeof(EnvironmentPresentationLayerProcessingStepOptions);
+            var runtimeType = alias == "CloudPresentationLayer" ? typeof(CloudPresentationLayerProcessingStepOptions) : alias == "ScenePresentationLayer" ? typeof(ScenePresentationLayerProcessingStepOptions) : typeof(EnvironmentPresentationLayerProcessingStepOptions);
             var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(Activator.CreateInstance(runtimeType), runtimeType));
             foreach (var option in descriptor.Options)
             {
                 Assert.AreEqual(option.DefaultValue, defaults.Get(option.Key).Value);
-                if (option.Kind == ProcessingOptionKind.Toggle) continue;
+                if (option.Kind is ProcessingOptionKind.Toggle or ProcessingOptionKind.Color or ProcessingOptionKind.RealNumber) continue;
                 var property = runtimeType.GetProperties().Single(property => string.Equals(property.Name, option.Members.Single(), StringComparison.OrdinalIgnoreCase));
                 var range = (RangeAttribute)Attribute.GetCustomAttribute(property, typeof(RangeAttribute))!;
                 Assert.AreEqual(option.MinimumWholeNumber, Convert.ToInt64(range.Minimum, CultureInfo.InvariantCulture));
                 Assert.AreEqual(option.MaximumWholeNumber, Convert.ToInt64(range.Maximum, CultureInfo.InvariantCulture));
             }
             var missingDimensions = config.Pipeline with { Steps = config.Pipeline.Steps.Select(step => step.Id == "layer" ? step with { Options = null } : step).ToArray() };
-            Assert.ThrowsExactly<ValidationException>(() => factory.PreviewPlan(config with { Pipeline = missingDimensions }));
+            if (alias != "ScenePresentationLayer") Assert.ThrowsExactly<ValidationException>(() => factory.PreviewPlan(config with { Pipeline = missingDimensions }));
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
             var storedSource = (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText();
@@ -80,8 +87,12 @@ public sealed partial class ProcessingGraphOperationsTests
                     Options = JsonDocument.Parse("{\"widthPixels\":1936,\"heightPixels\":1216,\"" + key + "\":" + invalid + "}").RootElement.Clone()
                 } : step).ToArray()
             };
-            await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
-                await operations.CreateRevisionAsync("invalid", "3", bad, "bad", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            if (descriptor.Find(key)!.Kind == ProcessingOptionKind.NullableWholeNumber)
+                await Assert.ThrowsExactlyAsync<JsonException>(async () =>
+                    await operations.CreateRevisionAsync("invalid", "3", bad, "bad", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            else
+                await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
+                    await operations.CreateRevisionAsync("invalid", "3", bad, "bad", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
         }
         finally

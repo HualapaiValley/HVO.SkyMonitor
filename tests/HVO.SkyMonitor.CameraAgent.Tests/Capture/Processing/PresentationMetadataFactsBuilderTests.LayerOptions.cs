@@ -16,6 +16,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [DataRow("scale", "4")]
     [DataRow("inset", "64")]
     [DataRow("lineSpacing", "16")]
+    [DataRow("value", "0")]
+    [DataRow("value", "255")]
     public async Task RetainedEnvironmentEditsReachRealProducerAndPreserveMissingStaleFacts(string key, string value)
     {
         using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
@@ -66,7 +68,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         }
         var before = await Execute(optionsSource).ConfigureAwait(false);
         var after = await Execute(edited!.Value).ConfigureAwait(false);
-        Assert.AreNotEqual(before.Product.ChecksumSha256, after.Product.ChecksumSha256, key);
+        if (key == "value" && value == "255") Assert.AreEqual(before.Product.ChecksumSha256, after.Product.ChecksumSha256, "The existing default text is already white.");
+        else Assert.AreNotEqual(before.Product.ChecksumSha256, after.Product.ChecksumSha256, key);
         Assert.AreEqual(before.Facts.FactsIdentitySha256, after.Facts.FactsIdentitySha256);
         Assert.AreEqual("Stale", after.Facts.Environment.Single(static fact => fact.Kind == "RelativeHumidity").Status);
         Assert.AreEqual("Missing", after.Facts.Environment.Single(static fact => fact.Kind == "AtmosphericPressure").Status);
@@ -75,7 +78,17 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.AreEqual(1936, payload.WidthPixels);
         Assert.AreEqual(512, payload.HeightPixels);
         Assert.IsNotEmpty(payload.TextBlocks);
-        var restored = await Execute(optionsSource).ConfigureAwait(false);
+        if (key == "value")
+        {
+            var gray = byte.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
+            Assert.IsTrue(payload.TextBlocks.All(block => block.Color == new PresentationColor(gray, gray, gray)));
+            CollectionAssert.AreEqual(PresentationLayerPayloadJson.Parse(before.Product.Payload).Payload!.TextBlocks.SelectMany(static block => block.Lines).ToArray(),
+                payload.TextBlocks.SelectMany(static block => block.Lines).ToArray());
+        }
+        var restoreForm = new ProcessingNodeOptionsForm(RetainedLayerOptionDescriptors.Environment, edited);
+        restoreForm.Set(key, key == "value" ? "" : form.Descriptor.Find(key)!.DefaultValue.AsWholeNumber().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.IsTrue(restoreForm.TryBuild(out var cleared, out _));
+        var restored = await Execute(cleared!.Value).ConfigureAwait(false);
         Assert.AreEqual(before.Product.OutputIdentitySha256, restored.Product.OutputIdentitySha256);
         CollectionAssert.AreEqual(before.Product.Payload.ToArray(), restored.Product.Payload.ToArray());
     }

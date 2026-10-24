@@ -314,6 +314,17 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("JpegEncoding", "{\"MaximumDimension\":\"4\"}", "processing.options.wrong-type")]
     [DataRow("JpegEncoding", "{\"MaximumDimension\":true}", "processing.options.wrong-type")]
     [DataRow("JpegEncoding", "{\"MaximumDimension\":null,\"maximumDimension\":4}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":256}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-1}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":true}", "processing.options.wrong-type")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":-0}", "processing.options.out-of-range")]
     public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
@@ -337,6 +348,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [TestMethod]
     [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
     [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
     public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
