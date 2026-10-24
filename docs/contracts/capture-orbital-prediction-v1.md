@@ -98,6 +98,11 @@ for track hashes, selected records, query/exposure/geometry/time provenance,
 status and budgets. It rejects noncanonical bytes and unknown fields. Never
 parse against a newly resolved current pointer. The output's checksum and
 recipe identity still require the surrounding artifact envelope's validation.
+Complete/None rejects all object failures. Every visited selection without a
+selected record must retain its ObjectMissing or SelectionWithheld failure;
+deadline/global time failures before visiting an object do not invent a selection
+failure. A non-success result is Partial only when it contains tracks, otherwise
+Unavailable. Complete geometric exclusion with no tracks remains valid.
 
 ## Availability and truthful result handling
 

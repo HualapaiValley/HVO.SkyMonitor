@@ -57,7 +57,7 @@ physical/whole-pipeline performance and larger-population throughput remain
 unqualified. Process peak across the run was 123056128 bytes. No speedup or
 portable latency guarantee is inferred.
 
-## Commands and candidate evidence
+## Initial commands and candidate evidence
 
 All heavy commands use `flock -o /tmp/hvo-heavy-gate.lock timeout <seconds> ...`.
 Build/test commands add `-nodeReuse:false -p:UseSharedCompilation=false`.
@@ -108,9 +108,10 @@ publication, source-reference retention and UI composition are #1641, with
 | `tests/fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A` | `A11AD9627063DC10FA59FE25B9F9C07F0BACF81EA65F9405F40E4055DAA42E8B` |
 | `tests/fixtures/orbital-prediction-v1/time/leap-seconds.list` | `DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433` |
 
-## Affected output coverage and runtime review
+## Initial affected output coverage and runtime review
 
-The final 920-case Processing Unit run passed all cases. Its Cobertura report
+The initial implementation's final 920-case Processing Unit run passed all
+cases. Its Cobertura report
 covers 150/150 executable lines in `CaptureOrbitalPredictionContracts.cs` and
 37/38 in `CaptureOrbitalPredictionRecipe.cs` (187/188 combined). This is line
 coverage evidence, not an assertion that every invalid-input combination has
@@ -125,7 +126,7 @@ retained typed output, including query-level no-result and budget/failure state;
 no failure state is collapsed to an empty successful overlay. #1641 owns host
 observability and durable reference/publication integration.
 
-## Final candidate gate results
+## Initial implementation candidate gate results
 
 `profile=development-v1`; no full CI dispatch. All requested candidate commands
 returned exit 0. Times below include any wait for the host lock.
@@ -214,7 +215,7 @@ Tier C solution commands; no historical report glob was merged and no full
 main/release qualification is claimed. Parent still owns independent deep review,
 final base synchronization, protected checks, publication and merge.
 
-Final validated source/test fingerprints (documentation-only ledger completion
+Initial validated source/test fingerprints (documentation-only ledger completion
 does not change these validated files):
 
 ```text
@@ -224,3 +225,223 @@ does not change these validated files):
 F441363512CBA0856D8A75E98A20F3AC2F582FF83ABA2CED6808C9BE1D047D77  tests/HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionRecipeTests.cs
 3258603381CACB7C4BB3E5EEC48F22F7A56E47C93826565371BC8F708C286ED1  tests/HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionResourceTests.cs
 ```
+
+## F1 correction validation
+
+The [initial review request](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1645#issuecomment-6381458126)
+bound the reviewed head to `2d00f99415a1c7a734cfa8396026351911c1fb98`.
+[Full report F1](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1645#issuecomment-6381501798)
+found that canonical Serialize/Parse accepted Complete/None results that
+contradicted retained missing/withheld selections, with or without their object
+failures. This is a blocking contract-behavior correction; independent deep
+correction review remains the parent's next step, not a result of this test run.
+
+`CaptureOrbitalPredictionJson.Serialize` now enforces the engine's result-state
+mapping and rejects all failures on Complete/None. For the first
+`EvaluatedObjects` retained selections, every absent selected record must retain
+the matching ObjectMissing or SelectionWithheld failure. The general result
+contract still validates population, unique failures, budgets and provenance
+before the bounded dictionary/prefix check. Global model/time validation runs
+before object visitation; deadline/global failures with zero visited objects do
+not invent a selection failure. Complete/None with no tracks remains valid for
+geometric exclusion. The existing contract handoff now states these rules;
+schema version, nominal wrapper bytes and approved track bytes are unchanged.
+
+### Reproducer-first evidence retained from parent
+
+The parent added tests while production remained at the reviewed head and ran
+the following exact command (recovered from its recorded execution):
+
+```bash
+flock -o /tmp/hvo-heavy-gate.lock timeout 240 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~ContradictorySelectionResultsAreRejectedBySerializeAndParse|FullyQualifiedName~CompleteResultCannotRetainAnyObjectFailure|FullyQualifiedName~DeadlineBeforeSelectionDoesNotInventAnObjectFailure' -warnaserror -nodeReuse:false -p:UseSharedCompilation=false --logger 'trx;LogFileName=f1-red.trx' --results-directory /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-red > /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-red.log 2>&1
+```
+
+Exit 1: **3 failed, 1 passed, 0 skipped**. Both DataRow cases of
+`ContradictorySelectionResultsAreRejectedBySerializeAndParse` and
+`CompleteResultCannotRetainAnyObjectFailure` failed because Serialize threw no
+exception; `DeadlineBeforeSelectionDoesNotInventAnObjectFailure` passed. These
+are expected red results, not candidate gate failures. The parent then applied
+the validator correction and ran:
+
+```bash
+flock -o /tmp/hvo-heavy-gate.lock timeout 240 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~ContradictorySelectionResultsAreRejectedBySerializeAndParse|FullyQualifiedName~CompleteResultCannotRetainAnyObjectFailure|FullyQualifiedName~DeadlineBeforeSelectionDoesNotInventAnObjectFailure|FullyQualifiedName~ExactPlanRestoreAndNoTrackGeometryRetainTruthfulInputs' -warnaserror -nodeReuse:false -p:UseSharedCompilation=false --logger 'trx;LogFileName=f1-green.trx' --results-directory /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-green > /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-green.log 2>&1
+```
+
+Exit 0: **5 passed, 0 failed/skipped**, including
+`ExactPlanRestoreAndNoTrackGeometryRetainTruthfulInputs`. Each contradictory
+selection case tests Complete with retained failures, Complete with stripped
+failures, stripped failure on the original unavailable result, Partial without
+tracks, and the wrong selection-failure reason through both Serialize and Parse.
+Parse receives independently canonicalized bytes to avoid relying on Serialize
+as its only rejection path. The red/green logs and TRX remain byte-identical in
+registered scratch; `f1-preserved-evidence.sha256` records their hashes together
+with the unchanged initial resource report. No reviewed history was rewritten.
+
+### Classifier and complete correction candidate gate
+
+`profile=development-v1`. The explicit shared-output-validation exception in
+the correction ladder and the parent's instruction require one complete Tier C
+local candidate gate for the new implementation. No CI workflow was dispatched;
+this is local evidence and does not claim production/promotion qualification.
+The previous-reviewed-head correction range was classified before the gate
+using unreferenced snapshot `688eb4f82547f520f4ba2aecd0c1a84ebe344153`
+(tree `c2533bcf013b883b742830d43b8c548b4c0a13f1`), without moving HEAD:
+
+```bash
+timeout 120 ./scripts/ci:classify pull_request 2d00f99415a1c7a734cfa8396026351911c1fb98 688eb4f82547f520f4ba2aecd0c1a84ebe344153
+```
+
+```text
+CI classification: mode=full deployment=false complete=false shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request does not change deployment-contract inputs complete-reason=pull request changes only component-scoped paths paths=5
+mode=full
+deployment=false
+deployment_catalog=false
+deployment_shards=false
+deployment_installer=false
+complete=false
+shared=true
+cameraagent=true
+logichost=true
+combined=true
+delivery=true
+secret_scan_contract=false
+release_scripts=false
+```
+
+The authoritative `complete=false` plan selects all five component lanes.
+It does not change the Development v1 protected-CI profile. Including the
+completed evidence ledger and new resource report, the unreferenced snapshot
+`5ab477b02e3ded496b9c7602cd7c34f44b177419` was classified again:
+
+```bash
+timeout 120 ./scripts/ci:classify pull_request 2d00f99415a1c7a734cfa8396026351911c1fb98 5ab477b02e3ded496b9c7602cd7c34f44b177419
+```
+
+```text
+CI classification: mode=full deployment=false complete=false shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request does not change deployment-contract inputs complete-reason=pull request changes only component-scoped paths paths=7
+```
+
+The selected plan is unchanged with all seven correction paths included.
+The final committed range is also reclassified in scratch. Evidence-only
+additions do not change the validated production/test fingerprints.
+
+All gates below exited 0. Seconds include host-lock wait when applicable.
+
+| Gate | Exit | Seconds |
+| --- | --- | --- |
+| tool-restore | 0 | 0.135 |
+| restore | 0 | 1.430 |
+| debug | 0 | 178.887 |
+| release | 0 | 170.302 |
+| format | 0 | 126.783 |
+| package-audit | 0 | 42.570 |
+| shell-syntax | 0 | 0.719 |
+| ci-classification | 0 | 17.114 |
+| coordination-guard | 0 | 0.207 |
+| pr-review-tools | 0 | 8.649 |
+| unit | 0 | 423.291 |
+| integration | 0 | 826.616 |
+| manual-resource | 0 | 2.414 |
+| coverage-policy | 0 | 0.164 |
+| docs-audit-operations | 0 | 0.827 |
+
+Exact candidate commands (each heavy command used the host lock and bounded
+timeout; build/tests disable node reuse and shared compilation):
+
+```bash
+flock -o /tmp/hvo-heavy-gate.lock timeout 180 dotnet tool restore
+flock -o /tmp/hvo-heavy-gate.lock timeout 300 dotnet restore
+flock -o /tmp/hvo-heavy-gate.lock timeout 900 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false
+flock -o /tmp/hvo-heavy-gate.lock timeout 900 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false
+flock -o /tmp/hvo-heavy-gate.lock timeout 600 dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+flock -o /tmp/hvo-heavy-gate.lock timeout 600 ./scripts/package:audit /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-package-audit
+timeout 120 ./scripts/ci:shell-syntax
+timeout 120 ./scripts/test:ci-classification
+timeout 120 ./scripts/test:coordination-guard
+timeout 120 ./scripts/test:pr-review-tools
+flock -o /tmp/hvo-heavy-gate.lock timeout 1500 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter TestCategory=Unit --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' -nodeReuse:false -p:UseSharedCompilation=false --logger trx --results-directory /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-unit
+flock -o /tmp/hvo-heavy-gate.lock timeout 1800 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter TestCategory=Integration --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' -nodeReuse:false -p:UseSharedCompilation=false --logger trx --results-directory /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-integration
+flock -o /tmp/hvo-heavy-gate.lock timeout 240 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter 'FullyQualifiedName~CaptureOrbitalPredictionResourceTests.NearestEngineAndRetainedRecipeReportBoundedResourceCosts' -nodeReuse:false -p:UseSharedCompilation=false --logger 'trx;LogFileName=f1-manual-resource.trx' --results-directory /tmp/hvo-skymonitor-1640-review.vGWxzP/f1-manual-resource
+timeout 120 ./scripts/coverage:policy pull_request development/v1
+timeout 120 ./scripts/docs:audit-operations
+```
+
+Debug and Release solution builds passed with zero warnings/errors. Format,
+package audit, shell syntax, classifier, coordination and PR-review-tool guards,
+coverage baseline policy, and operations-document inventory audit passed.
+Unit ran with `HVO_PRODUCTION_CATALOG_BUNDLE` unset and the invalid Docker
+endpoint; Integration used real Docker 29.8.0. Results are **13861 Unit passed,
+124 existing skipped/inconclusive, 0 failed; 13985 selected**, and **957
+Integration passed, 0 skipped/failed**. The unchanged skips comprise 122
+production-catalog cases, the macOS-only SDK case and the filesystem
+unlink-ambiguity case. Processing now has **924/924 Unit cases passed**, four
+more than the initial implementation's 920. The runbook total and owning
+inventory agree. The Manual resource selection passed its one case.
+
+Coverage collection produced 38 Unit and 38 Integration Cobertura reports in the
+new run directories. Affected Unit coverage is:
+
+| Source | Covered / executable lines |
+| --- | --- |
+| `CaptureOrbitalPredictionContracts.cs` | 161 / 161 |
+| `CaptureOrbitalPredictionRecipe.cs` | 37 / 38 |
+
+Combined affected coverage is 198/199 lines. This is measured line
+coverage, not exhaustive invalid-input qualification. Only this correction's
+scoped collector reports were inspected; historical reports were not merged.
+Logs, exact commands/durations (`f1-gates.json`), TRX counters and coverage
+(`f1-test-summary.json`), original collector reports, and progress milestones
+remain in `/tmp/hvo-skymonitor-1640-review.vGWxzP`.
+
+### F1 resource rerun and unchanged outputs
+
+The unchanged Manual harness ran on the corrected Release assemblies with the
+same workload, five warmups, 30 measurements, concurrency one, and declared
+bounds above. The new raw report is
+[capture-orbital-prediction-1640-f1-resources.json](capture-orbital-prediction-1640-f1-resources.json).
+The initial raw report and table remain historical evidence.
+
+| Fixture | Engine median / p95 ms | Corrected recipe median / p95 ms | Engine / recipe bytes allocated per operation | Engine / recipe CPU ms per 30 | Engine / recipe WS growth bytes |
+| --- | --- | --- | --- | --- | --- |
+| iss | 2.4296 / 2.8674 | 7.3568 / 9.0222 | 971036 / 2211048 | 76.354 / 244.112 | 114688 / 6369280 |
+| starlink-56838 | 2.8722 / 3.6927 | 8.7049 / 9.7504 | 888999 / 2127077 | 89.864 / 281.205 | 20480 / 6524928 |
+| starlink-65283 | 3.9304 / 4.5507 | 7.3689 / 9.3197 | 888988 / 2128819 | 118.246 / 285.765 | 16384 / 491520 |
+
+All six fixture/stage observations passed p95 <100 ms, allocations <25 MiB per
+operation, CPU <5000 ms per 30 operations and working-set growth <64 MiB.
+Recipe changes relative to the initial resource observation are:
+
+| Fixture | Median delta ms | p95 delta ms | Allocated-byte delta per operation |
+| --- | --- | --- | --- |
+| iss | +1.0797 | +2.1919 | +127 |
+| starlink-56838 | +3.5517 | +3.9716 | +341 |
+| starlink-65283 | +2.5524 | +3.9646 | +1850 |
+
+Recipe medians are 1.08–3.55 ms above the initial observation; the unchanged
+engine medians also vary by +0.01–1.87 ms. Allocations rise by 127–1850 bytes
+per recipe operation (less than 0.1%). The unchanged engine's timing shift
+shows that cross-run runtime/environment variation is present; attributing the
+recipe latency difference solely to this validator would be an inference these
+measurements cannot establish. These are separate process observations with
+GC/JIT/instrumentation noise, not an isolated estimate of validator latency.
+The bounded dictionary/prefix check is included in the corrected recipe timing. The baseline engine and
+required envelope work retain their original measurement boundaries; no
+whole-frame/capture-cadence or portable throughput claim is added.
+
+All three independently produced wrapper attachments from the new Manual run
+match the committed wrapper goldens byte for byte, including checksum and
+output size; embedded approved tracks and source/time fixture hashes above are
+unchanged. No golden fixture or initial resource-report byte was replaced.
+Current validated source/test SHA-256 values are:
+
+```text
+1a0000d78862f36426025fb2c851b9a7790fbe213b679b8455b0333a3d531376  src/HVO.SkyMonitor.Processing/CaptureOrbitalPredictionContracts.cs
+10913c7daaabd5b24cfb77b4e98a50b531501bd30f4299f667ce672f19ce9b85  src/HVO.SkyMonitor.Processing/CaptureOrbitalPredictionRecipe.cs
+623a9d0bbab81bf67bb51872fee909b3621366a1aba99075316cad87c49d4999  tests/HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionFixtures.cs
+7ecb7d51ed88bd5a40a35555f40fb29560ae97fba49802d6a5e97947594b08ab  tests/HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionRecipeTests.cs
+3258603381cacb7c4bb3e5eec48f22f7a56e47c93826565371bc8f708c286ed1  tests/HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionResourceTests.cs
+```
+
+The added validation changes no host registration, persistence, logs, metrics,
+health endpoint or deployed configuration. Parent retains pushes, PR comments,
+claims, independent correction review, protected checks and finalization.

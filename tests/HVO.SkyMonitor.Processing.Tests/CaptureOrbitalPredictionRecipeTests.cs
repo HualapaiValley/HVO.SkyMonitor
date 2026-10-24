@@ -300,6 +300,55 @@ public sealed class CaptureOrbitalPredictionRecipeTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ContradictorySelectionResultsAreRejectedBySerializeAndParse(bool missingObject)
+    {
+        var f = new CaptureOrbitalPredictionFixture();
+        var input = missingObject ? f.Input(objects: [new("norad", "999999999")]) :
+            f.Input(policy: new([new("approved:other", 0)]));
+        var result = await f.Run(input).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalExecutionStatus.Unavailable, result.Output.Status);
+        Assert.AreEqual(missingObject ? OrbitalPredictionReason.ObjectMissing : OrbitalPredictionReason.SelectionWithheld,
+            result.Output.Failures.Single().Reason);
+        AssertRejected(result.Output with { Status = OrbitalExecutionStatus.Complete, Reason = OrbitalPredictionReason.None });
+        AssertRejected(result.Output with { Status = OrbitalExecutionStatus.Complete, Reason = OrbitalPredictionReason.None, Failures = [] });
+        AssertRejected(result.Output with { Failures = [] });
+        AssertRejected(result.Output with { Status = OrbitalExecutionStatus.Partial });
+        AssertRejected(result.Output with { Failures = [result.Output.Failures.Single() with { Reason = OrbitalPredictionReason.PropagationFailure }] });
+
+        void AssertRejected(CaptureOrbitalPredictionV1 value)
+        {
+            Assert.ThrowsExactly<ArgumentException>(() => CaptureOrbitalPredictionJson.Serialize(value, input));
+            // Bypass Serialize to exercise the parser against independently supplied canonical bytes.
+            Assert.ThrowsExactly<ArgumentException>(() => CaptureOrbitalPredictionJson.Parse(OrbitalContract.SerializeCanonical(value), input));
+        }
+    }
+
+    [TestMethod]
+    public async Task CompleteResultCannotRetainAnyObjectFailure()
+    {
+        var f = new CaptureOrbitalPredictionFixture(); var input = f.Input();
+        var result = await f.Run(input).ConfigureAwait(false);
+        var forged = result.Output with
+        { Failures = [new(f.Track.Lineage.ObjectIdentity, OrbitalPredictionReason.PropagationFailure, "propagation-failed")] };
+        Assert.ThrowsExactly<ArgumentException>(() => CaptureOrbitalPredictionJson.Serialize(forged, input));
+        Assert.ThrowsExactly<ArgumentException>(() => CaptureOrbitalPredictionJson.Parse(OrbitalContract.SerializeCanonical(forged), input));
+    }
+
+    [TestMethod]
+    public async Task DeadlineBeforeSelectionDoesNotInventAnObjectFailure()
+    {
+        var f = new CaptureOrbitalPredictionFixture();
+        var result = await f.Run(f.Input(objects: [new("norad", "999999999")]), clock: new AdvancingClock()).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalPredictionReason.Deadline, result.Output.Reason);
+        Assert.AreEqual(OrbitalExecutionStatus.Unavailable, result.Output.Status);
+        Assert.AreEqual(0, result.Output.EvaluatedObjects);
+        Assert.AreEqual(0, result.Output.Failures.Count);
+        Assert.AreEqual(OrbitalSelectionEligibility.MissingObject, result.Output.Input.Selections.Single().Eligibility);
+    }
+
+    [TestMethod]
     public async Task ExactPlanRestoreAndNoTrackGeometryRetainTruthfulInputs()
     {
         var f = new CaptureOrbitalPredictionFixture(); var input = f.Input();

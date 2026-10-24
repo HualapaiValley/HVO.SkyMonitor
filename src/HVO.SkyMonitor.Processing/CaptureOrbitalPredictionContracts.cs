@@ -195,6 +195,19 @@ public static class CaptureOrbitalPredictionJson
             // Reuse the engine's result contract for track hashes, query, selection, model, geometry, sampling and budgets.
             _ = new OrbitalPredictionResult<OrbitalExposureTrackV1>(query, value.Status, value.Reason,
                 value.EvaluatedObjects, value.PropagationEvaluations, 0, value.Tracks, value.Failures);
+            // The general result contract validates provenance/bounds, but the retained capture envelope must
+            // also preserve the engine's query-level state and every failed selection in the visited prefix.
+            CaptureOrbitalPredictionInput.Require(value.Status == (value.Reason == OrbitalPredictionReason.None
+                ? OrbitalExecutionStatus.Complete : value.Tracks.Count == 0
+                    ? OrbitalExecutionStatus.Unavailable : OrbitalExecutionStatus.Partial) &&
+                (value.Status != OrbitalExecutionStatus.Complete || value.Failures.Count == 0), "capture-result-state");
+            var failures = value.Failures.ToDictionary(static f => f.ObjectIdentity);
+            foreach (var selection in expected.Plan.Selections.Take(value.EvaluatedObjects))
+                if (selection.SelectedRecord is null)
+                    CaptureOrbitalPredictionInput.Require(failures.TryGetValue(selection.ObjectIdentity, out var failure) &&
+                        failure.Reason == (selection.Eligibility == OrbitalSelectionEligibility.MissingObject
+                            ? OrbitalPredictionReason.ObjectMissing : OrbitalPredictionReason.SelectionWithheld),
+                        "capture-selection-failure");
         }
         else
             CaptureOrbitalPredictionInput.Require(value.Status == OrbitalExecutionStatus.Unavailable &&
