@@ -92,11 +92,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 var id = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
                 return (await operations.ReadExecutionDetailAsync(id!.Value, CancellationToken.None).ConfigureAwait(false))!;
             }
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var warmup = await Capture(0).ConfigureAwait(false);
-            Assert.AreEqual(TimeSpan.FromSeconds(1), warmup.Nodes.Single().Outputs.Single().TotalIntegration);
+            var warmupOutput = (await store.ReadNodeAsync(warmup.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
+            Assert.AreEqual(TimeSpan.FromSeconds(1), warmupOutput.TotalIntegration);
             await Capture(1).ConfigureAwait(false);
             var original = await Capture(2).ConfigureAwait(false);
-            var originalOutput = original.Nodes.Single().Outputs.Single();
+            var originalOutput = (await store.ReadNodeAsync(original.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
             Assert.AreEqual(TimeSpan.FromSeconds(3), originalOutput.TotalIntegration);
             var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "rolling", "2");
             model.Nodes[0].OptionsForm!.Set(key, limit);
@@ -108,11 +110,11 @@ public sealed partial class ProcessingGraphOperationsTests
             await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "test", null, CancellationToken.None).ConfigureAwait(false);
             var active = await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false);
             var changed = await Capture(4).ConfigureAwait(false);
-            var changedOutput = changed.Nodes.Single().Outputs.Single();
+            var changedOutput = (await store.ReadNodeAsync(changed.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
             Assert.AreEqual(draft.RevisionId, changed.Execution.GraphRevisionId);
             Assert.AreEqual(TimeSpan.FromSeconds(1), changedOutput.TotalIntegration);
             Assert.HasCount(1, changedOutput.Descriptor!.Artifact.SourceArtifactIds);
-            Assert.AreEqual("kept", changedOutput.Variant);
+            Assert.AreEqual("kept", changed.Nodes.Single().Outputs.Single().Variant);
             Assert.AreNotEqual(Sha256OfFile(Path.Combine(root, originalOutput.PayloadRelativePath)),
                 Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath)));
             var retained = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
@@ -120,7 +122,7 @@ public sealed partial class ProcessingGraphOperationsTests
             await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
             var restored = await Capture(5).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, restored.Execution.GraphRevisionId);
-            Assert.AreEqual(TimeSpan.FromSeconds(3), restored.Nodes.Single().Outputs.Single().TotalIntegration);
+            Assert.AreEqual(TimeSpan.FromSeconds(3), (await store.ReadNodeAsync(restored.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single().TotalIntegration);
             Console.WriteLine($"{key}: warmup=1s; original=3s; edited=1s; rollback=3s; old={initial.ActiveRevisionId}; new={draft.RevisionId}; payload={Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath))}");
         }
         finally
