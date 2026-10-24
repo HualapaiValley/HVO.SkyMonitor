@@ -1282,6 +1282,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             id,
             registration.ImplementationType.FullName ?? registration.ImplementationType.Name,
             order);
+        if (registration.Alias == SceneStylePresentation.StepAlias)
+        {
+            var decoded = ProcessingNodeOptionsCodec.Decode(SceneStylePresentation.Descriptor,
+                config.Options ?? JsonSerializer.SerializeToElement(new { }));
+            if (!decoded.IsValid) throw new ValidationException(string.Join(' ', decoded.Diagnostics.Select(item => item.Message)));
+        }
         var options = CreateOptionsInstance(config.Options, registration.OptionsType);
         var effectiveOptions = SerializeEffectiveOptions(options, aliasesOnly);
         effectiveConfig = aliasesOnly

@@ -11,11 +11,13 @@ public interface IProcessingNodeOptionsUpgrade
 {
     string StepAlias { get; }
 
+    string ToStepAlias => StepAlias;
+
     string FromStepVersion { get; }
 
     string ToStepVersion { get; }
 
-    /// <summary>The node at <see cref="ToStepVersion"/>, keeping its id and step alias.</summary>
+    /// <summary>The node at <see cref="ToStepVersion"/>, keeping its id and using the declared target alias.</summary>
     ProcessingGraphNodeDefinition Upgrade(ProcessingGraphNodeDefinition node);
 }
 
@@ -44,7 +46,8 @@ public sealed record ProcessingNodeOptionsUpgradeStep(
     string NodeId,
     string StepAlias,
     string FromStepVersion,
-    string ToStepVersion);
+    string ToStepVersion,
+    string? ToStepAlias = null);
 
 /// <summary>Every upgrade a draft is eligible for, bound to the draft's definition identity.</summary>
 public sealed record ProcessingGraphOptionsUpgradePlan(
@@ -97,7 +100,7 @@ public sealed class ProcessingNodeOptionsCatalog
         {
             ArgumentNullException.ThrowIfNull(upgrade, nameof(upgrades));
             if (string.Equals(upgrade.FromStepVersion, upgrade.ToStepVersion, StringComparison.Ordinal) ||
-                !_descriptors.ContainsKey((upgrade.StepAlias, upgrade.ToStepVersion)) ||
+                !_descriptors.ContainsKey((upgrade.ToStepAlias, upgrade.ToStepVersion)) ||
                 !_upgrades.TryAdd((upgrade.StepAlias, upgrade.FromStepVersion), upgrade))
             {
                 throw new ArgumentException(
@@ -108,8 +111,10 @@ public sealed class ProcessingNodeOptionsCatalog
         }
     }
 
-    /// <summary>The shipped descriptors. No upgrade ships yet, so no saved pipeline changes.</summary>
-    public static ProcessingNodeOptionsCatalog BuiltIn { get; } = new(ProcessingNodeOptionsDescriptors.All);
+    /// <summary>Shipped descriptors and explicitly requested upgrades; reads never apply them.</summary>
+    public static ProcessingNodeOptionsCatalog BuiltIn { get; } = new(ProcessingNodeOptionsDescriptors.All,
+        [new SceneStylePresentationUpgrade(ProcessingNodeOptionsDescriptors.ScenePresentationLayerV12.StepVersion),
+         new SceneStylePresentationUpgrade(ProcessingNodeOptionsDescriptors.ScenePresentationLayer.StepVersion)]);
 
     public ImmutableArray<ProcessingNodeOptionsDescriptor> Descriptors { get; }
 
@@ -165,7 +170,7 @@ public sealed class ProcessingNodeOptionsCatalog
                 candidate.node.Id,
                 candidate.node.StepAlias,
                 candidate.node.StepVersion,
-                candidate.Upgrade!.ToStepVersion))
+                candidate.Upgrade!.ToStepVersion, candidate.Upgrade.ToStepAlias))
             .ToImmutableArray();
         return new(ProcessingGraphJson.ComputeDefinitionIdentity(draft), draft.Revision, steps);
     }
@@ -215,14 +220,20 @@ public sealed class ProcessingNodeOptionsCatalog
             {
                 continue;
             }
-            var upgraded = upgrade.Upgrade(node);
+            ProcessingGraphNodeDefinition upgraded;
+            try { upgraded = upgrade.Upgrade(node); }
+            catch (ArgumentException exception)
+            {
+                diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, $"nodes[{index}].effectiveOptions", exception.Message));
+                continue;
+            }
             if (!string.Equals(upgraded.Id, node.Id, StringComparison.Ordinal) ||
-                !string.Equals(upgraded.StepAlias, node.StepAlias, StringComparison.Ordinal) ||
+                !string.Equals(upgraded.StepAlias, upgrade.ToStepAlias, StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(upgraded.StepVersion, upgrade.ToStepVersion, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
                     $"The upgrade of step '{upgrade.StepAlias}' from '{upgrade.FromStepVersion}' must keep the node " +
-                    $"id and step alias and produce version '{upgrade.ToStepVersion}'.");
+                    $"id, use its declared target alias and produce version '{upgrade.ToStepVersion}'.");
             }
             diagnostics.AddRange(ProcessingNodeOptionsCodec.Decode(
                 Resolve(upgraded.StepAlias, upgraded.StepVersion).Descriptor!,
@@ -235,6 +246,18 @@ public sealed class ProcessingNodeOptionsCatalog
             return new(null, diagnostics.ToImmutable());
         }
 
+        var sceneVariants = nodes.Where(node => string.Equals(node.StepAlias, SceneStylePresentation.StepAlias, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(node => node.Outputs).Select(output => output.Variant).ToHashSet(StringComparer.Ordinal);
+        if (sceneVariants.Count > 0)
+            for (var index = 0; index < nodes.Count; index++)
+                if (nodes[index].StepAlias.Equals("OverlayManifest", StringComparison.OrdinalIgnoreCase) ||
+                    nodes[index].StepAlias.Equals("PresentationMaterializer", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { nodes[index] = SceneStylePresentationUpgrade.UpgradeConsumer(nodes[index], sceneVariants); }
+                    catch (ArgumentException exception)
+                    { diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, $"nodes[{index}].effectiveOptions", exception.Message)); }
+                }
+        if (diagnostics.Count > 0) return new(null, diagnostics.ToImmutable());
         var result = draft with { Revision = revision, Nodes = nodes.ToImmutable() };
         var compiled = ProcessingGraphCompiler.Compile(result);
         return compiled.IsValid ? new(result, []) : new(null, compiled.Diagnostics);

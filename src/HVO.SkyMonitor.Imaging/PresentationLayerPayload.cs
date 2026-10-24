@@ -35,7 +35,7 @@ public sealed record PresentationBackplateV2(PresentationColor Fill, int Opacity
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationPlateStyleV3? Style = null);
 
 /// <summary>Pinned font faces for new presentation styles; absent styles retain the original Plex face.</summary>
-public enum PresentationFontFaceV3 { MonoRegular, MonoBold }
+public enum PresentationFontFaceV3 { MonoRegular, MonoBold, PlexRegular }
 
 /// <summary>Explicit font, tracking and halo in thousandths of an image pixel.</summary>
 public sealed record PresentationTextStyleV3(PresentationFontFaceV3 Face, int SizeMilliPixels,
@@ -87,13 +87,15 @@ public sealed record PresentationLayerPayloadV1(
     IReadOnlyList<PresentationEllipseV1> Ellipses,
     IReadOnlyList<PresentationTextBlockV1> TextBlocks,
     PresentationTileMaskV1? TileMask,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationRichTextV1? RichText = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationRichTextV1? RichText = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SceneStyleIdentitySha256 = null)
 {
     public const string PreviousSchemaVersion = "presentation-layer-payload-v1";
     public const string SemanticSchemaVersion = "presentation-layer-payload-v2";
     public const string CurrentSchemaVersion = "presentation-layer-payload-v3";
     public const string RichTextSchemaVersion = "presentation-layer-payload-v4";
-    public static bool SupportsSchema(string? schema) => schema is RichTextSchemaVersion or CurrentSchemaVersion or SemanticSchemaVersion or PreviousSchemaVersion;
+    public const string SceneStyleSchemaVersion = "presentation-layer-payload-v5-scene-style";
+    public static bool SupportsSchema(string? schema) => schema is SceneStyleSchemaVersion or RichTextSchemaVersion or CurrentSchemaVersion or SemanticSchemaVersion or PreviousSchemaVersion;
     public const int MaximumMarkers = 10_000;
     public const int MaximumSegments = 50_000;
     public const int MaximumEllipses = 16;
@@ -105,6 +107,11 @@ public sealed record PresentationLayerPayloadV1(
     /// <summary>Validates schema, identity shape, dimensions, collection bounds, and primitive ranges.</summary>
     public void ValidateStructure()
     {
+        if (SchemaVersion == SceneStyleSchemaVersion ? !Sha256(SceneStyleIdentitySha256) : SceneStyleIdentitySha256 is not null)
+            throw new ArgumentException("Scene styling requires its explicit versioned payload and identity.", nameof(PresentationLayerPayloadV1));
+        if (SchemaVersion != SceneStyleSchemaVersion && TextBlocks is not null && TextBlocks.Any(block =>
+            block?.Appearance?.Body?.Face == PresentationFontFaceV3.PlexRegular || block?.Appearance?.Heading?.Face == PresentationFontFaceV3.PlexRegular))
+            throw new ArgumentException("Plex scene appearances require the scene-style payload version.", nameof(PresentationLayerPayloadV1));
         if (RichText is not null && SchemaVersion != RichTextSchemaVersion || SchemaVersion == RichTextSchemaVersion &&
             (RichText is null || Markers is not { Count: 0 } || Segments is not { Count: 0 } || Ellipses is not { Count: 0 } ||
                 TextBlocks is not { Count: 0 } || TileMask is not null))
@@ -138,7 +145,7 @@ public sealed record PresentationLayerPayloadV1(
                     plate.BorderOpacityMillionths is < 0 or > 1_000_000 || plate.RuleOpacityMillionths is < 0 or > 1_000_000 ||
                     plate.MinimumWidthMilliPixels is < 0 or > 256_000 || plate.MinimumHeightMilliPixels is < 0 or > 256_000 ||
                     plate.CornerRadiusMilliPixels is < 0 or > 32_000)) ||
-            SchemaVersion != CurrentSchemaVersion && (Ellipses.Any(value => value.ThicknessMilliPixels is not null) ||
+            SchemaVersion is not (CurrentSchemaVersion or SceneStyleSchemaVersion) && (Ellipses.Any(value => value.ThicknessMilliPixels is not null) ||
                 TextBlocks.Any(value => value.Appearance is not null || value.Backplate?.Style is not null)))
             throw new ArgumentException("Presentation appearance is invalid for its schema.", nameof(PresentationLayerPayloadV1));
         if (SchemaVersion != PreviousSchemaVersion && (Markers.Any(value => !Bounded(value.Center)) ||
@@ -201,10 +208,13 @@ public static class PresentationLayerCompositor
     public const string AlgorithmVersion = "typed-presentation-compositor-v6-pinned-appearance";
     public const string RichTextAlgorithmVersion = "typed-presentation-compositor-v7-rich-text";
 
+    public const string SceneStyleAlgorithmVersion = "typed-presentation-compositor-v8-scene-style";
+
     public static string SelectAlgorithmVersion(IEnumerable<string> versions)
     {
         var values = versions.ToArray();
-        return values.Contains(RichTextAlgorithmVersion, StringComparer.Ordinal) ? RichTextAlgorithmVersion :
+        return values.Contains(SceneStyleAlgorithmVersion, StringComparer.Ordinal) ? SceneStyleAlgorithmVersion :
+            values.Contains(RichTextAlgorithmVersion, StringComparer.Ordinal) ? RichTextAlgorithmVersion :
             values.All(value => value == PreviousAlgorithmVersion) ? PreviousAlgorithmVersion :
             values.All(value => value is PreviousAlgorithmVersion or SemanticAlgorithmVersion) ? SemanticAlgorithmVersion : AlgorithmVersion;
     }

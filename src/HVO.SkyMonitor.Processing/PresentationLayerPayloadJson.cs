@@ -30,14 +30,16 @@ public static class PresentationLayerPayloadJson
         IEnumerable<PresentationSegmentV1>? segments = null,
         IEnumerable<PresentationEllipseV1>? ellipses = null,
         IEnumerable<PresentationTextBlockV1>? textBlocks = null,
-        PresentationTileMaskV1? tileMask = null)
+        PresentationTileMaskV1? tileMask = null,
+        string? sceneStyleIdentitySha256 = null)
     {
         var value = new PresentationLayerPayloadV1(
-            PresentationLayerPayloadV1.CurrentSchemaVersion, string.Empty, NormalizeSha256(sourceIdentitySha256),
+            sceneStyleIdentitySha256 is null ? PresentationLayerPayloadV1.CurrentSchemaVersion : PresentationLayerPayloadV1.SceneStyleSchemaVersion,
+            string.Empty, NormalizeSha256(sourceIdentitySha256),
             widthPixels, heightPixels, Freeze(markers, PresentationLayerPayloadV1.MaximumMarkers),
             Freeze(segments, PresentationLayerPayloadV1.MaximumSegments),
             Freeze(ellipses, PresentationLayerPayloadV1.MaximumEllipses),
-            Freeze(textBlocks, PresentationLayerPayloadV1.MaximumTextBlocks), Freeze(tileMask));
+            Freeze(textBlocks, PresentationLayerPayloadV1.MaximumTextBlocks), Freeze(tileMask), SceneStyleIdentitySha256: sceneStyleIdentitySha256);
         value = FreezePayload(value);
         value = value with { ContentIdentitySha256 = ComputeIdentityCore(value) };
         var bytes = CanonicalBytes(value);

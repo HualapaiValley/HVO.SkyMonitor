@@ -1,0 +1,67 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
+
+var scene = ProjectedSceneJson.Parse(File.ReadAllBytes(args[0])).Scene!;
+var raw = new byte[scene.ImageTransform.OutputWidthPixels * scene.ImageTransform.OutputHeightPixels];
+var layout = new ImageLayout(scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels, CameraPixelFormat.Mono8, scene.ImageTransform.OutputWidthPixels);
+var annotation = new PresentationAnnotationStyleV1(LabelScale: 2, SegmentThickness: 2);
+Func<PresentationSceneLayerPayloadsV2> produce = () => PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, annotation, expectedPositionDiagnostics: true);
+#if SCENE_STYLE
+if (args[2] == "default-v14") produce = () => SceneStylePresentation.Create(scene, new(annotation));
+if (args[2] == "changed-v14") produce = () => SceneStylePresentation.Create(scene, new(annotation with { MarkerColor = new(255,128,0) }, "PlexRegular", "MonoRegular", "Crosshair"));
+#endif
+var results = new List<object>();
+using var process = Process.GetCurrentProcess();
+for (var trial = 0; trial < 3; trial++)
+{
+    for (var warmup = 0; warmup < 5; warmup++) _ = Run();
+    var samples = new List<object>();
+    var times = new double[30];
+    long allocated = 0, workingSet = 0;
+    double cpuMs = 0;
+    string? checksum = null, styleIdentity = null;
+    int labels=0, markers=0, primitives=0;
+    for (var iteration = 0; iteration < 30; iteration++)
+    {
+        var c0 = GC.CollectionCount(0); var c1 = GC.CollectionCount(1); var c2 = GC.CollectionCount(2);
+        var cpu = process.TotalProcessorTime;
+        var allocationStart = GC.GetTotalAllocatedBytes(true);
+        var result = Run();
+        allocated += GC.GetTotalAllocatedBytes(true) - allocationStart;
+        var usedCpu = (process.TotalProcessorTime - cpu).TotalMilliseconds;
+        cpuMs += usedCpu;
+        times[iteration] = result.Ms;
+        var actual = Convert.ToHexString(SHA256.HashData(result.Output));
+        checksum ??= actual;
+        if (actual != checksum) throw new Exception("Nondeterministic output.");
+        process.Refresh(); workingSet = Math.Max(workingSet, process.WorkingSet64);
+        labels=result.Labels; markers=result.Markers; primitives=result.Primitives; styleIdentity=result.StyleIdentity;
+        samples.Add(new {ms=result.Ms,producerMs=result.ProducerMs,cpuMs=usedCpu,gen0=GC.CollectionCount(0)-c0,gen1=GC.CollectionCount(1)-c1,gen2=GC.CollectionCount(2)-c2});
+    }
+    Array.Sort(times);
+    results.Add(new {revision=args[3],name=args[2],trial,warmup=5,operations=30,concurrency=1,processors=Environment.ProcessorCount,
+        scene=scene.SceneIdentitySha256,style=styleIdentity,input=Convert.ToHexString(SHA256.HashData(raw)),output=checksum,
+        cpuMs,allocatedBytesPerOperation=allocated/30,maximumWorkingSet=workingSet,medianMs=times[15],p95Ms=times[28],labels,markers,primitives,samples,
+        fonts=PresentationFont.MonoRegularSha256+":"+PresentationFont.MonoBoldSha256+":"+PresentationFont.FontSha256});
+}
+File.WriteAllText(args[1],JsonSerializer.Serialize(results,new JsonSerializerOptions {WriteIndented=true}));
+(double Ms,double ProducerMs,byte[] Output,int Labels,int Markers,int Primitives,string? StyleIdentity) Run()
+{
+    var start=Stopwatch.GetTimestamp();
+    var groups=produce();
+    var produced=Stopwatch.GetTimestamp();
+    PresentationLayerPayloadV1[] payloads=[groups.StarAnnotations,groups.CardinalDirections,groups.ImageCircle,groups.Constellations];
+    var output=PresentationLayerCompositor.CompositeDisplay(layout,raw,payloads.Select(p=>new PresentationCompositorLayer(p,true,PresentationRasterBlendMode.Normal,1_000_000)).ToArray());
+    var elapsed=Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    string? identity=null;
+#if SCENE_STYLE
+    identity=groups.StarAnnotations.SceneStyleIdentitySha256;
+#endif
+    return (elapsed,Stopwatch.GetElapsedTime(start,produced).TotalMilliseconds,output.Pixels,payloads.Sum(p=>p.TextBlocks.Count),payloads.Sum(p=>p.Markers.Count),
+        payloads.Sum(p=>p.Markers.Sum(m=>m.Crosshair?2:1)+p.Segments.Count+p.Ellipses.Count+p.TextBlocks.Sum(b=>b.Lines.Count)),identity);
+}
