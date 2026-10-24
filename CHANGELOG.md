@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Configure existing same-gain rolling windows with bounded size, trailing/centered selection and optional age/integration limits in graph drafts, with explicit activation and rollback. #1624
+
 - Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
 
 ### Changed
