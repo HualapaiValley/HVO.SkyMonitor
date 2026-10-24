@@ -6,6 +6,9 @@ It produces `measured-astrometry-solution-v1` typed Metadata. Availability in th
 shared registry does not enable a CameraAgent step, central job, installed
 profile, live capture path, or calibration write-back. Host adoption is separate.
 
+The opt-in #1643 adapter, immutable artifact/read contract and #1644 viewer
+handoff are documented in [Retained capture astrometry](retained-astrometry.md).
+
 Run fitting only as explicitly selected bounded work **after durable raw
 admission**, in a background/operator operation. Serialize expensive cold solves
 according to the host's resource capacity. A rejected or unavailable frame never

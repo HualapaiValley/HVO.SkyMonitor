@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
@@ -12,6 +13,67 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 [TestCategory("Unit")]
 public sealed class CentralDerivativeJobInputReaderTests
 {
+    [TestMethod]
+    [DataRow(MeasuredStellarAssociationsV1.CurrentSchemaVersion, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType)]
+    [DataRow(MeasuredAstrometryContextV1.CurrentSchemaVersion, MeasuredAstrometryJson.ContextMediaType)]
+    [DataRow(MeasuredAstrometrySolutionV1.CurrentSchemaVersion, MeasuredAstrometryJson.MediaType)]
+    public async Task IngestedAstrometryInputsUseTheirImmutableDescriptorWithoutCentralProducerEvidence(string schema, string mediaType)
+    {
+        await using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var artifact = fixture.Artifact;
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 1, 4, fixture.Payload).Descriptor;
+        raw = raw with
+        {
+            Capture = raw.Capture with { CaptureId = artifact.Frame!.FrameId },
+            Artifact = raw.Artifact with { ArtifactId = fixture.SourceId }
+        };
+        var recipe = RecipeIdentityDescriptor.Create("immutable-input", "1.0.0", "fixture-v1", JsonSerializer.SerializeToElement(new { }));
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe);
+        var output = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "retained", recipeIdentity.IdentitySha256, [fixture.SourceId]);
+        var descriptor = new StructuredProcessingProductDescriptorV1(raw, new(ProcessingIdentity.CreateArtifactId(output),
+            FrameArtifactRole.Metadata, "processing", "retained", raw.Artifact.CreatedUtc, [fixture.SourceId], recipe,
+            mediaType, artifact.ChecksumSha256), output, [new("fixture", "v1")], fixture.Compatibility,
+            TimeSpan.FromSeconds(1).Ticks, fixture.Payload.Length, ProcessingProductKind.Metadata, schema, new string('C', 64));
+        artifact.ArtifactId = descriptor.Artifact.ArtifactId;
+        artifact.SourceId = descriptor.Artifact.SourceId;
+        artifact.Variant = descriptor.Artifact.Variant;
+        artifact.CreatedUtc = descriptor.Artifact.CreatedUtc;
+        artifact.MediaType = mediaType;
+        artifact.Recipe = new()
+        {
+            Name = recipe.Name,
+            SemanticVersion = recipe.SemanticVersion,
+            ImplementationVersion = recipe.ImplementationVersion,
+            OptionsSha256 = recipe.OptionsSha256,
+            OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(recipe.Options))
+        };
+        artifact.StructuredProduct = new()
+        {
+            OutputIdentitySha256 = output,
+            ProductKind = descriptor.Kind.ToString(),
+            ProductSchemaVersion = schema,
+            ContentIdentitySha256 = descriptor.ContentIdentitySha256,
+            AlgorithmsJson = JsonSerializer.Serialize(descriptor.Algorithms),
+            CompatibilityJson = JsonSerializer.Serialize(descriptor.Compatibility),
+            TotalIntegrationTicks = descriptor.TotalIntegrationTicks,
+            DescriptorJson = System.Text.Encoding.UTF8.GetString(StructuredProcessingProductManifestJson.SerializeDescriptor(descriptor))
+        };
+        fixture.Db.CentralArtifactProcessingEvidence.Remove(fixture.Evidence);
+        await fixture.Db.SaveChangesAsync().ConfigureAwait(false);
+        var lease = fixture.Lease with
+        {
+            Inputs = fixture.Lease.Inputs!.Select(i => i with
+            { ArtifactId = artifact.ArtifactId, MediaType = mediaType }).ToArray()
+        };
+        var input = (await fixture.Reader.ReadAsync(lease, CancellationToken.None).ConfigureAwait(false)).ProcessingInputs.Single();
+        Assert.IsNotNull(input.Artifact);
+        Assert.AreEqual(recipeIdentity.IdentitySha256, input.Artifact.RecipeIdentitySha256);
+        Assert.AreEqual(recipe.Name, input.Artifact.RecipeDescriptor!.Name);
+        Assert.AreEqual(recipe.OptionsSha256, input.Artifact.RecipeDescriptor.OptionsSha256);
+        Assert.AreEqual(schema, input.Artifact.SchemaVersion);
+        CollectionAssert.AreEqual(fixture.Payload, input.Payload.ToArray());
+    }
+
     [TestMethod]
     public async Task LegacyLeaseRetainsLayoutlessSourceIdentityWithoutInlineGeometry()
     {
