@@ -76,6 +76,10 @@ existing selection rules. Expected-position labels retain their complete
 Mandatory catalog/prediction captions and dashed distinctions keep their existing
 rules.
 
+For the separate physical predicted-scene query, use the
+[Projected scene query panel](projected-scene-query-options.md). VirtualSky's
+authoritative rendered-scene query remains in its module settings.
+
 `constellationIds`, nullable legacy `markerValue`, `labelValue`, `imageCircleValue`
 and `cardinalValue`, diagnostic policy and output variants remain preserved JSON
 without editors. Collection/nullable editor design, new fonts/glyphs, producer
