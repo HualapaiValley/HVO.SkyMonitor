@@ -59,7 +59,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(22, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(24, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades, "No upgrade ships, so no saved pipeline changes.");
     }
 
