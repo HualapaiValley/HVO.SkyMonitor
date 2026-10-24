@@ -61,6 +61,21 @@ public sealed class ProcessingNodeOptionsForm
 
     public string Get(string key) => _inputs[key];
 
+    public string NullableNumberStatus(string key)
+    {
+        if (_edited.Contains(key))
+            return Get(key).Length == 0 ? "No limit (cleared)." : "Limit edited.";
+        var option = Descriptor.Find(key)!;
+        var single = new ProcessingNodeOptionsDescriptor(Descriptor.DescriptorId, Descriptor.StepAlias + ".field",
+            Descriptor.StepVersion, Descriptor.Title, Descriptor.Help, [option]);
+        var result = ProcessingNodeOptionsCodec.Decode(single, Source);
+        if (!result.IsValid)
+            return "Correct the invalid value before saving.";
+        var decoded = result.Get(key);
+        return !decoded.IsExplicit ? "Not specified; using default." : decoded.Value.AsNullableWholeNumber() is null
+            ? "Explicit null; no limit." : "Limit set.";
+    }
+
     public void Set(string key, string value)
     {
         _inputs[key] = value;
@@ -99,6 +114,8 @@ public sealed class ProcessingNodeOptionsForm
     {
         ProcessingOptionKind.Toggle when bool.TryParse(input, out var toggle) => ProcessingOptionValue.FromToggle(toggle),
         ProcessingOptionKind.WholeNumber when long.TryParse(input, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var whole) => ProcessingOptionValue.FromWholeNumber(whole),
+        ProcessingOptionKind.NullableWholeNumber when input.Length == 0 => ProcessingOptionValue.FromNullableWholeNumber(null),
+        ProcessingOptionKind.NullableWholeNumber when long.TryParse(input, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var nullableWhole) => ProcessingOptionValue.FromNullableWholeNumber(nullableWhole),
         ProcessingOptionKind.RealNumber when double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var real) && double.IsFinite(real) => ProcessingOptionValue.FromRealNumber(real),
         ProcessingOptionKind.Text => ProcessingOptionValue.FromText(input),
         ProcessingOptionKind.Choice => ProcessingOptionValue.FromChoice(input),
@@ -112,6 +129,7 @@ public sealed class ProcessingNodeOptionsForm
     {
         ProcessingOptionKind.Toggle => value.AsToggle().ToString(CultureInfo.InvariantCulture),
         ProcessingOptionKind.WholeNumber => value.AsWholeNumber().ToString(CultureInfo.InvariantCulture),
+        ProcessingOptionKind.NullableWholeNumber => value.AsNullableWholeNumber()?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
         ProcessingOptionKind.RealNumber => value.AsRealNumber().ToString("R", CultureInfo.InvariantCulture),
         ProcessingOptionKind.Color => string.Create(CultureInfo.InvariantCulture,
             $"#{value.AsColor().Red:x2}{value.AsColor().Green:x2}{value.AsColor().Blue:x2}"),

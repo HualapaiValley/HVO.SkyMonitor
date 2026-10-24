@@ -39,7 +39,7 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// <summary>
 /// Typed reading and editing of a node's effective options against its descriptor (#1532). Members match ignoring
 /// case, as CameraAgent's options binding does. Values are strict JSON types: a whole number is an integer token, a
-/// toggle is <c>true</c> or <c>false</c>, and a quoted number or <c>null</c> is the wrong type. Members the descriptor
+/// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable whole number accepts <c>null</c>. Members the descriptor
 /// does not describe are never read or rewritten.
 /// </summary>
 /// <remarks>
@@ -268,6 +268,9 @@ public static class ProcessingNodeOptionsCodec
                     JsonValueKind.False => ProcessingOptionValue.FromToggle(false),
                     _ => null
                 };
+            case ProcessingOptionKind.NullableWholeNumber when token.ValueKind == JsonValueKind.Null:
+                return ProcessingOptionValue.FromNullableWholeNumber(null);
+            case ProcessingOptionKind.NullableWholeNumber:
             case ProcessingOptionKind.WholeNumber:
                 if (!IsIntegerToken(token))
                 {
@@ -275,7 +278,9 @@ public static class ProcessingNodeOptionsCodec
                 }
                 if (token.TryGetInt64(out var whole))
                 {
-                    return ProcessingOptionValue.FromWholeNumber(whole);
+                    return kind == ProcessingOptionKind.NullableWholeNumber
+                        ? ProcessingOptionValue.FromNullableWholeNumber(whole)
+                        : ProcessingOptionValue.FromWholeNumber(whole);
                 }
                 outOfRange = true;
                 return null;
@@ -337,6 +342,7 @@ public static class ProcessingNodeOptionsCodec
     {
         ProcessingOptionKind.Toggle => "true or false",
         ProcessingOptionKind.WholeNumber => "a whole JSON number",
+        ProcessingOptionKind.NullableWholeNumber => "a whole JSON number or null",
         ProcessingOptionKind.RealNumber => "a JSON number",
         _ => "a JSON string"
     };
@@ -355,6 +361,12 @@ public static class ProcessingNodeOptionsCodec
                     break;
                 case ProcessingOptionKind.WholeNumber:
                     writer.WriteNumberValue(value.AsWholeNumber());
+                    break;
+                case ProcessingOptionKind.NullableWholeNumber:
+                    if (value.AsNullableWholeNumber() is { } whole)
+                        writer.WriteNumberValue(whole);
+                    else
+                        writer.WriteNullValue();
                     break;
                 case ProcessingOptionKind.RealNumber:
                     writer.WriteNumberValue(value.AsRealNumber());

@@ -307,6 +307,13 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ProjectedScene", "{\"maximumResults\":\"1\"}", "processing.options.wrong-type")]
     [DataRow("ProjectedScene", "{\"includeConstellationEndpointStars\":null}", "processing.options.wrong-type")]
     [DataRow("ProjectedScene", "{\"maximumResults\":1,\"MAXIMUMRESULTS\":1}", "processing.options.duplicate-member")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":0}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":16385}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1.5}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1e400}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":\"4\"}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":true}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":null,\"maximumDimension\":4}", "processing.options.duplicate-member")]
     public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
@@ -328,13 +335,15 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     [TestMethod]
-    public async Task ProjectedSceneDraftPreviewAndCreateRequireAuthorization()
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
+    [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
+    public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
         var service = CreateService(operations.Object, authorized: false, factory.Object);
-        var pipeline = new CapturePipelineConfig([new("ProjectedScene", "scene", Options:
-            JsonSerializer.SerializeToElement(new { maximumMagnitude = 2, maximumResults = 1, includeConstellationEndpointStars = true }), DependsOn: ["$raw"])]);
+        var pipeline = new CapturePipelineConfig([new(alias, "scene", Options:
+            JsonSerializer.Deserialize<JsonElement>(json), DependsOn: ["$raw"])]);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false)).Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.CreateRevisionAsync("query", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false)).Kind);
         operations.VerifyNoOtherCalls();
