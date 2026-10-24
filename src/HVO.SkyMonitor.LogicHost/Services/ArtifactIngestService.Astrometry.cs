@@ -66,7 +66,7 @@ internal sealed partial class ArtifactIngestService
             !string.Equals(frame.SourcePayloadSha256, raw.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
             frame.ExposureStartUtc != raw.Timing.ExposureStartedUtc || frame.ExposureEndUtc != ProcessingArtifact.ResolveObservationEndedUtc(
                 raw.Timing.ExposureStartedUtc, raw.Timing.ExposureEndedUtc, raw.Controls.EffectiveExposure) ||
-            readoutIdentity != MeasuredAstrometryJson.ComputeReadoutIdentity(raw.Layout) ||
+            !string.Equals(readoutIdentity, MeasuredAstrometryJson.ComputeReadoutIdentity(raw.Layout), StringComparison.OrdinalIgnoreCase) ||
             raw.Location is { } location && !string.Equals(location.IdentitySha256, frame.ObserverIdentitySha256, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Astrometry raw descriptor mismatch.");
     }

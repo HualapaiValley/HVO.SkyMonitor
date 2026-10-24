@@ -16,7 +16,7 @@ public interface ICameraAgentRetainedAstrometryService
 }
 
 internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessingStore store,
-    ICameraAgentArtifactService artifacts) : ICameraAgentRetainedAstrometryService, IDisposable
+    ICameraAgentArtifactService artifacts, int maximumReadBytes = CameraAgentRetainedAstrometryService.MaximumReadBytes) : ICameraAgentRetainedAstrometryService, IDisposable
 {
     internal const int MaximumRawBytes = 32 * 1024 * 1024;
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
@@ -44,7 +44,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
             if (candidates.Count != 1 || candidates[0].AvailabilityState != "Available")
                 return new(captureId, "Unavailable", "assessment-ambiguous-or-unavailable");
-            var remaining = MaximumReadBytes;
+            var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
             var (solutionArtifact, solutionProduct) = await ReadProductAsync(candidates[0].ArtifactId,
                 MeasuredAstrometryJson.MaximumSolutionBytes).ConfigureAwait(false);
             var solution = MeasuredAstrometryJson.Parse(solutionArtifact.Payload);
@@ -112,7 +112,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 return bytes;
             }
         }
-        catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
             return new(captureId, "Unavailable", "retained-evidence-invalid-or-unavailable");
         }

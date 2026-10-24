@@ -67,13 +67,18 @@ internal sealed class AstrometricRayCamera
 internal static class AstrometricSolverCore
 {
     private sealed record Star(CelestialCatalogObject Catalog, EnuVector Ray);
-    private readonly record struct Triangle(int A, int B, int C, double X, double Y, double Z);
+    internal readonly record struct Triangle(int A, int B, int C, double X, double Y, double Z);
     private const int MaximumIndexTriangles = 2000000;
     private const int MaximumIndexStars = 1500;
     /// <summary>Largest selection the evaluation overload accepts: the whole installed HYG sky with headroom, never a production bound.</summary>
     internal const int MaximumEvaluationCatalogEntries = 131072;
     private sealed record Pair(Star Star, CoreDetection CoreDetection, PixelPoint Predicted, double Distance);
-    private sealed record Candidate(AstrometricRotation Rotation, double Scale, List<Pair> Matches);
+    private sealed record Candidate(AstrometricRotation Rotation, double Scale, List<Pair> Matches)
+    {
+        private double? rmsPixels;
+        // A candidate's match list is frozen; reuse the identical RMS during repeated ranking.
+        internal double RmsPixels => rmsPixels ??= AstrometricMath.Rms(Matches.Select(m => m.Distance));
+    }
     public static CoreResult Solve(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
         SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options = null, AstrometricWorkControl? control = null)
         => Run(detections, catalog, configuration, site, utc, options, control, null, AstrometricCatalogData.MaterializationCeiling);
@@ -132,7 +137,7 @@ internal static class AstrometricSolverCore
         if (indexed.Count > MaximumIndexStars) return Reject("Catalog exceeds the bounded1500-star in-memory index limit");
         var index = new Dictionary<(int, int, int), List<Triangle>>();
         foreach (var t in Triangles(indexed.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, control))
-        { var k = Key(t, tolerance); if (!index.TryGetValue(k, out var bucket)) index[k] = bucket = []; bucket.Add(t); triangleCount++; if (triangleCount > MaximumIndexTriangles) return Reject("Catalog triangle index exceeds its2million-entry bound"); }
+        { var k = Key(t, tolerance); if (!index.TryGetValue(k, out var bucket)) index[k] = bucket = new(1); bucket.Add(t); triangleCount++; if (triangleCount > MaximumIndexTriangles) return Reject("Catalog triangle index exceeds its2million-entry bound"); }
         var bright = detections.OrderByDescending(d => d.Flux).Take(o.DetectionTriangleStars).ToArray();
         var rawCandidates = new List<Candidate>();
         var scales = Enumerable.Range(0, (int)Math.Ceiling((o.MaximumScale - o.MinimumScale) / o.ScaleStep) + 1)
@@ -161,9 +166,8 @@ internal static class AstrometricSolverCore
                         if (Angle(rotation.Apply(rays[p.C]), indexed[t.C].Ray) > tolerance * 2) continue;
                         var matches = Match(training, grid, camera, rotation, 7.5);
                         if (matches.Count < 12) continue;
-                        if (rawCandidates.Any(c => c.Rotation.SeparationDegrees(rotation) < .8 && Math.Abs(c.Scale - scale) < .015 && SameAssignments(c.Matches, matches))) continue;
-                        rawCandidates.Add(new(rotation, scale, matches));
-                        rawCandidates = rawCandidates.OrderByDescending(c => c.Matches.Count).ThenBy(c => AstrometricMath.Rms(c.Matches.Select(m => m.Distance))).Take(o.MaximumCandidates).ToList();
+                        if (HasAcquisitionCandidate(rawCandidates, rotation, scale, matches)) continue;
+                        RetainCandidate(rawCandidates, new(rotation, scale, matches), o.MaximumCandidates);
                     }
                 }
             }
@@ -177,13 +181,13 @@ internal static class AstrometricSolverCore
             if (refined.Any(r => r.Rotation.SeparationDegrees(c.Rotation) < .03 && Math.Abs(r.Scale - c.Scale) < .002 && SameAssignments(r.Matches, c.Matches))) continue;
             refined.Add(c);
         }
-        refined = refined.OrderByDescending(c => c.Matches.Count).ThenBy(c => AstrometricMath.Rms(c.Matches.Select(m => m.Distance))).ToList();
+        refined = refined.OrderByDescending(c => c.Matches.Count).ThenBy(c => c.RmsPixels).ToList();
         if (refined.Count == 0) return Reject("No catalog pattern met the acquisition gate");
         if (acquisition is not null)
         {
             acquisition.AddRange(refined.Select(c => new CoreCandidate(c.Rotation, c.Scale,
                 [.. c.Matches.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, false))],
-                AstrometricMath.Rms(c.Matches.Select(m => m.Distance)))));
+                c.RmsPixels)));
             return new(false, "acquired", "Refined acquisition candidates returned without verification or quality gates", null, null, null, [],
                 indexed.Count, triangleCount, imageCount, hypotheses, refined.Count, exhausted, watch.Elapsed.TotalMilliseconds, domain);
         }
@@ -311,10 +315,20 @@ internal static class AstrometricSolverCore
                 var ac = distances[a * rays.Length + c]; var bc = distances[b * rays.Length + c];
                 if (!IsIndexTriangle(rays[a], rays[b], rays[c], ab, ac, bc, maxSpan, minimumSide)) continue;
                 // Ordering by opposite side gives rotation-invariant correspondence.
-                var side = new[] { (Angle: bc, Vertex: a), (Angle: ac, Vertex: b), (Angle: ab, Vertex: c) }.OrderBy(s => s.Angle).ToArray();
-                yield return new(side[0].Vertex, side[1].Vertex, side[2].Vertex, side[0].Angle, side[1].Angle, side[2].Angle);
+                yield return OrderTriangle(a, b, c, ab, ac, bc);
             }
         }
+    }
+    internal static Triangle OrderTriangle(int a, int b, int c, double ab, double ac, double bc)
+    {
+        var first = (Angle: bc, Vertex: a);
+        var second = (Angle: ac, Vertex: b);
+        var third = (Angle: ab, Vertex: c);
+        // Adjacent strict swaps preserve the former stable OrderBy order, including equal sides.
+        if (first.Angle > second.Angle) (first, second) = (second, first);
+        if (second.Angle > third.Angle) (second, third) = (third, second);
+        if (first.Angle > second.Angle) (first, second) = (second, first);
+        return new(first.Vertex, second.Vertex, third.Vertex, first.Angle, second.Angle, third.Angle);
     }
     internal static bool IsIndexTriangle(EnuVector a, EnuVector b, EnuVector c, double ab, double ac, double bc, double maxSpan, double minimumSide)
     {
@@ -332,10 +346,9 @@ internal static class AstrometricSolverCore
         foreach (var star in stars)
         {
             if (camera.Pixel(star.Ray, rotation) is not { } p) continue;
-            var nearby = grid.Near(p, radius).OrderBy(d => AstrometricMath.Distance(d.Pixel, p)).Take(2).ToArray();
-            if (nearby.Length == 0) continue; var distance = AstrometricMath.Distance(nearby[0].Pixel, p);
-            if (nearby.Length > 1 && AstrometricMath.Distance(nearby[1].Pixel, p) < distance * 1.5) continue;
-            candidates.Add(new(star, nearby[0], p, distance));
+            var (nearest, distance, secondDistance) = grid.NearestTwo(p, radius);
+            if (nearest is null || secondDistance < distance * 1.5) continue;
+            candidates.Add(new(star, nearest, p, distance));
         }
         var used = new HashSet<int>(); return candidates.OrderBy(m => m.Distance).Where(m => used.Add(m.CoreDetection.Index)).ToList();
     }
@@ -369,6 +382,29 @@ internal static class AstrometricSolverCore
             if (delta.Sum(Math.Abs) < 1e-8) break;
         }
         return new(rotation, scale, Match(training, grid, new AstrometricRayCamera(config, scale), rotation, 1.5));
+    }
+    private static bool HasAcquisitionCandidate(List<Candidate> candidates, AstrometricRotation rotation, double scale, List<Pair> matches)
+    {
+        // Keep the original ordered Any predicate without a closure per visited triangle.
+        foreach (var candidate in candidates)
+            if (candidate.Rotation.SeparationDegrees(rotation) < .8 && Math.Abs(candidate.Scale - scale) < .015 &&
+                SameAssignments(candidate.Matches, matches)) return true;
+        return false;
+    }
+    private static void RetainCandidate(List<Candidate> candidates, Candidate candidate, int maximum)
+        => RetainRanked(candidates, candidate, maximum, CompareCandidates);
+    private static int CompareCandidates(Candidate left, Candidate right)
+    {
+        var count = right.Matches.Count.CompareTo(left.Matches.Count);
+        return count != 0 ? count : left.RmsPixels.CompareTo(right.RmsPixels);
+    }
+    internal static void RetainRanked<T>(List<T> candidates, T candidate, int maximum, Comparison<T> compare)
+    {
+        // Insert after equal keys: the same stable sort and top-K selection without rebuilding the list.
+        var position = 0;
+        while (position < candidates.Count && compare(candidates[position], candidate) <= 0) position++;
+        candidates.Insert(position, candidate);
+        if (candidates.Count > maximum) candidates.RemoveAt(candidates.Count - 1);
     }
     private static bool SameAssignments(List<Pair> a, List<Pair> b)
     {
@@ -406,6 +442,29 @@ internal static class AstrometricSolverCore
         private readonly Dictionary<(int, int), List<CoreDetection>> cells = [];
         public CoreDetectionGrid(IEnumerable<CoreDetection> detections)
         { foreach (var d in detections) { var key = ((int)Math.Floor(d.X / 8), (int)Math.Floor(d.Y / 8)); if (!cells.TryGetValue(key, out var cell)) cells[key] = cell = []; cell.Add(d); } }
+        internal (CoreDetection? First, double FirstDistance, double SecondDistance) NearestTwo(PixelPoint p, double radius)
+        {
+            CoreDetection? first = null;
+            var firstDistance = double.PositiveInfinity;
+            var secondDistance = double.PositiveInfinity;
+            // Visit cells and detections in exactly Near's order; strict comparisons retain stable ties.
+            for (var y = (int)Math.Floor((p.Y - radius) / 8); y <= (int)Math.Floor((p.Y + radius) / 8); y++)
+                for (var x = (int)Math.Floor((p.X - radius) / 8); x <= (int)Math.Floor((p.X + radius) / 8); x++)
+                    if (cells.TryGetValue((x, y), out var values))
+                        foreach (var detection in values)
+                        {
+                            var distance = AstrometricMath.Distance(detection.Pixel, p);
+                            if (!(distance < radius)) continue;
+                            if (distance < firstDistance)
+                            {
+                                secondDistance = firstDistance;
+                                first = detection;
+                                firstDistance = distance;
+                            }
+                            else if (distance < secondDistance) secondDistance = distance;
+                        }
+            return (first, firstDistance, secondDistance);
+        }
         public IEnumerable<CoreDetection> Near(PixelPoint p, double radius)
         {
             for (var y = (int)Math.Floor((p.Y - radius) / 8); y <= (int)Math.Floor((p.Y + radius) / 8); y++) for (var x = (int)Math.Floor((p.X - radius) / 8); x <= (int)Math.Floor((p.X + radius) / 8); x++)

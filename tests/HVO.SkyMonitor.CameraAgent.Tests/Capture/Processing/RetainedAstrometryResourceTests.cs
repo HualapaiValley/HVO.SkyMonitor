@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -23,6 +25,7 @@ public sealed partial class DurableCaptureProcessingTests
             ?? throw new InvalidOperationException("Set HVO_ISSUE1643_EVIDENCE_ROOT to an hvo scratch directory.");
         Directory.CreateDirectory(evidenceRoot);
         var rows = new List<object>();
+        var warmEnabled = new List<(double ProducerMs, long ProducerBytes, double ReadMs, long ReadBytes)>();
         using var process = Process.GetCurrentProcess();
         foreach (var enabled in new[] { false, true })
         {
@@ -51,11 +54,21 @@ public sealed partial class DurableCaptureProcessingTests
                 var readElapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 var read = Sample();
                 Assert.AreEqual(enabled ? "Retained" : "NotRetained", view.Availability, view.Reason);
+                if (enabled)
+                {
+                    Assert.AreEqual(AstrometricAssessmentStatus.Accepted, view.Solution!.Assessment.Status, view.Reason);
+                    Assert.AreEqual("959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9", view.SolutionIdentitySha256,
+                        "The budget must preserve the original accepted solution identity.");
+                }
+                if (enabled && index > 0) warmEnabled.Add((producerElapsed, produced.Allocated - before.Allocated, readElapsed, read.Allocated - produced.Allocated));
                 rows.Add(new
                 {
                     enabled,
                     index,
                     cold = index == 0,
+                    rawDescriptorIdentity = CaptureContractJson.ComputeDescriptorSha256(f.Fixture.Manifest.Descriptor),
+                    rawPayloadIdentity = f.Fixture.Manifest.Descriptor.Artifact.ChecksumSha256,
+                    recipeOptions = f.Options.Recipe,
                     producerAndPersistence = Delta(before, produced, producerElapsed),
                     read = Delta(produced, read, readElapsed),
                     solutionIdentity = view.SolutionIdentitySha256,
@@ -94,6 +107,13 @@ public sealed partial class DurableCaptureProcessingTests
             rows
         }, AstrometryEvidenceJson)).ConfigureAwait(false);
         Console.WriteLine(path);
+        Assert.IsTrue(Median(warmEnabled.Select(r => (double)r.ProducerBytes)) <= 200L * 1024 * 1024,
+            $"Warm enabled producer median {Median(warmEnabled.Select(r => (double)r.ProducerBytes))} exceeds 209715200 bytes.");
+        Assert.IsTrue(Median(warmEnabled.Select(r => r.ProducerMs)) <= 5000, "Producer latency exceeds 5000 ms.");
+        Assert.IsTrue(Median(warmEnabled.Select(r => (double)r.ReadBytes)) <= 100L * 1024 * 1024, "Read allocation exceeds 104857600 bytes.");
+        Assert.IsTrue(Median(warmEnabled.Select(r => r.ReadMs)) <= 500, "Read latency exceeds 500 ms.");
+
+        static double Median(IEnumerable<double> samples) => samples.Order().ElementAt(2);
 
         ResourceSample Sample()
         {

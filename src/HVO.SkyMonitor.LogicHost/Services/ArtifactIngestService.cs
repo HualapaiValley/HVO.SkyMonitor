@@ -2156,6 +2156,7 @@ internal sealed partial class ArtifactIngestService(
                 .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
+                && candidate.DevicePublicId == frame.DevicePublicId
                 && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (!usable)
@@ -2267,7 +2268,8 @@ internal sealed partial class ArtifactIngestService(
 
     internal static bool RequiresSameFrameSource(CentralArtifact artifact, int ordinal)
         => artifact.StructuredProduct is not null &&
-            (artifact.MediaType != StructuredProcessingProductContracts.CloudAssessmentMediaType || ordinal != 1);
+            (artifact.MediaType != StructuredProcessingProductContracts.CloudAssessmentMediaType || ordinal != 1) &&
+            (artifact.MediaType != MeasuredAstrometryJson.ContextMediaType || ordinal != 3);
 
     internal static bool HasStructuredSourceIdentityMismatch(CentralArtifact artifact)
     {
@@ -2287,6 +2289,7 @@ internal sealed partial class ArtifactIngestService(
 
     internal static bool HasStructuredSourceFactsMismatch(CentralArtifact artifact)
     {
+        var requiresAstrometryFacts = artifact.MediaType is MeasuredAstrometryJson.ContextMediaType or MeasuredAstrometryJson.MediaType;
         var requiresCloudFacts = string.Equals(
             artifact.MediaType,
             StructuredProcessingProductContracts.CloudAssessmentMediaType,
@@ -2299,7 +2302,16 @@ internal sealed partial class ArtifactIngestService(
         {
             var hasCloudFacts = source.ExpectedRole.HasValue || source.ExpectedVariant is not null ||
                 source.ExpectedRecipeIdentitySha256 is not null;
-            if (!hasCloudFacts)
+            if (requiresAstrometryFacts)
+            {
+                // Native astrometry authenticates roles for every parent and producer facts where available.
+                // Scene/context slots intentionally carry no variant or producer identity.
+                if (!source.ExpectedRole.HasValue ||
+                    source.Ordinal == 0 && (source.ExpectedVariant is null || source.ExpectedRecipeIdentitySha256 is null) ||
+                    source.Ordinal == 1 && source.ExpectedRecipeIdentitySha256 is null)
+                    return true;
+            }
+            else if (!hasCloudFacts)
             {
                 if (requiresCloudFacts)
                 {
@@ -2335,31 +2347,34 @@ internal sealed partial class ArtifactIngestService(
             if (hasCloudFacts)
             {
                 if (resolved.Role != source.ExpectedRole!.Value ||
-                    !string.Equals(resolved.Variant, source.ExpectedVariant, StringComparison.Ordinal) ||
-                    resolved.Recipe is not { } recipe)
+                    source.ExpectedVariant is not null && !string.Equals(resolved.Variant, source.ExpectedVariant, StringComparison.Ordinal))
                 {
                     return true;
                 }
-                try
+                if (source.ExpectedRecipeIdentitySha256 is not null)
                 {
-                    using var options = JsonDocument.Parse(recipe.OptionsJson);
-                    var descriptor = new RecipeIdentityDescriptor(
-                        recipe.Name,
-                        recipe.SemanticVersion,
-                        recipe.ImplementationVersion,
-                        options.RootElement.Clone(),
-                        recipe.OptionsSha256);
-                    if (!string.Equals(
-                            ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
-                            source.ExpectedRecipeIdentitySha256,
-                            StringComparison.OrdinalIgnoreCase))
+                    if (resolved.Recipe is not { } recipe) return true;
+                    try
+                    {
+                        using var options = JsonDocument.Parse(recipe.OptionsJson);
+                        var descriptor = new RecipeIdentityDescriptor(
+                            recipe.Name,
+                            recipe.SemanticVersion,
+                            recipe.ImplementationVersion,
+                            options.RootElement.Clone(),
+                            recipe.OptionsSha256);
+                        if (!string.Equals(
+                                ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
+                                source.ExpectedRecipeIdentitySha256,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    catch (Exception exception) when (exception is JsonException or ArgumentException)
                     {
                         return true;
                     }
-                }
-                catch (Exception exception) when (exception is JsonException or ArgumentException)
-                {
-                    return true;
                 }
             }
             if (hasReferenceFacts && !MatchesPresentationReference(source, resolved))

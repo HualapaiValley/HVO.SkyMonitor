@@ -34,58 +34,77 @@ closed. The shared #1642 integrity/prior selection remains the numerical owner.
 
 ## Resource comparison
 
-[Machine-readable evidence](issue-1643-retained-resources.json) records SDK
-10.0.402, .NET 10.0.13, Linux x64, 12 logical processors, Release, concurrency one.
-The baseline executes the same admitted raw, scene and measured-association
-pipeline without astrometry. The enabled arm adds the real analyzer and durable
-context/solution publication. Both use fresh local SQLite/file roots. Fixture
-generation and admission happen before timing; there is one reported cold
-operation followed by five measured warm operations per arm. Sample p95 below
-is the largest of five observations. CPU/allocation/I/O counters are process-wide
-phase deltas; working set is sampled RSS, not managed live heap or isolated peak.
+The [original committed comparison](issue-1643-retained-resources-before.json)
+is preserved byte-for-byte: enabled warm-process producer allocation was
+1,305,640,048 bytes, **failing** the declared 209,715,200-byte ceiling (6.2258x).
+The correction first enforced all four existing comparison ceilings in
+`RetainedAstrometry_ResourceEvidenceMeasuresBaselineAnalyzerPersistenceAndRead`.
+It failed again at 1,305,676,392 bytes before numerical code changed. Both the
+failed test/TRX and its complete JSON remain in the registered correction scratch.
+An intermediate equivalent change reduced this to 401,989,608 bytes and still
+failed; that comparison is also retained, not described as passing.
+
+[Corrected machine-readable evidence](issue-1643-retained-resources.json) uses
+SDK 10.0.402, .NET 10.0.13, Linux x64, 12 logical processors, Release and
+concurrency one. The identical #1642 seeded 512-square Mono16 raw, 560 catalog
+rows, one-second exposure, recipe/solver settings, live stride and durable
+SQLite/file pipeline are used. No prior is supplied: every enabled operation
+still performs the same **cold numerical solve**. The first operation per arm
+is reported as process-cold, followed by five process-warm operations. Fixture
+generation/admission precede timing. The baseline still executes raw, scene and
+measured associations without astrometry. Sample p95 is the largest of five.
 
 | Phase | Baseline median / sample p95 ms | Enabled median / sample p95 ms | Baseline / enabled CPU median ms | Baseline / enabled allocated bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Producer plus persistence | 184.82 / 192.92 | 1510.77 / 1570.50 | 209.97 / 1585.10 | 27,961,448 / 1,305,640,048 |
-| Authenticated read | 0.198 / 0.238 | 27.45 / 37.46 | 0.444 / 33.25 | 53,472 / 22,168,016 |
+| Producer plus persistence | 200.80 / 238.00 | 854.82 / 1015.01 | 253.20 / 993.95 | 27,991,296 / 203,871,496 |
+| Authenticated read | 0.258 / 0.347 | 34.22 / 47.09 | 0.692 / 57.81 | 56,064 / 22,176,328 |
 
-Median sampled producer RSS was 256,798,720 bytes baseline and 339,570,688 bytes
-enabled; maximum enabled sampled producer RSS was 355,745,792 bytes.
-The process peak counter reached 377,585,664 bytes across the complete run. Median
-producer RSS deltas were 2,367,488 and 30,138,368 bytes respectively. Median
-logical reads/writes were 1,691,907/811,578 bytes baseline and
-2,007,841/1,050,517 bytes enabled; median storage writes were 831,488 and
-1,085,440 bytes. Enabled read added 2,496,139 logical read bytes, no writes and
-zero physical read bytes at the median (warm filesystem cache). These are real
-process I/O counters, not estimated payload sizes. Durable root size was
-2,067,940 bytes baseline and 2,306,879 bytes enabled.
+The four enforced warm-process median ceilings now pass: producer allocation
+**203,871,496 bytes (194.43 MiB) <= 200 MiB**, producer latency <= 5,000 ms,
+read allocation <= 100 MiB and read latency <= 500 ms. The harness also requires
+an accepted assessment and the original semantic solution identity on every
+enabled iteration. It writes the JSON before asserting resource ceilings.
+No ceiling, solver option, search bound, numerical threshold or work concurrency
+was changed; an unavailable assessment cannot satisfy this gate.
 
-The declared 5,000 ms producer and 500 ms read comparison ceilings are met.
-The **200 MiB producer-allocation comparison ceiling is exceeded**; the read's
-100 MiB allocation ceiling is met. This is explained by the inherited cold
-solver's approximately 1.21 GB/op allocation measured in
-[#1642](issue-1642-measured-astrometry.md#resource-comparison), plus actual
-measurement, strict frozen-input validation and durable publication here. No
-solver-allocation improvement is claimed and the original comparison ceiling is
-preserved in the report. Admission bounds one numerical execution per host and
-at least 60 capture sequences between live solves. At five-second acquisition,
-the enabled median CPU corresponds to about 0.53% of one core averaged over
-five minutes; this does not measure interference with concurrent acquisition.
+Thread-allocation attribution on the same shared numerical fixture measured
+199,647,472 bytes for the original triangle index, 983,794,320 for search and
+28,805,632 for refinement. After stable scalar triangle ordering and nearest-two
+selection, the remaining search still allocated about 240 MB; repeated ranking
+RMS alone allocated 161,930,480 bytes over 302,049 calls. Most index buckets
+held one triangle (139,155 of 190,111). The shared numerical owner now reuses the
+identical RMS for each immutable candidate, inserts into the same bounded stable
+ranking, avoids a capture closure per visited triangle and starts triangle lists
+at one slot. Stable ordering, tie handling, assignments, floating arithmetic,
+quality gates, verification partition, identities, finite work bounds and
+cancellation checkpoints are preserved. No alternate solver or fitted cache
+replaces the existing algorithm. Three direct equivalence tests compare scalar
+ordering/nearest selection and incremental ranking with their former stable
+LINQ operations, including ties and neighboring floating-point values.
 
-Hard structural/cooperative bounds remain: 2,500 catalog rows, 2 MiB context,
-128 KiB solution, 16M raw samples, a 20-second default/60-second maximum numerical
-budget, and the native solver's finite work bounds. The read admits one request
-without queuing raw buffers, at most five artifacts, 32 MiB raw and 44 MiB total.
-Allocation is measured rather than hard-preempted by those bounds. These results
-do not qualify W1/W2/W6, ARM/Pi, physical data, sustained acquisition interference,
-or a production catalog. Those limitations and the high cold allocation remain
-visible to adoption/review.
+Median sampled producer RSS is 268,267,520 bytes baseline and 356,655,104 enabled;
+median producer RSS deltas are 2,777,088 and 11,927,552 bytes. The enabled process
+peak counter reaches 394,158,080 bytes. Median producer logical read/write bytes
+are 1,688,089/811,578 baseline and 1,854,376/1,050,517 enabled; storage writes are
+831,488 and 1,085,440 bytes. Enabled read adds 2,473,682 logical bytes and no
+writes or physical read bytes at the median. Durable roots remain 2,067,940 and
+2,306,879 bytes. Counters are process-wide phase deltas; RSS is sampled working
+set, not an isolated live-heap peak. These results do not claim lower peak RSS.
 
-The compact accepted solution is 18,306 bytes with semantic SHA-256
+Structural/cooperative bounds remain: 2,500 catalog rows, 2 MiB context,
+128 KiB solution, 16M raw samples, the 20-second default/60-second maximum recipe
+budget, and all native solver bounds. Reads admit one request, at most five
+artifacts, 32 MiB raw and 44 MiB total. The aggregate test lowers an internal
+budget to exercise accounting; runtime limits are unchanged. Measurements do
+not qualify W1/W2/W6, ARM/Pi, physical data, sustained acquisition interference,
+full resolution or a production catalog.
+
+The compact accepted solution remains 18,306 bytes with semantic SHA-256
 `959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9`.
-Catalog rows, scene and complete calibration stay in referenced inputs. Inliers,
-native residuals and explicit covariance/clock withhold reasons remain the shared
-recipe's evidence, with no fitted uncertainty invented from configured geometry.
+Catalog rows, scene and calibration remain separate referenced inputs. Numerical
+residuals, membership and honest covariance/clock withhold reasons remain the
+shared recipe's evidence. Raw/descriptor, producer/input and output identities
+are compared across the retained before/after durable trees.
 
 ## Reproduction and local evidence
 
@@ -178,3 +197,45 @@ under `/tmp/hvo-skymonitor-1643-owner.Y8zsUy/deployment-rerun/`. These registere
 scratch roots are validation evidence to preserve, not runtime state. The
 following documentation-only ledger update does not invalidate executable gates.
 Independent review and fresh target-profile CI remain separate merge gates.
+
+## Initial-review corrections
+
+Reviewed head `41639131da9c36f4ca6f8ec14d33dae160107edf` was merged normally
+with freshly fetched target `6a1e13bd1c8942ec55c2ce7ba7d1e8b5ded505d3` as
+`9c0ccbb382c05140dd5b4013d27f00860fec0008`. Only CHANGELOG, the CameraAgent
+inventory and runbook totals conflicted; both issue entries and count deltas
+were retained. No reviewed history was rewritten. The target profile remains
+Development v1; full `ci.yml` was not dispatched.
+
+All four blocking findings have executable failed-before evidence in
+`/tmp/hvo-skymonitor-1643-corrections.CRiHbJ/logs/` and matching named TRX files:
+
+- F1: `NativeAstrometrySourceFactsPassReconciliation(false/true)` failed before
+  the native partial-fact correction. It now checks every resolved role and
+  supplied producer, rejects missing measured-producer facts, and accepts native
+  solution readout hashes normalized to lowercase. Other structured products
+  retain their existing completeness requirements.
+- F2: `OnlyAstrometryPriorRawCanResolveAcrossFrames` failed before the narrow
+  ordinal-3 context exception. Real-Docker
+  `RetainedAstrometry_NativeIngestReconcilesAndReadsExactProducts` then passed
+  without a prior and rejected a foreign-device prior, while the same-device
+  earlier capture remained `PendingReference / lineage.source-not-found`.
+  After correction all three cases pass; context/solution source rows come from
+  actual ingest and reconciliation, reach Complete when authorized, and read
+  back exact payloads through the owner-authenticated central endpoint.
+- F3: five rows of
+  `RetainedAstrometry_InvalidReadEvidenceReturnsUnavailableAndCancellationPropagates`
+  failed with InvalidDataException before its catch-filter correction; the
+  cancellation row passed. All six now pass. Individual raw/solution limits,
+  aggregate accounting and raw/product envelope mismatches return Unavailable
+  with no solution; caller cancellation propagates.
+- F4: the enforced Manual harness failed first, then passed under its unchanged
+  ceilings and original accepted identity. The original comparison and each
+  intermediate failure remain separate evidence. No owner exception is assumed.
+
+Correction inventories are Unit=14341, Integration=993 and Manual=288.
+Final classifier receipts, candidate builds/guards/discovery/affected suites,
+coverage provenance and any residual blockers are recorded in the correction
+scratch handoff. Pending gates are not claimed passed here. The unchanged
+ReleaseTool prerequisite coverage failure documented above remains separate
+from corrected runtime/resource acceptance; no coverage floor was changed.

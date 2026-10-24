@@ -50,6 +50,12 @@ The adopted solution's ordered immediate parents are raw, measured associations,
 scene, context. The standalone recipe's existing two-parent form is unchanged.
 The context also holds the prior's raw artifact when supplied. Existing retention
 walks these parents; restart restores completed outputs without refitting.
+In LogicHost only this authenticated context parent at ordinal 3 may resolve to
+another capture, and it must belong to the same device and have the Raw role.
+Current raw/measured/scene parents and all solution parents remain capture-bound.
+Ingest retains and checks every supplied role, variant and producer hash; native
+scene/context parents carry roles without invented variant or producer facts.
+Reconciliation admits the products only when their required parents resolve.
 Raw/descriptor, catalog rows/package, scene/calibration, observer, reported time,
 readout, settings and prior are independently bound by the shared recipe.
 Hashes preserve identity and integrity; they do not establish physical accuracy.
@@ -97,7 +103,10 @@ The projection admits one read at a time without queuing raw buffers. Each read
 opens at most five authenticated artifacts, allows 32 MiB raw and 44 MiB total,
 and returns a compact solution of at most 128 KiB. Every artifact passes the
 existing sidecar/checksum boundary; semantic lineage is then revalidated. Missing
-or altered sources return no solution. Caller cancellation propagates.
+or altered sources, invalid envelopes and individual or aggregate byte-limit
+violations return `Availability=Unavailable` with no solution. Caller cancellation
+propagates. The aggregate-accounting regression lowers an internal test budget;
+the production limit remains 44 MiB.
 
 Fixtures: `RetainedAstrometryDurabilityTests` uses #1642's seeded 512-square
 `MeasuredAstrometryFixture` raw pixels, the actual measured producer, durable

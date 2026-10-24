@@ -187,6 +187,71 @@ public sealed partial class DurableCaptureProcessingTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [TestMethod]
+    [TestCategory("Integration")]
+    [DataRow("raw-limit")]
+    [DataRow("solution-limit")]
+    [DataRow("total-limit")]
+    [DataRow("raw-envelope")]
+    [DataRow("product-envelope")]
+    [DataRow("cancel")]
+    public async Task RetainedAstrometry_InvalidReadEvidenceReturnsUnavailableAndCancellationPropagates(string fault)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var f = await CreateAstrometryDurabilityFixtureAsync(root, "unavailable").ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var gate = new CaptureAstrometryExecutionGate();
+            var persistence = CreatePersistence(f.Fixture.Options, store, storage, telemetry);
+            var processed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item,
+                AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence), persistence,
+                telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
+            using var real = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            var decorated = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
+            using var cancellation = new CancellationTokenSource();
+            decorated.Setup(a => a.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .Returns(async (Guid id, CancellationToken token) =>
+                {
+                    if (fault == "cancel")
+                    {
+                        await cancellation.CancelAsync().ConfigureAwait(false);
+                        token.ThrowIfCancellationRequested();
+                    }
+                    var result = await real.OpenContentAsync(id, token).ConfigureAwait(false);
+                    var content = result.Content!;
+                    var raw = content.Role == FrameArtifactRole.Raw;
+                    var bytes = content.ByteLength;
+                    if (fault == "raw-limit" && raw) bytes = CameraAgentRetainedAstrometryService.MaximumRawBytes + 1L;
+                    if (fault == "solution-limit" && !raw) bytes = MeasuredAstrometryJson.MaximumSolutionBytes + 1L;
+                    var capture = fault == "raw-envelope" && raw || fault == "product-envelope" && !raw ? Guid.NewGuid() : content.CaptureId;
+                    return result with
+                    {
+                        Content = new CameraAgentArtifactContentStream(content, content.ArtifactId, capture,
+                        content.Role, content.MediaType, bytes, content.ChecksumSha256, content.FileName, content.Descriptor)
+                        { ProductManifest = content.ProductManifest }
+                    };
+                });
+            // Lower the aggregate budget to exercise accounting independently of individual limits.
+            // At production limits the sum of the five individual caps is already below 44 MiB.
+            using var reader = new CameraAgentRetainedAstrometryService(store, decorated.Object,
+                fault == "total-limit" ? MeasuredAstrometryJson.MaximumSolutionBytes : CameraAgentRetainedAstrometryService.MaximumReadBytes);
+            if (fault == "cancel")
+            {
+                await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                    await reader.GetAsync(f.Fixture.Manifest.Descriptor.Capture.CaptureId, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+                return;
+            }
+            var view = await reader.GetAsync(f.Fixture.Manifest.Descriptor.Capture.CaptureId, cancellation.Token).ConfigureAwait(false);
+            Assert.AreEqual("Unavailable", view.Availability);
+            Assert.IsNull(view.Solution);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static ProcessingArtifact ImportAstrometryProduct(byte[] manifestBytes, byte[] bytes)
     {
         var parsed = StructuredProcessingProductManifestJson.Parse(manifestBytes);

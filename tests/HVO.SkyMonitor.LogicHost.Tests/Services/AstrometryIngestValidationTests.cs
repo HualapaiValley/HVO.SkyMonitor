@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 
@@ -47,6 +48,67 @@ public sealed class AstrometryIngestValidationTests
         Assert.AreEqual(FrameArtifactRole.Metadata, accepted.Sources[1].Role);
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void NativeAstrometrySourceFactsPassReconciliation(bool solution)
+    {
+        var (descriptor, bytes) = Create(solution);
+        var accepted = ArtifactIngestService.ValidateAstrometryPayload(descriptor, bytes);
+        var artifact = new CentralArtifact { MediaType = descriptor.Artifact.MediaType };
+        foreach (var fact in accepted.Sources)
+            artifact.Sources.Add(new CentralArtifactSource
+            {
+                Ordinal = artifact.Sources.Count,
+                ExpectedRole = fact.Role,
+                ExpectedVariant = fact.Variant,
+                ExpectedRecipeIdentitySha256 = fact.RecipeIdentitySha256
+            });
+        Assert.IsFalse(ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact));
+        var recipe = descriptor.SourceCapture.Artifact.Recipe;
+        foreach (var source in artifact.Sources)
+            source.ResolvedArtifact = new CentralArtifact
+            {
+                Role = source.ExpectedRole!.Value,
+                Variant = source.ExpectedVariant ?? "native",
+                Recipe = new CentralArtifactRecipe
+                {
+                    Name = recipe.Name,
+                    SemanticVersion = recipe.SemanticVersion,
+                    ImplementationVersion = recipe.ImplementationVersion,
+                    OptionsJson = recipe.Options.GetRawText(),
+                    OptionsSha256 = recipe.OptionsSha256
+                }
+            };
+        Assert.IsFalse(ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact));
+        foreach (var source in artifact.Sources)
+        {
+            var role = source.ResolvedArtifact!.Role;
+            source.ResolvedArtifact.Role = role == FrameArtifactRole.Raw ? FrameArtifactRole.Metadata : FrameArtifactRole.Raw;
+            Assert.IsTrue(ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact), "Every authenticated role must be checked.");
+            source.ResolvedArtifact.Role = role;
+            if (source.ExpectedRecipeIdentitySha256 is not null)
+            {
+                source.ResolvedArtifact.Recipe!.ImplementationVersion += "-changed";
+                Assert.IsTrue(ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact), "Every supplied producer identity must be checked.");
+                source.ResolvedArtifact.Recipe.ImplementationVersion = recipe.ImplementationVersion;
+            }
+        }
+        var measured = artifact.Sources.Single(s => s.Ordinal == 1);
+        measured.ExpectedRecipeIdentitySha256 = null;
+        Assert.IsTrue(ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact), "The measured producer identity is required.");
+    }
+
+    [TestMethod]
+    public void OnlyAstrometryPriorRawCanResolveAcrossFrames()
+    {
+        var context = new CentralArtifact { MediaType = MeasuredAstrometryJson.ContextMediaType, StructuredProduct = new() };
+        var solution = new CentralArtifact { MediaType = MeasuredAstrometryJson.MediaType, StructuredProduct = new() };
+        Assert.IsFalse(ArtifactIngestService.RequiresSameFrameSource(context, 3));
+        for (var ordinal = 0; ordinal < 3; ordinal++) Assert.IsTrue(ArtifactIngestService.RequiresSameFrameSource(context, ordinal));
+        for (var ordinal = 0; ordinal < 4; ordinal++) Assert.IsTrue(ArtifactIngestService.RequiresSameFrameSource(solution, ordinal));
+    }
+
     private static (StructuredProcessingProductDescriptorV1 Descriptor, byte[] Bytes) Create(bool solution)
     {
         byte[] rawBytes = [0, 1, 0, 1];
@@ -70,14 +132,15 @@ public sealed class AstrometryIngestValidationTests
         var product = contextProduct;
         if (solution)
         {
-            var assessment = AstrometricSolver.Solve(context.Frame, new(projection, context.CalibrationVersion, context.ReadoutIdentitySha256),
+            var calibration = new AstrometricCalibration(projection, context.CalibrationVersion, context.ReadoutIdentitySha256);
+            var assessment = AstrometricSolver.Solve(context.Frame, calibration,
                 new(metadata, [], false, 7, provenance: package), []).Assessment;
             Assert.AreEqual(AstrometricAssessmentStatus.Unavailable, assessment.Status);
             var definition = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.MeasuredAstrometry, out var found) ? found! : throw new InvalidOperationException();
             var identity = ProcessingIdentity.CreateRecipeIdentity(definition, JsonSerializer.SerializeToElement(new { }));
             var value = new MeasuredAstrometrySolutionV1(MeasuredAstrometrySolutionV1.CurrentSchemaVersion, identity.IdentitySha256,
                 contextProduct.ContentIdentitySha256!, measured.ArtifactId, context.MeasuredIdentitySha256,
-                measured.RecipeIdentitySha256, new string('E', 64), context.ReadoutIdentitySha256, package, assessment,
+                measured.RecipeIdentitySha256, new string('E', 64), calibration.ReadoutIdentitySha256, package, assessment,
                 new(0, [], [], [], null, null, null, null, "catalog-incomplete", []), null, "not-accepted");
             var payload = MeasuredAstrometryJson.Serialize(value);
             product = RetainedAstrometryProducts.Product(source with
