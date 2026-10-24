@@ -45,6 +45,7 @@ public static class PresentationFont
         {
             PresentationFontFaceV3.MonoRegular => MonoRegular.Value,
             PresentationFontFaceV3.MonoBold => MonoBold.Value,
+            PresentationFontFaceV3.PlexRegular => TypefaceSource.Value,
             _ => throw new ArgumentOutOfRangeException(nameof(style))
         }, style.SizeMilliPixels / 1000f);
     }

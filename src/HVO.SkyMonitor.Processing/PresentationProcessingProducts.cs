@@ -240,6 +240,7 @@ public static class PresentationProcessingProducts
             PresentationLayerPayloadV1.SupportsSchema(input.Product.SchemaVersion) &&
             parsed.Payload is { } payload &&
             input.Product.SchemaVersion == payload.SchemaVersion &&
+            SceneStylePresentation.MatchesRetainedLayer(payload, input.Layer) &&
             string.Equals(input.Product.ContentIdentitySha256, payload.ContentIdentitySha256, StringComparison.Ordinal) &&
             payload.WidthPixels == input.Layer.SourceProduct.Compatibility.WidthPixels &&
             payload.HeightPixels == input.Layer.SourceProduct.Compatibility.HeightPixels;
@@ -356,7 +357,8 @@ public static class PresentationMaterializationExecutor
                 throw new ArgumentException("An enabled layer product is missing.", nameof(layerProducts));
             var parsed = PresentationLayerPayloadJson.Parse(input.Product.Payload);
             if (!parsed.IsValid || parsed.Payload is not { } payload ||
-                !string.Equals(payload.ContentIdentitySha256, input.Layer.SourceProduct.ProductIdentitySha256, StringComparison.Ordinal))
+                !string.Equals(payload.ContentIdentitySha256, input.Layer.SourceProduct.ProductIdentitySha256, StringComparison.Ordinal) ||
+                !SceneStylePresentation.MatchesRetainedLayer(payload, layer))
                 throw new ArgumentException("Layer payload is invalid.", nameof(layerProducts));
             compositorLayers.Add(new(payload, true, layer.BlendMode switch
             {

@@ -20,7 +20,9 @@ public sealed partial class HostRecipeContractConformanceTests
     [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true, null)]
     [DataRow(ProjectedSceneKind.Predicted, true, 0)]
     [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true, 255)]
-    public async Task CentralSceneMetadataCanDriveDeterministicToggleablePresentation(ProjectedSceneKind kind, bool edited, int? intensity)
+    [DataRow(ProjectedSceneKind.Predicted, true, null, true)]
+    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true, null, true)]
+    public async Task CentralSceneMetadataCanDriveDeterministicToggleablePresentation(ProjectedSceneKind kind, bool edited, int? intensity, bool styled = false)
     {
         var source = Source(CameraPixelFormat.Mono8) with
         { CaptureId = Guid.NewGuid(), DescriptorIdentitySha256 = new string('A', 64) };
@@ -86,7 +88,15 @@ public sealed partial class HostRecipeContractConformanceTests
             return new(MarkerRadius: 1, CardinalScale: 1, MarkerColor: Color("markerValue"), LabelColor: Color("labelValue"),
                 ImageCircleColor: Color("imageCircleValue"), CardinalColor: Color("cardinalValue"));
         }
-        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(intensityOptions.Options!.Value));
+        var groups = styled ? SceneStylePresentation.Create(scene,
+            new(Style(intensityOptions.Options!.Value) with { MarkerColor = new(240, 100, 25) }, "PlexRegular", "MonoRegular", "Crosshair"))
+            : PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(intensityOptions.Options!.Value));
+        if (styled)
+        {
+            Assert.IsTrue(groups.StarAnnotations.Markers.All(marker => marker.Crosshair));
+            Assert.AreEqual(PresentationLayerPayloadV1.SceneStyleSchemaVersion, groups.StarAnnotations.SchemaVersion);
+            Assert.IsNotNull(groups.StarAnnotations.SceneStyleIdentitySha256);
+        }
         var clearOptions = ProcessingNodeOptionsCodec.Encode(sceneOptions, intensityOptions.Options.Value,
             intensityKeys.ToDictionary(static key => key, _ => ProcessingOptionValue.FromNullableWholeNumber(null)));
         var restoredGroups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(clearOptions.Options!.Value));
@@ -106,11 +116,11 @@ public sealed partial class HostRecipeContractConformanceTests
             .Select((layerPayload, index) =>
             {
                 var layerProduct = PresentationProcessingProducts.CreateLayerProduct(layerPayload, $"layer-{index}",
-                    [sceneArtifact], index == 4 ? PresentationLayerProducers.MetadataProducerVersion : PresentationLayerProducers.SceneProducerVersion);
+                    [sceneArtifact], index == 4 ? PresentationLayerProducers.MetadataProducerVersion : styled ? SceneStylePresentation.ProducerVersion : PresentationLayerProducers.SceneProducerVersion);
                 var artifact = AsTypedArtifact(layerProduct);
                 var layer = LayeredPresentationJson.CreateLayer($"layer-{index}",
                     new PresentationProductReference(artifact.ArtifactId, layerPayload.ContentIdentitySha256, artifact.MediaType, reference.Compatibility),
-                    null, PresentationCoordinateSpace.ScenePixels, PresentationLayerCompositor.AlgorithmVersion, "host-conformance-v1",
+                    null, PresentationCoordinateSpace.ScenePixels, styled && index != 4 ? PresentationLayerCompositor.SceneStyleAlgorithmVersion : PresentationLayerCompositor.AlgorithmVersion, styled && index != 4 ? SceneStylePresentation.ProducerVersion : "host-conformance-v1",
                     index, PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { }));
                 return new PresentationLayerProductInput(layer, artifact);
             }).ToArray();
@@ -118,6 +128,15 @@ public sealed partial class HostRecipeContractConformanceTests
         var manifestArtifact = AsTypedArtifact(PresentationProcessingProducts.CreateManifestProduct(reference, null, layers, "manifest", baseArtifact));
         var enabled = layers.Select(l => l.Layer.LayerIdentitySha256).ToArray();
         var rendered = PresentationMaterializationExecutor.MaterializePacked(baseArtifact, manifestArtifact, manifest, layers, enabled, "rendered");
+        if (styled)
+        {
+            var svg = GroupedSvgPresentationRenderer.Render(manifest,
+                layers.Select(layer => PresentationLayerPayloadJson.Parse(layer.Product.Payload).Payload!).ToArray(), ProcessingIdentity.ComputePayloadSha256(baseArtifact.Payload));
+            Assert.IsTrue(svg.Svg.Length > 0);
+            var wrong = layers[0] with { Layer = layers[0].Layer with { RendererVersion = PresentationLayerCompositor.AlgorithmVersion } };
+            Assert.ThrowsExactly<ArgumentException>(() => PresentationProcessingProducts.CreateManifestProduct(reference, null,
+                [wrong, .. layers.Skip(1)], "invalid", baseArtifact));
+        }
         var repeated = PresentationMaterializationExecutor.MaterializePacked(baseArtifact, manifestArtifact, manifest, layers, enabled, "rendered");
         Assert.AreEqual(rendered.OutputIdentitySha256, repeated.OutputIdentitySha256);
         CollectionAssert.AreEqual(rendered.Payload.ToArray(), repeated.Payload.ToArray());

@@ -1,0 +1,35 @@
+{
+  "sceneArtifacts": [
+    {
+      "file": "scene-default.png",
+      "sha256": "12EFEBF9E6190EAC9839AC7C3A833A89504B478AA6B1E44453F1C722C9AE835F",
+      "matchesCompleteUnitAttachment": true
+    },
+    {
+      "file": "scene-changed.png",
+      "sha256": "E1BB8368AA6051F3B6D61BB69597A6F30A580574A490C58B89F3749AF64C2C3E",
+      "matchesCompleteUnitAttachment": true
+    },
+    {
+      "file": "default-star-layer.json",
+      "sha256": "DD8F750EAFECA7A46871861EC5128569A8DDC87F5932C4C8B83ECE56C0234D4A",
+      "matchesCompleteUnitAttachment": true
+    },
+    {
+      "file": "changed-star-layer.json",
+      "sha256": "176693ACA00F23B33B32F5B1EB59D7DF69C46B62265D5F712B6FC3660FEE18A6",
+      "matchesCompleteUnitAttachment": true
+    },
+    {
+      "file": "identities.json",
+      "sha256": "525F5707558E1739839CC4B1089E006758506FF75CD462C7D8A4D18492A48452",
+      "matchesCompleteUnitAttachment": true
+    },
+    {
+      "file": "input-scene.json",
+      "sha256": "0245938AA58E9F79D884554498929F1F513F0CA81F76D617EBDA47DCC2FDD994",
+      "matchesCompleteUnitAttachment": true
+    }
+  ],
+  "loopbackPort41660Released": true
+}

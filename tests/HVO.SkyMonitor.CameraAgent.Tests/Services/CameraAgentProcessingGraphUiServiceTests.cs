@@ -325,6 +325,10 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":-0}", "processing.options.out-of-range")]
     [DataRow("ScenePresentationLayer", "{\"cardinalValue\":-0}", "processing.options.out-of-range")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":-0}", "processing.options.out-of-range")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"pointGlyph\":\"star\"}", "processing.options.not-allowed")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexBold\"}", "processing.options.not-allowed")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"markerBlue\":256}", "processing.options.out-of-range")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"pointGlyph\":\"Circle\",\"PointGlyph\":\"Crosshair\"}", "processing.options.duplicate-member")]
     public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
@@ -350,6 +354,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
     [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexRegular\",\"pointGlyph\":\"Crosshair\"}")]
     public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);

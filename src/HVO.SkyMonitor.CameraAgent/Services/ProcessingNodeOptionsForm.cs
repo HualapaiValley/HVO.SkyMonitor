@@ -53,6 +53,7 @@ public sealed class ProcessingNodeOptionsForm
         }
         var version = alias.ToUpperInvariant() switch
         {
+            "SCENESTYLEPRESENTATIONLAYERV1" => SceneStylePresentation.ProducerVersion,
             "IMAGEQUALITY" => CaptureScalarOptionDescriptors.ImageQuality.StepVersion,
             "TELEMETRY" => CaptureScalarOptionDescriptors.Telemetry.StepVersion,
             "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
@@ -190,6 +191,7 @@ public sealed class ProcessingNodeOptionsForm
         ProcessingOptionKind.Text => ProcessingOptionValue.FromText(input),
         ProcessingOptionKind.Choice => ProcessingOptionValue.FromChoice(input),
         ProcessingOptionKind.Font => ProcessingOptionValue.FromFont(input),
+        ProcessingOptionKind.Glyph => ProcessingOptionValue.FromGlyph(input),
         ProcessingOptionKind.Color when input.Length == 7 && input[0] == '#' && uint.TryParse(input.AsSpan(1), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var rgb)
             => ProcessingOptionValue.FromColor(new PresentationColor((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)),
         _ => null

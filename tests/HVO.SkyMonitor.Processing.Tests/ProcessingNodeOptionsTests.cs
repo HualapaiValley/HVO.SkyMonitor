@@ -59,8 +59,8 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(24, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades, "No upgrade ships, so no saved pipeline changes.");
+        Assert.HasCount(25, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]
@@ -92,7 +92,7 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.AreEqual(saved.Nodes[index].EffectiveOptions.GetRawText(),
                 roundTripped.Nodes[index].EffectiveOptions.GetRawText());
         }
-        Assert.IsEmpty(catalog.Upgrades, "Describing both versions never upgrades a saved draft.");
+        Assert.HasCount(2, catalog.Upgrades, "Upgrades are offered but never applied by reading or validation.");
     }
 
     [TestMethod]

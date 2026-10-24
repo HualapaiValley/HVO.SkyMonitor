@@ -37,7 +37,8 @@ internal static class LayeredPresentationCaptureProcessing
             artifact.ArtifactId, payload.ContentIdentitySha256, artifact.MediaType, compatibility);
         var layer = LayeredPresentationJson.CreateLayer(
             kind, reference, sceneIdentity, PresentationCoordinateSpace.ScenePixels,
-            payload.SchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion
+            payload.SchemaVersion == PresentationLayerPayloadV1.SceneStyleSchemaVersion
+                ? PresentationLayerCompositor.SceneStyleAlgorithmVersion : payload.SchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion
                 ? PresentationLayerCompositor.RichTextAlgorithmVersion : PresentationLayerCompositor.AlgorithmVersion, product.Recipe.Descriptor.ImplementationVersion,
             zOrder, blendMode, opacityMillionths, enabled, JsonSerializer.SerializeToElement(new { product.Variant }));
         return new(layer, artifact);
@@ -75,24 +76,25 @@ internal static class PresentationLayerKinds
     }
 }
 
-internal sealed class ScenePresentationLayerCaptureProcessingStep(
+internal class ScenePresentationLayerCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     ScenePresentationLayerProcessingStepOptions options)
     : ConfigurableCaptureProcessingStep<ScenePresentationLayerProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     internal const string Recipe = "scene-presentation-layer";
-    private static readonly ProcessingRecipeDefinition SharedLayerRecipe = new(
+    protected virtual string ProducerVersion => PresentationLayerProducers.SceneProducerVersion;
+    private ProcessingRecipeDefinition SharedLayerRecipe => new(
         PresentationProcessingProducts.LayerRecipeName,
         "1.0.0",
-        PresentationLayerProducers.SceneProducerVersion,
+        ProducerVersion,
         ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => Recipe;
-    public string? SharedStepVersion => PresentationLayerProducers.SceneProducerVersion;
+    public string? SharedStepVersion => ProducerVersion;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.AnnotationOutputVariant;
-    public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
+    public virtual string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
     public string? OutputMediaType => PresentationLayerPayloadJson.MediaType;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
@@ -142,20 +144,24 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
             new(Options.ConstellationLineRed, Options.ConstellationLineGreen, Options.ConstellationLineBlue),
             Options.ImageCircleValue is { } circle ? new(circle, circle, circle) : null,
             Options.CardinalValue is { } cardinal ? new(cardinal, cardinal, cardinal) : null, Options.CardinalScale);
-        var payloads = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+        var payloads = Produce(
             scene, style, Options.DrawMarkers, Options.DrawLabels, Options.DrawConstellationLines,
             Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics);
         var annotation = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, PresentationLayerProducers.SceneProducerVersion);
+            payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, ProducerVersion);
         var cardinals = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.CardinalDirections, Options.CardinalOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
+            payloads.CardinalDirections, Options.CardinalOutputVariant, [source], ProducerVersion);
         var imageCircle = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
+            payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], ProducerVersion);
         var constellations = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.Constellations, Options.ConstellationOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
+            payloads.Constellations, Options.ConstellationOutputVariant, [source], ProducerVersion);
         LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
         return ValueTask.CompletedTask;
     }
+    protected virtual PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
+        bool markers, bool labels, bool constellations, bool circle, bool cardinals,
+        MeasuredStellarAssociationsV1? measured, bool expected) =>
+        PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected);
 }
 
 internal sealed class CloudPresentationLayerCaptureProcessingStep(
@@ -333,10 +339,18 @@ internal sealed class OverlayManifestCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
             new HashSet<string> { BuiltInProcessingRecipes.EncodedPreview }, Variant: Options.BasePreviewVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneAnnotationVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneCardinalVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneImageCircleVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneConstellationVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneAnnotationVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneCardinalVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneImageCircleVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneConstellationVariant),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudMaskVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudLabelVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { PresentationProcessingProducts.MetadataFactsRecipeName }, Options.UseRichFrameFacts
@@ -447,10 +461,18 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
             new HashSet<string> { BuiltInProcessingRecipes.EncodedPreview }, Variant: Options.BasePreviewVariant),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { PresentationProcessingProducts.ManifestRecipeName }, new HashSet<string> { OverlayManifestV1.CurrentSchemaVersion }),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneAnnotationVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneCardinalVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneImageCircleVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneConstellationVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneAnnotationVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneCardinalVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneImageCircleVariant),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe }, Options.UseSceneStyle
+            ? new HashSet<string> { PresentationLayerPayloadV1.SceneStyleSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
+            : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.SceneConstellationVariant),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudMaskVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudLabelVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { PresentationProcessingProducts.MetadataFactsRecipeName }, Options.UseRichFrameFacts
@@ -497,7 +519,7 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
     }
 }
 
-internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatableObject
+internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
 {
     [Required, MaxLength(128)] public string AnnotationOutputVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string CardinalOutputVariant { get; init; } = "scene-cardinal-layer-v1";
@@ -568,6 +590,9 @@ internal sealed class EnvironmentPresentationLayerProcessingStepOptions
 
 internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseSceneStyle { get; init; }
+
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? SatelliteVariant { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -602,6 +627,9 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 
 internal sealed class PresentationMaterializerProcessingStepOptions : IValidatableObject
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseSceneStyle { get; init; }
+
     /// <summary>Explicit graph opt-in; omitted false preserves legacy effective options and input-contract identities.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool UseRichFrameFacts { get; init; }

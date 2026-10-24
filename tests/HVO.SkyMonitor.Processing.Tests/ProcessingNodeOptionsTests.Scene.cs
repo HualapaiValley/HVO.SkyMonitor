@@ -45,7 +45,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(source.GetRawText().Replace("true, \"constellationIds\"", "false, \"constellationIds\"", StringComparison.Ordinal)
             .Replace(" }", ",\"maximumLabelMagnitude\":-1.25 }", StringComparison.Ordinal), edited.Options!.Value.GetRawText());
         Assert.IsFalse(edited.Options.Value.TryGetProperty("labelScale", out _), "An edit must not materialize other defaults.");
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]

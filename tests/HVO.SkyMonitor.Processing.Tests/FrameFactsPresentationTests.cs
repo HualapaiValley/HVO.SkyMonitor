@@ -189,7 +189,8 @@ public sealed class FrameFactsPresentationTests
         using var document = JsonDocument.Parse(bytes);
         Assert.IsFalse(document.RootElement.TryGetProperty("richText", out _));
         Assert.AreEqual(payload.ContentIdentitySha256, PresentationLayerPayloadJson.Parse(bytes).Payload!.ContentIdentitySha256);
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades.Where(static upgrade =>
+            upgrade.StepAlias == "EnvironmentPresentationLayer"));
         Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve("EnvironmentPresentationLayer", PresentationLayerProducers.MetadataProducerVersion).Status);
     }

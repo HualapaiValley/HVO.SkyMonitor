@@ -441,6 +441,9 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            SceneStylePresentation.StepAlias, typeof(SceneStylePresentationCaptureProcessingStep),
+            typeof(SceneStylePresentationStepOptions), 70, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "ScenePresentationLayer", typeof(ScenePresentationLayerCaptureProcessingStep),
             typeof(ScenePresentationLayerProcessingStepOptions), 70, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
