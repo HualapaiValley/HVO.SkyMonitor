@@ -200,12 +200,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "JpegEncoding" => "jpeg-encoding",
             _ => "constellations"
         };
-        var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
+        var first = _model.Nodes.FirstOrDefault(row => IsSceneOptions(node)
+            ? IsSceneOptions(row) : row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
     }
 
+    private static bool IsSceneOptions(ProcessingGraphDraftModel.NodeRow node)
+        => node.OptionsForm?.Descriptor.StepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias;
+
     private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
-        => node.OptionsForm?.Descriptor.StepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias
+        => IsSceneOptions(node)
             ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
             : null;
 

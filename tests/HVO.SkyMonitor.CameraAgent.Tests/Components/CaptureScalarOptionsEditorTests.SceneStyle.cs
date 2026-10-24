@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -98,6 +99,32 @@ public sealed partial class CaptureScalarOptionsEditorTests
         cut.Find("button.btn-primary").Click();
         Assert.AreEqual(source, service.RevisionDetail!.Pipeline.Steps.Single().Options!.Value.GetRawText());
         Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
+    public void SceneStyleMixedAliasesKeepUniqueSectionAnchorsBeforeAndAfterUpgrade()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "ScenePresentationLayer", null);
+        var original = service.RevisionDetail!.Pipeline.Steps[0];
+        service.RevisionDetail = service.RevisionDetail with
+        {
+            Pipeline = new CapturePipelineConfig([original with { Id = "legacy" },
+                original with { Id = "styled", Type = SceneStylePresentation.StepAlias }])
+        };
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        AssertUnique();
+        cut.FindAll("button").Single(button => button.TextContent == "Review whole-draft scene style upgrade").Click();
+        cut.FindAll("button").Single(button => button.TextContent == "Apply conversion to draft").Click();
+        AssertUnique();
+        Assert.HasCount(2, cut.FindAll("select[id$='-pointGlyph']"));
+        void AssertUnique()
+        {
+            var ids = cut.FindAll("[id]").Select(element => element.Id).ToArray();
+            Assert.AreEqual(ids.Length, ids.Distinct(StringComparer.Ordinal).Count());
+            Assert.IsNotNull(cut.Find("#scene-overlay"));
+            Assert.IsNotNull(cut.Find("#scene-overlay-1"));
+        }
     }
 
     private void SaveFixture(string name, string markup)
