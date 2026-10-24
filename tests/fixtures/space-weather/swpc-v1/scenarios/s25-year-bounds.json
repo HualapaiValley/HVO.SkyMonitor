@@ -1,0 +1,212 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s25-year-bounds",
+  "title": "Source years 1900 and 9998 are inclusive; adjacent years reject",
+  "covers": [
+    "source-year",
+    "message-header",
+    "schema",
+    "last-known-good"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "All records and scales are synthetic. Alert years exercise Issue Time; scales exercise JSON product stamps. Boundary outcomes are hand-authored.",
+    "A restart separates products and preserves the accepted year-9998 alert across the year-9999 rejection. The 9998 record is not purged during this scenario."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s25-alerts-1899\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"1899-10-20 12:00:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1425\\r\\nIssue Time: 1899 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic source-year boundary\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:no-valid-records"
+        ],
+        "product": {
+          "lkgSha256": null,
+          "lastSuccessUtc": null
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:02:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s25-alerts-1900\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"1900-10-20 12:00:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1425\\r\\nIssue Time: 1900 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic source-year boundary\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "product": {
+          "lkgSha256": "AB899635135FF6FE1AAFF478A3DD0C6EE2C244DF71F6F69E37AD6BC70C911C9B",
+          "lastSuccessUtc": "2026-10-20T12:02:00Z"
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:04:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s25-alerts-9998\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"9998-10-20 12:00:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1425\\r\\nIssue Time: 9998 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic source-year boundary\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "product": {
+          "lkgSha256": "EFABD82801C0A1BE536A1CD0A5512C1579FE0204275A5A8248E59166F95CAF7F",
+          "lastSuccessUtc": "2026-10-20T12:04:00Z"
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:06:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s25-alerts-9999\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"9999-10-20 12:00:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1425\\r\\nIssue Time: 9999 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic source-year boundary\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:no-valid-records"
+        ],
+        "product": {
+          "lkgSha256": "EFABD82801C0A1BE536A1CD0A5512C1579FE0204275A5A8248E59166F95CAF7F",
+          "lastSuccessUtc": "2026-10-20T12:04:00Z"
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "restart"
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": "{\"-1\": {\"DateStamp\": \"1899-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"0\": {\"DateStamp\": \"1899-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"1\": {\"DateStamp\": \"1899-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"2\": {\"DateStamp\": \"1899-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"3\": {\"DateStamp\": \"1899-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:schema"
+        ],
+        "product": {
+          "lkgSha256": null,
+          "lastSuccessUtc": null
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:05:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": "{\"-1\": {\"DateStamp\": \"1900-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"0\": {\"DateStamp\": \"1900-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"1\": {\"DateStamp\": \"1900-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"2\": {\"DateStamp\": \"1900-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"3\": {\"DateStamp\": \"1900-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}}"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "product": {
+          "lkgSha256": "937718AE9E352C6AC992FA778355AC3AEC28B95CF72E1BCA8696F6FCC774A863",
+          "lastSuccessUtc": "2026-10-20T12:05:00Z"
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:10:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": "{\"-1\": {\"DateStamp\": \"9998-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"0\": {\"DateStamp\": \"9998-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"1\": {\"DateStamp\": \"9998-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"2\": {\"DateStamp\": \"9998-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"3\": {\"DateStamp\": \"9998-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}}"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "product": {
+          "lkgSha256": "4AA172551B3BE5F98FDF1328E7816DE5A779F3D121E03B01A5F08B680E33FF3F",
+          "lastSuccessUtc": "2026-10-20T12:10:00Z"
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:15:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": "{\"-1\": {\"DateStamp\": \"9999-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"0\": {\"DateStamp\": \"9999-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"1\": {\"DateStamp\": \"9999-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"2\": {\"DateStamp\": \"9999-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"3\": {\"DateStamp\": \"9999-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:schema"
+        ],
+        "product": {
+          "lkgSha256": "4AA172551B3BE5F98FDF1328E7816DE5A779F3D121E03B01A5F08B680E33FF3F",
+          "lastSuccessUtc": "2026-10-20T12:10:00Z"
+        }
+      }
+    }
+  ]
+}

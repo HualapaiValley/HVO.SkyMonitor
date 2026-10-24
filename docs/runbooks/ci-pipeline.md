@@ -19,6 +19,38 @@ PR #1364 took 173 seconds with the contract selected; the new budget provides
 All checks, their order and selection rules, job names and required-check names
 remain unchanged.
 
+## Promotion ancestry prerequisite
+
+Before **every** promotion from `development/v1` to `main` becomes ready, including promotions without release
+tags, follow [Before every promotion](releases.md#before-every-promotion). A merge-commit promotion leaves a commit
+on `main` that development lacks. The workflow's behind-check tolerates verified promotion merges, but that does
+not satisfy `main`'s strict up-to-date protection; `Required CI` and branch protection stay unchanged.
+
+The operator/coordinator opens the sync PR with authenticated Git/`gh`, proves its normal merge tree equals the
+**pre-sync development tree**, and takes it through review, both Development v1 required checks, and a merge-commit
+merge. A conflict or changed tree stops the sync. Workflow `GITHUB_TOKEN` pushes do not start downstream push CI,
+and PR workflow runs may require approval; the operator step avoids relying on that token or adding secrets or
+permissions. Wait for the green Development v1 **push run on the merged development head**, then verify ancestry:
+
+<!-- promotion-sync-ready -->
+```bash
+(
+  set -euo pipefail
+  git fetch origin main development/v1
+  git merge-base --is-ancestor origin/main origin/development/v1 || {
+    echo "Keep the promotion draft: sync main into development/v1 first." >&2
+    exit 1
+  }
+  git rev-parse origin/main origin/development/v1
+)
+```
+<!-- /promotion-sync-ready -->
+
+Record these source/target SHAs and the sync tree proof with the promotion's updated-source review. If `main` was
+already an ancestor, record the no-sync result instead. Mark the promotion ready only after this prerequisite;
+then full `ci.yml` qualification supplies `Required CI` on the reviewed head. Recheck when either branch moves.
+A green sync PR is integration evidence and does not replace promotion qualification.
+
 ## Required Checks
 
 | Check | Enforced behavior |
@@ -28,13 +60,13 @@ remain unchanged.
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 8800 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
-| **Integration Tests** | 843 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
-| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 20 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
+| **Unit Tests** | 14499 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Integration Tests** | 993 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
-| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 9 slots. |
+| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
 | **LogicHost Component** | Component lane. Project-root restore/build of the LogicHost host and test project roots, the LogicHost Unit and Integration selections, the LogicHost publish with checksum manifest and an opposite-host assembly check, and the LogicHost component coverage baseline over 2 slots. |
 | **Combined Protocol & Integration** | Component lane. Project-root restore/build and execution of the only suites allowed to compose both hosts, covering registration, identity, artifact transfer, fleet contracts, and other cross-host behavior, plus the combined component coverage baseline over 2 slots. |
@@ -127,9 +159,36 @@ job-summary block.
       reported twice, identical in every field, is counted once.
     - A file that `.gitattributes` marks as binary is therefore read in full at
       every commit that changes it.
-  - Every text line in a scanned tree is therefore either a line some commit's
-    text diff added or part of a file scanned in full. Only content that is
-    binary by Git's rule is not read.
+  - For paths outside gitleaks' exclusions, a text line is covered when a
+    reachable commit added it in a text diff or the script scanned its file in
+    full. Binary content is not read. The pinned [gitleaks v8.30.1 default
+    path allowlist](https://github.com/gitleaks/gitleaks/blob/v8.30.1/config/gitleaks.toml#L18-L46)
+    also excludes these paths, even when their content is text:
+    - Any path containing `gitleaks.toml`, including `.gitleaks.toml`.
+    - Images (`bmp`, `gif`, `jpg`, `jpeg`, `png`, `svg`, `tif`, `tiff`) and
+      fonts (`eot`, `otf`, `ttf`, `woff`, `woff2`), case-insensitively.
+    - Document/binary extensions: `doc`, `docx`, `xls`, `xlsx`, `pdf`, `bin`,
+      `socket`, `vsidx`, `v2`, `suo`, `wsuo`, `.dll`, `pdb`, `exe`, `gltf`
+      (the linked regular expression is authoritative), case-insensitively.
+    - Go `go.mod`, `go.sum`, `go.work`, `go.work.sum`, `vendor/modules.txt`,
+      and vendor trees for `github.com`, `golang.org/x`, `google.golang.org`,
+      `gopkg.in`, `istio.io`, `k8s.io`, and `sigs.k8s.io`.
+    - Gradle/Maven wrappers (`gradlew`, `gradlew.bat`, `mvnw`, `mvnw.cmd`,
+      `.mvn/wrapper/MavenWrapperDownloader.java`) and `gradle.lockfile`.
+    - `node_modules`, `bower_components`, `deno.lock`, `npm-shrinkwrap.json`,
+      `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `javascript.json`,
+      and the allowlisted Angular, Bootstrap, jQuery/UI, Plotly and Swagger UI
+      JavaScript bundles and maps.
+    - `Pipfile.lock`, `poetry.lock`, Python environment/library and
+      versioned `.dist-info` paths; Ruby `vendor/bundle`, `vendor/ruby`,
+      and paths ending in `.gem`.
+    - Paths containing `verification-metadata.xml` or `Database.refactorlog`,
+      and a final `.git` path component.
+  - A credential introduced only in an excluded path is not reported. A pure
+    rename from an excluded path to an included path adds no lines, so it does
+    not establish coverage of the unchanged content either. A rename with edits
+    covers the added lines, not all unchanged lines. Reachable-commit and byte
+    counts prove scan delivery, not detection coverage for excluded paths.
   - A merge of more than two parents is refused, because Git shows no diff for
     one.
   - Other branches in the clone are not scanned; their own pull requests scan
@@ -326,6 +385,53 @@ source check; the ARM64 harness separately resolves its native references.
 and verifies that every checked-in Dockerfile directory is listed in Dependabot.
 No Docker daemon, image pull, SDK invocation, or registry access is needed.
 
+#### Base-image heredoc grammar
+
+The guard recognizes a bounded subset of BuildKit heredoc syntax, without
+evaluating shell expressions. Shell-form `RUN`, `COPY`, `ADD` and a single
+`ONBUILD` wrapper consume bodies in declaration order. A raw shell word must
+start with optional decimal file-descriptor digits followed by `<<` or `<<-`;
+`cat<<EOF`, a quoted `"<<EOF"` word and an escaped `\<<EOF` word do not open a
+body. Whitespace after `<<` is allowed. A delimiter must be nonempty after
+POSIX quote/escape removal and resolve to one word; single/double quotes,
+mixed quoted segments, escapes and quoted spaces are supported subject to the
+restrictions below. `<<-` strips leading tabs from body/terminator lines.
+Terminators match the entire LF/CRLF line exactly; leading spaces and trailing
+whitespace do not match. Dockerfile backslash continuations are joined before
+header parsing, retaining the first physical opener line. JSON argument arrays
+of strings never introduce bodies.
+
+Compatibility limits are deliberately conservative:
+
+- If a shell-form eligible instruction contains `<<`, the literal byte sequence
+  `${` anywhere in its header is rejected with
+  `unsupported expansion in heredoc instruction`. This includes command text,
+  single/double quoted or escaped literal brace text, and even a quoted `<<`
+  word that would not open a body. For example, `RUN echo ${FOO} <<EOF`,
+  `RUN echo '${FOO}' <<EOF` and `RUN echo \${FOO} <<EOF` are rejected.
+- Any dollar or backtick character in a raw delimiter is rejected with
+  `unsupported heredoc delimiter expansion`, even when quoted or escaped.
+  Examples: `RUN <<'$EOF'`, `RUN <<"$EOF"`, `RUN <<\$EOF`, and a delimiter
+  consisting of a quoted or escaped backtick followed by `EOF`. A delimiter
+  containing `${` hits the preceding header rule first. BuildKit accepts these
+  literal delimiters; the guard intentionally does not.
+- Plain `{FOO}` command text is allowed. Dollar/backtick characters in command
+  words alone do not trigger the delimiter restriction; the `${` header rule
+  still applies. This is lexical recognition, not shell expansion support.
+  Substitutions with spaces or apparent `<<` words containing `${` are rejected
+  as a whole, rather than guessed into delimiter/body boundaries.
+- Missing/empty delimiters, a bare `<<-`, any additional raw `<` in a delimiter
+  (including `<<<` and quoted/escaped `<`), unmatched quotes, unsupported
+  JSON forms, nested `ONBUILD` and unterminated bodies fail explicitly. Errors
+  identify the opener's source line; CLI diagnostics escape control characters.
+
+Supported bodies never become instructions; unsupported or malformed headers
+reject the file before consuming a body. A later unpinned FROM therefore cannot
+pass the check through a rejected header. The offline contracts retain inputs
+with separate guard and real BuildKit expectations, including these intentional
+differences; see
+[`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
+
 Development v1 CI does not build images; full qualification's Deployment
 Contracts job exercises the CameraAgent and LogicHost images. ProcessingRunner
 has no dedicated CI image build. Build affected images locally before merging a
@@ -417,7 +523,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=8800`, `Integration=843`, `Manual=253`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14499`, `Integration=993`, `Manual=288`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -481,7 +587,11 @@ without executing the nine full shards:
 
 Manual dispatch retains the historical Phase 14 acceptance inventory contract:
 
+Build the current checkout in Release first. The inventory reads compiled enum
+metadata without executing target assemblies.
+
 ```bash
+dotnet build HVO.SkyMonitor.v9.slnx --configuration Release -warnaserror
 ./scripts/test:phase14-acceptance
 ```
 
@@ -524,6 +634,7 @@ patterns=(
   'TestResults/unit/imaging/*/coverage.cobertura.xml'
   'TestResults/unit/processing/*/coverage.cobertura.xml'
   'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
+  'TestResults/unit/storage-filesystem/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-cli/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-distribution/*/coverage.cobertura.xml'
   'TestResults/unit/agent-core/*/coverage.cobertura.xml'
@@ -893,8 +1004,27 @@ direct local equivalents:
 
 Component baselines live beside the aggregate baseline as
 `scripts/coverage/baseline.<component>.json`. Each one carries its own aggregate
-rate over the files its lane observes plus its own critical-file floors, so a
+rate over the files its lane measures plus its own critical-file floors, so a
 regression in one component cannot be masked by another component's coverage.
+
+The CameraAgent, LogicHost and delivery lanes measure only the assemblies they
+own, as the classifier's project lists assign them: `HVO.SkyMonitor.CameraAgent`
+and `HVO.SkyMonitor.CameraAgent.*`, `HVO.SkyMonitor.LogicHost`, and
+`HVO.SkyMonitor.Deployment.*` with `HVO.SkyMonitor.TerminalUi`.
+`scripts/coverage:component` passes each lane's set to ReportGenerator as
+`-assemblyfilters`. Coverlet instruments every HVO assembly in a test project's
+output, including the shared assemblies a host references, so without the
+filter shared code the host's tests never call would count against the host's
+floor. #1408's orbital contracts took the LogicHost lane below its floor that
+way (#1420). Shared code is measured by the shared lane and the aggregate
+rollup, with one gap: the `ProcessingRunner` and `ProcessingRunner.Contracts`
+files LogicHost's tests reach are not in the shared lane, because the
+ProcessingRunner suite is not a coverage slot (below). The aggregate rollup
+still measures both, and the combined lane measures the contracts. The shared
+and combined lanes keep every assembly their reports carry: the shared suites
+reference only shared assemblies, and the combined baseline floors the shared
+contracts both hosts compose. A filter that drops a floored file, or leaves a
+report with no classes, fails the lane rather than passing it.
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`
@@ -928,9 +1058,15 @@ When the classifier returns `complete=false`, each owning component lane also ru
 
 `./scripts/ci:unit-selection` derives the expectation from the inventories instead of from this list: every `tests/<project>/test-categories.json` with `Unit > 0` must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger `unit-<slot>.trx` under its own `TestResults/unit/<slot>`; the command's step must match a closed grammar (a `- name:` opening line, an optional `env:` mapping holding only `DOCKER_HOST`, one `run: |` block of `dotnet test tests/<project>.csproj` lines that use only `--no-build`, `--configuration Release`, `--filter "$UNIT_FILTER"`, `--settings`, `--collect`, `--results-directory` and the TRX `--logger`) so an `if:` or `continue-on-error:` key in any spelling, a reindented step, a heredoc or shell operator, a step-level `UNIT_FILTER` override, or an option such as `--list-tests` that stops a line executing the cases is rejected, as is anything around the step that changes what it runs (workflow or job `defaults:` or `shell:`, workflow or job env beyond `DOTNET_*` and `DOCKER_HOST`/`UNIT_FILTER`, an earlier step exporting through `GITHUB_ENV` or `GITHUB_PATH` other than the catalog bundle path, a selection placed after `Bind Unit evidence`/`Upload Unit evidence`, or an upload path other than `TestResults/unit/`), a command that selects a project owning no Unit cases, a slot shared by two commands, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection or `--settings`, or a supplemental step without the Docker-disabled endpoint, all fail. Job-level `env:` and workflow-level `env:` must hold only plain single-line `KEY: value` entries (a quoted key, a flow mapping or a folded continuation under `UNIT_FILTER` is rejected), and a `defaults` key in any spelling is rejected anywhere in the workflow and a `shell` key anywhere in the Unit job.
 
-Bounded guarantee: the control proves that, for each inventory-derived Unit-bearing project, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). Those behaviors are the workflow's existing, unchanged checkout, catalog-preparation, evidence-binding and upload steps and are covered by Required CI and review.
+Bounded guarantee: the control proves that, for each inventory-derived Unit-bearing project, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). #1265 accepts the following bounded gaps with the existing workflow-review control, rather than adding a whole-job parser or changing the workflow:
 
-For those four component supplements, the same control checks exactly one supported TRX-only selecting command with the complete positive Unit filter, Release/`--no-build`, its distinct result directory and TRX name, the exact `unix:///tmp/hvo-no-docker.sock` endpoint and the closed step grammar. It checks that the command follows the named component build and precedes the named component upload, and that `scripts/ci:component-build <component> --list-projects` includes the owned assembly. List mode reads the same root array used by restore/build; a recorder control proves the real invocations agree. These are bounded selection/build-plan/report checks, not whole-job checkout, prerequisite or publication assurance; #1265 retains those separate follow-ups.
+- **Publication and supplemental TRX membership.** Review must keep the effective upload condition and inputs valid for every qualification event, include all four supplemental TRX directories in the actual `unit-test-evidence` upload, and reject TRX-deleting steps between selection and publication or later uploads that overwrite that artifact. Finding `path: TestResults/unit/` somewhere in the job does not prove those effective inputs. Canonical Coverage slot checks catch lost canonical reports; **Required CI alone does not prove supplemental TRX membership in the uploaded artifact**.
+- **Catalog prerequisite.** Review must preserve the required-and-executing restore, missing-bundle failure and `HVO_PRODUCTION_CATALOG_BUNDLE` export before the affected full-qualification Unit selections, including on pull requests. Removing the export or making the restore conditional can make the catalog-dependent subset Inconclusive instead of executing; it does not affect every selection equally. The selection guard does not prove bundle availability. The separate `development/v1` profile intentionally runs Unit without this bundle and is unchanged.
+- **Checkout trust.** Review must keep the Unit checkout on the revision validated by Quality, without a source or `ref:` override that builds another revision and omits newly added or changed Unit cases. The selection guard does not prove checkout identity.
+
+Required CI and artifact-provenance checks remain required controls. They do not extend the selection guard's bounded claim into proof of the accepted gaps above. Changes to checkout, catalog preparation, evidence binding or upload therefore retain these explicit review responsibilities. The inherited-defaults/shell inspection rejects failed reads and matches optional keys in memory, so an input-delivery failure cannot count as clean key absence.
+
+For those four component supplements, the same control checks exactly one supported TRX-only selecting command with the complete positive Unit filter, Release/`--no-build`, its distinct result directory and TRX name, the exact `unix:///tmp/hvo-no-docker.sock` endpoint and the closed step grammar. It checks that the command follows the named component build and precedes the named component upload, and that `scripts/ci:component-build <component> --list-projects` includes the owned assembly. List mode reads the same root array used by restore/build; a recorder control proves the real invocations agree. These are bounded selection/build-plan/report checks, not whole-job checkout, prerequisite or publication assurance; #1265 records the accepted full-job gaps above.
 
 Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative controls prove that each way of dropping a selection fails. Both are Docker-free and need no build:
 
@@ -980,3 +1116,34 @@ are outside the observation; this is bounded-read evidence, with no percentile,
 speedup, full-history snapshot or production qualification claim. Raw SQL plan
 XML and observed values are retained in TRX output with the exact source/DLL/PDB
 provenance in the issue/PR evidence archive.
+
+
+### Exact central workspace event disclosure (#1241)
+
+`CentralOperationsWorkspaceServiceTests` and `CentralOperationsWorkspaceTests`
+cover a canonical-valid event with 1,000 superseding reviews, 1,000 notifications,
+and oversized nested reason and geometry collections. The workspace retains a
+separate display projection: every child collection has at most 25 items and an
+explicit `Truncated` flag. Histories show newest items first; observation,
+geometry and lineage order is preserved. Current assessment identity, scalar
+values and the strong ETag come from the exact authorized read, independently of
+history truncation. The projection does not claim canonical-event schema or
+completeness. Review actions keep their original preconditions and all-contributor
+authority checks. The durable event remains unchanged.
+
+`CentralWorkspace_ExactEventChildHistoryQueryResponseDisclosureRenderAndHeapStayBounded`
+adds real SQL/Kestrel/Chromium evidence for 100 and 1,000 review/notification
+children, seeded through the immutable version appender outside measurement.
+It records query plans/actual rows, canonical document bytes/checksum, bounded
+snapshot bytes, five measured exact-event renders after one warmup, expanded
+DOM disclosure size, browser memory and four viewport overflow checks. The
+canonical read still parses the exact immutable document; these measurements
+bound retained UI evidence and rendering, not canonical parse cost. The existing
+W3M list/execution harness retains its 1K/10K workloads; execution fixture sealing
+uses 250-row batches outside the measured interval.
+
+Run these Manual acceptance cases with `HVO_EVIDENCE_REVISION=$(git rev-parse HEAD)`
+and `HVO_ISSUE1241_EVIDENCE` pointing at the issue scratch evidence directory.
+`exact-event-child-costs.json`, `w3m-costs.json`, screenshots and the acceptance
+report bind source cleanliness, revision and assembly identities. These are
+candidate integration observations, not production qualification.

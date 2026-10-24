@@ -339,7 +339,7 @@ public sealed class CommandLineTests
 
     [TestMethod]
     [DataRow("--image-ref", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with --release.")]
-    [DataRow("--catalog-bundle", "/srv/hvo/catalog.bundle", "Image upgrade does not accept catalog or purge options.")]
+    [DataRow("--catalog-bundle", "/srv/hvo/catalog.bundle", "Unknown option '--catalog-bundle'.")]
     public void ParseCommand_UpgradeFromAReleaseWithAnotherSource_IsRejected(string option, string value, string message)
     {
         var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
@@ -642,7 +642,7 @@ public sealed class CommandLineTests
 
     [TestMethod]
     [DataRow(null, "catalog install requires --catalog-bundle.")]
-    [DataRow("--catalog-version", "Catalog install accepts only --catalog-bundle and common options.")]
+    [DataRow("--catalog-version", "Unknown option '--catalog-version'.")]
     [DataRow("relative", "--catalog-bundle must be an absolute normalized path other than root.")]
     public void ParseCommand_CatalogInstallTakesOnlyABundle(string? fault, string message)
     {
@@ -744,6 +744,138 @@ public sealed class CommandLineTests
         }
     }
 
+    /// <summary>
+    /// Each command's help says what the command does and lists only the options it takes, each with what it does
+    /// (#1384): no command lists another's options, and none says that some of its options do not apply.
+    /// </summary>
+    [TestMethod]
+    public void CommandUsage_DescribesTheCommandAndListsOnlyItsOwnOptionsEachDescribed()
+    {
+        foreach (var command in CommandLine.Commands)
+        {
+            var lines = UsageFor([.. command.Path, "--help"]).Split('\n');
+
+            Assert.AreEqual(string.Empty, lines[1], command.Name);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(lines[2]) || lines[2] == "Options:", $"{command.Name} has no description");
+            Assert.DoesNotContain("not every one applies", string.Join('\n', lines), StringComparison.Ordinal);
+            var options = lines.SkipWhile(static line => line != "Options:").Skip(1).TakeWhile(static line => line.Length > 0).ToArray();
+            Assert.IsNotEmpty(options, command.Name);
+            foreach (var option in options)
+            {
+                Assert.IsTrue(
+                    option.StartsWith("  -", StringComparison.Ordinal) && option.Trim().Contains("  ", StringComparison.Ordinal),
+                    $"{command.Name}: '{option}' has no description");
+            }
+        }
+
+        var catalogInstall = UsageFor(["catalog", "install", "--help"]);
+        StringAssert.Contains(catalogInstall, "--catalog-bundle <path>", StringComparison.Ordinal);
+        Assert.DoesNotContain("--image-ref", catalogInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("--instance-id", catalogInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("--catalog-version", catalogInstall, StringComparison.Ordinal);
+        var status = UsageFor(["status", "--help"]);
+        Assert.DoesNotContain("--plan", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("--resume", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("--release", status, StringComparison.Ordinal);
+        var rollback = UsageFor(["cameraagent", "rollback", "--help"]);
+        Assert.DoesNotContain("--release", rollback, StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", rollback, StringComparison.Ordinal);
+        StringAssert.Contains(UsageFor(["cameraagent", "upgrade", "--help"]), "--migration-backward-compatible", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// What a command's help lists is exactly what its parser reads: a listed option is never an unknown one, and an option
+    /// another command takes that this one does not list is a usage error (exit 2) carrying this command's usage.
+    /// </summary>
+    [TestMethod]
+    public void ParseCommand_EveryCommand_AdmitsExactlyTheOptionsItsHelpLists()
+    {
+        var instance = Guid.NewGuid().ToString("D");
+        var every = CommandLine.Commands.SelectMany(static command => command.ValueOptions.Concat(command.Flags)).Distinct().ToArray();
+        foreach (var command in CommandLine.Commands)
+        {
+            string[] head = [.. command.Path, .. (command.Positional is null ? [] : new[] { "/srv/hvo" })];
+            foreach (var option in every)
+            {
+                string[] arguments = command.ValueOptions.Contains(option) || CommandLine.Commands.Any(other => other.ValueOptions.Contains(option))
+                    ? [.. head, option, ValueFor(option, instance)]
+                    : [.. head, option];
+                var listed = command.ValueOptions.Contains(option) || command.Flags.Contains(option);
+                try
+                {
+                    _ = CommandLine.ParseCommand(arguments, allowTestProductRoot: false);
+                    Assert.IsTrue(listed, $"{command.Name} admits {option}, which its help does not list");
+                }
+                catch (InstallUsageException exception)
+                {
+                    if (listed)
+                    {
+                        Assert.AreNotEqual($"Unknown option '{option}'.", exception.Message, $"{command.Name} lists {option}");
+                    }
+                    else
+                    {
+                        // Unknown, or, for another command's flag, read as an option that lacks its value.
+                        StringAssert.Contains(exception.Message, $"'{option}'", StringComparison.Ordinal);
+                        Assert.AreEqual(CommandLine.CommandUsage(command), exception.Usage, $"{command.Name} {option}");
+                    }
+                }
+                catch (InstallerException exception) when (listed)
+                {
+                    // Reading what an admitted option names can fail later, as an answers file that is not there does.
+                    Assert.IsFalse(exception.Message.StartsWith("Unknown option", StringComparison.Ordinal), $"{command.Name} {option}");
+                }
+            }
+        }
+
+        static string ValueFor(string option, string instance) => option switch
+        {
+            "--image-source" => "archive",
+            "--replay-profile" => "in-process",
+            "--port" => "5130",
+            "--cpus" => "2",
+            "--latitude" or "--longitude" or "--elevation" => "1",
+            "--image-archive-sha256" => new string('a', 64),
+            "--image-ref" => $"sha256:{new string('a', 64)}",
+            _ when option.EndsWith("-id", StringComparison.Ordinal) => instance,
+            _ => "/srv/hvo/value"
+        };
+    }
+
+    /// <summary>
+    /// A group's help, and a group named without a command, lists the group's own commands with what each does (#1384),
+    /// rather than every command.
+    /// </summary>
+    [TestMethod]
+    public void HelpFor_AGroup_ListsOnlyItsOwnCommands()
+    {
+        var catalog = UsageFor(["catalog", "--help"]);
+        var cameraagent = UsageFor(["cameraagent", "-h"]);
+        var host = UsageFor(["host", "--help"]);
+
+        foreach (var (group, usage) in new[] { ("catalog", catalog), ("cameraagent", cameraagent), ("host", host) })
+        {
+            var listed = usage.Split('\n').Where(static line => line.StartsWith("  ", StringComparison.Ordinal)).ToArray();
+            var own = CommandLine.Commands.Where(command => command.Path[0] == group).ToArray();
+            Assert.HasCount(own.Length, listed, usage);
+            foreach (var command in own)
+            {
+                Assert.IsTrue(
+                    listed.Any(line => line.StartsWith($"  {command.Name} ", StringComparison.Ordinal) && line.Trim().Contains("  ", StringComparison.Ordinal)),
+                    $"{group} help does not describe {command.Name}:\n{usage}");
+            }
+        }
+        Assert.DoesNotContain("catalog install", cameraagent, StringComparison.Ordinal);
+        Assert.DoesNotContain("cameraagent install", catalog, StringComparison.Ordinal);
+
+        var missing = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.ParseCommand(["catalog"], allowTestProductRoot: false));
+        Assert.AreEqual("Missing command after 'catalog'.", missing.Message);
+        Assert.AreEqual(catalog, missing.Usage);
+    }
+
+    private static string UsageFor(string[] arguments)
+        => ((HelpCommand)CommandLine.ParseCommand(arguments, allowTestProductRoot: false)).Usage;
+
     [TestMethod]
     public void ParseCommand_HelpOption_IsRecognisedOnlyWhereAnOptionIsRead()
     {
@@ -756,8 +888,8 @@ public sealed class CommandLineTests
         Assert.AreEqual(status, Help(["status", "--instance-id", instance, "-h"]));
         Assert.AreEqual(host, Help(["host", "set-product-root", "--help"]));
         Assert.AreEqual(host, Help(["host", "set-product-root", "/srv/hvo", "-h"]));
-        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["cameraagent", "--help"]));
-        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["catalog", "-h"]));
+        Assert.AreEqual(CommandLine.GroupUsage("cameraagent"), Help(["cameraagent", "--help"]));
+        Assert.AreEqual(CommandLine.GroupUsage("catalog"), Help(["catalog", "-h"]));
 
         // A value that happens to be -h is still that option's value, and is validated as one.
         var value = Assert.ThrowsExactly<InstallUsageException>(

@@ -194,8 +194,8 @@ internal static class PrivilegedPreparation
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(exception.Message);
-            return 1;
+            Console.Error.WriteLine(CameraAgentStateDiagnostics.Message(exception.Message));
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 
@@ -258,10 +258,7 @@ internal static class PrivilegedPreparation
         CancellationToken cancellationToken)
     {
         var result = await processRunner.RunAsync("sudo", HelperArguments(invocation), cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InstallerException($"Privileged product-root preparation failed: {Redaction.SafeDiagnostic(result.StandardError)}");
-        }
+        PrivilegedHelperErrors.ThrowIfFailed(result, "Privileged product-root preparation failed");
     }
 
     private static void Prepare(

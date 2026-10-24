@@ -27,6 +27,8 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "LogicHost:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "Enabled; heartbeat Available, last acknowledged 2026-10-18T19:29:50Z", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "As of:", StringComparison.Ordinal);
+        Assert.DoesNotContain(", Healthy", result.Out, StringComparison.Ordinal);
+        Assert.DoesNotContain(", Accepting", result.Out, StringComparison.Ordinal);
         CollectionAssert.AreEqual(new[] { "GET " + Fake.SummaryRoute }, harness.Api.Requests.Select(static r => $"{r.Method} {r.PathAndQuery}").ToArray());
     }
 

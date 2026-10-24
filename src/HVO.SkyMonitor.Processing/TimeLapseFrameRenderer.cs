@@ -32,17 +32,23 @@ public sealed record TimeLapseRenderedFrame(
 /// </summary>
 public static class TimeLapseFrameRenderer
 {
-    public const string Version = "hvo-timelapse-stack-display-v2";
-    public const string OverlayVersion = "hvo-timelapse-proportional-overlays-v1";
+    // Keep released implementations independent of the default selected for newly frozen jobs.
+    public const string LegacyVersion = "hvo-timelapse-stack-display-v2";
+    public const string OriginalColoursVersion = "hvo-timelapse-stack-display-v3-original-colours";
+    public const string Version = OriginalColoursVersion;
+    public const string OverlayVersion = OriginalColoursOverlayVersion;
+    private const string OriginalColoursOverlayVersion = "hvo-timelapse-proportional-overlays-v2-original-colours";
+    private const string LegacyOverlayVersion = "hvo-timelapse-proportional-overlays-v1";
     public const int MaximumColorSourcePixels = LinearBayerReconstruction.MaximumSupportedPixels;
 
-    public static string RecipeIdentity(TimeLapseFrameOptions options)
+    public static string RecipeIdentity(TimeLapseFrameOptions options, string rendererVersion = Version)
     {
         Validate(options);
+        ValidateVersion(rendererVersion);
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            Version,
-            OverlayVersion,
+            Version = rendererVersion,
+            OverlayVersion = rendererVersion == LegacyVersion ? LegacyOverlayVersion : OriginalColoursOverlayVersion,
             options,
             mean = Linear16ArithmeticMean.AlgorithmVersion,
             stretch = Mono16DisplayStretch.AlgorithmVersion,
@@ -70,11 +76,13 @@ public static class TimeLapseFrameRenderer
 
     public static TimeLapseRenderedFrame Render(IReadOnlyList<ProcessingArtifact> sources, CameraRigConfig rig,
         TimeLapseFrameOptions options, bool daytime, int outputWidth, int outputHeight,
-        IReadOnlyList<PresentationCompositorLayer>? additionalLayers = null, CancellationToken cancellationToken = default)
+        IReadOnlyList<PresentationCompositorLayer>? additionalLayers = null, string rendererVersion = Version,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(rig);
         Validate(options);
+        ValidateVersion(rendererVersion);
         if (sources.Count < 1 || sources.Count > options.StackCount || daytime && sources.Count != 1 || outputWidth is < 2 or > 4096 || outputHeight is < 2 or > 4096 ||
             outputWidth % 2 != 0 || outputHeight % 2 != 0 || additionalLayers?.Count > 12)
             throw new ArgumentException("A time-lapse frame requires one to three bounded sources and even output dimensions.");
@@ -110,7 +118,7 @@ public static class TimeLapseFrameRenderer
         var imageLayout = new ImageLayout(layout.Width, layout.Height, color ? CameraPixelFormat.Rgb24 : CameraPixelFormat.Mono8,
             layout.Width * (color ? 3 : 1));
         var checksums = sources.Select(source => ProcessingIdentity.ComputePayloadSha256(source.Payload)).ToArray();
-        var recipeIdentity = RecipeIdentity(options);
+        var recipeIdentity = RecipeIdentity(options, rendererVersion);
         var baseIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             recipeIdentity,
@@ -135,7 +143,7 @@ public static class TimeLapseFrameRenderer
             ["ROLLING STACK", FormattableString.Invariant($"{sources.Count} frames | {integration.TotalSeconds:0.###} s")],
             ["TIMELAPSE", FormattableString.Invariant($"Video {outputWidth} x {outputHeight}"),
                 FormattableString.Invariant($"Source {layout.Width} x {layout.Height}")]);
-        var layers = CreateLayers(RigProjectionContextFactory.Create(rig), facts, layout.Width, layout.Height, options);
+        var layers = CreateLayers(RigProjectionContextFactory.Create(rig), facts, layout.Width, layout.Height, options, rendererVersion);
         var selected = layers.Select(payload => new PresentationCompositorLayer(payload, true, PresentationRasterBlendMode.Normal, 1_000_000))
             .Concat(additionalLayers ?? []).ToArray();
         var composed = PresentationLayerCompositor.CompositeDisplay(imageLayout, pixels, selected, cancellationToken);
@@ -161,10 +169,11 @@ public static class TimeLapseFrameRenderer
         return (Even(width), Even(height));
     }
 
-    public static byte[] GapImage(int width, int height)
+    public static byte[] GapImage(int width, int height, string rendererVersion = Version)
     {
+        ValidateVersion(rendererVersion);
         if (width is < 2 or > 4096 || height is < 2 or > 4096) throw new ArgumentOutOfRangeException(nameof(width));
-        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new { Version, gap = true, width, height });
+        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new { Version = rendererVersion, gap = true, width, height });
         var label = new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default, ["NO IMAGE", "Missing capture interval"],
             PresentationFont.FrameScale(width, height), 8, 4, new(220, 220, 220));
         var layer = PresentationLayerPayloadJson.Create(identity, width, height, textBlocks: [label]);
@@ -174,8 +183,10 @@ public static class TimeLapseFrameRenderer
     }
 
     internal static IReadOnlyList<PresentationLayerPayloadV1> CreateLayers(ProjectionContext projection,
-        PresentationMetadataFactsV1 facts, int width, int height, TimeLapseFrameOptions options)
+        PresentationMetadataFactsV1 facts, int width, int height, TimeLapseFrameOptions options, string rendererVersion = Version)
     {
+        ValidateVersion(rendererVersion);
+        var legacy = rendererVersion == LegacyVersion;
         var unit = Math.Min(width, height) / 630d;
         var result = new List<PresentationLayerPayloadV1>();
         if ((options.CardinalDirections || options.ImageCircle) && RigProjectionContextFactory.CreateAnnotationLandmarks(projection) is { } landmarks)
@@ -183,10 +194,11 @@ public static class TimeLapseFrameRenderer
             if (options.ImageCircle)
                 result.Add(PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, width, height,
                     ellipses: [new(landmarks.Center, landmarks.ImageCircleRadius, landmarks.ImageCircleRadius,
-                        new(116, 209, 255), new(0, 0, 450_000), Math.Clamp((int)Math.Round(2000 * unit), 1, 8000))]));
+                        legacy ? new(116, 209, 255) : new(96, 96, 96), new(0, 0, legacy ? 450_000 : 1_000_000),
+                        Math.Clamp((int)Math.Round((legacy ? 2000 : 1000) * unit), 1, 8000))]));
             if (options.CardinalDirections)
             {
-                var color = new PresentationColor(195, 236, 255);
+                var color = legacy ? new PresentationColor(195, 236, 255) : new PresentationColor(255, 255, 255);
                 var appearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
                     Math.Clamp((int)Math.Round(18000 * unit), 1000, 112000), Math.Clamp((int)Math.Round(720 * unit), 0, 8000),
                     color, new(3, 8, 14), 950000, Math.Clamp((int)Math.Round(4000 * unit), 0, 16000)));
@@ -217,11 +229,19 @@ public static class TimeLapseFrameRenderer
             throw new ArgumentException("Selected time-lapse geometry overlays are unavailable for this rig.", nameof(projection));
         if (options.CornerMetadata)
         {
-            var metadata = PresentationLayerProducers.FromMetadataFacts(facts, width, height);
+            // Pin both palettes explicitly: a shared producer default must not change a retained recipe's bytes.
+            var metadata = PresentationLayerProducers.FromMetadataFacts(facts, width, height,
+                legacy ? new PresentationColor(216, 229, 246) : new PresentationColor(255, 255, 255));
             result.Add(PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, width, height,
                 textBlocks: metadata.TextBlocks.Select(block => block with { Inset = block.Backplate!.Padding + 1 }).ToArray()));
         }
         return result;
+    }
+
+    private static void ValidateVersion(string rendererVersion)
+    {
+        if (rendererVersion is not (LegacyVersion or OriginalColoursVersion))
+            throw new ArgumentOutOfRangeException(nameof(rendererVersion), "Unsupported time-lapse renderer version.");
     }
 
     private static void Validate(TimeLapseFrameOptions options)

@@ -262,6 +262,33 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            if (configured.Count(static item => item.Step is MeasuredAstrometryCaptureProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded astrometry producer.");
+            foreach (var astrometry in configured.Where(static item => item.Step is MeasuredAstrometryCaptureProcessingStep))
+            {
+                if (!explicitV2 || astrometry.Config.Required || astrometry.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal ||
+                    astrometry.Config.DependsOn is not { Count: 2 } || astrometry.Config.DependsOn.Any(id =>
+                        !nodesById.TryGetValue(id, out var producer) ||
+                        producer.Step is not (ProjectedSceneCaptureProcessingStep or MeasuredStellarAssociationCaptureProcessingStep) ||
+                        producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
+                    throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
+            }
+            if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
+            foreach (var satellite in configured.Where(static item => item.Step is CaptureSatelliteTracksProcessingStep))
+            {
+                if (!explicitV2 || satellite.Config.DependsOn?.Count != 1 ||
+                    !IsRawDependency(satellite.Config.DependsOn[0]) ||
+                    satellite.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteTracks requires an explicit v2 raw dependency and durable local publication.");
+            }
+            foreach (var layer in configured.Where(static item => item.Step is CaptureSatelliteLayerProcessingStep))
+            {
+                if (!explicitV2 || layer.Config.DependsOn?.Count != 1 ||
+                    !nodesById.TryGetValue(layer.Config.DependsOn[0], out var producer) || producer.Step is not CaptureSatelliteTracksProcessingStep ||
+                    layer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
+            }
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
@@ -704,10 +731,26 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 step.SharedOutputAlgorithms,
                 step.OutputMediaType)];
 
-    private static bool RequiresLinear16(string recipeName)
+    // Gain stays a window boundary everywhere except the mixed-gain recipe, whose frozen plan normalizes it.
+    internal static ImmutableArray<string> CreateWindowCompatibilityLabels(string? recipeName)
+        => string.Equals(
+            recipeName,
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.MixedGainNormalizedMean,
+            StringComparison.Ordinal)
+            ? [
+                "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                "sensor", "setpoint", "processing-profile", "location", GainNormalizationCompatibility.WindowLabel
+            ]
+            : [
+                "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                "sensor", "setpoint", "processing-profile", "location"
+            ];
+
+    internal static bool RequiresLinear16(string recipeName)
         => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
             HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ReferenceCalibration or
-            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment;
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment or
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.MixedGainNormalizedMean;
 
     private static bool ProcessingStoredCodeIsSupported(FrameLayoutDescriptor layout)
         => layout.StoredCodeTransform switch
@@ -806,9 +849,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             : GetOutputs(graphStep).Select(output => new ProcessingGraphProductContract(
                 output.Role,
                 output.Variant,
-                output.Role == FrameArtifactRole.Metadata
+                output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata
                     ? ProcessingProductKind.Metadata
-                    : ProcessingProductKind.PixelData,
+                    : ProcessingProductKind.PixelData),
                 ResolveRecipeDefinition(output, item.Config.Type, operationKind),
                 output.SchemaVersion,
                 output.SharedAlgorithms?.ToImmutableArray() ?? [],
@@ -819,10 +862,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 windowStep.MinimumInputCount,
                 windowStep.MaximumInputCount,
                 windowStep.RequiredPositions.ToImmutableArray(),
-                 [
-                     "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
-                     "sensor", "setpoint", "processing-profile", "location"
-                 ],
+                CreateWindowCompatibilityLabels(graphStep?.RecipeName),
                 windowStep.Timeout.Ticks,
                 windowStep.MissingInputOutcome)
             : null;
@@ -898,7 +938,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         ? GetOutputs(producerStep).Select(output => new ProcessingGraphProductContract(
                             output.Role,
                             output.Variant,
-                            output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData,
+                            output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData),
                             ResolveRecipeDefinition(
                                 output,
                                 producer.Config.Type,

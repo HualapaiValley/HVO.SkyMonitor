@@ -560,6 +560,29 @@ internal sealed partial class SqliteRawCaptureJournal(
         return captures;
     }
 
+    /// <summary>
+    /// The committed captures whose lane work ended because processing found their evidence unusable. Every
+    /// consumer verifies a payload's checksum before it uses it, so this is where a payload whose content no longer
+    /// matches is recorded; an operator release moves the lane work on, and a quarantine changes the capture's state.
+    /// </summary>
+    internal async Task<IReadOnlySet<Guid>> ReadReportedEvidenceFailuresAsync(CancellationToken cancellationToken)
+    {
+        var captures = new HashSet<Guid>();
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT raw.capture_id
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            WHERE work.state = 'quarantined' AND work.failure_reason IN ('evidence-unavailable', 'evidence-invalid')
+              AND raw.state = 'committed';
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            captures.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        return captures;
+    }
+
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -703,6 +726,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         byte[] contextJson,
         string contextSha256,
         ProcessingLiveExecutionSeed execution,
+        bool manifestFallback,
         CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -733,7 +757,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             rawRowId = Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
         }
         await UpsertRecoveredContextAsync(
-            connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
+            connection, transaction, rawRowId, contextJson, contextSha256, manifestFallback, cancellationToken).ConfigureAwait(false);
         await InsertLiveExecutionAsync(
             connection, transaction, rawRowId, entry, execution, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1030,6 +1054,9 @@ internal sealed partial class SqliteRawCaptureJournal(
         {
             throw new InvalidDataException("The live processing execution source manifest is invalid.");
         }
+        if (parsedManifest.Document.Manifest.CaptureGraphRevisionId is { } retainedRevision &&
+            !string.Equals(retainedRevision, execution.Revision.State.RevisionId, StringComparison.Ordinal))
+            throw new RawIngressConflictException("The live execution differs from the immutable sidecar graph binding.");
         var primaryInput = new ProcessingFrozenRawInput(
             rawRowId,
             0,
@@ -1039,16 +1066,16 @@ internal sealed partial class SqliteRawCaptureJournal(
             entry.PayloadRelativePath);
         var pinnedInputs = new Dictionary<long, ProcessingFrozenRawInput> { [rawRowId] = primaryInput };
 
+        // Activation can advance while physical scene staging runs. Validate the selected immutable revision,
+        // rather than asking whether it is still active; recovery must honor exactly the same sidecar binding.
         using (var active = connection.CreateCommand())
         {
             active.Transaction = transaction;
             active.CommandText = """
                 SELECT COUNT(*)
-                FROM processing_graph_registry_state registry
-                JOIN processing_graph_revisions revision
-                  ON revision.revision_id = registry.active_revision_id
-                WHERE registry.state_key = 1
-                  AND revision.revision_id = $revision
+                FROM processing_graph_revisions revision
+                WHERE revision.revision_id = $revision
+                  AND revision.validated_unix_ms IS NOT NULL
                   AND revision.definition_identity_sha256 = $definition
                   AND revision.shared_plan_identity_sha256 = $shared_plan
                   AND revision.local_plan_identity_sha256 = $local_plan;
@@ -1062,7 +1089,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     System.Globalization.CultureInfo.InvariantCulture) != 1)
             {
                 throw new ProcessingGraphStoreConflictException(
-                    "The active processing graph revision changed during raw capture acceptance.");
+                    "The selected immutable processing graph revision is unavailable or differs from the capture binding.");
             }
         }
 
@@ -1206,12 +1233,14 @@ internal sealed partial class SqliteRawCaptureJournal(
 
         using var verify = connection.CreateCommand();
         verify.Transaction = transaction;
-        verify.CommandText = "SELECT context_sha256 FROM capture_lane_contexts WHERE raw_capture_row_id = $raw;";
+        verify.CommandText = "SELECT context_sha256 FROM capture_lane_contexts WHERE raw_capture_row_id = $raw AND context_source != 'manifest-fallback';";
         verify.Parameters.AddWithValue("$raw", rawRowId);
         var existing = Convert.ToString(
             await verify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture);
-        if (!string.Equals(existing, contextSha256, StringComparison.Ordinal))
+        // A sidecar-only recovery cannot recreate transient loop timing. Keep its descriptor-derived context;
+        // the retry's immutable descriptor/payload were already checked, and must not overwrite frozen evidence.
+        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal))
         {
             throw new RawIngressConflictException("Capture lane context differs from the committed retry context.");
         }
@@ -1223,13 +1252,14 @@ internal sealed partial class SqliteRawCaptureJournal(
         long rawRowId,
         byte[] contextJson,
         string contextSha256,
+        bool manifestFallback,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO capture_lane_contexts(raw_capture_row_id, context_json, context_sha256, context_source)
-            VALUES ($raw, $json, $sha, 'capture')
+            VALUES ($raw, $json, $sha, $source)
             ON CONFLICT(raw_capture_row_id) DO UPDATE SET
                 context_json = excluded.context_json,
                 context_sha256 = excluded.context_sha256,
@@ -1238,6 +1268,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$raw", rawRowId);
         command.Parameters.AddWithValue("$json", contextJson);
         command.Parameters.AddWithValue("$sha", contextSha256);
+        command.Parameters.AddWithValue("$source", manifestFallback ? "manifest-fallback" : "capture");
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1617,23 +1648,31 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT evidence_key, source_relative_path, companion_relative_path,
-                   quarantine_relative_path, reason, observed_bytes
-            FROM raw_ingress_reconciliation
-            WHERE outcome = 'quarantined' AND operation_state = 'planned'
-            ORDER BY reconciliation_id;
+            SELECT plan.evidence_key, plan.source_relative_path, plan.companion_relative_path,
+                   plan.quarantine_relative_path, plan.reason, plan.observed_bytes, raw.capture_id
+            FROM raw_ingress_reconciliation plan
+            LEFT JOIN raw_captures raw
+                ON raw.payload_relative_path IN (plan.source_relative_path, plan.companion_relative_path)
+                OR raw.sidecar_relative_path IN (plan.source_relative_path, plan.companion_relative_path)
+            WHERE plan.outcome = 'quarantined' AND plan.operation_state = 'planned'
+            ORDER BY plan.reconciliation_id;
             """;
         var operations = new List<RawIngressPlannedQuarantine>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The plan's durable source paths reference the capture's unique, immutable evidence paths.
+            // Recover that association even when a crash already moved either or both source files.
+            if (operations.Count > 0 && operations[^1].EvidenceKey == reader.GetString(0))
+                throw new InvalidDataException("A planned raw ingress quarantine references multiple captures.");
             operations.Add(new RawIngressPlannedQuarantine(
                 reader.GetString(0),
                 reader.GetString(1),
                 await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
                 reader.GetString(3),
                 reader.GetString(4),
-                reader.GetInt64(5)));
+                reader.GetInt64(5),
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : Guid.ParseExact(reader.GetString(6), "N")));
         }
         return operations;
     }

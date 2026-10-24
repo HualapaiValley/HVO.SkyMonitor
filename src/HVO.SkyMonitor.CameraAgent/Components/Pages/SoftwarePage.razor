@@ -32,11 +32,12 @@ else
 {
     var software = _software;
     var catalog = software.Catalog;
+    var orbitalRail = OrbitalRail(_orbitalView, _orbitalRead);
     <section class="ops-status-rail" aria-label="Software summary">
         <div><span>Selected HYG</span><strong>@catalog.CatalogVersion</strong><small>@catalog.CatalogId</small></div>
         <div><span>Star rows</span><strong>@Number(catalog.RowCount)</strong><small>Schema @catalog.SchemaVersion / preprocessing @catalog.PreprocessingVersion</small></div>
         <div><span>Catalog integrity</span><strong>Verified</strong><small>Checksum checked at startup</small></div>
-        <div><span>Orbital snapshot</span><strong>Not collected</strong><small>No orbital source on this version</small></div>
+        <div><span>Orbital snapshot</span><strong id="software-orbital-state">@orbitalRail.State</strong><small id="software-orbital-detail">@orbitalRail.Detail</small></div>
     </section>
 
     <div class="ops-note-banner"><span class="status-icon success" aria-hidden="true"></span><span><strong>Selection is explicit.</strong> Nothing on this page downloads, rebuilds, installs, or activates a catalog. Published package bytes remain immutable and historical captures retain their exact selected identity.</span></div>
@@ -86,15 +87,7 @@ else
     </section>
 
     <div class="ops-grid sidebar-right">
-        <section class="ops-panel" aria-labelledby="software-orbital-heading">
-            <header class="ops-panel-heading"><div><h2 id="software-orbital-heading">Orbital-element snapshot</h2><p>Time-varying evidence is refreshed and assessed independently from HYG/OpenNGC packages.</p></div><span class="state-chip neutral">Not collected</span></header>
-            <div class="ops-note-banner compact"><span class="status-icon pending" aria-hidden="true"></span><span>This version of CameraAgent does not acquire orbital elements, so it makes no satellite or orbital predictions. Nothing here needs configuring.</span></div>
-            <dl class="ops-facts software-orbital-facts">
-                <div><dt>Snapshot</dt><dd>None</dd></div>
-                <div><dt>Scheduler</dt><dd>Not present</dd></div>
-                <div class="full"><dt>Use boundary</dt><dd>Predicted geometry only; ordinary orbital data does not establish optical visibility.</dd></div>
-            </dl>
-        </section>
+        <OrbitalSnapshotPanel ViewChanged="OnOrbitalViewChanged" />
         <section class="ops-panel" aria-labelledby="software-separation-heading">
             <header class="ops-panel-heading"><div><h2 id="software-separation-heading">Lifecycle separation</h2><p>Static celestial truth and changing orbital predictions have different safety rules.</p></div></header>
             <div class="ops-table-wrap">
@@ -117,6 +110,7 @@ else
                 <thead><tr><th scope="col">Operation</th><th scope="col">Current interface</th><th scope="col">UI state</th><th scope="col">Safety boundary</th></tr></thead>
                 <tbody>
                     <tr><td><strong>Status &amp; verification</strong></td><td>This page / <code>hvo-sky-install status</code></td><td><span class="state-chip success">Available</span></td><td>Read-only installed facts; checksums are verified at startup</td></tr>
+                    <tr><td><strong>Orbital refresh / resume</strong></td><td>This page / Automations / API</td><td><span class="state-chip success">Available</span></td><td>Durable single-flight task; provider floor and halt enforced by the store</td></tr>
                     <tr><td><strong>Catalog install / select / rollback</strong></td><td><code>hvo-sky-install catalog install|select|rollback</code></td><td>Informational</td><td>Atomic validation and explicit selection</td></tr>
                     <tr><td><strong>Catalog cleanup</strong></td><td><code>hvo-sky-install catalog gc</code></td><td>Informational</td><td>Removes only packages no selection references; <code>--dry-run</code> lists them first</td></tr>
                     <tr><td><strong>Application upgrade / rollback</strong></td><td><code>hvo-sky-install cameraagent upgrade|rollback</code></td><td>Informational</td><td>Candidate health before capture resumes</td></tr>

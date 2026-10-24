@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredAstrometryFixture.cs" Link="Fixtures/MeasuredAstrometryFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredStellarAssociationFixtures.cs" Link="Fixtures/MeasuredStellarAssociationFixtures.cs" />
+  </ItemGroup>
   <PropertyGroup>
   </PropertyGroup>
   <ItemGroup>

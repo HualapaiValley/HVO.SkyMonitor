@@ -46,6 +46,10 @@ internal sealed partial class RawCaptureIngress :
     private readonly Capture.CaptureMaintenanceGate? _maintenanceGate;
     private int _completedInitializations;
     private bool _maintenanceDeferred;
+    // Every request for the raw reconciliation increments the first; a raw pass that left nothing for later records the
+    // count it read before it ran, so a request made while it ran still needs another pass.
+    private long _reconciliationRequests = 1;
+    private long _reconciledRequests;
     private bool _journalValidated;
     private bool _evidenceUnavailable;
     private bool _capacityRevalidationRequired;
@@ -121,13 +125,20 @@ internal sealed partial class RawCaptureIngress :
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
         => _ = await InitializeCoreAsync(allowEvidenceUnavailable: false, cancellationToken).ConfigureAwait(false);
 
-    private async ValueTask<bool> InitializeCoreAsync(bool allowEvidenceUnavailable, CancellationToken cancellationToken)
+    // A maintenance caller must keep the pause signal separate from cancellation of a durable operation.
+    internal async ValueTask InitializeForMaintenanceAsync(CancellationToken cancellationToken, CancellationToken interruptionToken)
+        => _ = await InitializeCoreAsync(false, cancellationToken, interruptionToken).ConfigureAwait(false);
+
+    private async ValueTask<bool> InitializeCoreAsync(
+        bool allowEvidenceUnavailable, CancellationToken cancellationToken, CancellationToken interruptionToken = default)
     {
         if (Volatile.Read(ref _initialized))
         {
             return true;
         }
-        await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var waitToken = interruption.Token;
+        await _initializeGate.WaitAsync(waitToken).ConfigureAwait(false);
         SemaphoreSlim? lifecycleGate = null;
         var lifecycleAcquired = false;
         try
@@ -140,7 +151,7 @@ internal sealed partial class RawCaptureIngress :
             if (allowEvidenceUnavailable && _journalValidated && _evidenceUnavailable) return false;
             _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
             lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
-            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await lifecycleGate.WaitAsync(waitToken).ConfigureAwait(false);
             lifecycleAcquired = true;
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
@@ -160,13 +171,20 @@ internal sealed partial class RawCaptureIngress :
                 Volatile.Write(ref _journalValidated, true);
                 initializationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
-                var reconciliation = await new RawIngressReconciler(
-                    _options.RawIngressRoot,
-                    _journal,
-                    _telemetry.RecordFileFlush,
-                    _telemetry.RecordDirectorySync,
-                    _lanePolicy.Definitions)
-                     .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken).ConfigureAwait(false);
+                // Capture opening after a held start reruns only what that start deferred: the raw pass that already ran
+                // in this process runs again only if it left work for later or a failure invalidated it since.
+                var requests = Interlocked.Read(ref _reconciliationRequests);
+                var reconcileRaw = requests != Volatile.Read(ref _reconciledRequests);
+                var reconciliation = reconcileRaw
+                    ? await new RawIngressReconciler(
+                        _options.RawIngressRoot,
+                        _journal,
+                        _telemetry.RecordFileFlush,
+                        _telemetry.RecordDirectorySync,
+                        _lanePolicy.Definitions,
+                        _faultInjector.OpenPayloadForVerification)
+                         .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
+                    : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
                 var projectedSceneBacklog = 0;
                 var heldBy = HeldBy();
                 if (reconciliation.MaintenanceDeferred > 0)
@@ -179,22 +197,32 @@ internal sealed partial class RawCaptureIngress :
                     // Stage cleanup deletes unowned stages, so it runs only under the maintenance barrier, as the
                     // background reconciliation does.
                     using var maintenance = await EnterInitializationMaintenanceAsync(cancellationToken).ConfigureAwait(false);
-                    if (maintenance is null)
+                    if (maintenance.Held)
                     {
                         stagesHeld = true;
                         _logger.MaintenanceHeld("Startup projected-scene stage reconciliation", heldBy);
                     }
                     else
                     {
-                        using var stageLease = _projectedSceneLifecycle is null
-                            ? null
-                            : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
-                        var ownedStageKeys = await GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
-                        var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
-                        if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
-                        var staged = await _projectedSceneStaging.ReconcileAsync(protectedStageKeys, cancellationToken).ConfigureAwait(false);
-                        projectedSceneBacklog = staged.BacklogCount;
-                        reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                        using var stageInterruption = CancellationTokenSource.CreateLinkedTokenSource(waitToken, maintenance.InterruptionToken);
+                        try
+                        {
+                            using var stageLease = _projectedSceneLifecycle is null
+                                ? null
+                                : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(stageInterruption.Token).ConfigureAwait(false);
+                            var ownedStageKeys = await GetOwnedStageKeysAsync(stageInterruption.Token).ConfigureAwait(false);
+                            var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
+                            if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
+                            var staged = await _projectedSceneStaging.ReconcileAsync(
+                                protectedStageKeys, cancellationToken, stageInterruption.Token).ConfigureAwait(false);
+                            projectedSceneBacklog = staged.BacklogCount;
+                            reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                            stagesHeld = stageInterruption.IsCancellationRequested;
+                        }
+                        catch (OperationCanceledException) when (stageInterruption.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        {
+                            stagesHeld = true;
+                        }
                     }
                 }
                 // Whatever was held runs again once capture admission opens (CaptureMaintenanceGate.CaptureRunning).
@@ -203,7 +231,7 @@ internal sealed partial class RawCaptureIngress :
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
-                _state.RecordReconciliation(reconciliation);
+                if (reconcileRaw) _state.RecordReconciliation(reconciliation);
                 _logger.RawIngressSqliteSucceeded("checkpoint");
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
@@ -234,12 +262,15 @@ internal sealed partial class RawCaptureIngress :
                     Volatile.Write(ref _evidenceUnavailable, true);
                     throw new InvalidDataException("Raw ingress has committed records with missing evidence.");
                 }
-                _logger.RawIngressReconciled(
-                    reconciliation.Inspected,
-                    reconciliation.Recovered,
-                    reconciliation.Cleaned,
-                    reconciliation.Quarantined,
-                    reconciliation.MissingEvidence);
+                if (reconcileRaw)
+                {
+                    _logger.RawIngressReconciled(
+                        reconciliation.Inspected,
+                        reconciliation.Recovered,
+                        reconciliation.Cleaned,
+                        reconciliation.Quarantined,
+                        reconciliation.MissingEvidence);
+                }
                 if (reconciliation.Quarantined > 0)
                 {
                     _logger.RawIngressQuarantined(reconciliation.Quarantined, reconciliation.QuarantineBytes);
@@ -253,8 +284,17 @@ internal sealed partial class RawCaptureIngress :
                 {
                     _logger.RawIngressRecovered();
                 }
+                // A held quarantine or an unrepaired index is found again by the next pass.
+                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0 && reconciliation.IndexProjectionFailures == 0)
+                    Volatile.Write(ref _reconciledRequests, requests);
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
+                // A resume can notify us after the maintenance lease releases but before this publication, and processing
+                // can report evidence while this ran. Recheck after publishing: an earlier one is covered here, and a later
+                // one invalidates us.
+                if (Interlocked.Read(ref _reconciliationRequests) != requests ||
+                    Volatile.Read(ref _maintenanceDeferred) && _maintenanceGate?.HeldBy == Capture.CaptureAdmissionState.Running)
+                    Volatile.Write(ref _initialized, false);
                 return true;
             }
             catch (OperationCanceledException)
@@ -265,12 +305,14 @@ internal sealed partial class RawCaptureIngress :
             catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
             {
                 // The validated journal has already published its evidence health and retained quarantine.
+                Interlocked.Increment(ref _reconciliationRequests);
                 _telemetry.RecordFailure("initialization", "evidence-unavailable");
                 if (allowEvidenceUnavailable) return false;
                 throw;
             }
             catch (Exception exception)
             {
+                Interlocked.Increment(ref _reconciliationRequests);
                 var reason = FailureReason(exception);
                 SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "initialization-failed");
                 _telemetry.RecordFailure("initialization", reason);
@@ -324,9 +366,58 @@ internal sealed partial class RawCaptureIngress :
         return owned;
     }
 
-    public async ValueTask<RawCaptureReceipt?> AcceptAsync(
+    async ValueTask<RawCaptureGraphBinding?> IRawCaptureIngress.PrepareGraphBindingAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => await PrepareGraphBindingAsync(configuration, submission, cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<RawCaptureGraphBinding?> PrepareGraphBindingAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+    {
+        if (_graphOperations is null || submission.Result.Frame is not { } frame) return null;
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+        var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
+        var published = File.Exists(paths.SidecarAbsolutePath);
+        string? revisionId = null;
+        if (published)
+        {
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false));
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+                manifest.Descriptor.Capture.CaptureId != ids.CaptureId ||
+                manifest.Descriptor.Artifact.ArtifactId != ids.ArtifactId ||
+                manifest.Descriptor.Capture.AgentId != configuration.AgentId ||
+                manifest.RelativeArtifactPath != paths.PayloadRelativePath)
+                throw new RawIngressConflictException("Existing immutable sidecar differs from the capture identity.");
+            revisionId = manifest.CaptureGraphRevisionId;
+        }
+        var revision = await _graphOperations.SelectLiveRevisionAsync(
+            configuration, retainedCapture: false, cancellationToken, revisionId).ConfigureAwait(false);
+        return new(revision, published);
+    }
+
+    public ValueTask<RawCaptureReceipt?> AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => AcceptAsync(configuration, submission, binding: null, cancellationToken);
+
+    ValueTask<RawCaptureReceipt?> IRawCaptureIngress.AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        RawCaptureGraphBinding? binding,
+        CancellationToken cancellationToken)
+        => AcceptAsync(configuration, submission, binding, cancellationToken);
+
+    private async ValueTask<RawCaptureReceipt?> AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        RawCaptureGraphBinding? binding,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -356,6 +447,9 @@ internal sealed partial class RawCaptureIngress :
             {
                 await _laneStore.EnsureCanAcceptAsync(frame.PixelData.Length, cancellationToken).ConfigureAwait(false);
             }
+            // Physical staging has already selected this immutable revision. Other ingress callers select once
+            // here, before publication, so the sidecar also retains the choice across a pre-journal interruption.
+            binding ??= await PrepareGraphBindingAsync(configuration, submission, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(RawIngressFaultPoint.BeforeAcceptanceLifecycleLock);
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             lifecycleAcquired = true;
@@ -399,6 +493,17 @@ internal sealed partial class RawCaptureIngress :
                     frame.PixelData,
                     identity,
                     CancellationToken.None).ConfigureAwait(false);
+                if (manifest.CaptureGraphRevisionId is not null && frame.Metadata.Scene is { } retryScene &&
+                    (manifest.Scene is null || !string.Equals(
+                        CaptureContractJson.ComputeCanonicalJsonSha256(retryScene),
+                        CaptureContractJson.ComputeCanonicalJsonSha256(manifest.Scene), StringComparison.Ordinal)))
+                    throw new RawIngressConflictException("Existing immutable scene differs from the retry evidence.");
+                if (_graphOperations is not null && manifest.CaptureGraphRevisionId is { } retainedRevision &&
+                    !string.Equals(retainedRevision, binding?.Revision.State.RevisionId, StringComparison.Ordinal))
+                {
+                    binding = new(await _graphOperations.SelectLiveRevisionAsync(
+                        configuration, retainedCapture: false, CancellationToken.None, retainedRevision).ConfigureAwait(false), true);
+                }
                 var expectedDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -464,7 +569,8 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     previewDescriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene);
+                    frame.Metadata.Scene)
+                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 var validation = previewManifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -487,7 +593,8 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     descriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene);
+                    frame.Metadata.Scene)
+                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 validation = manifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -531,14 +638,14 @@ internal sealed partial class RawCaptureIngress :
             };
             ProcessingLiveExecutionSeed? liveExecution = null;
             var durableConfiguration = configuration;
-            if (_graphOperations is not null)
+            if (_graphOperations is not null && binding is not null)
             {
-                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                var prepared = _graphOperations.PrepareBoundLiveExecution(
                     configuration,
                     identity.CaptureId,
                     identity.ArtifactId,
                     committedDescriptor.Timing.DurableIngressUtc,
-                    CancellationToken.None).ConfigureAwait(false);
+                    binding.Revision);
                 liveExecution = prepared.Seed;
                 durableConfiguration = prepared.Configuration;
             }
@@ -652,7 +759,7 @@ internal sealed partial class RawCaptureIngress :
                     // The journal commit cannot be interrupted, but a payload published without its sidecar or its
                     // commit would make every retry of this capture a conflict until the reconciler recovers or
                     // quarantines it, so the next accept re-initializes first.
-                    Volatile.Write(ref _initialized, false);
+                    RequireReconciliation();
                 }
             }
             throw;
@@ -679,7 +786,7 @@ internal sealed partial class RawCaptureIngress :
                 _logger.RawIngressSqliteFailed("commit");
             }
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, reason);
-            Volatile.Write(ref _initialized, false);
+            RequireReconciliation();
             throw;
         }
         finally
@@ -733,8 +840,9 @@ internal sealed partial class RawCaptureIngress :
             await foreach (var entry in _journal.EnumerateUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
             {
                 var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
-                if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)
+                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
                     throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
+                var descriptor = manifest.Descriptor;
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
                 var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
@@ -742,13 +850,15 @@ internal sealed partial class RawCaptureIngress :
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,
                     descriptor.Timing.DurableIngressUtc,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, manifest.CaptureGraphRevisionId).ConfigureAwait(false);
                 var envelope = existingEnvelope is null
                     ? CreateRecoveredEnvelope(prepared.Configuration, descriptor)
                     : existingEnvelope with { Configuration = prepared.Configuration };
                 var context = CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
                 await _journal.BindRecoveredLiveExecutionAsync(
-                    entry, context.Json, context.Sha256, prepared.Seed, cancellationToken).ConfigureAwait(false);
+                    entry, context.Json, context.Sha256, prepared.Seed,
+                    manifestFallback: existingEnvelope is null && manifest.CaptureGraphRevisionId is not null,
+                    cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -851,6 +961,13 @@ internal sealed partial class RawCaptureIngress :
         SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "committed-evidence-unavailable");
         _telemetry.RecordFailure("processing", "evidence-unavailable");
         _logger.RawIngressRefused("processing", "evidence-unavailable");
+        RequireReconciliation();
+    }
+
+    /// <summary>Makes the next operation re-initialize, running the raw ingress reconciliation again.</summary>
+    private void RequireReconciliation()
+    {
+        Interlocked.Increment(ref _reconciliationRequests);
         Volatile.Write(ref _initialized, false);
     }
 
@@ -923,6 +1040,10 @@ internal sealed partial class RawCaptureIngress :
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
         var reason = NormalizeLaneReason(result.Reason);
+        // This outcome is what makes the raw pass verify the capture's payload in full. It commits after the handler
+        // reported the evidence, so a pass that report started can have run before it.
+        if (actualOutcome == CaptureLaneHandlerOutcome.TerminalFailure && reason == "evidence-unavailable")
+            RequireReconciliation();
         if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
         {
             _logger.CaptureLaneRetryScheduled(
@@ -1145,18 +1266,18 @@ internal sealed partial class RawCaptureIngress :
             : "handler-failure";
 
     /// <summary>
-    /// The capture maintenance barrier for a deletion or move this initialization makes, or null while it is held.
+    /// The interruption-bearing maintenance entry for a deletion or move this initialization makes, held while capture is paused.
     /// Admission initialization waits for the first raw-ingress initialization, so no pause can be acknowledged before
     /// that one ends, and the durable admission state this journal records decides. A later re-initialization runs
     /// while admission can be paused, so it needs a maintenance lease, which it takes without initializing admission.
     /// </summary>
-    private async ValueTask<IDisposable?> EnterInitializationMaintenanceAsync(CancellationToken cancellationToken)
+    private async ValueTask<Capture.CaptureMaintenanceEntry> EnterInitializationMaintenanceAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _completedInitializations) > 0 && _maintenanceGate is not null)
-            return _maintenanceGate.TryEnterIfInitialized();
+            return _maintenanceGate.EnterIfInitialized();
         return await _journal.HasDurablePauseAsync(cancellationToken).ConfigureAwait(false)
-            ? null
-            : NoLease.Instance;
+            ? new Capture.CaptureMaintenanceEntry(null, Capture.CaptureAdmissionState.Paused)
+            : default;
     }
 
     private Capture.CaptureAdmissionState HeldBy()
@@ -1169,15 +1290,6 @@ internal sealed partial class RawCaptureIngress :
     private void RunDeferredMaintenance()
     {
         if (Volatile.Read(ref _maintenanceDeferred)) Volatile.Write(ref _initialized, false);
-    }
-
-    private sealed class NoLease : IDisposable
-    {
-        public static readonly NoLease Instance = new();
-
-        public void Dispose()
-        {
-        }
     }
 
     public void Dispose()

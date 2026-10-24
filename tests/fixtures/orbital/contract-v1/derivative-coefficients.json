@@ -1,0 +1,1 @@
+{"convention":"gp-tle-field-values-rev-per-day-powers-v1","expectedNddotRadiansPerMinuteCubed":-6.312678139447083E-16,"expectedNdotRadiansPerMinuteSquared":6.0601710138692E-11,"meanMotionDdotGp":-3E-07,"meanMotionDotGp":2E-05,"reference":"python-sgp4 2.27 OMM initializer; unit conversion only, no additional factors 2/6"}

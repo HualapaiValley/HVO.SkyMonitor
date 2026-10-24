@@ -5,6 +5,7 @@
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@attribute [StreamRendering]
 @rendermode InteractiveServer
 
 <PageTitle>@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
@@ -102,6 +103,14 @@
                     }
                 </div>
             </header>
+
+            @if (!IsArchived && (_initialLoading || _refreshDeadlineMessage is not null))
+            {
+                <div class="state-notice sky-refresh-notice" role="status" aria-live="polite">
+                    <strong>Current Sky page refresh</strong>
+                    <span>@(_refreshDeadlineMessage ?? "The current image is still loading. Retrying automatically.")</span>
+                </div>
+            }
 
             <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
                 <div class="sky-image-stage" style="@StageAspectStyle">
@@ -267,15 +276,24 @@
                         <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>measured product not produced</small></span></label>
                     </div>
                     <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay">Edit scene visibility, sizes and constellation style</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=legacy-annotation#legacy-annotation">Edit legacy Annotation styling</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=frame-facts#frame-facts">Edit Frame Facts corner templates</a>
                         @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
                         @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Sky annotations</strong><small>expected / not retained for this capture</small></span></label> }
                         @if (!HasLayer("scene-constellations", "constellations")) { <label><input type="checkbox" disabled /><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>expected / not retained for this capture</small></span></label> }
                         @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }
                     </div>
                     <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay">Edit weather and cloud overlay</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=cloud-layer#cloud-layer">Edit existing cloud layer</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=environment-layer#environment-layer">Edit existing environment layer</a>
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
+                        @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>No compatible prediction retained for this capture</small></span></label>
+                        }
                         @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
                         @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
                         @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }
@@ -386,6 +404,6 @@
 
     private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
     {
-        <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>
+        <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive || layer.Satellite is { Renderable: false })" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind) @SatelliteDescription(layer.Satellite)</small></span></label>
     };
 }

@@ -49,6 +49,11 @@ root. The loader requires a physical, reconstructable v2 manifest and verifies i
 payload before execution. Omitting the setting produces explicit insufficient evidence.
 Same-capture derivatives are rejected through source lineage.
 
+The existing scalar options are editable in CameraAgent's generic graph draft
+panel; see [Cloud assessment options](../runbooks/cloud-assessment-options.md) for
+the exact alias/version, defaults, bounds and explicit activation/rollback flow.
+The retained reference path and provisioning remain opaque and unchanged.
+
 LogicHost designates one reconstructable raw reference per device/rig through
 `PUT /api/v1.0/devices/{devicePublicId}/rigs/{rigId}/clear-reference`. Automatic central
 scheduling creates an assessment only when that designation is usable. Job creation

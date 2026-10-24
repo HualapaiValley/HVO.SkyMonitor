@@ -10,6 +10,8 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal sealed partial class CameraAgentLifecycleManager
 {
+    internal static readonly AsyncLocal<IHostEnvironment?> UpgradeStorageHostOverride = new();
+
     public static Task<LifecycleResult> ExecuteAsync(LifecycleRequest request, CancellationToken cancellationToken)
         => ExecuteAsync(request, new ProcessRunner(), null, null, NativeLinux.getuid(), NativeLinux.getgid(), cancellationToken);
 
@@ -23,6 +25,24 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken,
         TextWriter? output = null,
         TextWriter? error = null)
+    {
+        var result = await ExecuteCoreAsync(request, processRunner, lifecycleClientFactory, ownerClientFactory,
+            uid, gid, output, error, cancellationToken).ConfigureAwait(false);
+        if (result.Plan is null || request.InstanceId is not { } id ||
+            request.Operation is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or
+                LifecycleOperationKind.Uninstall or LifecycleOperationKind.Reinstall or LifecycleOperationKind.Purge)) return result;
+        var paths = InstallationPaths.Create(request.ProductRoot, id, ProductionCatalog.DefaultCatalogId);
+        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        var imageId = request.Operation == LifecycleOperationKind.Rollback ? manifest.PreviousImage!.ImageId : manifest.Image.ImageId;
+        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, imageId,
+            request.Operation, cancellationToken).ConfigureAwait(false);
+        return programs.Count == 0 ? result : result with { Plan = DeploymentPlan.Of([.. result.Plan.Items, .. programs]) };
+    }
+
+    private static async Task<LifecycleResult> ExecuteCoreAsync(
+        LifecycleRequest request, IProcessRunner processRunner,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory, Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        uint uid, uint gid, TextWriter? output, TextWriter? error, CancellationToken cancellationToken)
     {
         request.Validate();
         output ??= Console.Out;
@@ -95,6 +115,14 @@ internal sealed partial class CameraAgentLifecycleManager
             EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"Instance {instanceId:D} records");
         }
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
+        if (request.Operation == LifecycleOperationKind.Rollback && manifest.PreviousImage is { } previous)
+            await PathPrograms.VerifyRollbackAsync(paths, request.ProductionProductRoot, previous.ImageId, cancellationToken).ConfigureAwait(false);
+        if (request.Operation == LifecycleOperationKind.Upgrade && request.Release is not null)
+            _ = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, string.Empty,
+                request.Operation, cancellationToken).ConfigureAwait(false);
+        if (request.Operation is LifecycleOperationKind.Uninstall or LifecycleOperationKind.Purge)
+            _ = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, null, manifest.Image.ImageId,
+                request.Operation, cancellationToken).ConfigureAwait(false);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         var retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
@@ -615,7 +643,7 @@ internal sealed partial class CameraAgentLifecycleManager
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
             await docker.VerifyContainerAsync(
                 compose, paths, manifest.Image, uid, gid, cancellationToken).ConfigureAwait(false);
-            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback);
+            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: false);
         }
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var previousManifestPath = Path.Combine(operationRoot, "previous-instance-manifest.json");
@@ -680,8 +708,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 !await docker.HoldsReleaseImageAsync(signedImage.Image, cancellationToken).ConfigureAwait(false))
             {
                 // A plan imports nothing: a release image Docker does not hold yet is described as it was read and
-                // checked from the release's archive or registry.
-                candidate = checkedImage;
+                // checked from the release's archive or registry, under the ID the upgrade will report (#1384).
+                candidate = await docker.PlannedReleaseImageAsync(signedImage.Image, checkedImage, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -786,6 +815,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate,
                 preflightDatabases?.RawIngressDatabasePath);
         var stateSnapshotRequired = operation.StateSnapshotRequired || retainedSnapshot is not null || declaredChanges.Count > 0;
+        // Archive/headroom admission ran before image preparation. Only a snapshotting operation needs the
+        // database copies and carry journal, and that decision is known only after candidate state preflight.
+        if (!operation.MutationStarted && stateSnapshotRequired)
+            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: true);
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
@@ -1328,7 +1361,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken)
             .ConfigureAwait(false);
         var (observed, unreadable) = CameraAgentStateCounters.ReadReadable(paths.StateRoot);
-        incomplete.AddRange(unreadable.Select(static entry => $"the counters of '{entry.Store}' ({Redaction.SafeDiagnostic(entry.Reason)})"));
+        incomplete.AddRange(unreadable.Select(static entry => $"the counters of '{entry.Store}' ({CameraAgentStateDiagnostics.Reason(entry.Reason)})"));
         if (incomplete.Count > 0)
         {
             await CameraAgentStateSnapshot.ShowRestoreIncompleteAsync(snapshot, string.Join("; ", incomplete), json, error)
@@ -1345,7 +1378,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var carry = CameraAgentStateCounters.PlanCarry(
             floors,
             relative => CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, relative),
-            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-trial"));
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-trial"),
+            target.Databases.Sum(static database => database.Length));
         if (carry.Uncarried.Count > 0)
             await CameraAgentStateSnapshot.ShowRestoreUncarriedAsync(snapshot, carry.Uncarried, json, error).ConfigureAwait(false);
         return (operation, carry);
@@ -1536,6 +1570,8 @@ internal sealed partial class CameraAgentLifecycleManager
             .ConfigureAwait(false);
         var parent = Directory.GetParent(paths.InstanceRoot)?.FullName
             ?? throw new InstallerException("The instance root has no authenticated parent.");
+        await PathPrograms.RetainForPurgeAsync(paths, request.ProductionProductRoot, operation.OperationId,
+            cancellationToken).ConfigureAwait(false);
         var expectedParent = PrivilegedPurgeNamespace.NamespaceRoot(paths.ProductRoot);
         if (parent != expectedParent || new DirectoryInfo(paths.InstanceRoot).LinkTarget is not null)
             throw new InstallerException("The instance root path is not canonical.");
@@ -1617,6 +1653,9 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         await RemoveFromInstallRecordAsync(request, paths, manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+        // Removal is last: after the last installer is gone, a crash must not leave an unfinished data deletion.
+        await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
+            PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
         return new LifecycleResult(
             DeploymentSchemaVersions.LifecycleOperation,
             operation.Kind,
@@ -2031,7 +2070,14 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-        if (operation is not { Kind: LifecycleOperationKind.Purge, Status: not InstallationStatus.Completed, MutationStarted: true } ||
+        var cleanupOnly = operation is
+        {
+            Kind: LifecycleOperationKind.Purge, Status: InstallationStatus.Completed,
+            Phase: LifecycleOperationPhase.Completed, MutationStarted: false
+        } &&
+            File.Exists(PathPrograms.PurgeRecord(paths, operation.OperationId));
+        if (operation is null || operation.Kind != LifecycleOperationKind.Purge ||
+            !cleanupOnly && operation is not { Status: not InstallationStatus.Completed, MutationStarted: true } ||
             operation.InstanceId != request.InstanceId || operation.RequestSha256 != request.ComputeRequestSha256())
             throw new InstallerException("No matching interrupted purge operation exists.");
         if (request.ConfirmRemovedOperationId is { } confirmedOperationId && confirmedOperationId != operation.OperationId)
@@ -2049,6 +2095,19 @@ internal sealed partial class CameraAgentLifecycleManager
         EnsureDaemon(manifest.DockerDaemon, daemon);
         await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
         await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
+        if (cleanupOnly)
+        {
+            if (request.ConfirmRemovedOperationId is not null && evidence.Settlement != PurgeAlreadyAbsentSettlement ||
+                NativeLinux.TryGetNodeIdentity(tombstone) is not null)
+                throw InstallerException.Refused("A completed purge resumes only its retained program cleanup, without adopting another tree.");
+            var cleanup = new LifecycleResult(
+                DeploymentSchemaVersions.LifecycleOperation, operation.Kind, "completed", operation.OperationId,
+                manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
+                daemon, false, false, [paths.CatalogRoot, paths.OperationsRoot], null, DateTimeOffset.UtcNow);
+            await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
+                PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
+            return cleanup;
+        }
         SafeFileSystem.EnsureSafeExistingAncestors(parent);
         bool tombstonePresent;
         using (var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent))
@@ -2089,6 +2148,8 @@ internal sealed partial class CameraAgentLifecycleManager
         EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         await RemoveFromInstallRecordAsync(request, paths, manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+        await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
+            PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
         return new LifecycleResult(
             DeploymentSchemaVersions.LifecycleOperation, operation.Kind, outcome, operation.OperationId,
             manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
@@ -2661,22 +2722,32 @@ internal sealed partial class CameraAgentLifecycleManager
     }
 
     /// <summary>
-    /// Room for the staged image archive and for two copies of the small databases: the operation's snapshot, and the
-    /// temporary copy a restore writes beside each store. Bulk data is never copied, so it is never counted, and the
-    /// check reads only the stores' sizes rather than walking the instance tree.
+    /// Estimated room for the image archive and headroom, plus the operation's snapshot, scratch database,
+    /// concurrent rollback journal and separate restore-copy allowance only when those phases are required.
+    /// Triggers may grow the trial beyond its current-size estimate; every trial checks capacity again while
+    /// keeping space for the restore. Bulk data is never copied or counted.
     /// </summary>
     private static void EnsureUpgradeStorage(
         InstallationPaths paths, string? imageArchive, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile,
-        bool rollback)
+        bool rollback, bool snapshotRequired)
     {
-        var databaseBytes = CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback));
+        var databaseBytes = snapshotRequired
+            ? CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback))
+            : 0;
+        var snapshotBytes = snapshotRequired
+            ? checked(4 * databaseBytes + CameraAgentStateCounters.JournalRecordBytes(databaseBytes))
+            : 0;
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
-        var required = checked(2 * databaseBytes + archiveBytes + 256L * 1024 * 1024);
+        var required = checked(snapshotBytes + archiveBytes + 256L * 1024 * 1024);
         // The snapshot and staged archive land on the filesystem that holds the product root, which need not be '/'.
-        var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
+        var available = UpgradeStorageHostOverride.Value is { } host
+            ? host.MeasureFileSystem(paths.ProductRoot).AvailableBytes
+            : LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)
         {
-            throw new InstallerException("Insufficient free space for the candidate image and the database snapshot.");
+            throw new InstallerException(snapshotRequired
+                ? "Insufficient free space for the candidate image and the database snapshot."
+                : "Insufficient free space for the candidate image and headroom.");
         }
     }
 
@@ -2750,7 +2821,7 @@ internal sealed partial class CameraAgentLifecycleManager
             healthy,
             [paths.ConfigRoot, paths.StateRoot, paths.CatalogRoot],
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
-                ? $"hvo-sky-install cameraagent reinstall --instance-id {manifest.InstanceId:D}"
+                ? $"{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
             DateTimeOffset.UtcNow);
 

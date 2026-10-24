@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Combine two digest-verified single-platform Buildx OCI archives, without a registry."""
+import argparse
+import hashlib
+import io
+import json
+import pathlib
+import re
+import sys
+import tarfile
+import tempfile
+
+INDEX = "application/vnd.oci.image.index.v1+json"
+MANIFESTS = {"application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"}
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def digest_file(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def encoded(value):
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def combine(args):
+    output = pathlib.Path(args.output)
+    require(not output.exists(), f"{output} already exists")
+    with tempfile.TemporaryDirectory(prefix="hvo-combine-") as temporary:
+        work = pathlib.Path(temporary)
+        blobs = {}
+        manifests = []
+        for arch in ("amd64", "arm64"):
+            source = pathlib.Path(getattr(args, arch))
+            expected = getattr(args, arch + "_sha256")
+            require(re.fullmatch(r"[0-9a-f]{64}", expected), f"invalid {arch} archive SHA-256")
+            require(digest_file(source) == expected, f"{arch} archive SHA-256 mismatch")
+            # Never extract paths supplied by the archive. Only regular OCI members are accepted, and every blob is
+            # checked against its content address, including layers. The job outputs above bind the transferred tar.
+            metadata = {}
+            seen = set()
+            with tarfile.open(source, "r:") as archive:
+                for member in archive:
+                    name = member.name.rstrip("/")
+                    require(name not in seen, f"duplicate OCI member: {name}")
+                    seen.add(name)
+                    if member.isdir() and name in ("blobs", "blobs/sha256"):
+                        continue
+                    require(member.isfile(), f"non-regular OCI member: {name}")
+                    stream = archive.extractfile(member)
+                    if name in ("index.json", "oci-layout", "manifest.json"):
+                        require(member.size <= 4 * 1024 * 1024, f"oversized OCI metadata: {name}")
+                        metadata[name] = stream.read()
+                        continue
+                    require(re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name), f"unexpected OCI member: {name}")
+                    destination = work / name.rsplit("/", 1)[1]
+                    checksum = hashlib.sha256()
+                    with destination.open("wb") as target:
+                        while chunk := stream.read(1024 * 1024):
+                            checksum.update(chunk)
+                            target.write(chunk)
+                    require(checksum.hexdigest() == destination.name, f"OCI blob digest mismatch: {name}")
+                    blobs[name] = destination
+            require(json.loads(metadata["oci-layout"]) == {"imageLayoutVersion": "1.0.0"}, "unsupported OCI layout")
+
+            def blob(descriptor):
+                digest = descriptor["digest"]
+                require(re.fullmatch(r"sha256:[0-9a-f]{64}", digest), "invalid OCI blob digest")
+                path = blobs["blobs/sha256/" + digest[7:]]
+                require(path.stat().st_size == descriptor["size"], "OCI blob size mismatch")
+                return path
+
+            def document(descriptor):
+                path = blob(descriptor)
+                require(path.stat().st_size <= 4 * 1024 * 1024, "oversized OCI metadata blob")
+                return json.loads(path.read_bytes())
+
+            entries = json.loads(metadata["index.json"])["manifests"]
+            require(len(entries) == 1 and entries[0]["mediaType"] in MANIFESTS,
+                    f"{arch} archive must hold exactly one platform manifest, with no nested index or attestations")
+            descriptor = entries[0]
+            manifest = document(descriptor)
+            require(manifest["schemaVersion"] == 2, "unsupported image manifest")
+            config = document(manifest["config"])
+            require(config["os"] == "linux" and config["architecture"] == arch, f"incorrect {arch} image platform")
+            for layer in manifest["layers"]:
+                blob(layer)
+            manifests.append({"mediaType": descriptor["mediaType"], "digest": descriptor["digest"],
+                              "size": descriptor["size"], "platform": {"architecture": arch, "os": "linux"}})
+        index = encoded({"schemaVersion": 2, "mediaType": INDEX, "manifests": manifests})
+        digest = hashlib.sha256(index).hexdigest()
+        index_path = work / digest
+        index_path.write_bytes(index)
+        blobs["blobs/sha256/" + digest] = index_path
+        layout = encoded({"schemaVersion": 2, "mediaType": INDEX,
+                          "manifests": [{"mediaType": INDEX, "digest": "sha256:" + digest, "size": len(index)}]})
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Publish the output only after both inputs and all their descriptors have passed verification.
+        with tempfile.TemporaryDirectory(prefix=".hvo-combined-", dir=output.parent) as staging:
+            staged = pathlib.Path(staging) / "image.tar"
+            with tarfile.open(staged, "w") as archive:
+                for name, data in (("oci-layout", encoded({"imageLayoutVersion": "1.0.0"})), ("index.json", layout)):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+                # An unprivileged reader such as skopeo cannot create missing parent directories with the
+                # archive's root ownership, so name them explicitly, as buildx archives do (#1464).
+                for name in ("blobs", "blobs/sha256"):
+                    info = tarfile.TarInfo(name)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    archive.addfile(info)
+                for name, path in sorted(blobs.items()):
+                    info = tarfile.TarInfo(name)
+                    info.size = path.stat().st_size
+                    with path.open("rb") as stream:
+                        archive.addfile(info, stream)
+            staged.rename(output)
+        print("sha256:" + digest)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for option in ("output", "amd64", "amd64-sha256", "arm64", "arm64-sha256"):
+        parser.add_argument("--" + option, required=True)
+    args = parser.parse_args()
+    try:
+        combine(args)
+    except (ValueError, KeyError, TypeError, OSError, tarfile.TarError) as error:
+        print(f"release:combine-images: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

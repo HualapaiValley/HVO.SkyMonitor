@@ -309,6 +309,53 @@ public sealed class LogicalCameraArchiveIntegrationTests
         exactDetail!.Capture.CaptureId.Should().Be(latest.CentralFrameId);
     }
 
+    [TestMethod]
+    public async Task CurrentSky_ServiceAndEndpointsIntersectCredentialScopeMembershipAndRetainedInstallations()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var a = await SeedAsync(services, 2).ConfigureAwait(false);
+        var b = await SeedAsync(services, 1).ConfigureAwait(false);
+        var retained = await AddPreviewAsync(services, a.Frames[0], true).ConfigureAwait(false);
+        var foreign = await AddPreviewAsync(services, b.Frames[0], true).ConfigureAwait(false);
+        var owner = await db.Users.SingleAsync(user => user.Id == a.Owner).ConfigureAwait(false);
+        var key = await services.GetRequiredService<IApiKeyLifecycleService>().CreateAsync(owner.Id, owner.Email!,
+            "current-sky-read", ApiKeyAccessLevel.Read, a.Observatory, DateTimeOffset.UtcNow.AddMinutes(10), CancellationToken.None).ConfigureAwait(false);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Add(ApiKeyAuthenticationOptions.HeaderName, key.PlaintextKey);
+        string Route(Dataset data) => $"/api/v1.0/observatories/{data.Observatory:D}/cameras/{data.Camera:D}";
+        async Task AssertDeniedAsync(string path)
+        {
+            using var response = await client.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+            response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+            (await response.Content.ReadAsStringAsync().ConfigureAwait(false)).Should().NotContain(foreign.ArtifactId.ToString());
+        }
+        using (var selected = await client.GetAsync(new Uri(Route(a) + "/current", UriKind.Relative)).ConfigureAwait(false))
+        {
+            selected.StatusCode.Should().Be(HttpStatusCode.OK);
+            selected.Headers.CacheControl!.NoStore.Should().BeTrue();
+            var result = await selected.Content.ReadFromJsonAsync<CameraCurrentSelection>().ConfigureAwait(false);
+            result!.Capture!.CaptureId.Should().Be(a.Frames[0].Id);
+            result.ArtifactId.Should().Be(retained.ArtifactId);
+            // The latest capture belongs to the retired installation, not its replacement.
+            (await db.LogicalCameraInstallations.SingleAsync(i => i.Id == result.Capture.InstallationId).ConfigureAwait(false))
+                .RetiredAtUtc.Should().NotBeNull();
+        }
+        await AssertDeniedAsync(Route(b) + "/current").ConfigureAwait(false);
+        await AssertDeniedAsync(Route(a) + $"/captures/{b.Frames[0].Id:D}").ConfigureAwait(false);
+        await AssertDeniedAsync($"/api/v1.0/observatories/{a.Observatory:D}/cameras/{b.Camera:D}/current").ConfigureAwait(false);
+        await AssertDeniedAsync($"/api/v1.0/devices/{foreign.DevicePublicId:D}/artifacts/{foreign.ArtifactId:D}/content").ConfigureAwait(false);
+        await db.ObservatoryMemberships.Where(m => m.ObservatoryId == a.Observatory && m.UserId == a.Owner).ExecuteDeleteAsync().ConfigureAwait(false);
+        var service = services.GetRequiredService<ILogicalCameraArchiveReadService>();
+        (await service.SelectCurrentAsync(Principal(a.Owner), a.Observatory, a.Camera, null).ConfigureAwait(false)).Should().BeNull();
+        await AssertDeniedAsync(Route(a) + "/current").ConfigureAwait(false);
+        await AssertDeniedAsync(Route(a) + $"/captures/{a.Frames[0].Id:D}").ConfigureAwait(false);
+        using var anonymous = AssemblyHooks.Fixture.Factory.CreateClient();
+        using var denied = await anonymous.GetAsync(new Uri(Route(a) + "/current", UriKind.Relative)).ConfigureAwait(false);
+        denied.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     internal static ClaimsPrincipal Principal(string owner) => new(new ClaimsIdentity(
         new[] { new Claim(ClaimTypes.NameIdentifier, owner), new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType) }, IdentityConstants.ApplicationScheme));
 
@@ -380,8 +427,9 @@ public sealed class LogicalCameraArchiveIntegrationTests
     }
 
     private static readonly byte[] Preview = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZbkAAAAASUVORK5CYII=");
-    internal static async Task<CentralArtifact> AddPreviewAsync(IServiceProvider services, CentralFrame frame, bool put)
+    internal static async Task<CentralArtifact> AddPreviewAsync(IServiceProvider services, CentralFrame frame, bool put, byte[]? previewBytes = null)
     {
+        var bytes = previewBytes ?? Preview;
         var db = services.GetRequiredService<ApplicationDbContext>();
         var artifact = new CentralArtifact
         {
@@ -392,8 +440,8 @@ public sealed class LogicalCameraArchiveIntegrationTests
             RecipeVersion = "preview-v1",
             ManifestSchemaVersion = "v2",
             MediaType = "image/png",
-            ByteLength = Preview.Length,
-            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(Preview)),
+            ByteLength = bytes.Length,
+            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(bytes)),
             StorageReference = $"object://skymonitor-artifacts/archive-tests/{Guid.NewGuid():N}",
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
@@ -402,14 +450,15 @@ public sealed class LogicalCameraArchiveIntegrationTests
         };
         db.CentralArtifacts.Add(artifact);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        if (put) await PutAsync(services, artifact).ConfigureAwait(false);
+        if (put) await PutAsync(services, artifact, bytes).ConfigureAwait(false);
         return artifact;
     }
     private static string Key(CentralArtifact artifact) => artifact.StorageReference["object://skymonitor-artifacts/".Length..];
-    private static async Task PutAsync(IServiceProvider services, CentralArtifact artifact)
+    private static async Task PutAsync(IServiceProvider services, CentralArtifact artifact, byte[]? previewBytes = null)
     {
-        using var stream = new MemoryStream(Preview);
-        await services.GetRequiredService<IObjectStore>().PutAsync("skymonitor-artifacts", Key(artifact), stream, Preview.Length, "image/png", CancellationToken.None).ConfigureAwait(false);
+        var bytes = previewBytes ?? Preview;
+        using var stream = new MemoryStream(bytes);
+        await services.GetRequiredService<IObjectStore>().PutAsync("skymonitor-artifacts", Key(artifact), stream, bytes.Length, "image/png", CancellationToken.None).ConfigureAwait(false);
     }
     internal sealed record Dataset(string Owner, Guid Observatory, Guid Camera, IReadOnlyList<CentralFrame> Frames);
     private sealed class FaultReader(ICentralArtifactObjectReader inner, Func<Task> fault) : ICentralArtifactObjectReader

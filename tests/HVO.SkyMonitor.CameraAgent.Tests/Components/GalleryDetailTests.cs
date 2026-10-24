@@ -26,7 +26,7 @@ public sealed class GalleryDetailTests
         return module;
     }
 
-    private static CameraAgentCapturePresentation LayeredStages(CameraAgentGalleryCapture capture)
+    internal static CameraAgentCapturePresentation LayeredStages(CameraAgentGalleryCapture capture)
     {
         var stages = new TestOperatorUiService().Project(capture);
         return stages with
@@ -250,6 +250,56 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("script"));
         });
+    }
+
+    [TestMethod]
+    public async Task ArchivedAndLiveViewsKeepSeparateLayerChoices()
+    {
+        const string liveKey = "hvo.currentSky.layerVisibility.v1:/";
+        const string archivedKey = "hvo.archivedCapture.layerVisibility.v1:/";
+        const string toggle = ".sky-layer-controls input[data-layer-target]";
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var archived = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000051"));
+        var service = new TestOperatorUiService
+        {
+            CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
+                CurrentSkyPageTests.WithStructuredBase())),
+            DetailPresentationHandler = LayeredStages,
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(archived)),
+            PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                CurrentSkyPageTests.Layered(id, new string('D', 64),
+                    id == archived.CaptureId ? Guid.Parse("00000000-0000-0000-0000-000000000102") : null)))
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var module = SetupViewerModule(context);
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module.Setup<string?>("readLayerVisibility", call => Equals(call.Arguments[0], liveKey)).SetResult("{\"scene-annotation\":false}");
+        module.Setup<string?>("readLayerVisibility", call => Equals(call.Arguments[0], archivedKey)).SetResult(null);
+        module.SetupVoid("writeLayerVisibility", _ => true).SetVoidResult();
+
+        var live = context.Render<CurrentSkyPage>();
+        var detail = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, archived.CaptureId));
+        live.WaitForAssertion(() => Assert.IsFalse(live.Find(".restore-layers").HasAttribute("disabled")));
+        detail.WaitForAssertion(() => Assert.IsFalse(detail.Find(".restore-layers").HasAttribute("disabled")));
+
+        // The live view's remembered choice does not reach the archived view.
+        Assert.IsFalse(live.Find(toggle).HasAttribute("checked"));
+        Assert.IsTrue(detail.Find(toggle).HasAttribute("checked"));
+        CollectionAssert.AreEquivalent(
+            new object?[] { liveKey, archivedKey },
+            module.Invocations["readLayerVisibility"].Select(static call => call.Arguments[0]).ToArray());
+
+        // An archived choice is kept under its own key, and restoring defaults there clears only that key.
+        await detail.Find(toggle).ChangeAsync(false).ConfigureAwait(false);
+        await detail.Find(".restore-layers").ClickAsync().ConfigureAwait(false);
+
+        detail.WaitForAssertion(() => CollectionAssert.AreEqual(
+            new object?[] { archivedKey, "{\"scene-annotation\":false}", archivedKey, null },
+            module.Invocations["writeLayerVisibility"].SelectMany(static call => call.Arguments).ToArray()));
+        Assert.IsTrue(detail.Find(toggle).HasAttribute("checked"));
+        Assert.IsFalse(live.Find(toggle).HasAttribute("checked"));
     }
 
     [TestMethod]

@@ -4,13 +4,13 @@
   "shards": [
     { "name": "preflight", "proves": "inventory schema, split-host preflight rejection matrix, tampered-registry rejection, production script syntax" },
     { "name": "prepare-images", "proves": "image staging, registry digest binding, isolated and cross-case prepare failures" },
-    { "name": "partial-prepare", "proves": "no-container recovery after a failed prepare, lock and state cleanup" },
+    { "name": "partial-prepare", "proves": "no-container recovery after a failed prepare, lock and state cleanup", "owner": "HVO.SkyMonitor.Deployment.Cli.Tests/PartialPrepareRecoveryTests" },
     { "name": "existing-catalog-up", "proves": "production catalog bundle install, lock blocking, resume failure, fixture transport" },
     { "name": "bootstrap-authority", "proves": "registry publication as the hard barrier for bootstrap, registry-failure recovery" },
     { "name": "bootstrap-credentials", "proves": "credential destination rejection, orphan rejection, incomplete-phase marking" },
     { "name": "smoke", "proves": "hybrid transient smoke over the HTTP boundary" },
     { "name": "measure", "proves": "measure ledger, private-upload registry, strict entry cleanup, runtime-hash staleness" },
-    { "name": "existing-down", "proves": "same-host lifecycle down, remote private artifact absence, Docker context teardown" },
+    { "name": "existing-down", "proves": "same-host lifecycle down, remote private artifact absence, Docker context teardown", "owner": "HVO.SkyMonitor.Deployment.Cli.Tests/ExistingDownTests" },
     { "name": "deploy-services", "proves": "services up, compose rendering, up-phase failpoints" }
   ]
 }

@@ -1,8 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -63,7 +65,8 @@ internal sealed record InstallRecordInstance(
     public const string CameraAgent = "CameraAgent";
 
     /// <summary>Whether the two say the same, whenever each was written.</summary>
-    public bool SameAs(InstallRecordInstance? other) => other is not null && this with { UpdatedUtc = other.UpdatedUtc } == other;
+    public bool SameAs(InstallRecordInstance? other) => other is not null &&
+        this with { UpdatedUtc = other.UpdatedUtc } == other;
 }
 
 /// <summary>How an instance's image last changed.</summary>
@@ -90,7 +93,7 @@ internal enum InstallRecordEvent
 }
 
 /// <summary>One change to the record: an instance's entry set, or an instance removed.</summary>
-internal sealed record InstallRecordChange(InstallRecordInstance? Set, Guid? Remove)
+internal sealed record InstallRecordChange(InstallRecordInstance? Set, Guid? Remove, InstallProgramInstance? Programs = null)
 {
     public static InstallRecordChange Of(InstallRecordInstance entry) => new(entry, null);
 
@@ -148,6 +151,17 @@ internal static partial class InstallRecordStore
     };
 
     /// <summary>
+    /// The record as it is written, for people to read (#1384): without the default HTML-safe escaping, which writes the
+    /// <c>+</c> of every installer version as <c>\u002B</c>. It is the same JSON, read the same way by every installer;
+    /// only control characters, quotes and backslashes are still escaped.
+    /// </summary>
+    private static readonly JsonTypeInfo<InstallRecord> ReadableRecord = (JsonTypeInfo<InstallRecord>)new JsonSerializerOptions(
+        InstallRecordJsonContext.Default.Options)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    }.GetTypeInfo(typeof(InstallRecord));
+
+    /// <summary>
     /// Rebuilds <paramref name="manifest"/>'s entry after <paramref name="kind"/> completed and writes it when it
     /// changed. Returns what happened to the entry: created, changed or unchanged.
     /// </summary>
@@ -163,8 +177,10 @@ internal static partial class InstallRecordStore
         var record = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
         var existing = record?.Instances.FirstOrDefault(instance => instance.InstanceId == manifest.InstanceId);
         var entry = await ProjectAsync(paths, manifest, kind, existing, cancellationToken).ConfigureAwait(false);
+        var programAction = await SettleProgramsAsync(location, new(manifest.InstanceId,
+            await PathPrograms.ProjectAsync(paths, cancellationToken).ConfigureAwait(false)), cancellationToken).ConfigureAwait(false);
         return !await ApplyAsync(location, record, InstallRecordChange.Of(entry), cancellationToken).ConfigureAwait(false)
-            ? DeploymentPlanAction.Unchanged
+            ? programAction
             : existing is null ? DeploymentPlanAction.Create : DeploymentPlanAction.Change;
     }
 
@@ -179,6 +195,7 @@ internal static partial class InstallRecordStore
     {
         ArgumentNullException.ThrowIfNull(location);
         var record = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
+        await SettleProgramsAsync(location, new(instanceId, null), cancellationToken).ConfigureAwait(false);
         return await ApplyAsync(location, record, InstallRecordChange.Removing(instanceId), cancellationToken).ConfigureAwait(false)
             ? DeploymentPlanAction.Remove
             : DeploymentPlanAction.Unchanged;
@@ -433,7 +450,7 @@ internal static partial class InstallRecordStore
         }
         if (location.Trusted is not { } trusted)
         {
-            await SafeFileSystem.WriteJsonAtomicAsync(location.Path, next, InstallRecordJsonContext.Default.InstallRecord, cancellationToken)
+            await SafeFileSystem.WriteJsonAtomicAsync(location.Path, next, ReadableRecord, cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
@@ -446,11 +463,7 @@ internal static partial class InstallRecordStore
         }
         var result = await PrivilegedRunner.RunAsync("sudo", HelperArguments(location.ProductRoot, change), cancellationToken)
             .ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InstallerException(
-                $"The install record '{location.Path}' could not be updated: {Redaction.SafeDiagnostic(result.StandardError)}");
-        }
+        PrivilegedHelperErrors.ThrowIfFailed(result, $"The install record '{location.Path}' could not be updated");
         // The helper re-read the record under the lock, so the entry is read back as this user before it counts.
         var written = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
         var settled = change.Set is { } entry
@@ -477,6 +490,8 @@ internal static partial class InstallRecordStore
                 $"The install record names only the production product root; '{productRoot}' is not the root the host policy resolves.");
         }
         var location = InstallRecordLocation.Machine(policy, productRoot);
+        if (change.Programs is { } programs)
+            return ApplyProgramsTrusted(location, programs);
         var content = HostProductRootPolicy.TryReadTrustedFile(policy, location.Path, MaximumRecordBytes, "Install record");
         var record = content is null ? null : Parse(content, location.Path);
         var next = Apply(record, change, productRoot, InstallerBuildIdentity.Current, DateTimeOffset.UtcNow);
@@ -487,7 +502,7 @@ internal static partial class InstallRecordStore
         HostProductRootPolicy.WriteTrustedFile(
             policy,
             location.Path,
-            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(next, InstallRecordJsonContext.Default.InstallRecord) + "\n"),
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(next, ReadableRecord) + "\n"),
             "The install record");
         return HostPolicyChange.Updated;
     }
@@ -497,7 +512,12 @@ internal static partial class InstallRecordStore
     {
         ArgumentNullException.ThrowIfNull(change);
         List<string> arguments = ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot];
-        if (change.Set is { } entry)
+        if (change.Programs is { } programs)
+        {
+            arguments.Add("--programs");
+            arguments.Add(JsonSerializer.Serialize(programs, CompactOptions.GetTypeInfo(typeof(InstallProgramInstance))));
+        }
+        else if (change.Set is { } entry)
         {
             arguments.Add("--set");
             arguments.Add(JsonSerializer.Serialize(entry, CompactOptions.GetTypeInfo(typeof(InstallRecordInstance))));
@@ -529,12 +549,19 @@ internal static partial class InstallRecordStore
             (productRoot, change) = (args[2], InstallRecordChange.Removing(removed));
             return true;
         }
-        if (args[3] != "--set" || Encoding.UTF8.GetByteCount(args[4]) > MaximumEntryBytes)
+        if (args[3] is not ("--set" or "--programs") || Encoding.UTF8.GetByteCount(args[4]) > MaximumEntryBytes)
         {
             return false;
         }
         try
         {
+            if (args[3] == "--programs")
+            {
+                var programs = JsonSerializer.Deserialize(args[4], InstallRecordJsonContext.Default.InstallProgramInstance);
+                if (ProgramEntryProblem(programs) is not null) return false;
+                (productRoot, change) = (args[2], new(null, null, programs));
+                return true;
+            }
             var entry = (InstallRecordInstance?)JsonSerializer.Deserialize(
                 args[4], CompactOptions.GetTypeInfo(typeof(InstallRecordInstance)));
             if (EntryProblem(entry) is not null)
@@ -565,15 +592,10 @@ internal static partial class InstallRecordStore
             Console.Out.WriteLine(ApplyTrusted(HostPolicyLocation.Production, productRoot, change));
             return 0;
         }
-        catch (InstallerException exception) when (exception.IsRefusal)
-        {
-            Console.Error.WriteLine(exception.Message);
-            return 2;
-        }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(exception.Message);
-            return 1;
+            Console.Error.WriteLine(CameraAgentStateDiagnostics.Message(exception.Message));
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 
@@ -600,4 +622,6 @@ internal static partial class InstallRecordStore
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(InstallRecord))]
 [JsonSerializable(typeof(InstallRecordInstance))]
+[JsonSerializable(typeof(InstallProgramRecord))]
+[JsonSerializable(typeof(InstallProgramInstance))]
 internal sealed partial class InstallRecordJsonContext : JsonSerializerContext;

@@ -15,8 +15,21 @@ same kind of client, and `hvo-sky` follows it where the contract agrees.
 
 `hvo-sky` is one self-contained file, so the machine needs no .NET runtime. Every release and integration pre-release
 carries it for both platforms, as `hvo-sky-linux-arm64` and `hvo-sky-linux-x64` (asset kind `cli`), listed in
-`SHA256SUMS` and attested like every other file ([prereleases.md](prereleases.md)). The installer does not install it
-yet. Install it by hand on the CameraAgent host, or on any Linux machine that can reach the instance:
+`SHA256SUMS` and attested like every other file ([prereleases.md](prereleases.md)). A release-based
+`cameraagent install` or `upgrade` verifies the host platform's file against `release.json` and `SHA256SUMS` and
+installs it as `hvo-sky`, mode `0755`. It tries `~/.local/bin` first, then `/usr/local/bin` only when the runtime user
+can write there without sudo. Include the chosen folder in your shell's PATH; `--plan` lists the exact destination.
+Upgrade replaces a stale copy and keeps it as `hvo-sky.previous`; rollback restores the image's retained verified
+client without downloading it again. Uninstall removes the recorded client and its previous copy when no other
+installed instance uses that path. Purge also removes the installer's last-owner copies. A file changed outside the
+installer is preserved and reported rather than deleted. The same applies before replacing either the current file
+or `.previous`; an unowned recovery copy is never silently overwritten. Destination folders and ancestors must be
+owned by the runtime user or root and must not be group/world writable. Missing commands are repaired by re-running
+the matching release install, even when the instance is already completed. Program summaries live in the separate
+`install-programs.json` sidecar beside `install.json`, keeping older strict install-record readers compatible. Older
+installers do not manage those command files or that sidecar.
+
+For a client-only Linux machine that can reach the instance, install it by hand:
 
 ```bash
 version=0.9.0-dev.4
@@ -54,7 +67,13 @@ hvo-sky logout                                # removes the saved key; the addre
 - The installer binds CameraAgent to `127.0.0.1` by default, over plain HTTP, so `hvo-sky` runs on the CameraAgent host
   or reaches it through an SSH tunnel. Given a plain `http://` address on another machine, every command warns on
   standard error that the key crosses the network unencrypted, and `hvo-sky ui` shows the same warning in its notice
-  band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows.
+  band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows. This machine is its loopback and every
+  address bound to one of its interfaces. A loopback address (`127.0.0.1`, `localhost`, `[::1]`) is always reached
+  directly, never through a proxy, whatever `http_proxy` and `no_proxy` say, so the key never reaches a proxy for it.
+  On the CameraAgent host, its own LAN address, such as `http://192.0.2.10:5130/`, is not warned about when the request
+  goes to it directly, because it never leaves the host. Through a proxy (`http_proxy` and the like) it does leave, so
+  it is warned about unless `no_proxy` names it. A host name is not resolved, so a plain `http://` address given by
+  name is always warned about.
 
 ## Credentials
 
@@ -102,7 +121,7 @@ nothing about CameraAgent's state. A key CameraAgent refuses (HTTP 401 or 403) e
 
 | Command | Key | What it does |
 | --- | --- | --- |
-| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. |
+| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. A line ends `(stale)` when CameraAgent last observed that part more than 5 minutes ago, `(not observed yet)` when it has not observed it, and `(disabled)` when it is switched off. `Capture` is CameraAgent's live pause-or-run state and is never stale. |
 | `info` | Read | `hvo-sky`'s own version, then CameraAgent's version, runtime, start time, catalog, whether it can restart itself, and the key in use and where it came from. |
 | `config show [GROUP]` | Read | The settings by group, from CameraAgent's settings catalogue: each value, where it comes from, and whether it can be changed here. |
 | `config get KEY` | Read | One setting: value, default, source, what it accepts, when a change applies, what it affects, and why it is read-only when it is. `KEY` is the full key, or the part after the group when that is unique. |

@@ -134,8 +134,25 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         Guid captureId,
         Guid artifactId,
         DateTimeOffset acceptedUtc,
-        CancellationToken cancellationToken)
-        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: true, cancellationToken);
+        CancellationToken cancellationToken,
+        string? revisionId = null)
+        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: true, cancellationToken, revisionId);
+
+    internal async ValueTask<ProcessingGraphRevisionSnapshot> SelectLiveRevisionAsync(
+        CameraModuleConfig configuration,
+        bool retainedCapture,
+        CancellationToken cancellationToken,
+        string? revisionId = null)
+    {
+        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
+        var revision = revisionId is null
+            ? await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false)
+            : await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
+        if (revision.State.ValidatedUtc is null)
+            throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
+        EnsureLiveEligible(revision);
+        return revision;
+    }
 
     private async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
         CameraModuleConfig configuration,
@@ -143,10 +160,20 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         Guid artifactId,
         DateTimeOffset acceptedUtc,
         bool retainedCapture,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? revisionId = null)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
-        var revision = await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false);
+        var revision = await SelectLiveRevisionAsync(configuration, retainedCapture, cancellationToken, revisionId).ConfigureAwait(false);
+        return PrepareBoundLiveExecution(configuration, captureId, artifactId, acceptedUtc, revision);
+    }
+
+    internal (ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration) PrepareBoundLiveExecution(
+        CameraModuleConfig configuration,
+        Guid captureId,
+        Guid artifactId,
+        DateTimeOffset acceptedUtc,
+        ProcessingGraphRevisionSnapshot revision)
+    {
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
         var executionId = StableExecutionId(new
         {

@@ -53,7 +53,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedMonoLocalProfileSha256 = "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
     private const string ExpectedMonoDesiredGraphSha256 = "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90";
-    private const string ExpectedMonoEffectiveGraphSha256 = "0057FF63B73D26C31C376646EDD99C4C4BCCED9A7FDAD65849A8B8C45F6910D2";
+    private const string ExpectedMonoEffectiveGraphSha256 = "FF5FA1CD6A6351AF64346027DDA9D630A102F273C7DE20C9050539B6406CA262";
     private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];

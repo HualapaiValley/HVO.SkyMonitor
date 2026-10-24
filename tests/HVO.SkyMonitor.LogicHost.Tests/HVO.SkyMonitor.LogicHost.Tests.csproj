@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <None Include="../fixtures/processing/transient-event-v1.json" Link="Fixtures/transient-event-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/time-lapse-v090/central-request.json" Link="Fixtures/time-lapse-v090/central-request.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="bunit" />
     <PackageReference Include="coverlet.collector">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -7,6 +12,7 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="MSTest" />
   </ItemGroup>
   <ItemGroup>
@@ -28,6 +34,7 @@
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Calibration.cs" Link="Services\HostRecipeContractConformanceTests.Calibration.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Scene.cs" Link="Services\HostRecipeContractConformanceTests.Scene.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Still.cs" Link="Services\HostRecipeContractConformanceTests.Still.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.PreviewOptions.cs" Link="Services\HostRecipeContractConformanceTests.PreviewOptions.cs" />
     <!-- Central and combined host lanes use the canonical analytic/mask/noise Imaging conformance suite. -->
     <Compile Include="..\HVO.SkyMonitor.Imaging.Tests\FocusStarMeasurerTests.cs" Link="Imaging\FocusStarMeasurerTests.cs" />
   </ItemGroup>

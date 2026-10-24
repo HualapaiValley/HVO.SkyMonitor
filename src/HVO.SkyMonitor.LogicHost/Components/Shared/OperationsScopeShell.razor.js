@@ -1,6 +1,7 @@
 const bindings = new WeakMap();
 
 export function attach(root, receiver) {
+    if (!root?.isConnected) return;
     detach(root);
     let pending = false;
     const refresh = async () => {
@@ -26,11 +27,18 @@ export function attach(root, receiver) {
     reconnect?.addEventListener("components-reconnect-state-changed", reconnected);
     root.addEventListener("click", remember);
     root.dataset.scopeInteractive = "true";
-    bindings.set(root, { refresh, reconnected, remember, reconnect });
+    // Blazor can remove the element before .NET disposal can resolve its reference.
+    // Keep the live node here so window listeners cannot retain a removed scope.
+    const observer = new MutationObserver(() => {
+        if (!root.isConnected) detach(root);
+    });
+    bindings.set(root, { refresh, reconnected, remember, reconnect, observer });
+    observer.observe(document.body, { childList: true, subtree: true });
 }
 
 export function restoreFocus(root, requested) {
-    const targets = [history.state?.hvoScopeFocus,
+    const archiveFocus = /^archive-capture-[0-9a-f-]{36}$/i.test(requested || "") ? requested : null;
+    const targets = [archiveFocus, history.state?.hvoScopeFocus,
         requested === "observatories" ? "scope-observatories"
             : requested === "cameras" ? "scope-cameras" : null,
         "scope-heading"];
@@ -49,6 +57,7 @@ export function restoreFocus(root, requested) {
 export function detach(root) {
     const binding = bindings.get(root);
     if (!binding) return;
+    binding.observer.disconnect();
     window.removeEventListener("focus", binding.refresh);
     window.removeEventListener("online", binding.refresh);
     document.removeEventListener("visibilitychange", binding.refresh);

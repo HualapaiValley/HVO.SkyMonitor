@@ -10,6 +10,262 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Edit existing manifest layer enabled flags, optional ordering and constellation opacity in CameraAgent graph drafts, preserving producer defaults and retained revisions until explicit validation and activation. #1628
+
+- Choose existing materializer layer kinds or restore manifest defaults in CameraAgent graph drafts, preserving aliases and producer bindings until explicit validation and activation. #1627
+
+- CameraAgent's graph editor can add, remove and reorder existing projected-scene constellation and solar-system selections and scene-overlay constellation IDs, preserving retained values and unchanged saves; activation remains explicit (#1626).
+
+- Tune native black/white levels and gamma in existing fixed-transfer preview graph drafts, with bounded validation and explicit activation. (#1625)
+
+- Explicitly enabled, sampled background capture graphs can retain measured astrometric assessments and exact source inputs across restart and replay; an authenticated capture endpoint exposes fit quality, residuals, uncertainty and failure states for Current Sky and archive consumers. #1643
+- Configure existing same-gain rolling windows with bounded size, trailing/centered selection and optional age/integration limits in graph drafts, with explicit activation and rollback. #1624
+
+- Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
+
+### Changed
+
+- Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
+
+- Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
+
+- Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621
+
+- Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620
+
+- Edit physical projected-scene magnitude, result limit and constellation endpoint stars in the processing graph editor, then explicitly validate and activate a revision; VirtualSky module settings and retained scenes keep their existing authority. #1619
+
+- The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
+
+- An optional, off-by-default **Time-data refresh** (`timeDataRefresh.enabled` in the web UI and `hvo-sky config`) keeps satellite planning's Earth-orientation and leap-second pair current between releases. The reserved daily `time-data-refresh` automation downloads the files from IERS/USNO over HTTPS at most once a day, checks the providers' SHA-512 and `#h` checksums, parses the pair and adopts it atomically under `state/raw/.time-data/`; any failure keeps the current pair. Without an override, planning uses whichever verified pair (refreshed, its intact retained predecessor, or bundled) covers the planned time and covers later (the bundled pair on a tie), so a refresh never takes away coverage of the current day. The setup panel, the new read-only `GET /api/v1/operations/time-data` and `hvo-sky time-data` show the active source, coverage and expiry, whether any pair covers the current time, the last refresh attempt and the last adoption. (#1474)
+
+- Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. (#1474)
+
+- Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
+
+- Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
+
+- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+
+- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
+
+
+### Fixed
+
+- Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
+
+- Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
+- Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
+- Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
+
+- LogicHost reduces database round trips for derived environmental observations with up to 256 inputs, preserving ordered lineage and atomic rejection of invalid references. (#1558)
+
+- Capture headings in LogicHost Current Sky and camera archive detail now nest coherently for screen-reader navigation, while standalone capture detail retains its page heading. (#1548)
+
+
+- LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
+
+- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
+
+- Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
+
+- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
+
+- Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
+
+- CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
+
+- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
+
+- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
+- `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)
+
+- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
+
+- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
+
+
+### Added
+
+- Explicit post-admission processing can retain measured astrometric solutions with pinned capture/catalog/calibration lineage, fit quality, failure outcomes and uncertainty withhold reasons; applying an accepted mapping is a separate bounded operation. (#1642)
+
+- Explicitly constructed Processing recipes can produce retained satellite predictions for one capture's exact exposure, with pinned source/time/configured geometry, original versus retrospective identities, and truthful unavailable, partial and budget states. Host publication and viewer integration follow separately. (#1640)
+
+- CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
+- CameraAgent graph drafts expose preview recipe labels, output routes, active percentile/asinh controls and JPEG quality, preserving fixed-transfer modes and resize settings through explicit activation and rollback. (#1567)
+
+- CameraAgent graph drafts expose the existing cloud-assessment output route, grid, transmission/support/saturation thresholds and tile mask, with validation and explicit activation or rollback while retaining opaque clear-reference provisioning. (#1565)
+
+- Current Sky links to weather and cloud overlay settings in graph drafts: enablement, artifact/output labels, boundary thickness and label visibility/length, with validation and explicit activation or rollback. (#1564)
+
+- CameraAgent graph drafts expose image-quality routing and enable switches for image quality, capture telemetry and explicitly simulated VirtualSky cloud observations, using the existing validate, activate and rollback flow. (#1563)
+- The scene overlay node panel now edits existing marker/label visibility, sizes and limits, constellation/image-circle visibility, and cardinal visibility/scale through immutable graph drafts, validation, activation and rollback. Current Sky links directly to the panel; legacy and unknown options remain intact. (#1562)
+
+- Edit four independent Frame Facts corner templates, packaged fonts, colours, sizes and missing-fact policies; preview frozen retained facts and explicitly convert legacy presets into a new draft before validation and activation. #1553
+
+- Inspect and clean up a failed split-host prepare with `hvo-sky-install partial-prepare-cleanup`, preserving private evidence, retained schema 7 recovery and resumable cleanup without creating containers. (#1588)
+- Explicitly selected Frame Facts graphs can retain and reproduce four independent corner templates with packaged fonts, colour, size and bold/italic/underline on either host; existing graphs and historical annotations keep their current version and defaults. #1552
+
+- LogicHost camera workspaces now include bounded central execution, job, graph assignment, delivery-fact and event inspection, including explicit truncation of nested event evidence and review/notification history, with authorized recovery, future-job policy and exact-artifact publication controls. (#1241)
+- LogicHost camera workspaces now inspect immutable imported CameraAgent execution evidence, exact input/output lineage and independent receipt and byte observations, with bounded history and comparison to an explicitly selected central execution. (#1240)
+- LogicHost exposes authorized, bounded mappings and exact-artifact reconciliation observations for retained imported execution evidence. (#1554)
+
+- Operators can filter and page a logical camera’s retained archive, open an exact capture across installation replacements, and return to the same page and item with explicit unavailable-content and bounded-trace states. #1536
+
+- CameraAgent’s graph editor offers constellation colour and line thickness controls linked from Current Sky, with immutable draft revisions, validation, activation and rollback. (#1533)
+
+- LogicHost Current Sky shows the latest eligible retained capture for an authorized observatory and logical camera, with bounded search, independent capture/receipt times, and content/access revalidation. (#1535)
+
+- LogicHost camera-scoped operations history under `/api/v1.0/observatories/{observatoryId}/cameras/{cameraId}/`: graph assignments (`processing-graph-assignments?targetHost=`), central executions with a node-paged inspector, jobs by capture with an inspector whose attempts, inputs and outputs page separately, delivery proposals with their stored terminal and latest facts and a fact page, and transient-event associations. Every collection is keyset paged (`take` 1–50, opaque `cursor`), covers retired and replaced installations, requires current membership of the camera's observatory, and rejects a continuation reused for another camera, list or filter. "Staged" appears only as a labelled, timestamp-free derivation: an Accepted proposal that was never activated or whose latest lifecycle fact is a rollback. `GET /api/internal/processing-graphs/revision-summaries` pages the global graph catalog beyond its latest 100 revisions without definition documents. (#1237)
+
+- CameraAgent can opt in to calibrated mixed-gain night stacks with VirtualSky simulation responses: stacks retain their depth across automatic gain steps, use a fixed ×16 reference-gain scale and a 4:1 coefficient bound, and retain byte-exact archived replay. Execution details show frozen frame exclusions, saturation and invalid samples, no-coverage sites and low/high output clipping; physical-camera mixed-gain operation remains unavailable. (#1515)
+
+- CameraAgent's new Space weather page lists active, pending, recent and paged SWPC notices with source freshness, drift and halts, and offers Refresh now, Resume and Acknowledge. Each notice keeps SWPC's own activity apart from the relevance at the site's geomagnetic latitude and its daylight limits; relevance is an HVO SkyMonitor estimate, not a NOAA statement, and cloud is not assessed. The Overview adds a compact summary and attention items, Automations offers guided setup of the refresh schedule, the `spaceWeather` settings switch turns the feature on after a restart, and System health lists Space weather. (#1398)
+
+- CameraAgent can refresh NOAA SWPC space-weather alerts, scales, Kp forecast and 3-day forecast locally. Refresh is
+  off by default. Turn it on with `CameraAgent:SpaceWeather:Enabled` and a reserved `space-weather-refresh` automation
+  definition with a 60 to 120 second tick; per-product cadence, spacing, backoff and halts stay with the provider policy,
+  and no credential is needed. Owners can read status and notices, queue a refresh, resume a halt and acknowledge a
+  notice at `/api/v1/operations/space-weather` (antiforgery or a read-write API key, plus an `Idempotency-Key`). There
+  is a `space-weather` health entry, capped at Degraded, and metrics are on the
+  `HVO.SkyMonitor.CameraAgent.SpaceWeather` meter. The image's `io.hvo.skymonitor.state-contracts` label, and so
+  `release.json`, now declares the `spaceWeather` store (writes 1, reads 1 to 1); installer snapshots exclude it, so
+  provider floors and halts survive a rollback. Operation, recovery and downgrade limits are in
+  `docs/runbooks/space-weather-refresh.md`. (#1398)
+
+- Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
+
+- Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
+
+- Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
+  as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
+  and reinstall hints use the durable installer; uninstall and purge honor shared ownership. Publication refuses
+  unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
+  installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
+
+- Space-weather fact model (#1398 S1).
+- Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
+  bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
+  history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
+  operator actor bound and logs failures without exception text. The Observatory pass area shows the same orbital
+  data notice. (#1392)
+- Local satellite pass planning from verified local snapshots and explicitly pinned time data for the selected observatory and rig, with separate full-pass diagrams and retained predicted capture layers, thin dashed paths and small point markers, explicit data availability and source age, and independent presentation controls. (#1393)
+- Offline tools evaluate causal streak detections across retained virtual-camera sequences and compare every measured candidate with explicitly supplied satellite predictions, while preserving missing context, competing alternatives and unavailable observer or geometry facts. (#530)
+- CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
+  parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
+  with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with
+  `CameraAgent:OrbitalElements:Enabled` and a reserved `orbital-elements-refresh` automation definition (at least two
+  hours apart). It needs and accepts no credentials. At most one request is made per two hours, with no automatic retry
+  and no conditional request. Any non-200 response, a status line outside 100 to 599, or a request whose outcome was
+  never recorded halts refresh until an owner resumes it. Owners can read status, queue a refresh and resume a halt at
+  `/api/v1/operations/orbital-elements` (antiforgery or a read-write API key, plus an `Idempotency-Key`). There is an
+  `orbital-elements` health entry: element freshness comes from the newest element epoch against a 48-hour envelope,
+  and an overdue refresh is reported separately. Metrics are on the `HVO.SkyMonitor.CameraAgent.OrbitalElements`
+  meter. Raw provider bytes are never sent to LogicHost or any other service; local `cameraagent backup` archives
+  include them, so keep those archives owner-only. The image's `io.hvo.skymonitor.state-contracts` label, and so
+  `release.json`, now declares the `orbitalElements` store (writes 1, reads 1 to 1). Installer snapshots exclude it, so
+  the provider floor and halt survive a rollback. Operation, removal, backup, restore and recovery are in
+  `docs/runbooks/orbital-elements-refresh.md`.
+  (#528)
+- Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
+
+### Changed
+
+- Existing-services split-host teardown runs through the typed installer CLI, retaining authenticated drain checks, resumable evidence and private-file cleanup while preserving runtime data and shared services. (#1589)
+
+- CameraAgent configuration reads reuse annual schedule validation within a load when the schedule, rig compatibility inputs and complete effective observer are unchanged, reducing duplicate work while retaining protected-state validation. (#1591)
+
+- Documented explicit rebuilding and validation of saved v12 scene-overlay drafts for the current producer, whose retained outputs identify v13 and suppress unmeasured star labels. (#1541)
+
+- Star labels require an eligible measured stellar association; optional expected-position diagnostics label unmeasured stars explicitly as expected. The opt-in measured-association recipe preserves capture, scene and catalog lineage through durable edge publication and authorized central processing. (#1540)
+
+- A space-weather refresh uses less CPU and memory. Measured on a stress tick with a 1 MiB alerts body, it allocates
+  about 14 MiB instead of 115 MiB and takes about a third of the time. A simulated day of refreshes uses about 40% of
+  the CPU and a sixth of the allocation. The store keeps its schema, stored formats and fingerprints, and still
+  verifies every stored body's checksum on each read. (#1489)
+- Release CameraAgent images trial per-architecture, framework-dependent non-composite ReadyToRun; native release jobs verify application headers, layout and identical hashes from two clean publishes. Developer and advisory image builds retain IL defaults. (#1473)
+
+- Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
+  initialization, and runs on one bounded worker so provider waits and normalization let other automations proceed.
+  Its journal records the real completion; provider floor, halt and single-flight rules remain in force. (#1425)
+
+- Star markers are the original plain grey (`#909090`) circle outline again, without the crosshair inside them; so is
+  the marker of a Sun or Moon too small to outline. Captures already retained keep the markers they were drawn with,
+  and time-lapse frames, which draw no star markers, are unchanged. (#1415)
+- The pre-release and release **Build** jobs may run for 120 minutes (it was 60): the arm64 image is built under
+  emulation, and its publish alone has taken 46 minutes, which cancelled the first `0.9.1` pre-release. (#1410)
+- The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are
+  `0.9.1-dev.<n>`, and a build given no version is `0.9.1-dev`. (#1406)
+- Sky overlays are drawn in their original colours again, instead of the purple and cyan theme that did not read well on
+  the sky image: solid 2 px blue (`#60A0FF`) constellation lines, grey (`#909090`) star markers, white star names,
+  cardinal letters and corner text, a 1 px grey (`#606060`) image circle at full opacity and an orange-red (`#FF4020`)
+  cloud mask. The dark badge behind N, E, S and W and the dark corner-text panel stay, star markers have no crosshair
+  (#1415), and the Current Sky layer swatches match the overlays. Captures already retained keep the overlays they were
+  drawn with, and time-lapse frames are unchanged. (#1383)
+- Before a durable copy is installed, the installer names itself by the full path it runs from, such as
+  `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in its usage and in every command a message tells you to run (a `Resume:`
+  line, the rollback an upgrade names), so the command runs as printed. Each command's `--help` says what the command does
+  and lists only its own options, each described, and `cameraagent --help`, `catalog --help` and `host --help` list
+  that group's commands. An option a command does not take is still a usage error (exit 2). (#1384)
+- Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
+  them, and keeps showing the current capture until then. It changes image at most once per
+  `currentSky.minimumRefreshSeconds` (default 15 seconds, 15 to 3,600), a new operator setting on the Observatory &
+  location page under Operator settings, and then shows the newest complete capture, skipping any in between.
+  Refresh image skips the wait. (#1382)
+
+### Fixed
+
+- Stopping central graph recovery no longer reports an aborted SQL command as a database outage; faults while recovery is running still degrade health. (#1540)
+
+- Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
+
+- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
+
+- Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
+
+- Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
+
+- CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
+  ambiguous matches continue to be rejected. (#1437)
+
+- CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
+  their intended startup binding; listening addresses and ports are unchanged. (#1436)
+
+- While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
+  retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
+  capture still being processed. (#1409)
+- `cameraagent install --plan` and `cameraagent upgrade --plan` name the release's image by the ID the install or
+  upgrade then reports: under Docker's containerd image store, the release's image digest rather than its
+  configuration digest. (#1384)
+- `/etc/hvo-sky/install.json` is written without HTML-safe escaping, so the installer version reads `0.9.0+<commit>`
+  rather than `0.9.0\u002B<commit>`. It is the same JSON, read the same way by earlier installers. (#1384)
+- `hvo-sky` no longer warns of plain HTTP to another machine when the address is one bound to this machine, such as the
+  CameraAgent host's own LAN address, and the request goes to it directly rather than through a proxy. (#1384)
+- `hvo-sky status`, the Operations page and `hvo-sky ui` no longer mark capture `(stale)` five minutes after it was
+  last paused or resumed: capture control is CameraAgent's live state, and is always current. (#1384)
+- Current Sky keeps the overlays an operator turned on or off when a new capture arrives, and the browser remembers
+  them across page loads for each CameraAgent. An archived capture's view keeps its own choices. Restore profile
+  defaults clears the remembered choice of the view it is used in. (#1382)
+
+### Security
+
+- Deployment CLI errors and warnings hide the value after a quoted value that ends in a key, as in `token="password=" VALUE`, a quoted value after a tab behind a nested key, as in `api_key=db_password` then a tab and `"a VALUE"`, the value of a space-separated key whose words are joined by `__`, such as `ObjectStorage__SecretKey VALUE`, and a `SecretKey` value after colour codes. A message holding one of these values now ends with `<redacted>…` at the first of them, or earlier where the previous redaction would hide more on reading the message again as an embedding error does, and the rest of the line is dropped. Other messages are unchanged, and nothing the previous redaction hid or cut off is shown, including where an error embeds a diagnostic beside another reason and is redacted and cut again. Password-file and owner-recovery errors are reworded so redaction no longer hides one of their words. (#1523)
+
+- Deployment CLI errors and warnings hide the values of `SecretKey`, `ObjectStorage__SecretKey`, `SecretAccessKey` and `secret-access-key`. They also hide the whole of a quoted credential value that follows its key after a tab or other whitespace character rather than a plain space, and text joined to a quoted credential value's closing quote. Restore warnings hide the whole value of a claim whose type already reads as redacted, and the `--password-file`/`--generate-password` usage error is shown in full. (#1509)
+
+- Deployment CLI errors and warnings hide additional credential key forms and nested values, redact space-separated compound keys, and escape controls across raw, helper and report output boundaries. (#1499)
+
+- Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
+
+- Deployment CLI diagnostics remove ANSI colour and link codes before redacting, and any other escape or C1 control character after it, so colour or link codes around a key no longer expose its value; keys ending in a credential word, such as `db_password`, `client_secret`, `accessToken` and `x-api-key`, have their whole quoted value redacted; restore messages redact a counter key that reads as a credential; already formatted errors keep their fixed wording; and backup folder refusals redact and escape the archive name and folder they echo. (#1491)
+
+- `hvo-sky` reaches a loopback address (`127.0.0.1`, `localhost`, `[::1]`) directly, never through an HTTP proxy.
+  With `http_proxy` set and no `no_proxy` entry for it, the owner API key went to the proxy unencrypted, without the
+  plain-HTTP warning, and the request reached the proxy's own loopback rather than this machine's CameraAgent. Any
+  other address still uses the proxy as before. (#1404)
+
 ## [0.9.0] - 2026-10-19
 
 ### Added

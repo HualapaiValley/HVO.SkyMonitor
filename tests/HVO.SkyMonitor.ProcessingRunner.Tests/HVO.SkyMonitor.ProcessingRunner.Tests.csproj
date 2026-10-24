@@ -6,6 +6,8 @@
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredAstrometryFixture.cs" Link="MeasuredAstrometryFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredStellarAssociationFixtures.cs" Link="MeasuredStellarAssociationFixtures.cs" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner\HVO.SkyMonitor.ProcessingRunner.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />

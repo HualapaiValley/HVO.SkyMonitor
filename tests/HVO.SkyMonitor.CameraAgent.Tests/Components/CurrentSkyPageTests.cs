@@ -11,6 +11,19 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
+    public void ConstellationSettingsLinkTargetsTheActiveGraphOverlaySection()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var cut = context.Render<CurrentSkyPage>();
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=legacy-annotation#legacy-annotation']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=cloud-layer#cloud-layer']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=environment-layer#environment-layer']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay']"));
+    }
+
+    [TestMethod]
     [DataRow("Available", "35.33°, -113.99° / 1100 m")]
     [DataRow("NotRetained", "Location not retained for this capture")]
     [DataRow("Unavailable", "Historical location unavailable")]
@@ -677,7 +690,7 @@ public sealed partial class CurrentSkyPageTests
 
     private const string CombinedDisplayUrl = "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000104/preview?displayReference=00000000-0000-0000-0000-000000000104";
 
-    private static CameraAgentCurrentImagePresentation WithStructuredBase()
+    internal static CameraAgentCurrentImagePresentation WithStructuredBase()
     {
         var source = OperatorUiTestData.CurrentImage();
         return source with
@@ -1036,7 +1049,7 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task LayerSelectionSurvivesPollingAndResetsForNewCapture()
+    public async Task LayerSelectionSurvivesPollingAndANewCapture()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -1056,12 +1069,13 @@ public sealed partial class CurrentSkyPageTests
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
 
+        // The next capture's layer of the same kind keeps the operator's choice, not the profile default.
         current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".layers-link").GetAttribute("href"));
-            Assert.IsTrue(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
+            Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
         });
     }
 
@@ -1154,7 +1168,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
     }
 
-    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
+    internal static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
         captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('A', 64),
         new string('B', 64), new string('C', 64), 640, 480,
         [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],

@@ -1,0 +1,154 @@
+{
+  "BeforeRevision": "267c8974586a6822f7d39e048d8e3162d0041ad2",
+  "AfterRevision": "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+  "Before": {
+    "RawTrxSha256": "c0530ce5e20dc13dcd8a3f5199e0c7c59e69374ca2faa5136f05359e009d60bd",
+    "Tests": [
+      {
+        "Test": "BoundedLineageMaximumDistinctSourcesStaysBelowSqlParameterLimit",
+        "Outcome": "Failed",
+        "Duration": "00:00:01.6185142",
+        "Error": "Assertion failed. Expected values to be equal.\n\nexpected: 2\nactual:   257\n\nAssert.AreEqual(2, probe.SourceLookups)",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (1)",
+        "Outcome": "Failed",
+        "Duration": "00:00:04.4329252",
+        "Error": "Assertion failed. Expected values to be equal.\nReferenced entities must not enter the ingest graph.\n\nexpected: 1\nactual:   2\n\nAssert.AreEqual(1, db.ChangeTracker.Entries<EnvironmentalObservationRecord>().Count())",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineageProviderRestartReplaysAfterCommittedReceiptLoss",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.7648109",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (256)",
+        "Outcome": "Failed",
+        "Duration": "00:00:01.8915779",
+        "Error": "Assertion failed. Expected values to be equal.\nOwn identity plus one bounded lineage source projection.\n\nexpected: 2\nactual:   257\n\nAssert.AreEqual(2, probe.SourceLookups)",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (128)",
+        "Outcome": "Failed",
+        "Duration": "00:00:02.4187456",
+        "Error": "Assertion failed. Expected values to be equal.\nOwn identity plus one bounded lineage source projection.\n\nexpected: 2\nactual:   129\n\nAssert.AreEqual(2, probe.SourceLookups)",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineageRetentionRaceIsAtomicInEitherLockOrder (False)",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.5821988",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (32)",
+        "Outcome": "Failed",
+        "Duration": "00:00:02.2708981",
+        "Error": "Assertion failed. Expected values to be equal.\nOwn identity plus one bounded lineage source projection.\n\nexpected: 2\nactual:   33\n\nAssert.AreEqual(2, probe.SourceLookups)",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineageSqlDeadlockRollsBackPartialWritesAndFreshContextReplayConverges",
+        "Outcome": "Passed",
+        "Duration": "00:00:05.8861327",
+        "Error": "",
+        "TestContext": "SQL1205 after first EF write batch; zero acknowledged result; complete rollback; new-context replay accepted then duplicate."
+      },
+      {
+        "Test": "BoundedLineageRejectsCrossProductPairsAndMissingOrDuplicateInputsAtomically",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.7825195",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineageRetentionRaceIsAtomicInEitherLockOrder (True)",
+        "Outcome": "Passed",
+        "Duration": "00:00:02.2331225",
+        "Error": "",
+        "TestContext": ""
+      }
+    ]
+  },
+  "After": {
+    "RawTrxSha256": "2b55d59e7133987dee816f0ec48149f5d2e6b8eff863e7b0e0910f3145b5c875",
+    "Tests": [
+      {
+        "Test": "BoundedLineageRejectsCrossProductPairsAndMissingOrDuplicateInputsAtomically",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.5984457",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineageRetentionRaceIsAtomicInEitherLockOrder (False)",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.6739074",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (1)",
+        "Outcome": "Passed",
+        "Duration": "00:00:04.5453735",
+        "Error": "",
+        "TestContext": "refs=1; sources=2; observations=2; max_parameters=45; tracked_observations=1"
+      },
+      {
+        "Test": "BoundedLineageMaximumDistinctSourcesStaysBelowSqlParameterLimit",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.5249811",
+        "Error": "",
+        "TestContext": "256 distinct sources; max_parameters=512; RPC_overhead_allowance=3\nEnvironmentalObservationSources: parameters=300; distinct_values=256; type_size_counts=(NVarChar, 64):300\nEnvironmentalObservations: parameters=512; distinct_values=384; type_size_counts=(UniqueIdentifier, 0):512"
+      },
+      {
+        "Test": "BoundedLineageProviderRestartReplaysAfterCommittedReceiptLoss",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.6587962",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (128)",
+        "Outcome": "Passed",
+        "Duration": "00:00:02.4554889",
+        "Error": "",
+        "TestContext": "refs=128; sources=2; observations=2; max_parameters=256; tracked_observations=1"
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (32)",
+        "Outcome": "Passed",
+        "Duration": "00:00:02.3025091",
+        "Error": "",
+        "TestContext": "refs=32; sources=2; observations=2; max_parameters=138; tracked_observations=1"
+      },
+      {
+        "Test": "BoundedLineageRetentionRaceIsAtomicInEitherLockOrder (True)",
+        "Outcome": "Passed",
+        "Duration": "00:00:02.1707998",
+        "Error": "",
+        "TestContext": ""
+      },
+      {
+        "Test": "BoundedLineagePreservesQualifiedOrdinalsWithoutTrackingInputs (256)",
+        "Outcome": "Passed",
+        "Duration": "00:00:01.7310987",
+        "Error": "",
+        "TestContext": "refs=256; sources=2; observations=2; max_parameters=512; tracked_observations=1"
+      },
+      {
+        "Test": "BoundedLineageSqlDeadlockRollsBackPartialWritesAndFreshContextReplayConverges",
+        "Outcome": "Passed",
+        "Duration": "00:00:05.0421685",
+        "Error": "",
+        "TestContext": "SQL1205 after first EF write batch; zero acknowledged result; complete rollback; new-context replay accepted then duplicate."
+      }
+    ]
+  }
+}

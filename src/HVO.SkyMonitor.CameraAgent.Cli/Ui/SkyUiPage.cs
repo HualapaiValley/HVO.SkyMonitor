@@ -112,8 +112,9 @@ internal abstract class SkyUiPage : View
         }
     }
 
-    /// <summary>A panel's title, with <c>LAST KNOWN</c> when the latest read of what it shows failed.</summary>
-    protected static string Titled<T>(string title, SkyUiReading<T> reading) => reading.IsLastKnown ? $"{title} / LAST KNOWN" : title;
+    /// <summary>A panel's title, with <c>LAST KNOWN</c> when its read failed or the status is no longer live.</summary>
+    protected string Titled<T>(string title, SkyUiReading<T> reading)
+        => reading.IsLastKnown || (reading.HasValue && Ui.Freshness != SkyUiFreshness.Live) ? $"{title} / LAST KNOWN" : title;
 
     /// <summary>What a panel says before its data was read, or after reading it failed with nothing to show.</summary>
     protected static SkyUiField Pending<T>(SkyUiReading<T> reading, string what)
@@ -134,8 +135,5 @@ internal abstract class SkyUiPage : View
     protected bool CanChange => ChangeRefusal is null;
 
     /// <summary>Why a change cannot be sent, when it cannot.</summary>
-    protected string? ChangeRefusal => Ui.Connection is null ? "Sign in first (F5 System)."
-        : Ui.Data.Info.Value?.Caller.Access == "Read" ? "This key is read-only: changes need a ReadWrite key."
-        : Ui.Freshness != SkyUiFreshness.Live ? "Changes need live status: what shows is not current. Ctrl+R reads again."
-        : null;
+    protected string? ChangeRefusal => Ui.ChangeRefusal;
 }

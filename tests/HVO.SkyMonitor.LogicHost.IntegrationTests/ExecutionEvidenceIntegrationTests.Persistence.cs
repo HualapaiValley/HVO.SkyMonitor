@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.SqlClient;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -77,7 +78,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         var appDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         await using var database = new ExecutionEvidenceDatabase(appDb, Options.Create(limits));
         var service = new ExecutionEvidenceService(database, Options.Create(limits), TimeProvider.System,
-            scope.ServiceProvider.GetRequiredService<ExecutionEvidenceTelemetry>());
+            scope.ServiceProvider.GetRequiredService<ExecutionEvidenceTelemetry>(), scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
         async Task<ExecutionEvidenceFeedbackV1> Send(ExecutionEvidenceEnvelopeV1 unit)
             => await service.ReceiveAsync(device.DeviceId, device.DeviceKey, unit.Origin.IdentitySha256,
                 new ReadOnlyMemory<byte>[] { GraphExecutionEvidenceJson.Serialize(unit) }).ConfigureAwait(false);
@@ -178,7 +179,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         var options = Options.Create(new ExecutionEvidenceOptions { SqlTimeoutSeconds = 1 });
         await using var evidenceDatabase = new ExecutionEvidenceDatabase(unavailableContext, options);
         using var telemetry = new ExecutionEvidenceTelemetry();
-        var unavailable = new ExecutionEvidenceService(evidenceDatabase, options, TimeProvider.System, telemetry);
+        var unavailable = new ExecutionEvidenceService(evidenceDatabase, options, TimeProvider.System, telemetry, new EphemeralDataProtectionProvider());
         await Assert.ThrowsExactlyAsync<SqlException>(() => unavailable.ReceiveAsync(device.DeviceId, device.DeviceKey,
             unit.Origin.IdentitySha256, new ReadOnlyMemory<byte>[] { GraphExecutionEvidenceJson.Serialize(unit) })).ConfigureAwait(false);
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();

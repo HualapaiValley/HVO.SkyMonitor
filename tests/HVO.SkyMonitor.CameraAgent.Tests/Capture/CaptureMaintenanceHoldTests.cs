@@ -67,10 +67,18 @@ public sealed class CaptureMaintenanceHoldTests
         using var admission = await root.AdmissionAsync(paused: false).ConfigureAwait(false);
         var entry = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(entry.Held);
+        var interruption = entry.InterruptionToken;
+        using var second = admission.TryEnterMaintenanceIfInitialized();
+        Assert.IsNotNull(second);
+        var secondInterruption = second.InterruptionToken;
+        using var releaseSecond = secondInterruption.Register(second.Dispose);
 
         var pause = admission.PauseAsync("barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(300)).ConfigureAwait(false);
         Assert.IsFalse(pause.IsCompleted);
+        Assert.IsTrue(interruption.IsCancellationRequested);
+        Assert.IsTrue(secondInterruption.IsCancellationRequested);
+        second.Dispose();
         using (var late = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false))
         {
             Assert.IsTrue(late.Held, "A pass was admitted after the pause closed the gate.");
@@ -78,6 +86,32 @@ public sealed class CaptureMaintenanceHoldTests
 
         entry.Dispose();
         Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
+    }
+
+    [TestMethod]
+    public async Task RejectedAndReplayedPauseInterruptOldLeasesButFreshLeasesCanRun()
+    {
+        using var root = new MaintenanceHoldRoot();
+        using var admission = await root.AdmissionAsync(paused: false).ConfigureAwait(false);
+        using var old = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CaptureControlConflictException>(() => admission.PauseAsync(
+            "stale-pause", 999, "test", null, CancellationToken.None)).ConfigureAwait(false);
+        Assert.IsTrue(old.InterruptionToken.IsCancellationRequested);
+        using (var fresh = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false))
+        {
+            Assert.IsFalse(fresh.Held);
+            Assert.IsFalse(fresh.InterruptionToken.IsCancellationRequested);
+        }
+        old.Dispose();
+        await admission.PauseAsync("replay-pause", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await admission.ResumeAsync("replay-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        using var interrupted = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+        var replay = await admission.PauseAsync("replay-pause", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(replay.Replayed);
+        Assert.IsTrue(interrupted.InterruptionToken.IsCancellationRequested);
+        using var next = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(next.Held);
+        Assert.IsFalse(next.InterruptionToken.IsCancellationRequested);
     }
 
     [TestMethod]

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.ProcessingRunner.Contracts;
@@ -43,7 +44,8 @@ public static class ProcessingRunnerProjection
             artifact.SchemaVersion,
             artifact.ContentIdentitySha256,
             artifact.CaptureId,
-            artifact.DescriptorIdentitySha256);
+            artifact.DescriptorIdentitySha256,
+            artifact.RecipeDescriptor);
     }
 
     public static ProcessingArtifact ReconstructArtifact(
@@ -51,6 +53,9 @@ public static class ProcessingRunnerProjection
         ReadOnlyMemory<byte> payload)
     {
         ArgumentNullException.ThrowIfNull(metadata);
+        if (metadata.RecipeDescriptor is { } producer && !ProcessingRunnerProtocol.ChecksumEquals(
+            ProcessingIdentity.CreateRecipeIdentity(producer).IdentitySha256, metadata.RecipeIdentitySha256))
+            throw new ProcessingRunnerProtocolException(ProcessingRunnerReasonCodes.InvalidCompletion, "Input producer descriptor identity mismatch.");
         return new ProcessingArtifact(
             metadata.ArtifactId,
             metadata.Role,
@@ -72,7 +77,8 @@ public static class ProcessingRunnerProjection
             SchemaVersion = metadata.SchemaVersion,
             ContentIdentitySha256 = metadata.ContentIdentitySha256,
             CaptureId = metadata.CaptureId,
-            DescriptorIdentitySha256 = metadata.DescriptorIdentitySha256
+            DescriptorIdentitySha256 = metadata.DescriptorIdentitySha256,
+            RecipeDescriptor = metadata.RecipeDescriptor
         };
     }
 
@@ -108,8 +114,31 @@ public static class ProcessingRunnerProjection
         if (metadata.Kind == ProcessingAuxiliaryInputKind.CanonicalJson)
         {
             var bytes = Encoding.UTF8.GetBytes(metadata.CanonicalJson ?? string.Empty);
-            if (metadata.IdentitySha256 is not null
-                && !ProcessingRunnerProtocol.ChecksumEquals(ProcessingIdentity.ComputePayloadSha256(bytes), metadata.IdentitySha256))
+            var checksum = ProcessingIdentity.ComputePayloadSha256(bytes);
+            var isScene = ProjectedSceneV1.IsSupportedSchemaVersion(metadata.SchemaVersion);
+            var expectedChecksum = metadata.ChecksumSha256 ?? (isScene ? null : metadata.IdentitySha256);
+            if ((isScene && expectedChecksum is null) ||
+                (expectedChecksum is not null && !ProcessingRunnerProtocol.ChecksumEquals(checksum, expectedChecksum)))
+            {
+                throw new ProcessingRunnerProtocolException(
+                    ProcessingRunnerReasonCodes.PayloadChecksumMismatch,
+                    $"Canonical auxiliary input '{metadata.Name}' does not match its declared payload checksum.");
+            }
+            if (isScene)
+            {
+                // Scene parsing validates the identity recomputed with the identity field blanked. It is a
+                // content identity, independent of the checksum of the serialized bytes checked above.
+                var scene = ProjectedSceneJson.Parse(bytes).Scene;
+                if (scene is null || scene.SchemaVersion != metadata.SchemaVersion ||
+                    !ProcessingRunnerProtocol.ChecksumEquals(scene.SceneIdentitySha256, metadata.IdentitySha256))
+                {
+                    throw new ProcessingRunnerProtocolException(
+                        ProcessingReasonCodes.InvalidProjectedScene,
+                        $"Scene auxiliary input '{metadata.Name}' does not match its declared content identity.");
+                }
+            }
+            else if (metadata.IdentitySha256 is not null &&
+                !ProcessingRunnerProtocol.ChecksumEquals(checksum, metadata.IdentitySha256))
             {
                 throw new ProcessingRunnerProtocolException(
                     ProcessingRunnerReasonCodes.PayloadChecksumMismatch,

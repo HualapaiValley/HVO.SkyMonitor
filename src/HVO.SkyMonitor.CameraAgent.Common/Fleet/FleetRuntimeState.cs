@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Fleet.Contracts;
 
@@ -25,18 +26,39 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
         {
             lock (_gate)
             {
-                return new FleetRuntimeSnapshot(
-                    new FleetCaptureSummary(
-                        _captureAvailability,
-                        _captureReason,
-                        _lastSucceededUtc,
-                        _lastFailedUtc,
-                        _lastRecoveredUtc),
-                    _timings.OrderBy(static pair => pair.Key)
-                        .Select(static pair => Summarize(pair.Key, pair.Value))
-                        .ToArray());
+                return Compose();
             }
         }
+    }
+
+    /// <summary>Attempts to capture runtime state without waiting beyond the lock-acquisition timeout.</summary>
+    public bool TrySnapshot(TimeSpan timeout, [NotNullWhen(true)] out FleetRuntimeSnapshot? snapshot)
+    {
+        if (!Monitor.TryEnter(_gate, timeout))
+        {
+            snapshot = null;
+            return false;
+        }
+        try
+        {
+            snapshot = Compose();
+            return true;
+        }
+        finally { Monitor.Exit(_gate); }
+    }
+
+    private FleetRuntimeSnapshot Compose()
+    {
+        return new FleetRuntimeSnapshot(
+            new FleetCaptureSummary(
+                _captureAvailability,
+                _captureReason,
+                _lastSucceededUtc,
+                _lastFailedUtc,
+                _lastRecoveredUtc),
+            _timings.OrderBy(static pair => pair.Key)
+                .Select(static pair => Summarize(pair.Key, pair.Value))
+                .ToArray());
     }
 
     public void ModuleAvailable()

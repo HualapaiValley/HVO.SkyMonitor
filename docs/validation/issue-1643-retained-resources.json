@@ -1,0 +1,769 @@
+{
+  "schema": "issue-1643-resources-v1",
+  "environment": {
+    "framework": ".NET 10.0.13",
+    "architecture": "X64",
+    "ProcessorCount": 12
+  },
+  "bounds": {
+    "rawBytes": 33554432,
+    "readBytes": 46137344,
+    "contextBytes": 2097152,
+    "solutionBytes": 131072,
+    "fitMilliseconds": 20000,
+    "captureStride": 60
+  },
+  "comparisonCeilings": {
+    "producerMilliseconds": 5000,
+    "producerAllocationBytes": 209715200,
+    "readMilliseconds": 500,
+    "readAllocationBytes": 104857600
+  },
+  "limitation": "512-square generated raw, local filesystem and SQLite; process counters include runtime work. No physical/full-resolution/capture-interference qualification.",
+  "rows": [
+    {
+      "enabled": false,
+      "index": 0,
+      "cold": true,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 326.7748,
+        "cpuMilliseconds": 331.548,
+        "allocatedBytes": 30550976,
+        "workingSetBytes": 247402496,
+        "workingSetDeltaBytes": 18333696,
+        "peakWorkingSetBytes": 247402496,
+        "io": {
+          "rchar": 1686764,
+          "wchar": 811578,
+          "syscr": 359,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 4.8398,
+        "cpuMilliseconds": 5.967000000000098,
+        "allocatedBytes": 55472,
+        "workingSetBytes": 247705600,
+        "workingSetDeltaBytes": 303104,
+        "peakWorkingSetBytes": 247705600,
+        "io": {
+          "rchar": 8660,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 1,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 211.4132,
+        "cpuMilliseconds": 289.30999999999995,
+        "allocatedBytes": 27998512,
+        "workingSetBytes": 257298432,
+        "workingSetDeltaBytes": 3092480,
+        "peakWorkingSetBytes": 257298432,
+        "io": {
+          "rchar": 1693109,
+          "wchar": 811578,
+          "syscr": 351,
+          "syscw": 252,
+          "read_bytes": 4096,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.26,
+        "cpuMilliseconds": 0.6759999999999309,
+        "allocatedBytes": 55112,
+        "workingSetBytes": 257298432,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 257298432,
+        "io": {
+          "rchar": 8666,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 2,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 188.4247,
+        "cpuMilliseconds": 176.54700000000003,
+        "allocatedBytes": 27986416,
+        "workingSetBytes": 261206016,
+        "workingSetDeltaBytes": 2629632,
+        "peakWorkingSetBytes": 261206016,
+        "io": {
+          "rchar": 1684489,
+          "wchar": 811578,
+          "syscr": 335,
+          "syscw": 252,
+          "read_bytes": 4096,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.3126,
+        "cpuMilliseconds": 0.7519999999999527,
+        "allocatedBytes": 67496,
+        "workingSetBytes": 261214208,
+        "workingSetDeltaBytes": 8192,
+        "peakWorkingSetBytes": 261214208,
+        "io": {
+          "rchar": 8668,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 3,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 226.8795,
+        "cpuMilliseconds": 326.32199999999966,
+        "allocatedBytes": 27925240,
+        "workingSetBytes": 268156928,
+        "workingSetDeltaBytes": 3362816,
+        "peakWorkingSetBytes": 268156928,
+        "io": {
+          "rchar": 1688805,
+          "wchar": 811578,
+          "syscr": 343,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.2653,
+        "cpuMilliseconds": 0.5720000000001164,
+        "allocatedBytes": 55088,
+        "workingSetBytes": 268156928,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 268156928,
+        "io": {
+          "rchar": 8671,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 4,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 203.7974,
+        "cpuMilliseconds": 236.97500000000036,
+        "allocatedBytes": 27923664,
+        "workingSetBytes": 272371712,
+        "workingSetDeltaBytes": 3452928,
+        "peakWorkingSetBytes": 272371712,
+        "io": {
+          "rchar": 1689883,
+          "wchar": 811578,
+          "syscr": 345,
+          "syscw": 252,
+          "read_bytes": 4096,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.2122,
+        "cpuMilliseconds": 0.4920000000001892,
+        "allocatedBytes": 55544,
+        "workingSetBytes": 272384000,
+        "workingSetDeltaBytes": 12288,
+        "peakWorkingSetBytes": 272384000,
+        "io": {
+          "rchar": 8677,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 5,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 149.7773,
+        "cpuMilliseconds": 225.058,
+        "allocatedBytes": 27893848,
+        "workingSetBytes": 278532096,
+        "workingSetDeltaBytes": 2560000,
+        "peakWorkingSetBytes": 278532096,
+        "io": {
+          "rchar": 1687739,
+          "wchar": 811593,
+          "syscr": 343,
+          "syscw": 254,
+          "read_bytes": 4096,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.1754,
+        "cpuMilliseconds": 0.40500000000065484,
+        "allocatedBytes": 56736,
+        "workingSetBytes": 278564864,
+        "workingSetDeltaBytes": 32768,
+        "peakWorkingSetBytes": 278564864,
+        "io": {
+          "rchar": 9019,
+          "wchar": 0,
+          "syscr": 45,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": true,
+      "index": 0,
+      "cold": true,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1452.8713,
+        "cpuMilliseconds": 2017.6040000000003,
+        "allocatedBytes": 207618256,
+        "workingSetBytes": 317730816,
+        "workingSetDeltaBytes": 38449152,
+        "peakWorkingSetBytes": 317730816,
+        "io": {
+          "rchar": 1861808,
+          "wchar": 1050517,
+          "syscr": 421,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 44.6737,
+        "cpuMilliseconds": 50.99399999999969,
+        "allocatedBytes": 22418976,
+        "workingSetBytes": 323702784,
+        "workingSetDeltaBytes": 5971968,
+        "peakWorkingSetBytes": 323702784,
+        "io": {
+          "rchar": 2473671,
+          "wchar": 0,
+          "syscr": 224,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 1,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 825.4414,
+        "cpuMilliseconds": 1209.7800000000007,
+        "allocatedBytes": 203884072,
+        "workingSetBytes": 373661696,
+        "workingSetDeltaBytes": 38387712,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 1839176,
+          "wchar": 1050517,
+          "syscr": 379,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 43.0806,
+        "cpuMilliseconds": 53.05400000000009,
+        "allocatedBytes": 22185472,
+        "workingSetBytes": 367927296,
+        "workingSetDeltaBytes": -5734400,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 2490920,
+          "wchar": 0,
+          "syscr": 256,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 2,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 832.8205,
+        "cpuMilliseconds": 1147.1449999999986,
+        "allocatedBytes": 203753912,
+        "workingSetBytes": 345362432,
+        "workingSetDeltaBytes": -7348224,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 1890922,
+          "wchar": 1050517,
+          "syscr": 475,
+          "syscw": 306,
+          "read_bytes": 0,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 35.3372,
+        "cpuMilliseconds": 38.246000000001004,
+        "allocatedBytes": 22168264,
+        "workingSetBytes": 350117888,
+        "workingSetDeltaBytes": 4755456,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 2472595,
+          "wchar": 0,
+          "syscr": 222,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 3,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 814.5097,
+        "cpuMilliseconds": 985.3180000000011,
+        "allocatedBytes": 203885256,
+        "workingSetBytes": 336097280,
+        "workingSetDeltaBytes": -13426688,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 1867207,
+          "wchar": 1050517,
+          "syscr": 431,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 26.1967,
+        "cpuMilliseconds": 27.91699999999946,
+        "allocatedBytes": 22169104,
+        "workingSetBytes": 340541440,
+        "workingSetDeltaBytes": 4444160,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 2472595,
+          "wchar": 0,
+          "syscr": 222,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 4,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 810.402,
+        "cpuMilliseconds": 946.6740000000009,
+        "allocatedBytes": 203867008,
+        "workingSetBytes": 352489472,
+        "workingSetDeltaBytes": 196608,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 1874753,
+          "wchar": 1050517,
+          "syscr": 445,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 25.8159,
+        "cpuMilliseconds": 31.381999999999607,
+        "allocatedBytes": 22170496,
+        "workingSetBytes": 352489472,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 2473673,
+          "wchar": 0,
+          "syscr": 224,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 5,
+      "cold": false,
+      "rawDescriptorIdentity": "756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951",
+      "rawPayloadIdentity": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "recipeOptions": {
+        "Solver": {
+          "MinimumFocalScale": 0.9,
+          "MaximumFocalScale": 1.1,
+          "FocalScaleStep": 0.01,
+          "MaximumCatalogMagnitude": 7,
+          "TriangleDetectionCount": 28,
+          "ImageTriangleLimit": 192,
+          "HypothesisLimit": 200000,
+          "CandidateLimit": 32,
+          "ColdBudgetMilliseconds": 15000,
+          "WarmBudgetMilliseconds": 3000,
+          "MaximumWarmAgeSeconds": 600
+        },
+        "Diagnostics": null,
+        "Uncertainty": null,
+        "MaximumExecutionMilliseconds": 20000
+      },
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 839.269,
+        "cpuMilliseconds": 932.7739999999994,
+        "allocatedBytes": 204059568,
+        "workingSetBytes": 358584320,
+        "workingSetDeltaBytes": -606208,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 1879066,
+          "wchar": 1050517,
+          "syscr": 453,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 25.6078,
+        "cpuMilliseconds": 53.655000000000655,
+        "allocatedBytes": 22168168,
+        "workingSetBytes": 358612992,
+        "workingSetDeltaBytes": 28672,
+        "peakWorkingSetBytes": 391028736,
+        "io": {
+          "rchar": 2473675,
+          "wchar": 0,
+          "syscr": 224,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    }
+  ]
+}

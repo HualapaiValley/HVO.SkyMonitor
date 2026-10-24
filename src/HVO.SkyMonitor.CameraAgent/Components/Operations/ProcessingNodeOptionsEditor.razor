@@ -1,0 +1,121 @@
+@using HVO.SkyMonitor.Processing
+
+<div class="node-options">
+    <p class="node-options-help">@Form.Descriptor.Help</p>
+    @foreach (var option in Form.Descriptor.Options)
+    {
+        var inputId = $"{IdPrefix}-{option.Key}";
+        <div class="option-field @(option.Kind == ProcessingOptionKind.RowCollection ? "option-field--rows" : null)">
+            @if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection))
+            {
+                <label for="@inputId">@option.Label @option.Unit</label>
+            }
+            @switch (option.Kind)
+            {
+                case ProcessingOptionKind.RowCollection:
+                    <fieldset id="@inputId" class="collection-editor" aria-describedby="@(inputId + "-help")">
+                        <legend>@option.Label</legend>
+                        <ol>
+                            @for (var itemIndex = 0; itemIndex < Form.Rows(option.Key).Count; itemIndex++)
+                            {
+                                var index = itemIndex;
+                                var row = Form.Rows(option.Key)[index];
+                                var rowId = $"{inputId}-{index}";
+                                <li @key="row">
+                                    <ProcessingNodeOptionsEditor IdPrefix="@rowId" Form="@row" Changed="() => CollectionChangedAsync(() => Form.RowsChanged(option.Key))" />
+                                    <div class="collection-actions">
+                                        <button id="@(rowId + "-up")" type="button" class="btn btn-outline-secondary" disabled="@(index == 0)" aria-label="@($"Move layer override {index + 1} up")" @onclick="() => CollectionChangedAsync(() => Form.MoveRow(option.Key, index, index - 1))">Up</button>
+                                        <button id="@(rowId + "-down")" type="button" class="btn btn-outline-secondary" disabled="@(index == Form.Rows(option.Key).Count - 1)" aria-label="@($"Move layer override {index + 1} down")" @onclick="() => CollectionChangedAsync(() => Form.MoveRow(option.Key, index, index + 1))">Down</button>
+                                        <button id="@(rowId + "-remove")" type="button" class="btn btn-outline-secondary" aria-label="@($"Remove layer override {index + 1}")" @onclick="() => CollectionChangedAsync(() => Form.RemoveRow(option.Key, index))">Remove</button>
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+                        <button id="@(inputId + "-add")" type="button" class="btn btn-outline-secondary" disabled="@(Form.Rows(option.Key).Count >= option.MaximumItems)" @onclick="() => CollectionChangedAsync(() => Form.AddRow(option.Key))">Add layer override</button>
+                        <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" @onclick="() => CollectionChangedAsync(() => Form.ClearRows(option.Key))">@option.ClearCollectionLabel</button>
+                        <p role="status">@(Form.Rows(option.Key).Count == 0 ? option.EmptyCollectionLabel : "Using explicit layer overrides.")</p>
+                        <span role="status">@Form.Rows(option.Key).Count / @option.MaximumItems rows</span>
+                    </fieldset>
+                    break;
+                case ProcessingOptionKind.TextCollection:
+                case ProcessingOptionKind.EnumCollection:
+                case ProcessingOptionKind.ChoiceCollection:
+                    <fieldset id="@inputId" class="collection-editor" aria-describedby="@(inputId + "-help")">
+                        <legend>@option.Label</legend>
+                        <ol>
+                            @for (var itemIndex = 0; itemIndex < Form.Collection(option.Key).Items.Length; itemIndex++)
+                            {
+                                var index = itemIndex;
+                                var itemId = $"{inputId}-{index}";
+                                <li>
+                                    <label for="@itemId">@option.Label item @(index + 1)</label>
+                                    @if (option.Kind is ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+                                    {
+                                        <select id="@itemId" class="form-select" aria-describedby="@(inputId + "-help")" value="@Form.Collection(option.Key).Items[index]" @onchange="args => CollectionChangedAsync(() => Form.SetCollectionItem(option.Key, index, args.Value?.ToString() ?? string.Empty))">
+                                            @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
+                                        </select>
+                                    }
+                                    else
+                                    {
+                                        <input id="@itemId" class="form-control" type="text" aria-describedby="@(inputId + "-help")" value="@Form.Collection(option.Key).Items[index]" @onchange="args => CollectionChangedAsync(() => Form.SetCollectionItem(option.Key, index, args.Value?.ToString() ?? string.Empty))" />
+                                    }
+                                    <div class="collection-actions">
+                                        <button id="@(itemId + "-up")" type="button" class="btn btn-outline-secondary" disabled="@(index == 0)" aria-label="@($"Move {option.Label} item {index + 1} up")" @onclick="() => CollectionChangedAsync(() => Form.MoveCollectionItem(option.Key, index, index - 1))">Up</button>
+                                        <button id="@(itemId + "-down")" type="button" class="btn btn-outline-secondary" disabled="@(index == Form.Collection(option.Key).Items.Length - 1)" aria-label="@($"Move {option.Label} item {index + 1} down")" @onclick="() => CollectionChangedAsync(() => Form.MoveCollectionItem(option.Key, index, index + 1))">Down</button>
+                                        <button id="@(itemId + "-remove")" type="button" class="btn btn-outline-secondary" aria-label="@($"Remove {option.Label} item {index + 1}")" @onclick="() => CollectionChangedAsync(() => Form.RemoveCollectionItem(option.Key, index))">Remove</button>
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+                        <button id="@(inputId + "-add")" type="button" class="btn btn-outline-secondary" disabled="@(Form.Collection(option.Key).Items.Length >= option.MaximumItems)" @onclick="() => CollectionChangedAsync(() => Form.AddCollectionItem(option.Key))">Add @option.Label item</button>
+                        @if (option.ClearCollectionLabel is not null)
+                        {
+                            <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" @onclick="() => CollectionChangedAsync(() => Form.ClearCollection(option.Key))">@option.ClearCollectionLabel</button>
+                            <p role="status">@(Form.Collection(option.Key).Items.IsEmpty ? option.EmptyCollectionLabel : "Using an explicit selection.")</p>
+                        }
+                        <span role="status">@Form.Collection(option.Key).Items.Length / @option.MaximumItems items</span>
+                    </fieldset>
+                    break;
+                case ProcessingOptionKind.Color:
+                    <div class="colour-inputs">
+                        <input type="color" aria-label="@($"{option.Label} picker")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                        <input id="@inputId" class="form-control" type="text" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    </div>
+                    break;
+                case ProcessingOptionKind.Toggle:
+                    <input id="@inputId" type="checkbox" aria-describedby="@(inputId + "-help")" checked="@(option.Key == "enabled" && NodeEnabled.HasValue ? NodeEnabled.Value : Form.Get(option.Key) == bool.TrueString)" @onchange="args => ToggleChangedAsync(option.Key, args.Value is true)" />
+                    break;
+                case ProcessingOptionKind.Choice:
+                case ProcessingOptionKind.Font:
+                    <select id="@inputId" class="form-select" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)">
+                        @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
+                    </select>
+                    break;
+                case ProcessingOptionKind.NullableWholeNumber:
+                case ProcessingOptionKind.NullableRealNumber:
+                    <input id="@inputId" class="form-control" type="text" inputmode="@(option.Kind == ProcessingOptionKind.NullableRealNumber ? "decimal" : "numeric")" aria-describedby="@(inputId + "-help " + inputId + "-status")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" aria-describedby="@(inputId + "-help")" @onclick="() => ChangedAsync(option.Key, string.Empty)">@option.NullActionLabel</button>
+                    <p id="@(inputId + "-status")" role="status">@Form.NullableNumberStatus(option.Key)</p>
+                    break;
+                case ProcessingOptionKind.WholeNumber:
+                case ProcessingOptionKind.RealNumber:
+                case ProcessingOptionKind.Text:
+                    <input id="@inputId" class="form-control" type="text" inputmode="@(option.Kind == ProcessingOptionKind.WholeNumber ? "numeric" : option.Kind == ProcessingOptionKind.RealNumber ? "decimal" : null)" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                    break;
+                default:
+                    <p>This option needs a dedicated editor.</p>
+                    break;
+            }
+            <p id="@(inputId + "-help")">@option.Help @Bounds(option)</p>
+        </div>
+    }
+    @if (Form.Diagnostics.Count > 0)
+    {
+        <ul class="option-errors" role="alert">
+            @foreach (var diagnostic in Form.Diagnostics)
+            {
+                <li data-reason-code="@diagnostic.Code"><code>@diagnostic.Code</code> @diagnostic.Path: @diagnostic.Message</li>
+            }
+        </ul>
+    }
+</div>

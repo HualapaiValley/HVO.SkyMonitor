@@ -8,6 +8,78 @@ that install and `install --dry-run` evaluate. The CameraAgent image comes from 
 published release's files ([Release Install](#release-install)) or from an image
 the operator names, and the catalog from a verified local bundle.
 
+**Running it.** A release-based install puts `hvo-sky-install` in `/usr/local/sbin` for the machine and
+`~/.local/bin` for the runtime user, both mode `0755`. Include `~/.local/bin` in PATH when your shell does not already.
+The first invocation uses the release's `hvo-sky-install-linux-arm64` or `hvo-sky-install-linux-x64`, or
+[`install.sh`](#installsh). Later runs use the installed command:
+
+```bash
+hvo-sky-install status
+hvo-sky-install cameraagent upgrade --instance-id <uuid> --release /path/to/release
+```
+
+Both installed copies come from the release, verified against `release.json` and `SHA256SUMS`. Upgrade keeps the
+replaced copies beside them as `hvo-sky-install.previous`. Once an executable durable copy exists, usage, resume,
+rollback and reinstall hints name its path rather than `install.sh`'s temporary copy. Before one exists, hints name
+the running release installer; a failed initial bootstrap can be repeated with `install.sh` and the same arguments.
+The installer finishes the current operation itself; it does not hand execution to the newly published binary.
+
+Before publishing, the installer requires each destination folder and ancestor to be owned by the installing user or
+root, with no world write permission. Group write is allowed only for the installing user's private group: the folder's
+gid must equal the user's primary gid, its group name must equal the account name, no other supplementary member may
+belong to it, and no other account may use that primary gid. This requires a verified complete source: `/etc/nsswitch.conf`
+must contain exactly one `passwd: files` and one `group: files` entry, with `initgroups` absent or exactly `initgroups: files`.
+Configuration tokens must be ASCII. ASCII whitespace and full-line comments are allowed; comment text after an
+ASCII whitespace prefix and `#` may contain Unicode. Physical LF separates entries (CRLF is accepted); a bare CR
+does not start another entry. Inline `#` suffixes on account-provider entries are refused, because
+[glibc 2.41 scans those suffixes as source tokens](https://github.com/bminor/glibc/blob/glibc-2.41/nss/nss_action_parse.c)
+without first stripping them as comments. The installer reads the complete `/etc/group` and `/etc/passwd` files directly;
+unreadable, malformed or ambiguous configuration or account data refuses group-writable destinations. Additional or
+unknown providers (including `sss`, `systemd` and `compat`), action clauses and duplicate entries are conservatively
+refused: successful `getent` output does not prove that another account was not omitted. In particular,
+[SSSD disables enumeration by default](https://github.com/SSSD/sssd/blob/master/src/man/sssd.conf.5.xml), and
+[systemd can supply additional accounts and memberships](https://www.freedesktop.org/software/systemd/man/257/nss-systemd.html).
+The glibc configuration templates in [Debian 13](https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41-12+deb13u4.debian.tar.xz)
+and [Raspbian trixie](https://archive.raspbian.org/raspbian/pool/main/g/glibc/glibc_2.41-12%2Brpi1%2Bdeb13u2.debian.tar.xz)
+use files-only account sources, but [installing `libnss-systemd` adds a provider](https://packages.debian.org/trixie/libnss-systemd).
+Neither cited packaging archive patches the relevant glibc token/comment parsing; this does not assume every
+downstream build behaves identically. Inline comments and non-ASCII active configuration therefore remain refused
+even where another parser might accept them.
+Every group-writable folder or ancestor under such a mixed-provider configuration remains refused; this does not
+claim all Debian/Pi images are supported. The owner can deliberately remove group write (`chmod g-w <folder>`) from
+each reported folder/ancestor, or use an already trusted destination without group write. Do not disable account
+providers to satisfy this check. Folders without group write do not require account enumeration.
+Each group-writable destination folder and ancestor must also have no extended
+access ACL: present ACL metadata or an inability to confirm its absence is a refusal. Shared groups remain refused.
+Newly created program folders, including `~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe
+private-group folders keep their modes.
+This also checks destinations retained by an earlier install. Unsafe
+folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
+`.previous` must match publication records before replacement. An unowned or externally changed recovery file is
+preserved and reported; move it aside deliberately before retrying. Publication retains an open verified stage and
+checks its device/inode after rename, with recorded old/new intent making interruption recovery repeatable.
+
+Release installs also publish the matching `hvo-sky` runtime client ([hvo-sky.md](hvo-sky.md)). Each instance retains
+verified command files by image ID in `state/deployment/programs/`, with its authoritative `path-programs.json` and
+image-bound program records. Rollback restores those files, retaining the replaced version as `.previous`.
+`--image-ref` installs without release metadata do not install commands. A rollback to an image with no retained
+program set (including an installation from before PATH publication) removes this installer's runtime client and
+keeps the durable maintenance installer; it does not assume an unverified manual copy belongs to the old release.
+The install record projects the commands' paths, versions, SHA-256 and previous SHA-256; it is not their authority.
+Where instances share a command path, the last install, upgrade or rollback publishes that path's version.
+
+A preserved-instance uninstall removes the runtime client when no other installed instance uses it, and keeps the
+installer for `reinstall`. Reinstall republishes the retained client. Purge removes the last owner's installer copies
+and `.previous` files after deleting its instance tree, settling the install record and durably recording completion.
+An interrupted program cleanup resumes from the retained purge evidence with `--resume`.
+Shared paths stay while another instance needs them;
+files whose contents no longer match the recorded checksum are preserved with an actionable failure.
+Admitted test roots map every program destination below `<product-root>/programs/` and never publish to the host's
+real PATH folders. Their admitted product root is the virtual filesystem root for destination trust checks; production
+checks continue through `/`. Each newly created program directory gets an explicit safe mode, independent of umask.
+A completed legacy install re-run publishes missing release programs before settling its records, without restarting
+an otherwise unchanged container.
+
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
 [host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
@@ -31,7 +103,7 @@ runbook describes the installer as it behaves today.
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Upgrade and rollback decide between a swap and a breaking change by comparing `stateContracts` (contract section 6, D1) | `release.json` and the image's `io.hvo.skymonitor.state-contracts` label declare `stateContracts`, but the installer still decides a state migration from the image's state boundary labels ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | Epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318); no issue yet |
+| Upgrade-time checkpoint recovery only, complete DB/file/config/identity/key coverage and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer selects SQLite copies using boundary labels and supports later rollback; neither complete instance protection nor the new admission/decision boundary is qualified ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
 
 ## install.sh
 
@@ -146,7 +218,10 @@ else is a usage error), it is handed to curl as `--url`, never as an option, and
 
 The command surface follows section 5 of the install contract (#1315). Instance
 commands are grouped under `cameraagent`; every command takes `--json` and
-`-h`/`--help`, and `--version` stands alone.
+`-h`/`--help`, and `--version` stands alone. A command's `--help` says what it does and lists only the options it takes,
+each with what it does; an option it does not list is a usage error (exit `2`). A group's `--help`
+(`cameraagent --help`, `catalog --help`, `host --help`), or a group named without a command, lists that group's commands
+with what each does.
 
 ### Exit codes
 
@@ -412,6 +487,15 @@ production product root.
 }
 ```
 
+- PATH program metadata is in the separate `/etc/hvo-sky/install-programs.json` sidecar, with one instance ID and
+  `programs` list per release install: name, path, release version, SHA-256 and previous SHA-256. Admitted test roots keep
+  it beside their own `operations/install.json`. The instance's retained program sets and shared publication registry
+  own those facts; this sidecar projects them and uses the same atomic, fsynced file/directory writes and host-policy
+  trust checks as the machine record. Image-only instances have no program entry.
+- Schema-1 `install.json` retains exactly the released members shown above. Released installers use a strict reader,
+  so adding even an empty `programs` field there would break recovery with an older or `.previous` installer. Older
+  installers can still read and maintain `install.json`; they leave PATH programs and the sidecar untouched. Use the
+  current durable installer when commands must follow an upgrade, rollback or removal.
 - The instance's release records (`image-distribution.json` and
   `image-distribution.records.json` in its deployment state, see
   [Release Install](#release-install)) own its installed version. The install
@@ -551,9 +635,8 @@ A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
 existing ancestor, not on `/`; when the product root and Docker's data root
 share one filesystem their requirements are added together. An upgrade likewise
-measures the staged archive and room for two copies of the small databases (the
-snapshot and a restore's temporary copy) against the product root's own
-filesystem. Bulk capture data is never copied, so it is never counted.
+measures the staged archive, snapshot, temporary database copy, concurrent trial
+rollback journal and a separate restore-copy allowance against the product root's own filesystem when a migration or retained-state restore requires those phases. Pure image swaps budget only for their archive and headroom. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
 so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
@@ -1442,46 +1525,55 @@ backup unit.
 
 #### Repairing the host policy
 
-Every command refuses a policy that does not validate, including
-`host set-product-root`, which validates the existing policy before it writes a
-new one. A recorded `mountPoint` that is no longer a mount, or a hand edit that
-broke the file, therefore needs a privileged repair, which no `hvo-sky-install`
-command performs.
+Use `hvo-sky-install host set-product-root <the same productRoot> --repair` to
+re-record a stale `mountPoint`. The narrow privileged helper takes
+`/run/hvo-sky-host-policy.lock` before it reads the trusted policy, requires
+the requested root to equal its existing `productRoot`, authenticates that
+existing root, and atomically records the mount that currently holds it.
+It never moves the root, creates a missing root, or deletes the policy.
+Normal commands, including the setter without `--repair`, still refuse stale
+mount metadata.
 
-A manual edit of `/etc/hvo-sky/host.json` does **not** take the
-host-policy lock (`/run/hvo-sky-host-policy.lock`) that
-`host set-product-root` and the privileged preparation hold. A command started
-while the file is being changed can therefore resolve a different production
-root, for example create a new instance under `/var/lib/hvo-sky` while
-the policy is briefly absent, and that instance would then block restoring the
-real root. Repair only inside a maintenance window:
+A manual edit of `/etc/hvo-sky/host.json` does **not** take the host-policy
+lock. A command can then resolve a different production root, for example
+create an instance under `/var/lib/hvo-sky` while the policy is absent, and
+block restoring the real root. Do not hand-edit or unlink the policy to bypass
+validation. Process-name checks do not establish quiescence: apphost, `dotnet`
+and privileged helper invocations can have different names. The repair uses
+the same lock as policy changes, privileged preparation and namespace work,
+regardless of invocation form.
 
-1. **Open the window.** Stop or hold every automation that runs
-   `hvo-sky-install`, and run no `hvo-sky-install` command by hand: no
-   `cameraagent install`, `upgrade`, `rollback`, `reinstall`, `uninstall`,
-   `purge`, `reset-state`, `recover-owner`, `preflight`, no `catalog` command, no
-   `host` command, and no `status`, until step 5 is done. Confirm that nothing is
-   running: `pgrep -af hvo-sky-install` must print nothing. Running CameraAgent
-   containers are unaffected and keep running.
-2. **Repair in place, preferring storage over the file.** If the intended
-   filesystem can be mounted, mount it at the recorded `mountPoint`, confirm it
-   with `findmnt -no SOURCE,UUID <mountPoint>`, and change nothing in the file.
-3. **Otherwise edit only the mount field.** Run
-   `sudo editor /etc/hvo-sky/host.json` and either correct `mountPoint`
-   or delete just the `mountPoint` member so the setter records it again. Keep
-   `productRoot` exactly as it was: it is the root the instances live under.
-   Keep the file `root:root 0644`.
-4. **Never delete the file while instances exist under its `productRoot`.**
-   Without the file every command falls back to `/var/lib/hvo-sky`, so the
-   instances under the policy root become unreachable: `status` and every
-   lifecycle command look only in the root in force. Remove `host.json` only when
-   that root is empty, after every instance under it has been uninstalled and
-   purged.
-5. **Re-establish and verify, then close the window.** Run
-   `hvo-sky-install host set-product-root <the same productRoot>`, which validates
-   the repaired policy and records the mount point that currently holds the
-   root, then `hvo-sky-install status`, and confirm that every expected instance ID
-   is listed. Only then resume automation and other `hvo-sky-install` commands.
+1. **Open the window.** Hold automation and avoid starting installer/lifecycle
+   commands until verification is complete. Existing policy critical sections
+   finish before repair acquires the lock; if the lock is busy, retry after the
+   other operation completes. Running CameraAgent containers can keep running
+   during the policy metadata repair.
+2. **Verify the intended storage first.** Prefer mounting the intended filesystem
+   at the recorded `mountPoint` and changing nothing in the policy. Confirm its
+   source and UUID with `findmnt -no SOURCE,UUID <mountPoint>`. If the intended
+   filesystem now legitimately holds the same root through a different mount,
+   inspect `findmnt --target <productRoot> --output TARGET,SOURCE,UUID` before
+   repair. Mount-path validation does not authenticate a filesystem UUID; never
+   bless an empty mount-point directory on the parent filesystem.
+3. **Repair the mount metadata under the lock.** Run
+   `hvo-sky-install host set-product-root <the same productRoot> --repair`
+   (add `--json` for the structured result). Keep `productRoot` exactly as it
+   was. The helper re-reads it under the lock, refuses a different root, and
+   publishes `host.json` as `root:root 0644`. A missing, malformed or untrusted
+   policy, or an absent/unsafe root, is refused without replacing the policy;
+   repair does not guess the root or recover malformed JSON.
+4. **Never delete the policy while any entry exists beneath `cameraagents/` or
+   `logichosts/` in its root**, including tombstones and unrecognized entries.
+   Without the file commands fall back to `/var/lib/hvo-sky` and cannot find
+   the policy-root instances. The repair works in place with existing entries.
+   Remove the policy only when the root is empty after all instances have been
+   uninstalled and purged.
+5. **Verify, then close the window.** Run
+   `hvo-sky-install host set-product-root <the same productRoot>` without
+   `--repair`, then `hvo-sky-install status` and confirm every expected instance
+   ID is listed. Resume automation only after both succeed. If a policy or root
+   cannot be authenticated, stop and diagnose storage/protected backups; do not
+   hand-edit or delete it to force a repair.
 
 The installer records owner-only files beneath the UUID instance root:
 
@@ -1841,6 +1933,31 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
+**Implementation status, #1606 (2026-10-23).** The commands, database snapshot
+rules, post-upgrade rollback and previous-release readability tests documented
+in this section describe the current implementation. The
+[approved SkyMonitor target](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+supersedes their policy: rollback recovers only a pending upgrade's exact
+checkpoint and matching image/config/catalog, before new work is admitted.
+There is no arbitrary downgrade, post-commit grace period or periodic snapshot
+feature in that target. The existing CLI has not changed with this contract PR;
+do not infer that it implements complete instance checkpoints or durable
+protected/unprotected selection. In particular, capture drain alone does not
+prove that every config/identity/provider/maintenance writer is fenced.
+
+`CameraAgentStateSnapshot` currently uses SQLite online backup copies for a
+selected store list, plus checksummed manifests, sidecar-safe restore and durable
+journaling. That is useful delivered recovery machinery, not a filesystem
+snapshot or proof of complete DB/file/config/key coverage. Its existing provider
+store exclusions and best-effort counter carry need explicit reconciliation
+with the target's non-rewindable-fact rules. #1607 qualifies the smallest adequate
+mechanism; keeping SQLite copies is valid. See the
+[implementation/qualification map](../planning/skymonitor-upgrade-recovery.md).
+Existing required tests, including readability/exception guards, remain required
+until a reviewed implementation/policy change replaces their obligation with
+forward-migration and complete checkpoint-recovery evidence. #893 owns CLI
+parity; this change edits none of its implementation files.
+
 Run lifecycle commands, `backup` and `restore` included, as the Docker-capable deployment user, the instance's service
 account, never as root or with `sudo` (see [Backup and restore](#backup-and-restore)).
 Image and catalog transitions authenticate through the lifecycle-control credential
@@ -1991,7 +2108,7 @@ restore reads the whole archive and refuses it (exit `3`) when:
   restore;
 - the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
 - there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
-  database it puts back. A resumed one needs room only for what it has not done: none for staging once the journal
+  database it puts back, with current-size allowances for a carry trial and its rollback journal. A resumed one needs room only for what it has not done: none for staging once the journal
   records the archive staged, and none for the database copies once it records the databases restored.
 
 A `--plan` makes the same checks and writes nothing.
@@ -2066,7 +2183,11 @@ stay where they are (install contract section 6):
    with the SQLite online backup API into `<product-root>/operations/lifecycle/<operation>/state-snapshots/<snapshot>/`,
    and each copy must pass `PRAGMA integrity_check` and match its source's user version, schema and per-table row
    counts. A manifest binds the files by SHA-256, and the journal records the manifest's hash before the candidate
-   may start.
+   may start. The orbital-elements store (`state/raw/.orbital-elements/`) is deliberately never snapshotted, so
+   putting a snapshot back never rewinds its provider floor or halt (install contract section 6). Nor is the
+   calibration-family store (`state/raw/.calibration-families/`): no earlier release opens it, and a snapshot an
+   earlier installer took, which does not list it, must still verify. A full backup archives it with the instance's
+   other files.
 3. The candidate starts and must pass the same health and installation-identity checks as before.
 4. If it fails, the candidate is stopped, the snapshot (if any) is put back, and the previous image starts on the
    restored databases. A write-ahead log or journal the candidate left beside a store is removed first, so it can
@@ -2080,7 +2201,8 @@ from its container path through the writable bind mounts (`/app/data/raw` to `st
 `state/archive`, `/app/App_Data` to `state/identity`). A root outside every persisted mount holds nothing that
 survives the container, so there is nothing to snapshot. A root that is not an absolute, normalized container path
 refuses the upgrade before anything changes. The unit tests compare this inventory by location with the stores the
-CameraAgent actually creates (`CameraAgentStateInventoryTests` and `PreviousReleaseStoreReadabilityTests`).
+CameraAgent actually creates, less the stores the snapshot leaves out: orbital elements, space weather and calibration
+families (`CameraAgentStateInventoryTests` and `PreviousReleaseStoreReadabilityTests`).
 
 **A store under a root named after the snapshot is removed by the restore.** A capture schedule created through the API
 after the snapshot can name a new storage root, and its outbox there has nothing in the snapshot to go back to.
@@ -2245,6 +2367,10 @@ installer plans what each store of the target snapshot receives:
    - the target cannot carry it at all, such as a row the snapshot lacks beyond the lazy-row allowance.
 2. What remains for a store is carried and verified, in one transaction, on a scratch copy of the target store under
    the operation directory. This proves the carry against that store's real CHECK constraints and column types.
+   Before the trial starts, its free-space check includes the scratch database, a current-size rollback journal
+   with page-record overhead, the target snapshot's database-copy allowance, and 256 MiB headroom. The restore
+   allowance is kept while the trial runs. This is a capacity estimate, not a filesystem reservation: triggers can
+   grow the database and other processes can consume space.
 3. A store whose trial fails in any way, or whose own values the installer cannot interpret, is put back without its
    counters. A store not encoded as UTF-8 is one such case. The snapshot's authentication proves its bytes, not that the
    installer can read its values.
@@ -2265,9 +2391,12 @@ and `--resume` restores again. Whatever was not carried is named, with why, on s
 
 ```text
 Warning: the restore of the CameraAgent databases from snapshot <uuid> could not carry the <counter> counter of
-'<store>' (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
+'<store>' with key "<escaped-key>" (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
 snapshot may be handed out again; the restore itself completes.
 ```
+
+Every omitted floor is listed separately, including when a whole store fails. Keys use JSON escaping so control
+characters cannot alter terminal output. The same identities and reasons appear in human and JSON warnings.
 
 The journal keeps the marks themselves, and the plan is made again on every retry, so a mark a retry cannot carry never
 fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger, and the
@@ -2322,7 +2451,7 @@ restored stores, so it cannot overwrite what that image has captured since. `--r
 (below) and then resumes capture instead of retrying. A retry takes a new snapshot. Snapshots are kept with their
 operation and are not deleted automatically.
 
-**Migration rule.** A CameraAgent schema change must stay readable by the previous release for one release: add
+**Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
 SQL image at the location the instance keeps it, for the storage roots the fixture's `manifest.json` names. Each image
@@ -2331,7 +2460,8 @@ validates its own schema exactly, so the test compares the complete schema objec
 compares the rows that record a store's version: the version column of a `*_schema` or `*_metadata` table, and the EF
 migration history. It fails in either of two cases:
 
-- the stores the current code creates differ from the images;
+- the stores the current code creates differ from the images plus the stores the test declares this release adds
+  (`StoresAddedByThisRelease`, emptied when the release pull request regenerates the fixture);
 - the previous release's stores, once the current code has opened and migrated them, differ from the images.
 
 A processing table gaining a column while `capture_processing_schema` stays at 8 fails it. So does a new table, index

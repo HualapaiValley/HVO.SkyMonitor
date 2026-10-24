@@ -38,6 +38,9 @@ internal interface IRawIngressFaultInjector
     void AfterInitializationStateReset() { }
 
     void BeforeOperationsReadinessDecision() { }
+
+    // Reconciliation reads a stored payload's bytes, to verify its checksum, only through the stream this opens.
+    Stream OpenPayloadForVerification(string path) => RawIngressReconciler.OpenPayload(path);
 }
 
 internal interface IRawIngressRecoveryControl

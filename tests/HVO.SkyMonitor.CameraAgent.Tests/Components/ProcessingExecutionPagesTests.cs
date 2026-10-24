@@ -54,6 +54,38 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void MixedGainDiagnosticsShowsExclusionsClippingAndNoMeasurement()
+    {
+        using var context = new BunitContext();
+        var node = new CameraAgentProcessingNodeView("mixed", true, new string('A', 64), "Completed", null,
+            1, Now, Now, [], [], [])
+        {
+            NormalizationPlanIdentitySha256 = new string('B', 64),
+            NormalizationInputs =
+            [
+                new(-3, CaptureId, Guid.NewGuid(), 0, "excluded", "calibration.family.master-missing"),
+                new(-2, CaptureId, Guid.NewGuid(), 121, "excluded", "normalization.coefficient-ratio-exceeded"),
+                new(-1, CaptureId, Guid.NewGuid(), 0, "excluded", "calibration.family.identity-mismatch")
+            ],
+            MixedGainDiagnostics = new(MixedGainDiagnosticsV1.CurrentSchemaVersion,
+                new string('B', 64), new string('C', 64), new string('D', 64), 10, 10, 100, 2, 3, 4,
+                [new(Guid.NewGuid(), 5, 6)], [])
+        };
+        var cut = context.Render<MixedGainDiagnostics>(parameters => parameters.Add(component => component.Node, node));
+        var text = cut.Find("section").TextContent;
+        StringAssert.Contains(text, "Clipped low: 2", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Clipped high: 3", StringComparison.Ordinal);
+        StringAssert.Contains(text, "No measurement: 4 of 100", StringComparison.Ordinal);
+        StringAssert.Contains(text, "does not establish zero flux", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Saturated samples", StringComparison.Ordinal);
+        foreach (var input in node.NormalizationInputs) StringAssert.Contains(text, input.ExclusionReason!, StringComparison.Ordinal);
+        cut.Render(parameters => parameters.Add(component => component.Node, node with
+        { MixedGainDiagnostics = null, MixedGainDiagnosticsUnavailableReason = "Diagnostic evidence is missing or corrupt; counts are unavailable." }));
+        StringAssert.Contains(cut.Markup, "counts are unavailable", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Markup.Contains("Clipped low: 0", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ExecutionsPage_SeparatesLiveAndReplayAndMarksActiveWork()
     {
         using var context = new BunitContext();
@@ -768,6 +800,7 @@ public sealed class ProcessingExecutionPagesTests
         public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }
         public Func<CapturePipelineConfig, OperatorUiResult<CaptureProcessingPlanPreview>>? Preview { get; set; }
+        public Task<OperatorUiResult<CaptureProcessingPlanPreview>>? PendingPreview { get; set; }
         public Func<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason), OperatorUiResult<ProcessingGraphRevisionState>>? Create { get; set; }
         public List<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason)> Created { get; } = [];
         public OperatorUiResult<ProcessingGraphRegistryState>? RegistryFailure { get; set; }
@@ -783,8 +816,9 @@ public sealed class ProcessingExecutionPagesTests
         public ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(string revisionId, CancellationToken cancellationToken)
             => ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
 
-        public ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken)
-            => ValueTask.FromResult(Preview?.Invoke(pipeline) ?? throw new NotSupportedException());
+        public async ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken)
+            => PendingPreview is { } pending ? await pending.ConfigureAwait(false)
+                : Preview?.Invoke(pipeline) ?? throw new NotSupportedException();
 
         public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => RegistryCommand("activate", revisionId, expectedVersion, idempotencyKey, reason);

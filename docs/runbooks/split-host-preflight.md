@@ -351,7 +351,7 @@ Do not use normal `down` when prepare failed and `up` never ran. Inspect the
 retained run first without changing a target:
 
 ```bash
-./scripts/deploy:environment partial-prepare-cleanup \
+hvo-sky-install partial-prepare-cleanup \
   --inventory /absolute/path/inventory.yml \
   --mode persistent \
   --run-id d331-0821171819 \
@@ -359,6 +359,13 @@ retained run first without changing a target:
   --evidence-root /absolute/path/to/d331-0821171819/evidence \
   --dry-run
 ```
+
+This recovery phase is owned by the typed `Deployment.Cli` command. Use the
+matching self-contained installer, or from a source checkout run
+`dotnet run --project src/HVO.SkyMonitor.Deployment.Cli --configuration Release -- partial-prepare-cleanup ...`.
+The old `scripts/deploy:environment partial-prepare-cleanup` spelling delegates to
+that same CLI. Linux, authenticated OpenSSH, Bash/coreutils, jq, and the Docker CLI
+remain required on the control/target boundaries; no container is created.
 
 The command requires the original canonical inventory and retained passed
 preflight plus failed prepare ledger, manifest, and evidence. Their run ID,
@@ -388,7 +395,7 @@ After reviewing that evidence, remove only artifacts proven to have been
 created by the failed run:
 
 ```bash
-./scripts/deploy:environment partial-prepare-cleanup \
+hvo-sky-install partial-prepare-cleanup \
   --inventory /absolute/path/inventory.yml \
   --mode persistent \
   --run-id d331-0821171819 \
@@ -447,6 +454,11 @@ running, the declared control endpoint to be present, and every required
 platform to be supplied by at least one node. This permits a native AMD64/ARM64
 multi-node builder without weakening control-daemon correlation. The selected
 builder is passed to every build and registry inspect.
+Registry distribution requires the `docker-container` driver for CameraAgent's
+timestamp-rewriting image exporter. The unpacking `docker` driver conflicts with
+rewriting on the containerd image store and can silently skip it on the classic
+store; inventory validation rejects it before pushing a registry tag. Archive
+distribution supports both drivers.
 Ambient `DOCKER_CONTEXT` is cleared and the selected/default builder is never
 trusted. The phase does not create, alter, stop, or remove builders. LogicHost is
 built for `linux/amd64`; CameraAgent platforms are the unique `amd64` and/or
@@ -463,9 +475,12 @@ does not read secret values.
 Before a push, the phase durably records `push-intended` with the exact component,
 tag, platform set, revision/tree-bound labels, timestamp, and SDK. If the tag is
 already present, including after an abrupt post-push exit, it is adopted only
-after the canonical parent digest, exact non-attestation platform descriptors and
-child digests, optional well-formed attestation descriptors, and every child
-image config label all match the intent. A mismatched existing tag is never
+after the canonical parent digest, platform set and image config labels all match
+the intent. A plain single-platform OCI or Docker manifest is accepted with its
+platform checked from the config. An index is checked against the exact platform
+descriptors and child digests; attestation-free indexes are accepted, as are
+indexes with optional well-formed attestation descriptors. Every child config
+must match the intended labels. A mismatched existing tag is never
 overwritten. A missing tag is pushed once and subjected to the same checks before
 the intent becomes `built`. Targets pull only the resulting
 `repository@sha256:<parent-manifest>` reference.
@@ -842,7 +857,11 @@ campaign-index envelope; the existing runtime artifact schema remains unchanged.
 
 Manual CI retains the focused historical acceptance inventory contract:
 
+Build the current checkout in Release first. The inventory reads compiled enum
+metadata without executing target assemblies.
+
 ```bash
+dotnet build HVO.SkyMonitor.v9.slnx --configuration Release -warnaserror
 ./scripts/test:phase14-acceptance
 ```
 
@@ -1074,11 +1093,23 @@ without service containers with:
 Preserve all state:
 
 ```bash
-./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \
+hvo-sky-install existing-down --inventory /absolute/path/inventory.yml \
   --mode persistent --run-id observatory-preflight-01 --preserve-state
 ```
 
-Delete a fully isolated, orchestrator-owned stack:
+`existing-down` owns existing-services teardown. Run it from the retained source
+checkout, whose revision and worktree disposition must match the passed preflight.
+It preserves the schema-2 `down-ledger.json`, `down-manifest.json`, `down-commit.json`
+and `down.json` evidence layout, private diagnostics, local run lock, and resumable
+intent/completion semantics. The old `scripts/deploy:environment down` spelling
+forwards existing-services inventories to this command. Its deliberate Docker CLI
+boundary is `scripts/deploy/teardown-context.sh`; endpoint and lifecycle policy are
+in the typed phase. `--delete-state` is refused before target mutation or creation
+of down artifacts. Existing shared services remain running. See the
+[comparison and assertion trace](../validation/existing-down-1589.md).
+
+Delete a fully isolated, orchestrator-owned stack (the deploy-services shell owner
+remains until that later #893 port):
 
 ```bash
 ./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \
