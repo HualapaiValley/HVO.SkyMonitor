@@ -29,78 +29,93 @@ public sealed partial class ArtifactIngestTests
         await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
         using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
-        AstrometricFrameAssessment? prior = null;
-        ArtifactManifestV2? priorRaw = null;
-        byte[]? priorBytes = null;
-        if (scenario != "no-prior")
+        var registrations = new List<Guid> { registrationId };
+        try
         {
-            var priorDeviceId = deviceId;
-            if (scenario == "foreign-device-prior")
+            AstrometricFrameAssessment? prior = null;
+            ArtifactManifestV2? priorRaw = null;
+            byte[]? priorBytes = null;
+            if (scenario != "no-prior")
             {
-                var foreign = await SeedActiveDeviceAsync().ConfigureAwait(false);
-                priorDeviceId = foreign.DeviceId;
-                await SeedRigProfileAsync(foreign.RegistrationId, rig).ConfigureAwait(false);
+                var priorDeviceId = deviceId;
+                if (scenario == "foreign-device-prior")
+                {
+                    var foreign = await SeedActiveDeviceAsync().ConfigureAwait(false);
+                    registrations.Add(foreign.RegistrationId);
+                    priorDeviceId = foreign.DeviceId;
+                    await SeedRigProfileAsync(foreign.RegistrationId, rig).ConfigureAwait(false);
+                }
+                var previous = await CreateNativeAstrometryAsync(priorDeviceId, rig, 1, null).ConfigureAwait(false);
+                priorRaw = previous.Raw;
+                priorBytes = previous.RawBytes;
+                prior = MeasuredAstrometryJson.Parse(previous.Solution.Payload).Assessment;
+                Assert.IsTrue(prior.HasMeasuredMapping, prior.Reason);
             }
-            var previous = await CreateNativeAstrometryAsync(priorDeviceId, rig, 1, null).ConfigureAwait(false);
-            priorRaw = previous.Raw;
-            priorBytes = previous.RawBytes;
-            prior = MeasuredAstrometryJson.Parse(previous.Solution.Payload).Assessment;
-            Assert.IsTrue(prior.HasMeasuredMapping, prior.Reason);
-        }
-        var current = await CreateNativeAstrometryAsync(deviceId, rig, 2, prior).ConfigureAwait(false);
-        using var rawResponse = await PostAsync(client, current.Raw, current.RawBytes).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.Accepted, rawResponse.StatusCode, await rawResponse.Content.ReadAsStringAsync().ConfigureAwait(false));
+            var current = await CreateNativeAstrometryAsync(deviceId, rig, 2, prior).ConfigureAwait(false);
+            using var rawResponse = await PostAsync(client, current.Raw, current.RawBytes).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Accepted, rawResponse.StatusCode, await rawResponse.Content.ReadAsStringAsync().ConfigureAwait(false));
 
-        // Submit descendants before parents. Source facts and rows must be created by real ingest.
-        foreach (var product in new[] { current.Solution, current.Context, current.Measured, current.Scene })
-        {
-            using var response = await PostAsync(client, AstrometryUpload(current.Raw, product), product.Payload.ToArray()).ConfigureAwait(false);
-            Assert.IsTrue(response.StatusCode == HttpStatusCode.Accepted || (int)response.StatusCode == 425,
-                $"{product.SchemaVersion}: {response.StatusCode} {await response.Content.ReadAsStringAsync().ConfigureAwait(false)}");
-        }
-        if (priorRaw is not null)
-        {
-            using var priorResponse = await PostAsync(client, priorRaw, priorBytes!).ConfigureAwait(false);
-            Assert.AreEqual(HttpStatusCode.Accepted, priorResponse.StatusCode);
-        }
-        using var telemetry = new CentralIngestTelemetry();
-        var reconciler = new CentralArtifactReconciliationService(fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
-            TimeProvider.System, telemetry, NullLogger<CentralArtifactReconciliationService>.Instance);
-        // Each pass admits the next source generation without changing stored states in the test.
-        for (var pass = 0; pass < 4; pass++)
-        {
-            await using (var dueScope = fixture.Factory.Services.CreateAsyncScope())
+            // Submit descendants before parents. Source facts and rows must be created by real ingest.
+            foreach (var product in new[] { current.Solution, current.Context, current.Measured, current.Scene })
             {
-                var db = dueScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                await db.CentralArtifacts.Where(a => a.Frame!.RegistrationId == registrationId &&
-                    a.ReconstructionState == CentralReconstructionState.PendingReference)
-                    .ExecuteUpdateAsync(s => s.SetProperty(a => a.ReferenceRetryAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+                using var response = await PostAsync(client, AstrometryUpload(current.Raw, product), product.Payload.ToArray()).ConfigureAwait(false);
+                Assert.IsTrue(response.StatusCode == HttpStatusCode.Accepted || (int)response.StatusCode == 425,
+                    $"{product.SchemaVersion}: {response.StatusCode} {await response.Content.ReadAsStringAsync().ConfigureAwait(false)}");
             }
-            _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        using var owner = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
-        foreach (var product in new[] { current.Context, current.Solution })
-        {
-            await using var scope = fixture.Factory.Services.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var artifact = await db.CentralArtifacts.Include(a => a.Sources).ThenInclude(s => s.ResolvedArtifact)
-                .SingleAsync(a => a.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256)).ConfigureAwait(false);
-            Assert.AreEqual(CentralArtifactObjectState.Available, artifact.ObjectState);
-            if (scenario == "foreign-device-prior")
+            if (priorRaw is not null)
             {
-                Assert.AreEqual(CentralReconstructionState.PendingReference, artifact.ReconstructionState);
-                if (product == current.Context)
-                    Assert.IsNull(artifact.Sources.Single(s => s.Ordinal == 3).ResolvedCentralArtifactId,
-                        "A foreign device's raw cannot authenticate a prior slot.");
-                continue;
+                using var priorResponse = await PostAsync(client, priorRaw, priorBytes!).ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.Accepted, priorResponse.StatusCode);
             }
-            Assert.AreEqual(CentralReconstructionState.Complete, artifact.ReconstructionState, artifact.StateReasonCode);
-            Assert.IsTrue(artifact.Sources.All(s => s.ResolvedCentralArtifactId.HasValue));
-            if (product == current.Context && priorRaw is not null)
-                Assert.AreNotEqual(artifact.CentralFrameId, artifact.Sources.Single(s => s.Ordinal == 3).ResolvedArtifact!.CentralFrameId);
-            using var retrieved = await owner.GetAsync(new Uri($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content", UriKind.Relative)).ConfigureAwait(false);
-            Assert.AreEqual(HttpStatusCode.OK, retrieved.StatusCode);
-            CollectionAssert.AreEqual(product.Payload.ToArray(), await retrieved.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            using var telemetry = new CentralIngestTelemetry();
+            var reconciler = new CentralArtifactReconciliationService(fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                TimeProvider.System, telemetry, NullLogger<CentralArtifactReconciliationService>.Instance);
+            // Each pass admits the next source generation without changing stored states in the test.
+            for (var pass = 0; pass < 4; pass++)
+            {
+                await using (var dueScope = fixture.Factory.Services.CreateAsyncScope())
+                {
+                    var db = dueScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    await db.CentralArtifacts.Where(a => a.Frame!.RegistrationId == registrationId &&
+                        a.ReconstructionState == CentralReconstructionState.PendingReference)
+                        .ExecuteUpdateAsync(s => s.SetProperty(a => a.ReferenceRetryAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+                }
+                _ = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            using var owner = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+            foreach (var product in new[] { current.Context, current.Solution })
+            {
+                await using var scope = fixture.Factory.Services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var artifact = await db.CentralArtifacts.Include(a => a.Sources).ThenInclude(s => s.ResolvedArtifact)
+                    .SingleAsync(a => a.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256)).ConfigureAwait(false);
+                Assert.AreEqual(CentralArtifactObjectState.Available, artifact.ObjectState);
+                if (scenario == "foreign-device-prior")
+                {
+                    Assert.AreEqual(CentralReconstructionState.PendingReference, artifact.ReconstructionState);
+                    if (product == current.Context)
+                        Assert.IsNull(artifact.Sources.Single(s => s.Ordinal == 3).ResolvedCentralArtifactId,
+                            "A foreign device's raw cannot authenticate a prior slot.");
+                    continue;
+                }
+                Assert.AreEqual(CentralReconstructionState.Complete, artifact.ReconstructionState, artifact.StateReasonCode);
+                Assert.IsTrue(artifact.Sources.All(s => s.ResolvedCentralArtifactId.HasValue));
+                if (product == current.Context && priorRaw is not null)
+                    Assert.AreNotEqual(artifact.CentralFrameId, artifact.Sources.Single(s => s.Ordinal == 3).ResolvedArtifact!.CentralFrameId);
+                using var retrieved = await owner.GetAsync(new Uri($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content", UriKind.Relative)).ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, retrieved.StatusCode);
+                CollectionAssert.AreEqual(product.Payload.ToArray(), await retrieved.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            // Raw ingest schedules background work. Leave only this fixture's jobs terminal
+            // so subsequent tests using the shared global worker queue cannot claim them.
+            await using var cleanupScope = fixture.Factory.Services.CreateAsyncScope();
+            var db = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralDerivativeJobs.Where(j => registrations.Contains(j.SourceArtifact!.Frame!.RegistrationId))
+                .ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(j => j.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
         }
     }
 

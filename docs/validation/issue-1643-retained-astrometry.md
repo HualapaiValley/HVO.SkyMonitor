@@ -49,18 +49,18 @@ SDK 10.0.402, .NET 10.0.13, Linux x64, 12 logical processors, Release and
 concurrency one. The identical #1642 seeded 512-square Mono16 raw, 560 catalog
 rows, one-second exposure, recipe/solver settings, live stride and durable
 SQLite/file pipeline are used. No prior is supplied: every enabled operation
-still performs the same **cold numerical solve**. The first operation per arm
-is reported as process-cold, followed by five process-warm operations. Fixture
-generation/admission precede timing. The baseline still executes raw, scene and
+still performs the same **cold numerical solve**. Both arms share one test
+process; index 0 of each arm is tagged `cold`, followed by five measured
+warm-process operations. Fixture generation/admission precede timing. The baseline still executes raw, scene and
 measured associations without astrometry. Sample p95 is the largest of five.
 
 | Phase | Baseline median / sample p95 ms | Enabled median / sample p95 ms | Baseline / enabled CPU median ms | Baseline / enabled allocated bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Producer plus persistence | 200.80 / 238.00 | 854.82 / 1015.01 | 253.20 / 993.95 | 27,991,296 / 203,871,496 |
-| Authenticated read | 0.258 / 0.347 | 34.22 / 47.09 | 0.692 / 57.81 | 56,064 / 22,176,328 |
+| Producer plus persistence | 203.80 / 226.88 | 825.44 / 839.27 | 236.98 / 985.32 | 27,925,240 / 203,884,072 |
+| Authenticated read | 0.260 / 0.313 | 26.20 / 43.08 | 0.572 / 38.25 | 55,544 / 22,169,104 |
 
 The four enforced warm-process median ceilings now pass: producer allocation
-**203,871,496 bytes (194.43 MiB) <= 200 MiB**, producer latency <= 5,000 ms,
+**203,884,072 bytes (194.44 MiB) <= 200 MiB**, producer latency <= 5,000 ms,
 read allocation <= 100 MiB and read latency <= 500 ms. The harness also requires
 an accepted assessment and the original semantic solution identity on every
 enabled iteration. It writes the JSON before asserting resource ceilings.
@@ -82,11 +82,11 @@ replaces the existing algorithm. Three direct equivalence tests compare scalar
 ordering/nearest selection and incremental ranking with their former stable
 LINQ operations, including ties and neighboring floating-point values.
 
-Median sampled producer RSS is 268,267,520 bytes baseline and 356,655,104 enabled;
-median producer RSS deltas are 2,777,088 and 11,927,552 bytes. The enabled process
-peak counter reaches 394,158,080 bytes. Median producer logical read/write bytes
-are 1,688,089/811,578 baseline and 1,854,376/1,050,517 enabled; storage writes are
-831,488 and 1,085,440 bytes. Enabled read adds 2,473,682 logical bytes and no
+Median sampled producer RSS is 268,156,928 bytes baseline and 352,489,472 enabled;
+median producer RSS deltas are 3,092,480 and -606,208 bytes. The enabled process
+peak counter reaches 391,028,736 bytes. Median producer logical read/write bytes
+are 1,688,805/811,578 baseline and 1,874,753/1,050,517 enabled; storage writes are
+831,488 and 1,085,440 bytes. Enabled read adds 2,473,673 logical bytes and no
 writes or physical read bytes at the median. Durable roots remain 2,067,940 and
 2,306,879 bytes. Counters are process-wide phase deltas; RSS is sampled working
 set, not an isolated live-heap peak. These results do not claim lower peak RSS.
@@ -103,8 +103,25 @@ The compact accepted solution remains 18,306 bytes with semantic SHA-256
 `959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9`.
 Catalog rows, scene and calibration remain separate referenced inputs. Numerical
 residuals, membership and honest covariance/clock withhold reasons remain the
-shared recipe's evidence. Raw/descriptor, producer/input and output identities
+shared recipe's evidence. The same accepted assessment retains 82 fitting
+inliers and 24 verification stars, with fitting RMS
+0.006889433368410621 pixels and verification RMS 0.008375508244848805 pixels.
+Centroid covariance remains withheld (`centroid-covariance-missing`), and quality
+is explicitly not a calibrated probability. Raw/descriptor, producer/input and output identities
 are compared across the retained before/after durable trees.
+
+The admitted raw capture is `00000000-0000-0000-0000-000000000001`, raw artifact
+`00000000-0000-0000-0000-000000000002`, descriptor identity
+`756C70F6FC8AB950805A06F48A768696E42115A4AB012DC3933FC2BEA7C98951`, and raw payload
+identity `37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D`.
+The unchanged astrometry producer identity is
+`E4A523192A75CC766A8853207EB7B059838BE4BA47A23C6CB1B5D50461114B6E`;
+measured producer identity is
+`989F6E4B14A79B9FB5C682E9D63E9C3BA11DA50B1300717087E3D8F67DEB1AF8`.
+The retained solution artifact is `30bbbdfc-f758-8417-b9ed-500c92d5769b`.
+All 96 raw/descriptor/product/manifest files across twelve roots compare
+byte-for-byte with the failed-before run; SQLite runtime files are excluded
+from that byte identity comparison.
 
 ## Reproduction and local evidence
 
@@ -128,6 +145,24 @@ Release. Focused selectors are:
 - Processing: `FullyQualifiedName~MeasuredAstrometry&TestCategory=Unit`.
 - Resource method: `FullyQualifiedName~RetainedAstrometry_ResourceEvidence`,
   with `HVO_ISSUE1643_EVIDENCE_ROOT` set to a fresh `hvo scratch` directory.
+
+After the Release build, the exact resource invocation is:
+
+```bash
+resource_dir="$(hvo scratch HVO.SkyMonitor 1643 resources)"
+flock -o /tmp/hvo-heavy-gate.lock timeout 1200 env \
+  -u HVO_PRODUCTION_CATALOG_BUNDLE \
+  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 \
+  HVO_ISSUE1643_EVIDENCE_ROOT="$resource_dir" \
+  dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release --no-build --no-restore \
+  -nodeReuse:false -p:UseSharedCompilation=false \
+  --filter 'FullyQualifiedName~RetainedAstrometry_ResourceEvidence'
+```
+
+Leave TMPDIR/TMP/TEMP unchanged. Central regressions use the real Docker
+endpoint; the Manual resource harness uses only local SQLite/filesystem state.
 
 Per-project inventories add 6 CameraAgent Unit, 11 CameraAgent Integration,
 1 CameraAgent Manual, 11 LogicHost Unit and 6 ProcessingRunner Unit cases.
@@ -222,7 +257,9 @@ All four blocking findings have executable failed-before evidence in
   earlier capture remained `PendingReference / lineage.source-not-found`.
   After correction all three cases pass; context/solution source rows come from
   actual ingest and reconciliation, reach Complete when authorized, and read
-  back exact payloads through the owner-authenticated central endpoint.
+  back exact payloads through the owner-authenticated central endpoint. The test
+  only clears retry timestamps to make pending work due; it never assigns
+  resolution IDs or object/reconstruction-state outcomes.
 - F3: five rows of
   `RetainedAstrometry_InvalidReadEvidenceReturnsUnavailableAndCancellationPropagates`
   failed with InvalidDataException before its catch-filter correction; the
@@ -239,3 +276,78 @@ coverage provenance and any residual blockers are recorded in the correction
 scratch handoff. Pending gates are not claimed passed here. The unchanged
 ReleaseTool prerequisite coverage failure documented above remains separate
 from corrected runtime/resource acceptance; no coverage floor was changed.
+
+The broader central selection exposed a fixture interaction after the new native
+capture cases: `MultipartIngestV2_PersistsReconstructableFactsAndBindsHistoricalRig`
+claimed an unrelated `annotation` job while expecting `image-quality`. The same
+failure reproduced with only the three new cases plus that existing method
+(`central-queue-isolation-before`, 3 passes / 1 failure). Cleanup now terminalizes
+only background jobs belonging to registrations created by the new fixture,
+after its assertions, including the foreign-prior registration. No artifact
+resolution or reconstruction result is assigned by cleanup. The four-case
+replacement passes 4/4; affected Debug/Release builds remain warning-clean.
+The original 150-case failure and both minimal reproducer runs are preserved.
+
+## Final correction candidate evidence
+
+Executable candidate `a7bbf22fde38ea438ae8135474643fc5bd014942`, plus the
+fixture-only queue cleanup above, has these completed local results:
+
+- Both `scripts/ci:classify` ranges (reviewed `41639131` to candidate, and target
+  `6a1e13bd` to candidate) select `mode=full complete=false`, shared,
+  CameraAgent, LogicHost, combined and delivery; deployment/catalog/shards/
+  installer/secret-scan-contract/release-script flags are false. The protected
+  target profile is Development v1, not full qualification.
+- Whole-solution Debug and Release builds pass with zero warnings/errors.
+  Whole-solution formatting verification, all four CI-control guards,
+  operations-doc audit, complete category discovery and coverage-policy checks
+  pass. The later test-only cleanup has its own warning-clean Debug/Release
+  project builds and formatting verification.
+- Seven full affected Unit projects pass: Astronomy 798, Catalog.Sqlite 296,
+  Processing 1,044, CameraAgent 7,379 plus one platform skip, LogicHost 979 plus
+  one provider skip, ProcessingRunner 35, and combined 89. Fresh evidence is
+  **10,620 passes, zero failures, two skips**. With the retained unaffected
+  selections, composed Unit evidence is **14,217 passes, zero failures and
+  124 skips**, matching discovery of 14,341. The 122 other skips require the
+  absent production catalog. This is composed evidence, not a fresh whole-head
+  solution Unit run.
+- All 17 retained-capture Integration cases pass with coverage, including the
+  six reader regressions. The corrected real-Docker central ingestion,
+  retrieval, derivative/runner and reconstruction selection passes **150/150**.
+  Its initial 149/150 result and the minimal 3/4 -> 4/4 queue-isolation evidence
+  remain retained; the successful 150/150 rerun replaces that failed gate.
+- The enforced Manual resource harness passes on the built candidate with the
+  final JSON above: 203,884,072 producer bytes, 825.44 ms producer median,
+  22,169,104 read bytes and 26.20 ms read median. Exact raw/descriptor,
+  producer/options, product bytes, sidecars and output identities are unchanged.
+
+Canonical coverage uses the same closed 23 slots: six fresh canonical full-Unit
+reports and 17 preserved restricted reports, with fresh affected Integration
+coverage merged into the corresponding CameraAgent/LogicHost slots. The runner
+report remains outside the canonical rollup, as the existing policy requires.
+No stale shifted line mappings are retained for changed code. Preserved coverage
+is restricted to byte-identical files, plus the byte-identical, same-line prefix
+of `CentralArtifactReconciliationService.cs` before `ResolveReferencesAsync`
+(line 2051). Old coverage from that changed method onward is discarded; changed
+regions use current reports. Prefix SHA, source heads, removed classes, source
+mappings, raw report hashes and merge commands are recorded per slot in
+`canonical-reports.json`. The first whole-file-discard experiment, which lost
+unchanged recovery-method coverage, is preserved separately.
+
+The conservative composed aggregate is **88.8573% line / 75.0995% branch**.
+Shared, CameraAgent, LogicHost and combined floors pass. **Canonical and Delivery
+remain failed** solely at unchanged ReleaseTool coverage: 63/155 lines and
+31/88 branches. The source, package/SDK pins and all six coverage baselines are
+byte-identical to reviewed head and target. No catalog was supplied and no floor
+was weakened. This remains a merge blocker, not a green qualification result.
+
+Unchanged prior package/tool restore, package audit, other Integration,
+architecture/publish and migration evidence remains retained in the earlier
+candidate/sync/owner roots. Publishing and migration behavior did not change;
+those outputs were not regenerated for this correction. Complete local commands,
+TRX, failed-before/passed-after logs, resource roots, attribution source,
+identity proofs, source-mapping policy and current results are in
+`/tmp/hvo-skymonitor-1643-corrections.CRiHbJ/handoff.txt` and `summary.json`.
+The parent owns the single push, independent deep correction review, fresh
+protected CI and remaining lifecycle. This editor performed no push, GitHub
+mutation, claim/release, review dispatch or finalization.
