@@ -7,8 +7,10 @@ qualification or scientific acceptance is included.
 
 ## Qualification state
 
-**VALID 0.** The current campaign has not run. This preparation record must not
-be interpreted as a performance verdict or a supported operating envelope.
+**VALID 0.** Both current full campaigns stopped at their quietness gates, after
+trial 2 and trial 1 respectively. No complete comparison, performance verdict or
+supported operating envelope has been established. The separate operational
+fitting run passed.
 
 The original execution11 remains incomplete: ten source trials had quiet checks
 and individual validators return zero, but the finite work deadline stopped the
@@ -120,6 +122,139 @@ case IDs were recovered; derived inventories do not recreate missing original
 hashes. New packet seals and original historical seals must stay distinct.
 
 ## Evidence and next gate
+
+The Tier C candidate gate passed on
+`dab7422b7d2a2db9bd7ffec1f085a78891072918`. Its selector was
+`scripts/ci:classify pull_request f57dfc1b dab7422b`, returning `mode=full`,
+`complete=true`, all component lanes and catalog/deployment/shards selected,
+with installer unselected. Tool/solution restore, warning-clean Debug and
+Release builds, format, package audit and the four CI-control guards passed.
+The complete Docker-disabled Unit selection passed 13,842 cases with 124
+selected skips; Integration passed all 957 cases. Discovery-only skip messages
+are excluded from these totals.
+
+The initial supplemental canonical coverage merge failed the ReleaseTool line
+floor because Unit ran without the production catalog prerequisite. Preserve
+that failure. A focused Distribution Unit selection with the exact retained
+approved stars package passed all 116 cases. A new 23-slot coverage mapping
+replaced only its Distribution slot; the other 22 input hashes and all package
+files remained unchanged. Enforcement passed at 88.8078% line and 75.1101%
+branch coverage, with ReleaseTool at 89.03% line and 62.50% branch. The original
+Unit totals/skips and the supplemental selection remain separate.
+
+The first native operational fitting attempt, `FIT-native-r1`, exited 1 after
+147.64 seconds. Its 34 selected gates and three representative trials passed,
+but an embedded external allocation scan hit its explicit 10-second bound.
+The function default is 15 seconds; neither bound is raised. The later complete
+outer scan passed. Actual raw wait status 256, exit 1, complete stream EOF and
+no signals were recorded. Independent outer release found the recorded cohort
+empty; the original inner release was not run and postseal agreement remained
+red. The four postseal files used 57,344 allocated bytes within their 65,536-byte
+cap. No failed receipt is upgraded by the later observations.
+
+The complete final sample charged 119,365,632 evidence bytes against
+402,653,184. The larger projected evidence figure was a conservative scenario,
+not an observed cap breach. The initial layout also nested the entire fitting
+workspace beneath the proposed later campaign packet. A new job may select a
+separate namespace under the original finite-root accounting contract: every
+active input/output descendant remains charged, historical failed jobs stay
+intact, and the later campaign imports complete sealed read-only fitting proof
+without carrying its builds, caches, setup or trial credit. This changes path
+bindings without changing scientific predicates or numeric limits.
+
+Before correction, deterministic function controls reproduced the costly
+embedded path representation. The proposed correction uses the original v7
+support function's immutable prefixes for each fresh scan. Across 39 cases and
+nine functions, normalized results, entry digests and ordered descriptor calls
+agree; ten additional namespace controls preserve complete active-root charging.
+Scanner predicates, deadlines, errors and traversal are unchanged. These are
+function controls; the separate successful native fitting and finalization
+evidence is recorded below.
+
+The separately sealed r2 packet passed all 6,142 source-manifest checks before
+admission, then its entrypoint rejected a changed seed Git index before creating
+the native namespace. The owner's admission precheck had run `git status`
+without disabling optional writes, allowing its stat-cache refresh to replace
+the sealed index. No .NET or native fitting gate started. Preserve this failed
+attempt; subsequent seed checks must disable optional Git writes and verify
+that the complete sealed input remains unchanged after the checks.
+
+R3 passed the read-only seed checks and reached native fitting. It stopped at
+`quiet-after-source-t02`: the raw steal counter changed from 540,388 to 540,389.
+Its 27 passed, one failed and six unrun gates remain an incomplete attempt.
+The corrected external scans, inner and outer strict release, actual wait/EOF,
+postseal agreement and complete root accounting passed. The four postseal files
+used 57,344 allocated bytes. These mechanism results do not upgrade the failed
+quietness predicate or supply qualification credit.
+
+A separate function-only full-success filename fixture retains 1,415 modeled
+manifest rows, including all original 119 gates and 24 trials. Its successful
+checksum stdout is 110,411 bytes and its lossless encoded field is 8,276 bytes;
+the four-file scenarios allocate 61,440 bytes within the unchanged 65,536-byte
+limit. The fixture matches both observed fitting inventories before expansion.
+No deterministic output-size defect was reproduced. Its size is conditional on
+the modeled ordinary-success filenames and observed runtime metadata; future
+diagnostics, identities and allocations still require the original actual gate.
+
+R4 completed all 34 selected fitting gates, seven bootstrap envelopes and three
+representative trials in one fresh window. The actual tool exited zero after
+135.20 seconds. Raw wait status zero, complete EOF, no signals, both strict
+release checks, all original postseal checks and complete final root accounting
+passed. The four designated files used 57,344 allocated bytes. Independent
+checks verified the outer, executor and prepared manifests after completion.
+This is operational fitting evidence with zero F7 comparison credit.
+
+The source-derived twice-duration/1.25-byte scenario projects 947.28 seconds
+and 359,129,088 evidence bytes against the unchanged 3,880-second whole-window
+and 402,653,184-byte evidence limits. Its other component, workspace, native and
+sampled RAM scenarios also fit. The four-times-duration/twice-byte stress case
+projects an evidence excess and remains recorded. These are explicit sensitivity
+scenarios, not confidence or worst-case bounds. Full aggregate cost is still
+source-inferred. A fresh full packet must bind the complete read-only fitting
+proof, measure its actual input allocation and preserve every actual stop gate
+before the original 119-gate/24-trial campaign can be admitted.
+
+The first full campaign, `F7-native-r4`, used a new source-bound once-only
+allocation, fresh normal restore/build/setup and the original 119 gates plus
+seven bootstrap envelopes and 24-trial selection. Its prepared inputs occupied
+313,155,584 allocated bytes. With complete charged read-only fitting proof,
+the unchanged model recomputed the selected scenario at 1,030.69 seconds,
+359,129,088 evidence bytes and 3,920,769,024 workspace bytes. The adverse stress
+scenario and all original actual stop gates remained in force.
+
+The actual full runner exited 1 after 117.24 seconds. It stopped at
+`quiet-after-source-t02`: steal changed from 540,594 to 540,595. Its gate totals
+are 27 passed, one failed and 91 not run. No aggregate ran, and this incomplete
+prefix provides no comparative or regression verdict. Actual wait status 256,
+exit 1, complete EOF and no signals were recorded. Inner and outer strict
+release, the 57,344-byte four-file receipt and complete root accounting passed.
+The owner independently verified all 6,513 prepared-input rows, executor and
+outer manifests after completion. The failed allocation is consumed and retained
+unchanged; any later attempt requires a separate namespace and fresh admission.
+
+The separate `F7-native-r5` attempt used only namespace and source-hash binding
+changes, independently checked across all 30 active Python files. All 6,600
+prepared-input rows verified before and after fresh admission; the prepared job
+occupied 320,913,408 allocated bytes. Its actual runner exited 1 after 117.00
+seconds at `quiet-after-source-t01`: steal changed from 540,653 to 540,654.
+The result is 23 passed, one failed and 95 unrun gates, with no aggregate or
+comparison credit. Actual typed wait/EOF, both strict release checks, postseal
+agreement and final root accounting passed. The prepared, executor and outer
+manifests independently verified after completion. This second consumed full
+allocation remains unchanged; repeated quietness failures do not justify
+relaxing the original predicate.
+
+Durable native evidence is retained under
+`/home/roys/review-evidence/1188/jobs/`. Each job contains its admitted ruling,
+sealed prepared source/input manifests, `native/executor/result.json`, raw
+records, outer wait/release/postseal receipts and owner disposition. Source
+manifest identities are:
+
+| Job | Whole prepared-source manifest SHA-256 | Outcome |
+| --- | --- | --- |
+| `FIT-native-r4` | `66e5d066491ec58d616c55469c2fb1312423ef437f19cd23e254074f7cadb507` | Operational fit passed; three trials, no comparison credit |
+| `F7-native-r4` | `e146bc0132b487737e394a213426173161754417ceab7af523375d9e22925a66` | Quietness stop after trial 2 |
+| `F7-native-r5` | `2e0a361b909c6a1b83479ec4d1e7d5630f5c7b653acb0e9d58c4eef577551dd5` | Quietness stop after trial 1 |
 
 The owning issue's append-only ledger records the recovered sources, exact
 per-file provenance, fail-first receipts and subsequent control runs. Retain all
