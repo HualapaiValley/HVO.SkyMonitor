@@ -71,9 +71,14 @@ public sealed partial class ProcessingNodeOptionsTests
                 var window = new ProcessingGraphWindowRequirement(kind,
                     kind == ProcessingGraphWindowKind.Centered ? size : 1, size,
                     kind == ProcessingGraphWindowKind.Centered ? [.. Enumerable.Range(-(size / 2), size)] : [], []);
-                var node = Node("rolling", descriptor.StepAlias, descriptor.StepVersion,
-                    "{\"windowSize\":" + size + ",\"windowKind\":\"" + kind + "\"}") with
-                { OperationKind = ProcessingOperationKind.Window, Window = window };
+                var template = Node("rolling", descriptor.StepAlias, descriptor.StepVersion,
+                    "{\"windowSize\":" + size + ",\"windowKind\":\"" + kind + "\"}");
+                ProcessingGraphNodeDefinition WithWindow(ProcessingGraphWindowRequirement requirement) => new(
+                    template.Id, template.StepAlias, template.StepVersion, ProcessingOperationKind.Window,
+                    template.Enabled, template.FailurePolicy, template.Order, template.EffectiveOptions,
+                    template.Dependencies, template.Inputs, template.Outputs, requirement,
+                    template.CapabilityLabels, template.HostApplicability);
+                var node = WithWindow(window);
                 var graph = Graph(node);
                 Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(graph));
                 foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
@@ -84,7 +89,7 @@ public sealed partial class ProcessingNodeOptionsTests
                         ProcessingGraphCompiler.Compile(RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, graph), new(host, [])).Plan!.PlanIdentitySha256);
                     foreach (var mismatch in new[] { window with { MaximumInputCount = size + 1 },
                         window with { Kind = (ProcessingGraphWindowKind)(1 - (int)kind) }, window with { RequiredPositions = [-999, 0] } })
-                        Assert.IsFalse(ProcessingGraphCompiler.Compile(Graph(node with { Window = mismatch }), new(host, [])).IsValid);
+                        Assert.IsFalse(ProcessingGraphCompiler.Compile(Graph(WithWindow(mismatch)), new(host, [])).IsValid);
                 }
             }
     }
