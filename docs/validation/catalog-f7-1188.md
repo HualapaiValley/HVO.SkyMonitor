@@ -237,7 +237,7 @@ failure progress referring to a previous case. Each red remains preserved.
 
 The [current private controls](../../scripts/catalog/f7/README.md) correct those
 cases without changing the selected executor logic or scientific predicates.
-All 90 controls and 119 fake gate interactions pass. Complete snapshots contain
+The initial 90 controls and 119 fake gate interactions passed. Their snapshots contain
 10,334,069 reconstructed bytes; deterministic lossless compression keeps the
 complete native observer output at 852,193 logical bytes and 1,740,800 allocated
 bytes, within the unchanged output limits. The actual adapter exits zero with
@@ -246,6 +246,23 @@ released cohort. Typed terminal, multi-chunk reconstruction, corruption and
 failure-preservation regressions pass. This establishes the private control
 model and its observed adapter, without a native performance or crash-survival
 claim.
+
+Independent initial PR review subsequently reproduced F1: the afterseal oracle
+accepted Boolean/integer substitutions in wait status, flags and usage because
+Python equality treated them as equal. New `afterseal_terminal_regressions`
+failed against that reviewed oracle before correction. Exact terminal schemas,
+types and agreement with independently recorded fake wait observations now
+reject all 60 mutations across raw-only, receipt-only and matching changes to
+both artifacts. The affected suite passes all 90 original controls and 119
+ordered fake gates, ten whole-execute terminal rejections, the 60 afterseal
+rejections, three-chunk reconstruction and four failure-preservation cases.
+Its 10,346,059 reconstructed snapshot bytes retain complete observations;
+the regression output totals 2,361,813 logical bytes with a 65,536-byte maximum
+record, within the unchanged 8 MiB aggregate and per-record caps. This corrects
+the private oracle; no selected executor or native measurement code changed.
+The review independently verified the real r7 typed receipts and found no
+malformed native wait. Original native packets and all failures remain unchanged;
+F1 requires no repeat performance campaign. Correction review remains required.
 
 Both 37-file campaign source sets match their recorded manifests. The complete
 original 621/894-entry packets and some dated serialized inventory bindings
@@ -460,8 +477,8 @@ alternative for completing the unchanged campaign. This was the retained
 blocker before the prospective owner decision and fresh r7 comparison above;
 no other-host schedule change was used to resolve it.
 
-Durable native evidence is retained under
-`/home/roys/review-evidence/1188/jobs/`. Each job contains its admitted ruling,
+Durable native evidence is retained on each original execution host under
+`/home/roys/review-evidence/1188/jobs/`. Each canonical job contains its admitted ruling,
 sealed prepared source/input manifests, `native/executor/result.json`, raw
 records, outer wait/release/postseal receipts and owner disposition. Source
 manifest identities are:
@@ -475,6 +492,16 @@ manifest identities are:
 | `F7-alt-r6` | `6e4b1dbad6fa3cfac97d7831b1a2bb01e29557f9fd3c6b260b38e8bda43a95a7` | Alternate-host quietness stop after trial 1 |
 | `FIT-native-r7` | `166c0b8e2887484eabe9aaeeff0b17ee82a80443e4457276bc93fb18f7f67fbe` | Fresh prospective-method operational FIT passed |
 | `F7-native-r7` | `573a7d227863e4ea2f255b7d260f2ce42e8bc99c22cc572cc1506ded2fc586db` | Full119+7/24 passed under declared prospective method |
+
+The r6 canonical jobs remain on the alternate host. The local sealed archive
+`/home/roys/review-evidence/1188/alternate-host-followup-20261024T0730Z`
+contains selected proof under `parent-records/FIT-alt-r6-native-proof/` and
+`parent-records/F7-alt-r6-failed-native-proof/`, with their retrieval manifests
+and exclusions. Its 2,420-entry manifest SHA-256 is
+`dabe51f39b2b0a6b8bb4a4496b7bf15d2d813253a1918e0fc41cd224e4db390a`.
+Those local selections omit compiled helpers, catalogs, caches/worktrees and
+binary-containing record archives; they are not complete original remote
+packets.
 
 The owning issue's append-only ledger records the recovered sources, exact
 per-file provenance, fail-first receipts and subsequent control runs. Retain all

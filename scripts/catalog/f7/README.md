@@ -49,6 +49,11 @@ terminal discriminators. Its changes from recovered v7 are:
   fails. Both independently named faults remain mandatory in the oracle.
 - Require Python's actual `PermissionError`/13 and `NotADirectoryError`/20
   inspection types for the EACCES and ENOTDIR cases.
+- Validate the afterseal checker's terminal schema, exact status/flag/usage
+  types and agreement with independently recorded fake wait observations.
+  Compare raw and printed terminals by both type and value. Sixty fail-first
+  rejection cases cover raw-only, receipt-only and matching corruptions of
+  both; Python's Boolean/integer equality cannot grant terminal credit.
 - Reset publication progress per case so an early failure cannot cite the
   previous case's evidence.
 - Encode the complete snapshot JSON with deterministic gzip, then publish

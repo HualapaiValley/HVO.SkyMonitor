@@ -12,7 +12,7 @@ The separately scoped adapter must capture its own actual wait/stdout/stderr,
 BS-F2/resource/release/STOP/seal, including this adapter's errors. This source is
 not a runtime allocation and does not establish scenario verification.
 """
-import argparse,base64,builtins,gzip,hashlib,json,pathlib,stat,sys,types
+import argparse,base64,builtins,gzip,hashlib,json,math,pathlib,stat,sys,types
 HERE=pathlib.Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from evidence_codec import encode_payload,SCHEMA
@@ -744,7 +744,11 @@ class V7Runtime(V6Runtime):
    self.output_observations.append({'pid':child.pid,'argv':list(argv),'passFds':list(kw['pass_fds']),'startNewSession':kw['start_new_session'],'stdout':out,'stderr':err,'manifestBytes':bytes(self.fs.nodes[root+'/SHA256SUMS']['raw'])})
   return child
  def wait4(self,pid,flags):
-  if self.case['route']!='execute':return super().wait4(pid,flags)
+  if self.case['route']!='execute':
+   observed_pid,status,usage=super().wait4(pid,flags)
+   if observed_pid:
+    self.wait_observations.append({'pid':observed_pid,'flags':flags,'rawWaitStatus':status,'actualReturnCode':self.os.waitstatus_to_exitcode(status),'WIFEXITED':self.os.WIFEXITED(status),'WEXITSTATUS':self.os.WEXITSTATUS(status) if self.os.WIFEXITED(status) else None,'WIFSIGNALED':self.os.WIFSIGNALED(status),'WTERMSIG':self.os.WTERMSIG(status) if self.os.WIFSIGNALED(status) else None,'wait4usage':{k:getattr(usage,k) for k in WAIT_USAGE_FIXTURE}})
+   return observed_pid,status,usage
   require(pid==self.pid and flags==0,'FIXTURE_WAIT_CALL','whole-execute owned blocking wait')
   self.calls.append(['wait4',pid,flags]);usage=self.usage();self.reaped=True
   observation={'pid':pid,'flags':flags,'rawWaitStatus':0,'actualReturnCode':0,'WIFEXITED':True,'WEXITSTATUS':0,'WIFSIGNALED':False,'WTERMSIG':None,'wait4usage':{k:getattr(usage,k) for k in WAIT_USAGE_FIXTURE}}
@@ -889,6 +893,39 @@ def exercise(case):
  except BaseException as end:error={'type':type(end).__name__,'reason':str(end),'errno':getattr(end,'errno',None)};code=1
  return {'rt':rt,'raw':raw,'FIRST':first,'originals':originals,'code':code,'error':error}
 
+def same_json_types_and_values(left,right):
+ if type(left) is not type(right):return False
+ if type(left) is dict:return set(left)==set(right) and all(same_json_types_and_values(left[k],right[k]) for k in left)
+ if type(left) is list:return len(left)==len(right) and all(same_json_types_and_values(a,b) for a,b in zip(left,right))
+ return left==right
+
+def afterseal_terminal(rt,terminal):
+ keys={'argv','timeoutSeconds','startedMonotonic','finishedMonotonic','elapsedSeconds','timedOut','captureComplete','eof','actualReturnCode','actualWait','ownSignalsSent','errors','childIdentity','barrierReleased','drainLimitPerStreamBytes','noRetry'}
+ optional={'barrierCommand','childPid','barrierIdentityEvidenceBeforePidfd','barrierIdentityEvidenceAfterPidfd','identityAfterPidfd'}
+ require(type(terminal) is dict and keys<=set(terminal)<=keys|optional,'CHECK_TERMINAL_SHAPE','complete checker terminal schema; only declared partial barrier fields')
+ require(type(terminal['argv']) is list and terminal['argv']==['sha256sum','-c','SHA256SUMS'] and type(terminal['timeoutSeconds']) is int and terminal['timeoutSeconds']==30 and type(terminal['drainLimitPerStreamBytes']) is int and terminal['drainLimitPerStreamBytes']==1048576 and terminal['noRetry'] is True,'CHECK_TERMINAL_SHAPE','typed checker argv, limits and no retry')
+ require(all(type(terminal[k]) in (int,float) and math.isfinite(terminal[k]) for k in ('startedMonotonic','finishedMonotonic','elapsedSeconds')) and all(type(terminal[k]) is bool for k in ('timedOut','captureComplete','barrierReleased')),'CHECK_TERMINAL_SHAPE','typed checker time and flags')
+ if 'barrierCommand' in terminal:require(type(terminal['barrierCommand']) is list and all(type(v) is str for v in terminal['barrierCommand']),'CHECK_TERMINAL_SHAPE','typed barrier command')
+ if 'childPid' in terminal:require(type(terminal['childPid']) is int and terminal['childPid']==rt.pid,'CHECK_TERMINAL_SHAPE','typed owned child pid')
+ for key in ('barrierIdentityEvidenceBeforePidfd','barrierIdentityEvidenceAfterPidfd'):
+  if key in terminal:require(type(terminal[key]) is list and all(type(v) is dict for v in terminal[key]),'CHECK_TERMINAL_SHAPE','typed partial barrier evidence')
+ if 'identityAfterPidfd' in terminal:require(type(terminal['identityAfterPidfd']) is dict,'CHECK_TERMINAL_SHAPE','typed identity after pidfd')
+ require(type(terminal['eof']) is dict and set(terminal['eof'])=={'stdout','stderr'} and all(type(v) is bool for v in terminal['eof'].values()),'CHECK_TERMINAL_SHAPE','typed stream EOF observations')
+ require(all(type(terminal[k]) is list and all(type(v) is dict for v in terminal[k]) for k in ('ownSignalsSent','errors')) and (terminal['childIdentity'] is None or type(terminal['childIdentity']) is dict),'CHECK_TERMINAL_SHAPE','typed checker signal, error and identity containers')
+ if terminal['actualWait'] is None:return
+ wait=terminal['actualWait'];keys={'pid','rawWaitStatus','WIFEXITED','WEXITSTATUS','WIFSIGNALED','WTERMSIG','actualReturnCode','wait4usage','rawWait4NotOwnRSS'}
+ require(type(wait) is dict and set(wait)==keys and wait['rawWait4NotOwnRSS'] is True,'CHECK_WAIT_SHAPE','complete observed checker wait schema')
+ require(len(rt.wait_observations)==1,'CHECK_WAIT_OBSERVATIONS','one independent actual fake wait')
+ observed=rt.wait_observations[0]
+ require(type(terminal['actualReturnCode']) is int and terminal['actualReturnCode']==observed['actualReturnCode'],'CHECK_WAIT_STATUS','typed top-level return code')
+ for key in ('pid','rawWaitStatus','actualReturnCode','WEXITSTATUS','WTERMSIG'):
+  require(type(wait[key]) is type(observed[key]) and wait[key]==observed[key],'CHECK_WAIT_STATUS',key)
+ require(type(wait['WIFEXITED']) is bool and wait['WIFEXITED'] is observed['WIFEXITED'] and type(wait['WIFSIGNALED']) is bool and wait['WIFSIGNALED'] is observed['WIFSIGNALED'],'CHECK_WAIT_STATUS','typed exit/signal flags')
+ usage=wait['wait4usage']
+ require(type(usage) is dict and set(usage)==set(WAIT_USAGE_FIXTURE),'CHECK_USAGE','complete usage schema')
+ for key,expected in observed['wait4usage'].items():
+  require(type(usage[key]) is type(expected) and usage[key]==expected,'CHECK_USAGE',key)
+
 def strict_oracle(case,state):
  rt=state['rt'];fs=rt.fs;root='/f/executor';failure=case.get('failure');code=state['code'];error=state['error']
  # Trigger identity is checked before expected nonzero. Missing/wrong injection
@@ -970,6 +1007,7 @@ def strict_oracle(case,state):
    else:
     require(terminal_path in fs.nodes,'WAIT_REQUIRED','terminal artifact mandatory')
     terminal=json.loads(fs.nodes[terminal_path]['raw'])
+    afterseal_terminal(rt,terminal)
     require(terminal['timeoutSeconds']==30 and terminal['noRetry'],'CAP_PRESERVED','checker30/no retry')
     unknown=checker_mode in ('wait-error','wait-unknown')
     if unknown:require(terminal['actualWait'] is None and terminal['actualReturnCode'] is None and terminal['errors'],'WAIT_UNKNOWN','exact missing wait red')
@@ -995,7 +1033,9 @@ def strict_oracle(case,state):
    if values:
     value=values[-1]
     require(value['passed'] is (code==0) or failure=='parent-close' and code==1 and any(v['passed'] is True for v in values),'PRECISE_RESULT','inner zero provisional only named close fault')
-    if terminal is not None:require(value['checkerTerminal']==terminal,'EXACT_WAIT','receipt terminal equals raw terminal')
+    if terminal is not None:
+     afterseal_terminal(rt,value['checkerTerminal'])
+     require(same_json_types_and_values(value['checkerTerminal'],terminal),'EXACT_WAIT','receipt terminal types and values equal raw terminal')
     charges=value['adjacentRetentionChargedBytes'];components=value['combinedConservativeComponentsBytes']
     metas=[value['retentionJournal']]+list(value['obtainedEvidence']['artifacts'].values())+([value['checksumOutputFallback']] if 'checksumOutputFallback' in value else [])
     require(charges==sum(m['chargedConservativeBytes'] for m in metas) and components['retainedPacketAndBundle']>=charges,'EXACT_CHARGE','every retained artifact once; parent directories common-root sampled separately')

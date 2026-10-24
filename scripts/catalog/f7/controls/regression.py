@@ -128,6 +128,65 @@ def typed_terminal_regressions():
     return len(mutations)
 
 
+def afterseal_terminal_regressions():
+    target = next(c for c in controls.V7_CASES
+                  if c["id"] == "v5-normal-complete-owned-barrier-and-retention")
+    state = controls.exercise(target)
+    controls.strict_oracle(target, state)
+    fs, rt = state["rt"].fs, state["rt"]
+    path = "/f/executor.postseal.check-terminal.json"
+    original_node, original_output = dict(fs.nodes[path]), list(rt.output)
+    mutations = [
+        ("raw-status-bool", lambda v: v["actualWait"].update(rawWaitStatus=False), "CHECK_WAIT_STATUS"),
+        ("exited-int", lambda v: v["actualWait"].update(WIFEXITED=1), "CHECK_WAIT_STATUS"),
+        ("signaled-int", lambda v: v["actualWait"].update(WIFSIGNALED=0), "CHECK_WAIT_STATUS"),
+        ("return-code-bool", lambda v: v.update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
+        ("usage-bool", lambda v: v["actualWait"]["wait4usage"].update(ru_utime=False), "CHECK_USAGE"),
+        ("nested-return-code-bool", lambda v: v["actualWait"].update(actualReturnCode=False), "CHECK_WAIT_STATUS"),
+        ("exit-status-bool", lambda v: v["actualWait"].update(WEXITSTATUS=False), "CHECK_WAIT_STATUS"),
+        ("wrong-pid", lambda v: v["actualWait"].update(pid=rt.pid + 1), "CHECK_WAIT_STATUS"),
+        ("signal-zero", lambda v: v["actualWait"].update(WTERMSIG=0), "CHECK_WAIT_STATUS"),
+        ("usage-wrong-value", lambda v: v["actualWait"]["wait4usage"].update(ru_maxrss=1), "CHECK_USAGE"),
+        ("usage-missing-field", lambda v: v["actualWait"]["wait4usage"].pop("ru_stime"), "CHECK_USAGE"),
+        ("usage-extra-field", lambda v: v["actualWait"]["wait4usage"].update(extra=0), "CHECK_USAGE"),
+        ("wait-provenance-int", lambda v: v["actualWait"].update(rawWait4NotOwnRSS=1), "CHECK_WAIT_SHAPE"),
+        ("wait-extra-field", lambda v: v["actualWait"].update(extra=0), "CHECK_WAIT_SHAPE"),
+        ("wait-missing-field", lambda v: v["actualWait"].pop("WEXITSTATUS"), "CHECK_WAIT_SHAPE"),
+        ("terminal-missing-field", lambda v: v.pop("actualReturnCode"), "CHECK_TERMINAL_SHAPE"),
+        ("eof-int", lambda v: v["eof"].update(stderr=1), "CHECK_TERMINAL_SHAPE"),
+        ("capture-int", lambda v: v.update(captureComplete=1), "CHECK_TERMINAL_SHAPE"),
+        ("no-retry-int", lambda v: v.update(noRetry=1), "CHECK_TERMINAL_SHAPE"),
+        ("timeout-float", lambda v: v.update(timeoutSeconds=30.0), "CHECK_TERMINAL_SHAPE"),
+    ]
+    failures = []
+    for name, mutate, predicate in mutations:
+        # Exercise raw-only, receipt-only and mutually agreeing substitutions.
+        # Equality between two identically malformed artifacts is no authority.
+        for channel in ("raw", "receipt", "both"):
+            value = json.loads(original_node["raw"])
+            mutate(value)
+            if channel in ("raw", "both"):
+                fs.json(path, value)
+            if channel in ("receipt", "both"):
+                output = json.loads(original_output[-1])
+                output["checkerTerminal"] = value
+                rt.output[-1] = json.dumps(output)
+            try:
+                controls.strict_oracle(target, state)
+            except controls.OracleReject as error:
+                if error.predicate != predicate:
+                    failures.append([name, channel, "wrong predicate", error.predicate])
+            except Exception as error:
+                failures.append([name, channel, "untyped error", type(error).__name__])
+            else:
+                failures.append([name, channel, "malformed terminal accepted"])
+            finally:
+                fs.nodes[path], rt.output[:] = dict(original_node), original_output
+    check(not failures, "afterseal terminal regressions: " + json.dumps(failures))
+    controls.strict_oracle(target, state)
+    return len(mutations) * 3
+
+
 def codec_regressions(root):
     root.mkdir(mode=0o700)
     rng = random.Random(1188)
@@ -273,6 +332,7 @@ def main(output_root):
     root.mkdir(mode=0o700)
     summary = verify_all90(root / "all90")
     summary["extraTypedTerminalRejections"] = typed_terminal_regressions()
+    summary["aftersealTypedTerminalRejections"] = afterseal_terminal_regressions()
     summary["roundtripChunkCount"] = codec_regressions(root / "codec")
     summary["failurePreservationCases"] = failure_regressions(root / "failures")
     files = [p for p in root.rglob("*") if p.is_file()]
