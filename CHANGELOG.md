@@ -14,6 +14,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)
 
+- Edit existing manifest layer enabled flags, optional ordering and constellation opacity in CameraAgent graph drafts, preserving producer defaults and retained revisions until explicit validation and activation. #1628
+
+- Choose existing materializer layer kinds or restore manifest defaults in CameraAgent graph drafts, preserving aliases and producer bindings until explicit validation and activation. #1627
+
 - CameraAgent's graph editor can add, remove and reorder existing projected-scene constellation and solar-system selections and scene-overlay constellation IDs, preserving retained values and unchanged saves; activation remains explicit (#1626).
 
 - Tune native black/white levels and gamma in existing fixed-transfer preview graph drafts, with bounded validation and explicit activation. (#1625)
