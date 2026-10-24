@@ -23,6 +23,12 @@ public sealed class OrbitalTimeData
     private static readonly DateTimeOffset NtpEpoch = new(1900, 1, 1, 0, 0, 0, TimeSpan.Zero);
     private readonly EopRow[] _earthOrientation;
     private readonly LeapRow[] _leaps;
+    private readonly byte[] _earthOrientationBytes;
+    private readonly byte[] _leapBytes;
+
+    /// <summary>Exact verified source bytes for durable reconstruction, never synthesized from parsed rows.</summary>
+    public byte[] ExportEarthOrientation() => _earthOrientationBytes.ToArray();
+    public byte[] ExportLeapSeconds() => _leapBytes.ToArray();
 
     private readonly record struct EopRow(DateTimeOffset Utc, double Dut1, double X, double Y, OrbitalEarthOrientationStatus Status);
     private readonly record struct LeapRow(DateTimeOffset Utc, int Offset);
@@ -44,6 +50,8 @@ public sealed class OrbitalTimeData
     {
         OrbitalContract.Require(leapBytes.Length is > 0 and <= MaximumLeapBytes &&
             (zero ? earthOrientationBytes.IsEmpty : earthOrientationBytes.Length is > 0 and <= MaximumEopBytes), "time-input-size");
+        _earthOrientationBytes = earthOrientationBytes.ToArray();
+        _leapBytes = leapBytes.ToArray();
         LeapSecondsSha256 = Convert.ToHexString(SHA256.HashData(leapBytes));
         (_leaps, LeapTableExpiresUtc) = ParseLeaps(leapBytes);
         LeapTableCoverage = new(_leaps[0].Utc, LeapTableExpiresUtc.AddTicks(-1));

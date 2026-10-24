@@ -156,6 +156,30 @@ internal sealed class ProjectedSceneRetentionGuard(
         return captures;
     }
 
+    internal async ValueTask<bool> HasArchivedCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        var inventory = await store.ReadSceneConsumersAsync(captureId, Guid.Empty, AccountBytes, cancellationToken).ConfigureAwait(false);
+        if (inventory is null || !inventory.HasRecordedHistory) return true;
+        var raw = inventory.Raw.Descriptor;
+        foreach (var root in inventory.ArchiveRoots)
+        {
+            if (string.Equals(Path.TrimEndingDirectorySeparator(root), Path.TrimEndingDirectorySeparator(canonicalRoot),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
+            foreach (var date in new[] { DateOnly.FromDateTime(raw.Timing.ExposureStartedUtc.UtcDateTime),
+                DateOnly.FromDateTime(raw.Timing.ReadoutCompletedUtc.UtcDateTime) }.Distinct())
+            {
+                if (!_archiveDates.TryGetValue((root, date), out var captures))
+                {
+                    if (_archiveDates.Count >= 4096) throw new InvalidDataException("Satellite archive discovery exceeds its date bound.");
+                    captures = await ReadArchiveDateAsync(root, date, cancellationToken).ConfigureAwait(false);
+                    _archiveDates.Add((root, date), captures);
+                }
+                if (captures.Contains((raw.Capture.AgentId, captureId))) return true;
+            }
+        }
+        return false;
+    }
+
     private async Task<byte[]> ReadBoundedFileAsync(string path, CancellationToken cancellationToken)
     {
         var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
