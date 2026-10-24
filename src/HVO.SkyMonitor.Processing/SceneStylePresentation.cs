@@ -79,9 +79,14 @@ public static class SceneStylePresentation
             "Circle or crosshair at the existing projected position. This never makes a position measured.", "Circle", ["Circle", "Crosshair"]));
     }
 
-    internal static bool MatchesRetainedLayer(PresentationLayerPayloadV1 payload, PresentationLayerV1 layer) =>
-        payload.SchemaVersion != PresentationLayerPayloadV1.SceneStyleSchemaVersion ||
-        layer.RendererVersion == PresentationLayerCompositor.SceneStyleAlgorithmVersion && layer.StyleVersion == ProducerVersion;
+    /// <summary>All readers require the exact scene-style producer and renderer for the new payload representation.</summary>
+    public static bool MatchesRetainedLayer(PresentationLayerPayloadV1 payload, PresentationLayerV1 layer)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(layer);
+        return payload.SchemaVersion != PresentationLayerPayloadV1.SceneStyleSchemaVersion ||
+            layer.RendererVersion == PresentationLayerCompositor.SceneStyleAlgorithmVersion && layer.StyleVersion == ProducerVersion;
+    }
 
     /// <summary>Losslessly opts a consumer into the versioned scene payload; no other setting changes.</summary>
     public static JsonElement OptInConsumer(JsonElement? source)
