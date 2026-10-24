@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class PresentationMetadataFactsBuilderTests
+public sealed partial class PresentationMetadataFactsBuilderTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 8, 25, 12, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions ProductJson = new(JsonSerializerDefaults.Web);
