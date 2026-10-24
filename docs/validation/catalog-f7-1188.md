@@ -7,11 +7,21 @@ qualification or scientific acceptance is included.
 
 ## Qualification state
 
-**VALID 0.** Three current full campaigns across two hosts stopped at their
-quietness gates. No complete comparison, performance verdict or supported
-operating envelope has been established. Separate operational fitting runs
-passed on both hosts. Continuing the authorized host-move route requires a
-qualifying execution host or window.
+**VALID 1 for the pinned catalog-only software comparison under the declared
+owner-approved VM-steal policy.** `F7-native-r7` completed all 119 ordered gates,
+seven bootstrap invocations and 24 fresh trials in 375.437064 seconds. Paired
+star outputs agree and the independently recomputed aggregate passes the
+original startup/common-star/deep-sky regression rules, with no explanation
+flags. Native waits, complete streams, resources, strict release, postseal and
+final checks passed. Independent PR review and final integration remain separate
+lifecycle gates; this is not production or scientific adoption acceptance.
+
+Three earlier full campaigns across two hosts stopped at the original strict
+quietness gates. They remain failed and immutable. The subsequent owner decision
+changed only prospective steal-counter rejection on the selected original VM;
+raw counters and all other criteria remain. The completed results below include
+the added catalog's measured startup, memory, CPU and throughput costs rather
+than claim that every metric is unchanged.
 
 The original execution11 remains incomplete: ten source trials had quiet checks
 and individual validators return zero, but the finite work deadline stopped the
@@ -57,7 +67,7 @@ retain five warmups and 100 operations, the 50-pointing region sweep, and all 15
 nonempty pinned deep-sky queries. The linear deep-sky baselines run on the same
 candidate; no deep-sky operation is invented for a stars-only catalog.
 
-## Unchanged acceptance
+## Acceptance and prospective owner decision
 
 The existing rules require explanation for startup exceeding both twice its
 paired baseline and an additional 100 ms; common star query median or p95
@@ -71,11 +81,132 @@ logical reads and read calls stay distinct. Query verification remains outside
 the measured operation. CPU-counter zeros mean below resolution. Startup has
 six values per arm and reports median and range, without a startup p95 claim.
 
-The original strict no-steal and runqueue predicates, 2-GiB process peak limit,
-8-GiB cohort allowance, component and reserve limits, 119 ordered gates and
-finite phase bounds remain. Only this host's shared heavy gate may be reserved.
+The runqueue predicate, 2-GiB process peak limit, 8-GiB cohort allowance,
+component and reserve limits, 119 ordered gates and finite phase bounds remain.
+The original no-steal rule changes only through the owner decision below. Only
+the selected host's shared heavy gate may be reserved.
 Boundary samples do not prove continuous quietness or continuous peak
 containment. Fresh processes do not imply cold operating-system storage caches.
+
+On 2026-10-24, the [owner approved a prospective VM steal
+exception](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1188#issuecomment-6386492204)
+for both arms on the original claim host. New runs must retain and disclose raw
+before/after steal counters and deltas, but increases alone no longer reject a
+run. Other quietness and acceptance limits remain. This does not establish a
+causal absence of steal effects or change any prior failed allocation. Fresh
+host, toolchain and resource bindings, fail-first policy controls, a new measured
+FIT and a distinct full allocation were completed before accepting the full
+comparison.
+
+The fresh `FIT-native-r7` completed all 34 selected gates plus seven bootstrap
+invocations and three representative trials in 153.061216 seconds. Native typed
+wait/exit, complete EOF, no signals, strict release, resource, postseal and final
+checks passed. Paired steal deltas were 0, 1 and 6 ticks; all raw counters remain
+retained. The 30 policy controls include a real failure against the old observer,
+plus passing cases for the exception and preserved runqueue, reset, malformed
+data, host and authority rejection.
+
+The owner independently verified all source, executor and outer manifest rows
+and recomputed the unchanged capacity model from all 41 fresh observations.
+Its selected scenario projects 1,117.694955 seconds, 361,021,440 evidence bytes
+and 4,086,118,400 workspace bytes within the original caps. The adverse stress
+scenario exceeds the evidence cap at 527,298,560 bytes. These are sensitivity
+scenarios, with actual full-run checks still mandatory. The frozen
+`OWNER-FIT-DISPOSITION.json` SHA-256 is
+`f2a2a53d406ec1722ae97658ddde99b7e9e24568c8398a890f4304d1a5d62581`.
+It authorizes preparation of a distinct full packet; it grants no full
+allocation or comparative qualification.
+
+## Completed comparison and measured envelope
+
+The [machine-readable results](catalog-f7-1188-results.json) retain each group's
+six-trial median/range, CPU and verification costs, allocations, working set,
+I/O, throughput, all 90 pinned deep-sky measurements and all 24 raw paired steal
+deltas. Both comparisons use the exact sources, packages and query workload
+above. The runtime was Ubuntu 24.04.5 x64, SDK 10.0.402 / .NET 10.0.13,
+12 processors, workstation GC, concurrency one and initial backlog zero, with
+local filesystem I/O. No queued or concurrent workload was qualified.
+
+Startup summaries below each use six fresh processes. They include authenticated
+validation, eager loading and index construction. The composition comparison's
+higher cost is retained; no single causal foundation effect is inferred from
+the source comparison's different dependency versions.
+
+| Comparison / arm | Startup median [range], ms | CPU median, ms | Allocated median, MiB | Startup peak working set median, MiB | Logical reads median, bytes | Read calls median |
+| --- | --- | --- | --- | --- | --- | --- |
+| Source / baseline stars | 778.182 [716.744–1271.086] | 829.933 | 89.964 | 174.018 | 32,371,714.0 | 4025 |
+| Source / candidate stars | 764.834 [738.456–917.308] | 828.599 | 90.329 | 176.371 | 32,371,706.5 | 275 |
+| Composition / candidate stars | 795.526 [759.275–915.710] | 855.534 | 90.326 | 176.742 | 32,371,706.5 | 275 |
+| Composition / candidate composed | 1200.665 [1124.085–1474.172] | 1308.965 | 137.507 | 210.900 | 46,540,419.0 | 376 |
+
+Startup storage-read counters were zero in all 24 trials. They do not establish
+cold-cache I/O performance: the application cache was empty while the operating
+system page cache was uncontrolled. Storage bytes, logical bytes and read-call
+counts remain distinct.
+
+Query values below are medians across six per-process summaries, not pooled
+operation percentiles. Every process used five warmups and 100 measured
+operations; output verification is outside the operation timer and its CPU is
+reported separately in the JSON.
+
+| Comparison / arm | Query | Median latency, ms | p95 latency, ms | Throughput, operations/s | Process CPU/operation, ms |
+| --- | --- | --- | --- | --- | --- |
+| Source / baseline stars | All sky | 0.05210 | 0.06035 | 17,491.3 | 0.06057 |
+| Source / baseline stars | Bounded cap | 0.41780 | 0.47005 | 2,351.3 | 0.42929 |
+| Source / candidate stars | All sky | 0.05405 | 0.06195 | 16,829.9 | 0.06423 |
+| Source / candidate stars | Bounded cap | 0.41020 | 0.43485 | 2,398.7 | 0.42050 |
+| Composition / candidate stars | All sky | 0.05560 | 0.06640 | 16,180.8 | 0.06576 |
+| Composition / candidate stars | Bounded cap | 0.40815 | 0.44210 | 2,412.6 | 0.42011 |
+| Composition / candidate composed | All sky | 0.05805 | 0.10005 | 6,778.8 | 0.33940 |
+| Composition / candidate composed | Bounded cap | 0.40710 | 0.45055 | 2,332.7 | 0.57676 |
+
+The composed arm has lower observed all-sky throughput and higher process CPU
+than the stars-only composition arm. Throughput is computed from the sum of all
+100 operation times, so tail operations affect it even when the reported p95
+remains below one millisecond. The six composed all-sky maxima were
+3.5366–10.3908 ms; the stars-only maxima were 0.4125–1.2878 ms. The retained data
+do not identify GC or VM steal as a proven cause, and no CPU-ratio or unchanged
+throughput claim follows from the latency gate passing. These costs are part of
+this measured envelope. All-sky allocation medians were 142,856 bytes/operation
+in both composition arms.
+
+All six composed trials validated the 50-pointing, 20-degree region sweep and
+all 15 nonempty pinned deep-sky queries against equivalent within-candidate
+linear outputs. Across the 90 pinned measurements, the largest indexed-minus-
+linear p95 difference was +0.4118 ms (`brightness-Visual-false` in
+`composition-t10`: 0.5300 versus 0.1182 ms), below the original +1-ms criterion.
+No stars-only deep-sky operation or HYG timing ratio is invented.
+
+The largest terminal GNU-time process-tree RSS was 259,289,088 bytes, below the
+2-GiB limit. This later peak includes retained linear deep-sky baselines and is
+separate from startup memory. Final accounting charged 2,999,582,720 workspace
+bytes, including 227,024,896 evidence bytes; every original component/reserve
+check passed. The four postseal files used 57,344/65,536 bytes. All 126 gate and
+bootstrap resource boundaries passed. Boundary observations do not certify
+continuous peaks or continuous quietness.
+
+The 24 paired samples retained 181 total steal ticks across 20 trials, with a
+maximum of 56 ticks in one trial and maximum observed runqueue two against
+12 processors. Increases were accepted only under the exact owner-bound rule;
+malformed/reset/host/authority/runqueue failures remain rejecting. The original
+zero-steal method was not satisfied or retrospectively reinterpreted.
+
+Parent verification joined the actual tool return with complete typed native
+waits, EOF, no signals, strict inner/outer release, postseal/root/afterfinal
+receipts, all 7,317 prepared-input rows, 1,415 executor entries and twelve outer
+entries. A separate pure-reader recomputation reproduced the complete 24-trial
+aggregate exactly, including all output/TRX/GNU-time checks and no unexplained
+regression flags. No benchmark or partial-prefix aggregate was rerun.
+
+Canonical evidence remains at
+`/home/roys/review-evidence/1188/jobs/F7-native-r7`. Its admitted ruling SHA-256
+is `5c80963b31467d643fcc92dbc677d05f8dba4a9d29af3b9a202df2ff7e3141bb`;
+`OWNER-F7-DISPOSITION.json` SHA-256 is
+`22a155bfe0c9957d165f4140ddc89b6aeb45c64d7070af1db21270433f64d181`.
+The native provisional VALID0 markers remain immutable. The owner's acceptance
+record joins the completed return and evidence and grants the scoped VALID1
+above. This result does not qualify cold-cache startup, different packages or
+queries, parallel/backlogged hosts, other hardware, releases or live deployment.
 
 ## Recovered harness and failures
 
@@ -122,7 +253,7 @@ remain unavailable. Current 66/90 source cases and all 128 distinct historical
 case IDs were recovered; derived inventories do not recreate missing original
 hashes. New packet seals and original historical seals must stay distinct.
 
-## Evidence and next gate
+## Local validation and retained execution history
 
 The Tier C candidate gate passed on
 `dab7422b7d2a2db9bd7ffec1f085a78891072918`. Its selector was
@@ -297,8 +428,9 @@ SDK closure, another development host outside the current OOM admission, and
 unreachable desktop candidates through direct and proxy routes. Another eligible
 development host observed 21 steal ticks in a passive minute. These observations
 do not prove every future window must fail. They establish no currently verified
-alternative for completing the unchanged campaign. The owner-authorized move
-remains valid; a qualifying destination or execution window is needed.
+alternative for completing the unchanged campaign. This was the retained
+blocker before the prospective owner decision and fresh r7 comparison above;
+no other-host schedule change was used to resolve it.
 
 Durable native evidence is retained under
 `/home/roys/review-evidence/1188/jobs/`. Each job contains its admitted ruling,
@@ -313,13 +445,15 @@ manifest identities are:
 | `F7-native-r5` | `2e0a361b909c6a1b83479ec4d1e7d5630f5c7b653acb0e9d58c4eef577551dd5` | Quietness stop after trial 1 |
 | `FIT-alt-r6` | `a9fad3185366d1a95eb6dd6796a4628fa45f0203499de6796c40cd8865cdc734` | Alternate-host operational fit passed; no comparison credit |
 | `F7-alt-r6` | `6e4b1dbad6fa3cfac97d7831b1a2bb01e29557f9fd3c6b260b38e8bda43a95a7` | Alternate-host quietness stop after trial 1 |
+| `FIT-native-r7` | `166c0b8e2887484eabe9aaeeff0b17ee82a80443e4457276bc93fb18f7f67fbe` | Fresh prospective-method operational FIT passed |
+| `F7-native-r7` | `573a7d227863e4ea2f255b7d260f2ce42e8bc99c22cc572cc1506ded2fc586db` | Full119+7/24 passed under declared prospective method |
 
 The owning issue's append-only ledger records the recovered sources, exact
 per-file provenance, fail-first receipts and subsequent control runs. Retain all
-failed attempts. Before any valid comparison, require completed current controls,
-complete bounded output reconstruction, actual terminal/resource/release
-receipts, a conservative fitting-window assessment and fresh source/package
-bindings. The eventual results must state their measured envelope and limits.
+failed attempts. The accepted r7 comparison joins current controls, complete
+bounded output reconstruction, actual terminal/resource/release receipts, a
+fresh measured fitting assessment and exact source/package bindings. Its
+measured envelope and limits are recorded above.
 
 The merge profile is `development-v1`: Preflight plus Build and Unit after
 independent review. Tier C local candidate gates and the separate F7 acceptance
