@@ -200,6 +200,32 @@ records policies, contracts, reference inputs and remaining research. Cross-host
 handoffs use remotely accessible immutable commits/artifacts and hashes, never
 an assumption that a local POC directory exists on the other host.
 
+### Bounded capture satellite and measured-astrometry UI priority — 2026-10-23
+
+Roy's [planning ledger](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1391#issuecomment-6380982877)
+and [explicit authorization](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1391#issuecomment-6381026928)
+activate this exact bounded software/virtual sequence on `development/v1`:
+
+1. [#1640](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1640): capture-bound satellite prediction recipe/output and this reviewed roadmap checkpoint.
+2. After #1640, [#1641](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1641) capture satellite consumer and [#1642](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1642) measured-astrometry integration may proceed in parallel. A1 starts only after this checkpoint and the shared Processing registration collision are settled.
+3. [#1643](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1643) follows **both** #1641 and #1642.
+4. [#1644](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1644) follows #1643.
+
+This supersedes the historical scheduling-only manual reservations on #523,
+#529 and #1393 for these five issues. Existing claims and each issue's technical
+acceptance still govern ownership and execution. The approved #527 checkpoint,
+#1402 contracts and #528 acquisition are delivered prerequisites; the wider
+#527 source/coverage/physical research remains research, and wider #526/#527/#530
+work is not blanket-activated. Configured-rig predictions do not establish
+accepted measured calibration, detection, physical visibility or sensitivity.
+Deferred performance, native ARM, hardware/resolution qualification, broader V2,
+main/release promotion, automatic calibration write-back, automatic camera
+actions and external messaging retain their separate gates. This priority does
+not change an installed rig, silently enable a shipped/default profile, or
+authorize live deployment. The [#1641 source/schema/fixture handoff](contracts/capture-orbital-prediction-v1.md)
+keeps host registration/publication, source-reference retention and UI in the
+consumer slice.
+
 ## Deferred
 
 | ID | Initiative | Retained outcome | Owning issue | Reason deferred |

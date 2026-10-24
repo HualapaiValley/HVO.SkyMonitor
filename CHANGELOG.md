@@ -64,6 +64,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Explicitly constructed Processing recipes can produce retained satellite predictions for one capture's exact exposure, with pinned source/time/configured geometry, original versus retrospective identities, and truthful unavailable, partial and budget states. Host publication and viewer integration follow separately. (#1640)
+
 - CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
 - CameraAgent graph drafts expose preview recipe labels, output routes, active percentile/asinh controls and JPEG quality, preserving fixed-transfer modes and resize settings through explicit activation and rollback. (#1567)
 
