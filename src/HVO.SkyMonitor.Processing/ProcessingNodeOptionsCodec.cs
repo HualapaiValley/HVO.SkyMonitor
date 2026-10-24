@@ -308,7 +308,7 @@ public static class ProcessingNodeOptionsCodec
 
     private static byte[] WriteEditedValue(ProcessingOptionDescriptor option, JsonElement source, ProcessingOptionValue value)
     {
-        if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection))
+        if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection))
             return WriteValue(value);
         if (ReadOptionToken(option, source, out _) is not { } previous)
             return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(value.AsCollection().Items)));
@@ -350,7 +350,7 @@ public static class ProcessingNodeOptionsCodec
     // an untouched numeric token or its casing when the operator opens and saves an existing graph.
     private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
     {
-        if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+        if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
         {
             outOfRange = false;
             if (token.ValueKind != JsonValueKind.Array) return null;
@@ -501,6 +501,7 @@ public static class ProcessingNodeOptionsCodec
         ProcessingOptionKind.NullableRealNumber => "a JSON number or null",
         ProcessingOptionKind.TextCollection => "an array of nonblank strings",
         ProcessingOptionKind.EnumCollection => "an array of defined enum names or numbers",
+        ProcessingOptionKind.ChoiceCollection => "an array of supported string choices",
         _ => "a JSON string"
     };
 
@@ -515,6 +516,7 @@ public static class ProcessingNodeOptionsCodec
             {
                 case ProcessingOptionKind.TextCollection:
                 case ProcessingOptionKind.EnumCollection:
+                case ProcessingOptionKind.ChoiceCollection:
                     writer.WriteStartArray();
                     var collection = value.AsCollection();
                     for (var index = 0; index < collection.Items.Length; index++)

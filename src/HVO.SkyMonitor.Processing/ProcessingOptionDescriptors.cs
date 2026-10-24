@@ -24,7 +24,8 @@ public enum ProcessingOptionKind
     NullableWholeNumber,
     NullableRealNumber,
     TextCollection,
-    EnumCollection
+    EnumCollection,
+    ChoiceCollection
 }
 
 /// <summary>A typed option value. Text, choice, font and glyph values are strings; a colour is three channels.</summary>
@@ -102,19 +103,22 @@ public readonly record struct ProcessingOptionValue
     public static ProcessingOptionValue FromTextCollection(IEnumerable<string> items)
         => FromCollection(ProcessingOptionKind.TextCollection, new(items));
 
+    public static ProcessingOptionValue FromChoiceCollection(IEnumerable<string> items)
+        => FromCollection(ProcessingOptionKind.ChoiceCollection, new(items));
+
     public static ProcessingOptionValue FromEnumCollection(IEnumerable<string> items)
         => FromCollection(ProcessingOptionKind.EnumCollection, new(items));
 
     public static ProcessingOptionValue FromCollection(ProcessingOptionKind kind, ProcessingOptionSelection collection)
     {
         ArgumentNullException.ThrowIfNull(collection);
-        if (kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection))
+        if (kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection))
             throw new ArgumentOutOfRangeException(nameof(kind));
         return new(kind, collection: collection);
     }
 
     public ProcessingOptionSelection AsCollection()
-        => Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection ? _collection! : throw WrongKind();
+        => Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection ? _collection! : throw WrongKind();
 
     public bool Equals(ProcessingOptionValue other)
         => Kind == other.Kind && _toggle == other._toggle && _wholeNumber == other._wholeNumber &&
@@ -181,7 +185,10 @@ public sealed class ProcessingOptionDescriptor
         bool isUnsignedByte = false,
         string? parentMember = null,
         int? maximumItems = null,
-        Func<JsonElement, string?>? readEnumItem = null)
+        Func<JsonElement, string?>? readEnumItem = null,
+        Func<string, string>? uniqueItemIdentity = null,
+        string? emptyCollectionLabel = null,
+        string? clearCollectionLabel = null)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -217,6 +224,9 @@ public sealed class ProcessingOptionDescriptor
         MaximumLength = maximumLength;
         MaximumItems = maximumItems;
         ReadEnumItem = readEnumItem;
+        UniqueItemIdentity = uniqueItemIdentity;
+        EmptyCollectionLabel = emptyCollectionLabel;
+        ClearCollectionLabel = clearCollectionLabel;
         IsIdentifier = isIdentifier;
         IsRequired = isRequired;
         IsUnsignedByte = isUnsignedByte;
@@ -240,6 +250,12 @@ public sealed class ProcessingOptionDescriptor
     public string NullValueLabel { get; }
 
     public string NullActionLabel { get; }
+
+    public string? EmptyCollectionLabel { get; }
+
+    public string? ClearCollectionLabel { get; }
+
+    public Func<string, string>? UniqueItemIdentity { get; }
 
     /// <summary>A non-null scalar token must bind as an unsigned byte, including its source spelling.</summary>
     public bool IsUnsignedByte { get; }
@@ -415,6 +431,23 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionValue.FromTextCollection([]), maximumLength: maximumItemLength, maximumItems: maximumItems);
     }
 
+    /// <summary>A bounded, ordered collection of exact string choices, optionally unique by consumer identity.</summary>
+    public static ProcessingOptionDescriptor ChoiceCollection(
+        string key, string member, string label, string help, IEnumerable<string> allowedValues, int maximumItems,
+        Func<string, string>? uniqueItemIdentity = null, string? emptyCollectionLabel = null, string? clearCollectionLabel = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumItems);
+        ArgumentNullException.ThrowIfNull(allowedValues);
+        var choices = allowedValues.ToImmutableArray();
+        if (choices.IsEmpty || choices.Length > MaximumAllowedValues ||
+            choices.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > MaximumNameLength) ||
+            choices.Distinct(StringComparer.Ordinal).Count() != choices.Length)
+            throw new ArgumentException("A choice collection needs distinct, bounded, nonblank supported values.", nameof(allowedValues));
+        return new(key, ProcessingOptionKind.ChoiceCollection, label, help, [member],
+            ProcessingOptionValue.FromChoiceCollection([]), allowedValues: choices, maximumItems: maximumItems,
+            uniqueItemIdentity: uniqueItemIdentity, emptyCollectionLabel: emptyCollectionLabel, clearCollectionLabel: clearCollectionLabel);
+    }
+
     /// <summary>Uses the consumer's JsonStringEnumConverter, including numeric and equivalent source spellings.</summary>
     public static ProcessingOptionDescriptor EnumCollection<TEnum>(string key, string member, string label, string help)
         where TEnum : struct, Enum
@@ -483,15 +516,17 @@ public sealed class ProcessingOptionDescriptor
         {
             return (ProcessingOptionReasonCodes.WrongType, $"Option '{Key}' takes a {Kind} value, not a {value.Kind} value.");
         }
-        if (Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+        if (Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
         {
             var items = value.AsCollection().Items;
             if (items.Length > MaximumItems)
                 return (ProcessingOptionReasonCodes.OutOfRange, $"Option '{Key}' permits at most {MaximumItems} items.");
             if (Kind == ProcessingOptionKind.TextCollection && items.Any(item => string.IsNullOrWhiteSpace(item) || item.Length > MaximumLength))
                 return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be nonblank and at most {MaximumLength} characters.");
-            if (Kind == ProcessingOptionKind.EnumCollection && items.Any(item => !AllowedValues.Contains(item, StringComparer.Ordinal)))
-                return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be defined enum choices.");
+            if (Kind is ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection && items.Any(item => !AllowedValues.Contains(item, StringComparer.Ordinal)))
+                return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be supported choices.");
+            if (UniqueItemIdentity is { } identity && items.Select(identity).Distinct(StringComparer.Ordinal).Count() != items.Length)
+                return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be unique supported choices.");
         }
         return Kind switch
         {
@@ -741,6 +776,6 @@ public static class ProcessingNodeOptionsDescriptors
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
             CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
             CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
-            RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment,
+            RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment, PresentationMaterializerOptionDescriptors.Descriptor,
             .. PreviewOptionDescriptors.All];
 }

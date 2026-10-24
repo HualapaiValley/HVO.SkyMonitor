@@ -46,25 +46,9 @@ internal static class LayeredPresentationCaptureProcessing
 
 internal static class PresentationLayerKinds
 {
-    private static readonly HashSet<string> Supported = new(
-    [
-        "scene-annotation", "scene-cardinals", "scene-image-circle", "scene-constellations",
-        "cloud-mask", "cloud-labels", "environment",
-        "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations",
-        OrbitalTrackPresentation.LayerKind
-    ], StringComparer.Ordinal);
+    internal static bool IsSupported(string kind) => PresentationLayerKindSelection.IsSupported(kind);
 
-    internal static bool IsSupported(string kind) => Supported.Contains(kind);
-
-    internal static string Canonicalize(string kind) => kind switch
-    {
-        "star-annotations" => "scene-annotation",
-        "cardinal-directions" => "scene-cardinals",
-        "image-circle" => "scene-image-circle",
-        "constellations" => "scene-constellations",
-        "corner-annotations" => "environment",
-        _ => kind
-    };
+    internal static string Canonicalize(string kind) => PresentationLayerKindSelection.Canonicalize(kind);
 
     internal static string CanonicalizeSelectionIdentity(string kind) => kind == "star-annotations"
         ? kind
