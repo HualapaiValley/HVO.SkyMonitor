@@ -44,7 +44,8 @@ public static class ProcessingRunnerProjection
             artifact.SchemaVersion,
             artifact.ContentIdentitySha256,
             artifact.CaptureId,
-            artifact.DescriptorIdentitySha256);
+            artifact.DescriptorIdentitySha256,
+            artifact.RecipeDescriptor);
     }
 
     public static ProcessingArtifact ReconstructArtifact(
@@ -52,6 +53,9 @@ public static class ProcessingRunnerProjection
         ReadOnlyMemory<byte> payload)
     {
         ArgumentNullException.ThrowIfNull(metadata);
+        if (metadata.RecipeDescriptor is { } producer && !ProcessingRunnerProtocol.ChecksumEquals(
+            ProcessingIdentity.CreateRecipeIdentity(producer).IdentitySha256, metadata.RecipeIdentitySha256))
+            throw new ProcessingRunnerProtocolException(ProcessingRunnerReasonCodes.InvalidCompletion, "Input producer descriptor identity mismatch.");
         return new ProcessingArtifact(
             metadata.ArtifactId,
             metadata.Role,
@@ -73,7 +77,8 @@ public static class ProcessingRunnerProjection
             SchemaVersion = metadata.SchemaVersion,
             ContentIdentitySha256 = metadata.ContentIdentitySha256,
             CaptureId = metadata.CaptureId,
-            DescriptorIdentitySha256 = metadata.DescriptorIdentitySha256
+            DescriptorIdentitySha256 = metadata.DescriptorIdentitySha256,
+            RecipeDescriptor = metadata.RecipeDescriptor
         };
     }
 

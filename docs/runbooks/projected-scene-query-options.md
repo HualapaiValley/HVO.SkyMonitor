@@ -11,7 +11,9 @@ explicit raw dependency.
 | --- | --- | --- |
 | Maximum star magnitude / `maximumMagnitude` | `6.5` | Finite number, −30–30; larger values include fainter catalog stars. |
 | Maximum star results / `maximumResults` | `2000` | Whole number, 1–10000 (`ProjectedSceneJson.MaximumObjectCount`); limits magnitude-selected catalog stars after projection. |
-| Include constellation endpoint stars / `includeConstellationEndpointStars` | `false` | Boolean; adds available endpoints of the existing constellation selection beyond the magnitude/result query limits. |
+| Include constellation endpoint stars / `includeConstellationEndpointStars` | `false` | Boolean; adds available endpoints of the constellation selection beyond the magnitude/result query limits. |
+| Constellation IDs / `constellationIds` | `[]` | Up to 128 nonblank IDs, each at most 16 characters. Empty selects no constellation figures or endpoint stars. |
+| Solar-system bodies / `solarSystemBodies` | `[]` | Up to 9 entries drawn from Sun, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus and Neptune. Empty selects no bodies. |
 
 These controls govern **physical predicted-scene staging**. CameraAgent selects
 one immutable graph revision before the physical scene query and uses that same
@@ -31,16 +33,28 @@ adds no central catalog query behavior.
 
 The shared descriptor binds only registered alias `ProjectedScene` (case
 insensitive) at exact version `canonical-projected-scene-v1`. Pipeline JSON stays
-authoritative. Only edited scalar tokens change; original spelling, whitespace,
+authoritative. Only edited values change; original spelling, whitespace,
 unknown members and absent/default/null semantics of other fields are preserved.
 Opening an unchanged draft or restoring controls to their source/default values
 keeps saving disabled and creates no revision. Invalid input clears the preview
 and displays the affected option; correct it and preview again before saving.
 
-`OutputVariant`, `AstronomyAlgorithmVersion`, `ConstellationIds`,
-`SolarSystemBodies` and nullable `CuratedAnnotations` remain preserved JSON
-without controls. There is no silent upgrade, algorithm/identity replacement,
+The ordered selection lists have labelled item controls and **Add**, **Remove**,
+**Up** and **Down** buttons usable with keyboard or touch. Fill a new constellation
+ID before previewing; blank or oversized IDs and invalid enum values prevent
+saving. Count limits disable Add. Duplicate entries are allowed by the existing
+runtime and are retained. IDs need not appear in an installed display list; the
+editor never drops, uppercases or trims retained IDs. Reordering or removing an
+item preserves untouched occurrences, including escaped IDs and numeric or
+mixed-case enum tokens. Restoring the original order and values is a byte-identical
+no-op. Absent lists use the empty default; explicit empty lists remain empty.
+Explicit JSON null is invalid for these collections and is never silently
+converted to empty on opening or saving. Add an item and then remove it to
+explicitly repair a null list to empty, or repair the pipeline JSON.
+
+`OutputVariant`, `AstronomyAlgorithmVersion` and nullable `CuratedAnnotations`
+remain preserved JSON without controls. There is no silent upgrade, algorithm/identity replacement,
 catalog selection, general NGC/M/IC query, astrometry change or data acquisition.
 See [scene overlay options](constellation-overlay-options.md) for display-only
 label magnitude and [curated annotation configuration](curated-catalog-annotations.md)
-for the separate curated selection. This is slice I of #1386; #1386 remains open.
+for the separate curated selection. This includes slices I and P of #1386; #1386 remains open.

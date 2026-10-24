@@ -59,6 +59,35 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                 measuredArtifact.RecipeIdentitySha256);
     }
 
+    internal static IReadOnlyList<ProcessingArtifact> Sources(ProcessingExecutionRequest request, ProcessingArtifact raw)
+    {
+        var measured = ResolveMeasured(request);
+        if (request.Inputs.Count == 2) return [raw, measured];
+        if (request.Inputs.Count != 4) throw new ArgumentException("Retained astrometry requires exact scene and context artifacts.");
+        var scene = request.Inputs.Single(a => ProjectedSceneV1.IsSupportedSchemaVersion(a.SchemaVersion));
+        var context = request.Inputs.Single(a => a.SchemaVersion == MeasuredAstrometryContextV1.CurrentSchemaVersion);
+        if (request.Inputs.Select(a => a.ArtifactId).Distinct().Count() != 4)
+            throw new ArgumentException("Retained astrometry source identities must be distinct.");
+        foreach (var (artifact, name, media) in new[] { (scene, "scene", StructuredProcessingProductContracts.ProjectedSceneMediaType),
+            (context, MeasuredAstrometryJson.ContextInputName, MeasuredAstrometryJson.ContextMediaType) })
+        {
+            var auxiliary = request.AuxiliaryInputs!.Single(a => a.Name == name);
+            if (artifact.Role != FrameArtifactRole.Metadata || artifact.ProductKind != ProcessingProductKind.Metadata ||
+                artifact.MediaType != media || artifact.SchemaVersion != auxiliary.SchemaVersion ||
+                !MeasuredAstrometryJson.Same(artifact.ContentIdentitySha256, auxiliary.IdentitySha256) ||
+                !artifact.Payload.Span.SequenceEqual(auxiliary.Payload.Span) ||
+                artifact.SourceArtifactIds is null || !artifact.SourceArtifactIds.Contains(raw.ArtifactId))
+                throw new ArgumentException("Retained astrometry artifact differs from its frozen auxiliary.");
+        }
+        var expectedContext = RetainedAstrometryProducts.CreateContextProduct(MeasuredAstrometryJson.ParseContext(context.Payload),
+            raw, measured, scene, context.Variant);
+        if (context.ArtifactId != ProcessingIdentity.CreateArtifactId(expectedContext.OutputIdentitySha256) ||
+            !MeasuredAstrometryJson.Same(context.RecipeIdentitySha256, expectedContext.Recipe.IdentitySha256) ||
+            !context.SourceArtifactIds!.SequenceEqual(expectedContext.SourceArtifactIds))
+            throw new ArgumentException("Retained astrometry context producer or lineage mismatch.");
+        return [raw, measured, scene, context];
+    }
+
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request, ProcessingRecipeIdentity identity,
         CancellationToken cancellationToken)
     {
@@ -83,6 +112,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                 return Fail("astrometry.invalid-context");
             context = MeasuredAstrometryJson.ParseContext(contextInput.Payload);
             measuredArtifact = ResolveMeasured(request);
+            _ = Sources(request, raw);
             if (!MeasuredInputIsValid(measuredArtifact, raw))
                 return Fail("astrometry.invalid-measured-input");
             measured = MeasuredStellarAssociationJson.Parse(measuredArtifact.Payload).Associations
@@ -177,7 +207,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(ProcessingOutcome.Produced(ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,
                 request.OutputVariant, MeasuredAstrometryJson.MediaType, null, payload, identity, Algorithms,
-                [raw, measuredArtifact], raw.Integration, raw.Compatibility, ProcessingProductKind.Metadata,
+                Sources(request, raw), raw.Integration, raw.Compatibility, ProcessingProductKind.Metadata,
                 MeasuredAstrometrySolutionV1.CurrentSchemaVersion, solution.SolutionIdentitySha256)));
         }
     }

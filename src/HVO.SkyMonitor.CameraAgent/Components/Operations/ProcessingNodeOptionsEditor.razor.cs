@@ -32,10 +32,18 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
         await Changed.InvokeAsync().ConfigureAwait(false);
     }
 
+    private async Task CollectionChangedAsync(Action edit)
+    {
+        edit();
+        await Changed.InvokeAsync().ConfigureAwait(false);
+    }
+
     private static string? Bounds(ProcessingOptionDescriptor option) => option.Kind switch
     {
         ProcessingOptionKind.WholeNumber or ProcessingOptionKind.NullableWholeNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumWholeNumber}–{option.MaximumWholeNumber} {option.Unit}."),
         ProcessingOptionKind.RealNumber or ProcessingOptionKind.NullableRealNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumRealNumber}–{option.MaximumRealNumber} {option.Unit}."),
+        ProcessingOptionKind.TextCollection => $"Maximum {option.MaximumItems} items, {option.MaximumLength} characters per item.",
+        ProcessingOptionKind.EnumCollection => $"Maximum {option.MaximumItems} defined body selections.",
         ProcessingOptionKind.Color => "Use #RRGGBB or the colour picker.",
         ProcessingOptionKind.Text when option.MaximumLength.HasValue => $"Maximum {option.MaximumLength} characters.",
         _ => null

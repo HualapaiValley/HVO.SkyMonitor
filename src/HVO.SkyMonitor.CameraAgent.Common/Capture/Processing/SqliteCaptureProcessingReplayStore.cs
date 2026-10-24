@@ -483,7 +483,10 @@ internal sealed partial class SqliteCaptureProcessingStore
                 ];
                 auxiliaryOutputNodes.Add(node.NodeId);
             }
-            if (revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+            var astrometry = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+                string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId);
+            if (astrometry || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
                 string.Equals(step.Type, CaptureSatelliteTracksProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId))
             {
@@ -502,8 +505,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                     """;
                 satellite.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
                 satellite.Parameters.AddWithValue("$node", node.NodeId);
-                satellite.Parameters.AddWithValue("$input", CaptureSatelliteProducts.InputSchema);
-                satellite.Parameters.AddWithValue("$result", CaptureOrbitalPredictionJson.SchemaVersion);
+                var inputSchema = astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
+                satellite.Parameters.AddWithValue("$input", inputSchema);
+                satellite.Parameters.AddWithValue("$result", astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
                 var pinned = new List<ProcessingFrozenOutputInput>();
                 var schemas = new HashSet<string>(StringComparer.Ordinal);
                 using var reader = await satellite.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -512,8 +516,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                     if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original satellite products are ambiguous.");
                     pinned.Add(new(reader.GetString(0), 0, reader.GetString(1)));
                 }
-                if (!schemas.Contains(CaptureSatelliteProducts.InputSchema))
-                    throw new InvalidDataException("The original satellite evidence is not retained.");
+                if (!schemas.Contains(inputSchema) || astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
+                    throw new InvalidDataException("The original bounded analyzer evidence is not retained.");
                 outputInputsByNode[node.NodeId] = pinned;
                 auxiliaryOutputNodes.Add(node.NodeId);
             }

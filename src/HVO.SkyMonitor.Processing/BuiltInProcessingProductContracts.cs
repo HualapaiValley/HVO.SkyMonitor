@@ -32,7 +32,7 @@ internal static class BuiltInProcessingProductContracts
         };
         IReadOnlyList<ProcessingArtifact> sources = request.RecipeName switch
         {
-            MeasuredAstrometry when primary is not null => [primary, MeasuredAstrometryRecipe.ResolveMeasured(request)],
+            MeasuredAstrometry when primary is not null => MeasuredAstrometryRecipe.Sources(request, primary),
             RollingMean => RollingMeanRecipe.SelectWindow(
                 ProcessingRecipeSupport.ResolveMany(request, out _),
                 ProcessingRecipeSupport.ParseOptions<RollingMeanOptions>(

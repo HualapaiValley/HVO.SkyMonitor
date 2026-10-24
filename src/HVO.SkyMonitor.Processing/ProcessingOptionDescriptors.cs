@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
@@ -7,6 +9,7 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>
 /// The kinds of value a processing step option declares (#1532, slice A of #1386). A colour binds three 0-255 channel
 /// members of the node's effective options; choice, font and glyph values are strings from a closed set.
+/// Collections retain ordered string IDs or defined enum choices, including repeated occurrences.
 /// </summary>
 public enum ProcessingOptionKind
 {
@@ -19,7 +22,9 @@ public enum ProcessingOptionKind
     Font,
     Glyph,
     NullableWholeNumber,
-    NullableRealNumber
+    NullableRealNumber,
+    TextCollection,
+    EnumCollection
 }
 
 /// <summary>A typed option value. Text, choice, font and glyph values are strings; a colour is three channels.</summary>
@@ -32,6 +37,7 @@ public readonly record struct ProcessingOptionValue
     private readonly double? _nullableRealNumber;
     private readonly string? _text;
     private readonly PresentationColor _color;
+    private readonly ProcessingOptionSelection? _collection;
 
     private ProcessingOptionValue(
         ProcessingOptionKind kind,
@@ -41,7 +47,8 @@ public readonly record struct ProcessingOptionValue
         string? text = null,
         PresentationColor color = default,
         long? nullableWholeNumber = null,
-        double? nullableRealNumber = null)
+        double? nullableRealNumber = null,
+        ProcessingOptionSelection? collection = null)
     {
         Kind = kind;
         _toggle = toggle;
@@ -51,6 +58,7 @@ public readonly record struct ProcessingOptionValue
         _color = color;
         _nullableWholeNumber = nullableWholeNumber;
         _nullableRealNumber = nullableRealNumber;
+        _collection = collection;
     }
 
     public ProcessingOptionKind Kind { get; }
@@ -90,6 +98,33 @@ public readonly record struct ProcessingOptionValue
     public static ProcessingOptionValue FromGlyph(string value) => FromString(ProcessingOptionKind.Glyph, value);
 
     public static ProcessingOptionValue FromColor(PresentationColor value) => new(ProcessingOptionKind.Color, color: value);
+
+    public static ProcessingOptionValue FromTextCollection(IEnumerable<string> items)
+        => FromCollection(ProcessingOptionKind.TextCollection, new(items));
+
+    public static ProcessingOptionValue FromEnumCollection(IEnumerable<string> items)
+        => FromCollection(ProcessingOptionKind.EnumCollection, new(items));
+
+    public static ProcessingOptionValue FromCollection(ProcessingOptionKind kind, ProcessingOptionSelection collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        if (kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection))
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        return new(kind, collection: collection);
+    }
+
+    public ProcessingOptionSelection AsCollection()
+        => Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection ? _collection! : throw WrongKind();
+
+    public bool Equals(ProcessingOptionValue other)
+        => Kind == other.Kind && _toggle == other._toggle && _wholeNumber == other._wholeNumber &&
+            _realNumber.Equals(other._realNumber) && _nullableWholeNumber == other._nullableWholeNumber &&
+            _nullableRealNumber == other._nullableRealNumber && _text == other._text && _color == other._color &&
+            Equals(_collection, other._collection);
+
+    public override int GetHashCode()
+        => HashCode.Combine(HashCode.Combine(Kind, _toggle, _wholeNumber, _realNumber, _nullableWholeNumber,
+            _nullableRealNumber, _text, _color), _collection);
 
     public bool AsToggle() => Kind == ProcessingOptionKind.Toggle ? _toggle : throw WrongKind();
 
@@ -143,7 +178,10 @@ public sealed class ProcessingOptionDescriptor
         bool isRequired = false,
         string nullValueLabel = "Default",
         string nullActionLabel = "Use default",
-        bool isUnsignedByte = false)
+        bool isUnsignedByte = false,
+        string? parentMember = null,
+        int? maximumItems = null,
+        Func<JsonElement, string?>? readEnumItem = null)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -152,6 +190,8 @@ public sealed class ProcessingOptionDescriptor
         {
             RequireName(member, nameof(members), lowerCamel: false);
         }
+        if (parentMember is not null)
+            RequireName(parentMember, nameof(parentMember), lowerCamel: false);
         if (members.Distinct(StringComparer.OrdinalIgnoreCase).Count() != members.Length)
         {
             throw new ArgumentException("Option members must be distinct.", nameof(members));
@@ -167,6 +207,7 @@ public sealed class ProcessingOptionDescriptor
         NullValueLabel = nullValueLabel;
         NullActionLabel = nullActionLabel;
         Members = members;
+        ParentMember = parentMember;
         DefaultValue = defaultValue;
         Unit = unit;
         MinimumWholeNumber = minimumWholeNumber;
@@ -174,6 +215,8 @@ public sealed class ProcessingOptionDescriptor
         MinimumRealNumber = minimumRealNumber;
         MaximumRealNumber = maximumRealNumber;
         MaximumLength = maximumLength;
+        MaximumItems = maximumItems;
+        ReadEnumItem = readEnumItem;
         IsIdentifier = isIdentifier;
         IsRequired = isRequired;
         IsUnsignedByte = isUnsignedByte;
@@ -204,6 +247,9 @@ public sealed class ProcessingOptionDescriptor
     /// <summary>The effective-options members, one per value or red, green and blue for a colour.</summary>
     public ImmutableArray<string> Members { get; }
 
+    /// <summary>An existing object containing these members; null binds at the options root.</summary>
+    public string? ParentMember { get; }
+
     public ProcessingOptionValue DefaultValue { get; }
 
     public string? Unit { get; }
@@ -217,6 +263,10 @@ public sealed class ProcessingOptionDescriptor
     public double? MaximumRealNumber { get; }
 
     public int? MaximumLength { get; }
+
+    public int? MaximumItems { get; }
+
+    internal Func<JsonElement, string?>? ReadEnumItem { get; }
 
     /// <summary>Text must be non-empty, trimmed and contain no control characters, as graph identities require.</summary>
     public bool IsIdentifier { get; }
@@ -327,6 +377,18 @@ public sealed class ProcessingOptionDescriptor
             nullValueLabel: nullValueLabel, nullActionLabel: nullActionLabel);
     }
 
+    /// <summary>A bounded scalar inside an existing object. Editing cannot create or remove the object.</summary>
+    public static ProcessingOptionDescriptor NestedRealNumber(
+        string key, string parentMember, string member, string label, string help,
+        double defaultValue, double minimum, double maximum, string? unit = null)
+    {
+        if (!double.IsFinite(minimum) || !double.IsFinite(maximum) || minimum > maximum)
+            throw new ArgumentException("The range must be finite and ordered.", nameof(minimum));
+        return new(key, ProcessingOptionKind.RealNumber, label, help, [member],
+            ProcessingOptionValue.FromRealNumber(defaultValue), unit,
+            minimumRealNumber: minimum, maximumRealNumber: maximum, parentMember: parentMember);
+    }
+
     public static ProcessingOptionDescriptor Text(
         string key,
         string member,
@@ -342,6 +404,35 @@ public sealed class ProcessingOptionDescriptor
         return new(key, ProcessingOptionKind.Text, label, help, [member],
             ProcessingOptionValue.FromText(defaultValue), maximumLength: maximumLength, isIdentifier: isIdentifier,
             isRequired: isRequired);
+    }
+
+    public static ProcessingOptionDescriptor TextCollection(
+        string key, string member, string label, string help, int maximumItems, int maximumItemLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumItems);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumItemLength);
+        return new(key, ProcessingOptionKind.TextCollection, label, help, [member],
+            ProcessingOptionValue.FromTextCollection([]), maximumLength: maximumItemLength, maximumItems: maximumItems);
+    }
+
+    /// <summary>Uses the consumer's JsonStringEnumConverter, including numeric and equivalent source spellings.</summary>
+    public static ProcessingOptionDescriptor EnumCollection<TEnum>(string key, string member, string label, string help)
+        where TEnum : struct, Enum
+    {
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        json.Converters.Add(new JsonStringEnumConverter());
+        string? Read(JsonElement token)
+        {
+            try
+            {
+                var value = token.Deserialize<TEnum>(json);
+                return Enum.IsDefined(value) ? value.ToString() : null;
+            }
+            catch (JsonException) { return null; }
+        }
+        return new(key, ProcessingOptionKind.EnumCollection, label, help, [member],
+            ProcessingOptionValue.FromEnumCollection([]), allowedValues: [.. Enum.GetNames<TEnum>()],
+            maximumItems: Enum.GetValues<TEnum>().Length, readEnumItem: Read);
     }
 
     public static ProcessingOptionDescriptor Choice(
@@ -391,6 +482,16 @@ public sealed class ProcessingOptionDescriptor
         if (value.Kind != Kind)
         {
             return (ProcessingOptionReasonCodes.WrongType, $"Option '{Key}' takes a {Kind} value, not a {value.Kind} value.");
+        }
+        if (Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
+        {
+            var items = value.AsCollection().Items;
+            if (items.Length > MaximumItems)
+                return (ProcessingOptionReasonCodes.OutOfRange, $"Option '{Key}' permits at most {MaximumItems} items.");
+            if (Kind == ProcessingOptionKind.TextCollection && items.Any(item => string.IsNullOrWhiteSpace(item) || item.Length > MaximumLength))
+                return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be nonblank and at most {MaximumLength} characters.");
+            if (Kind == ProcessingOptionKind.EnumCollection && items.Any(item => !AllowedValues.Contains(item, StringComparer.Ordinal)))
+                return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' items must be defined enum choices.");
         }
         return Kind switch
         {
@@ -494,11 +595,15 @@ public sealed class ProcessingNodeOptionsDescriptor
         {
             throw new ArgumentException("Option keys must be distinct.", nameof(options));
         }
-        var members = described.SelectMany(static option => option.Members).ToArray();
+        var members = described.SelectMany(static option => option.Members.Select(member =>
+            option.ParentMember is null ? member : $"{option.ParentMember}.{member}")).ToArray();
         if (members.Distinct(StringComparer.OrdinalIgnoreCase).Count() != members.Length)
         {
             throw new ArgumentException("No two options may bind the same member.", nameof(options));
         }
+        if (described.Where(static option => option.ParentMember is null).SelectMany(static option => option.Members)
+            .Intersect(described.Select(static option => option.ParentMember).OfType<string>(), StringComparer.OrdinalIgnoreCase).Any())
+            throw new ArgumentException("An object cannot also bind a scalar option.", nameof(options));
         DescriptorId = descriptorId;
         StepAlias = stepAlias;
         StepVersion = stepVersion;
@@ -586,6 +691,8 @@ public static class ProcessingNodeOptionsDescriptors
                 "Select named stellar markers and labels through this magnitude; solar-system bodies keep their existing rules.", 2.5, -30, 30, "mag"),
             ProcessingOptionDescriptor.Toggle("drawConstellationLines", "drawConstellationLines", "Show constellation lines",
                 "Draw the retained constellation selection with its existing colour and thickness.", true),
+            ProcessingOptionDescriptor.TextCollection("constellationIds", "constellationIds", "Constellation IDs",
+                "Draw only these retained scene constellation figures. An empty list draws all retained figures. IDs outside the installed display choices are retained; duplicates and source order are allowed.", 256, 16),
             ProcessingOptionDescriptor.Color(
                 "constellationLineColor",
                 "constellationLineRed",

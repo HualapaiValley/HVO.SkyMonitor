@@ -8,6 +8,47 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed partial class HostRecipeContractConformanceTests
 {
     [TestMethod]
+    [DataRow("Preview")]
+    [DataRow("CalibratedPreview")]
+    [DataRow("CombinedPreview")]
+    public async Task FixedTransferEditsChangeOutputAndReconstructRetainedProductsAcrossHosts(string alias)
+    {
+        var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.FixedVersion).Descriptor!;
+        var retained = JsonSerializer.Deserialize<JsonElement>("""{ "FixedTransfer": { "BlackLevel":64, "WhiteLevel":4095, "Gamma":2.2, "future":[1e+02] }, "recipeVersion":"retained", "blackPercentile":0.25 }""");
+        var role = alias switch
+        {
+            "CalibratedPreview" => FrameArtifactRole.Calibrated,
+            "CombinedPreview" => FrameArtifactRole.Combined,
+            _ => FrameArtifactRole.Raw
+        };
+        var source = Source(CameraPixelFormat.Mono16) with { Role = role };
+        var sourceBytes = source.Payload.ToArray();
+        static FixedDisplayTransferOptions Parameters(ProcessingNodeOptionsDescriptor descriptor, JsonElement json)
+        {
+            var values = ProcessingNodeOptionsCodec.Decode(descriptor, json);
+            return new(values.Get("blackLevel").Value.AsRealNumber(), values.Get("whiteLevel").Value.AsRealNumber(), values.Get("gamma").Value.AsRealNumber());
+        }
+        var before = await Execute(source, BuiltInProcessingRecipes.FixedPreview, Parameters(descriptor, retained));
+        foreach (var (key, value) in new[] { ("blackLevel", 200d), ("whiteLevel", 2048d), ("gamma", 1d) })
+        {
+            var edit = ProcessingNodeOptionsCodec.Encode(descriptor, retained,
+                new Dictionary<string, ProcessingOptionValue> { [key] = ProcessingOptionValue.FromRealNumber(value) });
+            Assert.IsTrue(edit.IsValid);
+            var after = await Execute(source, BuiltInProcessingRecipes.FixedPreview, Parameters(descriptor, edit.Options!.Value));
+            Assert.AreNotEqual(before.ChecksumSha256, after.ChecksumSha256);
+            Assert.AreNotEqual(before.OutputIdentitySha256, after.OutputIdentitySha256);
+            Assert.AreNotEqual(before.Recipe.IdentitySha256, after.Recipe.IdentitySha256);
+            Assert.AreEqual(before.Layout, after.Layout);
+            CollectionAssert.AreEqual(before.SourceArtifactIds.ToArray(), after.SourceArtifactIds.ToArray());
+            var restored = await Execute(source, BuiltInProcessingRecipes.FixedPreview, Parameters(descriptor, retained));
+            Assert.AreEqual(before.OutputIdentitySha256, restored.OutputIdentitySha256);
+            CollectionAssert.AreEqual(before.Payload.ToArray(), restored.Payload.ToArray());
+            Console.WriteLine($"{alias}/{key}: before={before.ChecksumSha256}; after={after.ChecksumSha256}; restored={restored.ChecksumSha256}");
+        }
+        CollectionAssert.AreEqual(sourceBytes, source.Payload.ToArray());
+    }
+
+    [TestMethod]
     [DataRow("{}")]
     [DataRow("{ \"MaximumDimension\":null, \"JpegQuality\":90 }")]
     [DataRow("{ \"MaximumDimension\":4, \"JpegQuality\":90 }")]

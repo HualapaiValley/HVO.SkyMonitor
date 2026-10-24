@@ -13,9 +13,9 @@ public sealed partial class ProcessingNodeOptionsTests
         {
             var version = fixedTransfer ? "fixed-preview-v1" : "encoded-preview-v1";
             var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias.ToUpperInvariant(), version).Descriptor!;
-            var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}"));
+            var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, Json(fixedTransfer ? "{\"FixedTransfer\":{}}" : "{}"));
             Assert.IsTrue(defaults.IsValid);
-            Assert.HasCount(fixedTransfer ? 3 : 6, defaults.Options);
+            Assert.HasCount(6, defaults.Options);
             Assert.IsTrue(defaults.Get("enabled").Value.AsToggle());
             Assert.AreEqual("mono16-asinh-v2", defaults.Get("recipeVersion").Value.AsText());
             Assert.AreEqual(variant, defaults.Get("outputVariant").Value.AsText());
@@ -39,7 +39,8 @@ public sealed partial class ProcessingNodeOptionsTests
             });
             Assert.IsTrue(changed.IsValid);
             Assert.AreEqual(source.GetRawText().Replace("retained-label", "edited-label", StringComparison.Ordinal), changed.Options!.Value.GetRawText());
-            Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"),
+            var empty = fixedTransfer ? "{\"FixedTransfer\":{}}" : "{}";
+            Assert.AreEqual(empty, ProcessingNodeOptionsCodec.Encode(descriptor, Json(empty),
                 defaults.Options.ToDictionary(static item => item.Descriptor.Key, static item => item.Value)).Options!.Value.GetRawText());
             Assert.IsNull(descriptor.Find("fixedTransfer"));
             Assert.IsNull(descriptor.Find("jpegQuality"), "Preview always produces packed output; JPEG quality belongs to JpegEncoding.");
