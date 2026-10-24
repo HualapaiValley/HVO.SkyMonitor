@@ -285,6 +285,13 @@ internal sealed partial class ArtifactIngestService(
         int? presentationHeightPixels = null;
         switch (product.Artifact.MediaType.ToLowerInvariant())
         {
+            case MeasuredAstrometryJson.MediaType:
+            case MeasuredAstrometryJson.ContextMediaType:
+                var astrometry = ValidateAstrometryPayload(product, payload);
+                schemaVersion = astrometry.Schema;
+                contentIdentity = astrometry.Identity;
+                sourceFacts = astrometry.Sources;
+                break;
             case "application/vnd.hvo.projected-scene+json":
                 var projected = ProjectedSceneJson.Parse(payload);
                 schemaVersion = projected.Scene?.SchemaVersion;

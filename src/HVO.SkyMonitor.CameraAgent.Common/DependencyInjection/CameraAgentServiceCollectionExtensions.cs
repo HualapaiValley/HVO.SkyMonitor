@@ -299,6 +299,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
+        services.AddSingleton<ICameraAgentRetainedAstrometryService, CameraAgentRetainedAstrometryService>();
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<SqliteNightlyProductStore>();
         services.AddSingleton<INightlyProductCatalog>(static provider =>
@@ -414,6 +415,10 @@ public static class CameraAgentServiceCollectionExtensions
             "MeasuredStellarAssociations", typeof(MeasuredStellarAssociationCaptureProcessingStep),
             typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
         services.AddSingleton<CaptureSatelliteWorkStore>();
+        services.AddSingleton<CaptureAstrometryExecutionGate>();
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            MeasuredAstrometryCaptureProcessingStep.Alias, typeof(MeasuredAstrometryCaptureProcessingStep),
+            typeof(MeasuredAstrometryCaptureOptions), 19, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             CaptureSatelliteTracksProcessingStep.Alias, typeof(CaptureSatelliteTracksProcessingStep),
             typeof(CaptureSatelliteTracksOptions), 17, AutoInclude: false));

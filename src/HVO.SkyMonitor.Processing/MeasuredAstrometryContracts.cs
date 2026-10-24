@@ -79,6 +79,7 @@ public sealed record MeasuredAstrometrySolutionV1(
 public static class MeasuredAstrometryJson
 {
     public const string MediaType = "application/vnd.hvo.measured-astrometry-solution+json";
+    public const string ContextMediaType = "application/vnd.hvo.measured-astrometry-context+json";
     public const string ContextInputName = "astrometry-context";
     public const int MaximumContextBytes = 2 * 1024 * 1024;
     public const int MaximumSolutionBytes = 128 * 1024;
@@ -109,7 +110,7 @@ public static class MeasuredAstrometryJson
             IdentitySha256: ProcessingIdentity.ComputePayloadSha256(bytes), Payload: bytes);
     }
 
-    internal static MeasuredAstrometryContextV1 ParseContext(ReadOnlyMemory<byte> bytes)
+    public static MeasuredAstrometryContextV1 ParseContext(ReadOnlyMemory<byte> bytes)
     {
         if (bytes.Length > MaximumContextBytes) throw new ArgumentException("Astrometry context exceeds its byte bound.", nameof(bytes));
         var value = JsonSerializer.Deserialize<MeasuredAstrometryContextV1>(bytes.Span, Options)
