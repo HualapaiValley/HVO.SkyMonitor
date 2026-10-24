@@ -47,7 +47,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -182,6 +182,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "Calibration" => "calibration",
             "ProjectedScene" => "projected-scene",
             "Annotation" => "legacy-annotation",
+            "OverlayManifest" => "overlay-manifest",
             "PresentationMaterializer" => "presentation-materializer",
             "CloudPresentationLayer" => "cloud-layer",
             "EnvironmentPresentationLayer" => "environment-layer",

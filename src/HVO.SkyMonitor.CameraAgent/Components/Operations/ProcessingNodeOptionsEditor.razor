@@ -5,13 +5,38 @@
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
-        <div class="option-field">
-            @if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection))
+        <div class="option-field @(option.Kind == ProcessingOptionKind.RowCollection ? "option-field--rows" : null)">
+            @if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection))
             {
                 <label for="@inputId">@option.Label @option.Unit</label>
             }
             @switch (option.Kind)
             {
+                case ProcessingOptionKind.RowCollection:
+                    <fieldset id="@inputId" class="collection-editor" aria-describedby="@(inputId + "-help")">
+                        <legend>@option.Label</legend>
+                        <ol>
+                            @for (var itemIndex = 0; itemIndex < Form.Rows(option.Key).Count; itemIndex++)
+                            {
+                                var index = itemIndex;
+                                var row = Form.Rows(option.Key)[index];
+                                var rowId = $"{inputId}-{index}";
+                                <li @key="row">
+                                    <ProcessingNodeOptionsEditor IdPrefix="@rowId" Form="@row" Changed="() => CollectionChangedAsync(() => Form.RowsChanged(option.Key))" />
+                                    <div class="collection-actions">
+                                        <button id="@(rowId + "-up")" type="button" class="btn btn-outline-secondary" disabled="@(index == 0)" aria-label="@($"Move layer override {index + 1} up")" @onclick="() => CollectionChangedAsync(() => Form.MoveRow(option.Key, index, index - 1))">Up</button>
+                                        <button id="@(rowId + "-down")" type="button" class="btn btn-outline-secondary" disabled="@(index == Form.Rows(option.Key).Count - 1)" aria-label="@($"Move layer override {index + 1} down")" @onclick="() => CollectionChangedAsync(() => Form.MoveRow(option.Key, index, index + 1))">Down</button>
+                                        <button id="@(rowId + "-remove")" type="button" class="btn btn-outline-secondary" aria-label="@($"Remove layer override {index + 1}")" @onclick="() => CollectionChangedAsync(() => Form.RemoveRow(option.Key, index))">Remove</button>
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+                        <button id="@(inputId + "-add")" type="button" class="btn btn-outline-secondary" disabled="@(Form.Rows(option.Key).Count >= option.MaximumItems)" @onclick="() => CollectionChangedAsync(() => Form.AddRow(option.Key))">Add layer override</button>
+                        <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" @onclick="() => CollectionChangedAsync(() => Form.ClearRows(option.Key))">@option.ClearCollectionLabel</button>
+                        <p role="status">@(Form.Rows(option.Key).Count == 0 ? option.EmptyCollectionLabel : "Using explicit layer overrides.")</p>
+                        <span role="status">@Form.Rows(option.Key).Count / @option.MaximumItems rows</span>
+                    </fieldset>
+                    break;
                 case ProcessingOptionKind.TextCollection:
                 case ProcessingOptionKind.EnumCollection:
                 case ProcessingOptionKind.ChoiceCollection:

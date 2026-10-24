@@ -25,7 +25,8 @@ public enum ProcessingOptionKind
     NullableRealNumber,
     TextCollection,
     EnumCollection,
-    ChoiceCollection
+    ChoiceCollection,
+    RowCollection
 }
 
 /// <summary>A typed option value. Text, choice, font and glyph values are strings; a colour is three channels.</summary>
@@ -106,19 +107,22 @@ public readonly record struct ProcessingOptionValue
     public static ProcessingOptionValue FromChoiceCollection(IEnumerable<string> items)
         => FromCollection(ProcessingOptionKind.ChoiceCollection, new(items));
 
+    public static ProcessingOptionValue FromRows(IEnumerable<string> rows)
+        => FromCollection(ProcessingOptionKind.RowCollection, new(rows));
+
     public static ProcessingOptionValue FromEnumCollection(IEnumerable<string> items)
         => FromCollection(ProcessingOptionKind.EnumCollection, new(items));
 
     public static ProcessingOptionValue FromCollection(ProcessingOptionKind kind, ProcessingOptionSelection collection)
     {
         ArgumentNullException.ThrowIfNull(collection);
-        if (kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection))
+        if (kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection))
             throw new ArgumentOutOfRangeException(nameof(kind));
         return new(kind, collection: collection);
     }
 
     public ProcessingOptionSelection AsCollection()
-        => Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection ? _collection! : throw WrongKind();
+        => Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection ? _collection! : throw WrongKind();
 
     public bool Equals(ProcessingOptionValue other)
         => Kind == other.Kind && _toggle == other._toggle && _wholeNumber == other._wholeNumber &&
@@ -188,7 +192,9 @@ public sealed class ProcessingOptionDescriptor
         Func<JsonElement, string?>? readEnumItem = null,
         Func<string, string>? uniqueItemIdentity = null,
         string? emptyCollectionLabel = null,
-        string? clearCollectionLabel = null)
+        string? clearCollectionLabel = null,
+        ProcessingNodeOptionsDescriptor? rowDescriptor = null,
+        string? rowIdentityKey = null)
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -227,6 +233,8 @@ public sealed class ProcessingOptionDescriptor
         UniqueItemIdentity = uniqueItemIdentity;
         EmptyCollectionLabel = emptyCollectionLabel;
         ClearCollectionLabel = clearCollectionLabel;
+        RowDescriptor = rowDescriptor;
+        RowIdentityKey = rowIdentityKey;
         IsIdentifier = isIdentifier;
         IsRequired = isRequired;
         IsUnsignedByte = isUnsignedByte;
@@ -256,6 +264,10 @@ public sealed class ProcessingOptionDescriptor
     public string? ClearCollectionLabel { get; }
 
     public Func<string, string>? UniqueItemIdentity { get; }
+
+    /// <summary>Rows reuse the scalar codec; raw JSON carries unknown members through edits.</summary>
+    public ProcessingNodeOptionsDescriptor? RowDescriptor { get; }
+    public string? RowIdentityKey { get; }
 
     /// <summary>A non-null scalar token must bind as an unsigned byte, including its source spelling.</summary>
     public bool IsUnsignedByte { get; }
@@ -478,6 +490,23 @@ public sealed class ProcessingOptionDescriptor
         => ClosedSet(ProcessingOptionKind.Choice, key, member, label, help,
             ProcessingOptionValue.FromChoice(defaultValue), allowedValues);
 
+    public static ProcessingOptionDescriptor RowCollection(
+        string key, string member, string label, string help, int maximumItems,
+        ProcessingNodeOptionsDescriptor rowDescriptor, string identityKey, Func<string, string> canonicalize,
+        string emptyLabel, string clearLabel)
+    {
+        ArgumentNullException.ThrowIfNull(rowDescriptor);
+        ArgumentNullException.ThrowIfNull(canonicalize);
+        if (maximumItems is < 1 or > MaximumAllowedValues ||
+            rowDescriptor.Find(identityKey)?.Kind != ProcessingOptionKind.Choice ||
+            rowDescriptor.Options.Any(static option => option.ParentMember is not null || option.Kind == ProcessingOptionKind.RowCollection))
+            throw new ArgumentException("Rows require bounded scalar fields and a choice identity.");
+        return new(key, ProcessingOptionKind.RowCollection, label, help, [member],
+            ProcessingOptionValue.FromCollection(ProcessingOptionKind.RowCollection, new([])),
+            maximumItems: maximumItems, rowDescriptor: rowDescriptor, rowIdentityKey: identityKey,
+            uniqueItemIdentity: canonicalize, emptyCollectionLabel: emptyLabel, clearCollectionLabel: clearLabel);
+    }
+
     public static ProcessingOptionDescriptor Font(
         string key,
         string member,
@@ -515,6 +544,30 @@ public sealed class ProcessingOptionDescriptor
         if (value.Kind != Kind)
         {
             return (ProcessingOptionReasonCodes.WrongType, $"Option '{Key}' takes a {Kind} value, not a {value.Kind} value.");
+        }
+        if (Kind == ProcessingOptionKind.RowCollection)
+        {
+            var rows = value.AsCollection().Items;
+            if (rows.Length > MaximumItems)
+                return (ProcessingOptionReasonCodes.OutOfRange, $"Option '{Key}' permits at most {MaximumItems} rows.");
+            var identities = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var row in rows)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(row);
+                    var decoded = ProcessingNodeOptionsCodec.Decode(RowDescriptor!, document.RootElement);
+                    if (!decoded.IsValid)
+                        return (decoded.Diagnostics[0].Code, decoded.Diagnostics[0].Message);
+                    var identity = decoded.Get(RowIdentityKey!);
+                    if (!identity.IsExplicit || !identities.Add(UniqueItemIdentity!(identity.Value.AsText())))
+                        return (ProcessingOptionReasonCodes.NotAllowed, $"Option '{Key}' rows require unique supported kinds.");
+                }
+                catch (JsonException)
+                {
+                    return (ProcessingOptionReasonCodes.WrongType, $"Option '{Key}' requires object rows.");
+                }
+            }
         }
         if (Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
         {
@@ -777,5 +830,6 @@ public static class ProcessingNodeOptionsDescriptors
             CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
             CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
             RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment, PresentationMaterializerOptionDescriptors.Descriptor,
+            OverlayManifestOptionDescriptors.Descriptor,
             .. PreviewOptionDescriptors.All];
 }

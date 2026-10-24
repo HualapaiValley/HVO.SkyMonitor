@@ -1,6 +1,7 @@
 .node-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; }
 .node-options-help { grid-column: 1 / -1; margin: 0; }
 .option-field { min-width: 0; }
+.option-field--rows { grid-column: 1 / -1; }
 .option-field > label { display: block; margin-bottom: .35rem; }
 .option-field > p { color: var(--hvo-muted-strong); margin: .35rem 0 0; font-size: .8rem; }
 .colour-inputs { display: flex; gap: .6rem; align-items: center; }
