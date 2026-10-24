@@ -11,6 +11,31 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("ScenePresentationLayer", "imageCircleValue")]
     [DataRow("ScenePresentationLayer", "cardinalValue")]
     [DataRow("EnvironmentPresentationLayer", "value")]
+    public void SignedZeroIntensityCannotSaveUntilExplicitZeroRepairsOnlySelectedMember(string alias, string key)
+    {
+        using var context = new BunitContext();
+        var source = "{ \"" + key + "\" : -0, \"future\":[1e+02] }";
+        var service = Configure(context, alias, source);
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var id = "node-options-0-" + key;
+        StringAssert.Contains(cut.Find("#" + id + "-status").TextContent, "Correct the invalid value", StringComparison.Ordinal);
+        cut.Find("form").Submit();
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("#" + id).Change("0");
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+        Assert.AreEqual(source.Replace("-0", "0", StringComparison.Ordinal), service.Created.Single().Pipeline.Steps[0].Options!.Value.GetRawText());
+        Assert.AreEqual(source, service.RevisionDetail!.Pipeline.Steps[0].Options!.Value.GetRawText());
+        Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer", "markerValue")]
+    [DataRow("ScenePresentationLayer", "labelValue")]
+    [DataRow("ScenePresentationLayer", "imageCircleValue")]
+    [DataRow("ScenePresentationLayer", "cardinalValue")]
+    [DataRow("EnvironmentPresentationLayer", "value")]
     public void IntensityPanelPreservesNoOpsAndSetsOrClearsOnlySelectedOverride(string alias, string key)
     {
         ArgumentNullException.ThrowIfNull(key);

@@ -4,7 +4,9 @@ In the processing graph editor, open **Scene overlay** for Marker intensity,
 Label intensity, Image circle intensity and Cardinal intensity, or
 **Environment layer** for Environment intensity. Each accepts a whole number
 from 0 to 255. Zero explicitly draws black; it does not mean unset. Blank input
-or **Use default palette** clears an override. The producer's current grayscale
+or **Use default palette** clears an override. The byte-backed overrides reject
+numeric `-0`, matching the producer binder; explicitly entering `0` repairs that
+invalid source spelling while preserving every unrelated byte. The producer's current grayscale
 palette returns: marker 144, label 255, image circle 96, cardinal 255 and
 environment text 255. Setting an already-white text override to 255 therefore
 retains its existing rendered bytes and product identity.
@@ -33,7 +35,8 @@ remain under #1386 and their existing issues.
   invalid input even after a valid preview. Labels, help/status associations
   and explicit-save behavior are checked. Existing denied-access tests cover
   both panels; service tests reject invalid and unauthorized raw edits before
-  compilation or storage.
+  compilation or storage. Signed-zero regressions exercise the real pipeline
+  factory and the UI repair action for every intensity field.
 - `ProcessingGraphOperationsTests.RetainedLayerOptions`: registered versions,
   runtime defaults/bounds, unchanged effective plan, validation before
   activation, immutable retained revisions and rollback for both producers.

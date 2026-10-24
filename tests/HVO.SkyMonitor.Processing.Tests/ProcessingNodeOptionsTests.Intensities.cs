@@ -8,11 +8,12 @@ public sealed partial class ProcessingNodeOptionsTests
         foreach (var descriptor in new[] { Scene, ProcessingNodeOptionsDescriptors.ScenePresentationLayerV12, RetainedLayerOptionDescriptors.Environment })
             foreach (var option in descriptor.Options.Where(static option => option.Kind == ProcessingOptionKind.NullableWholeNumber))
             {
+                Assert.IsTrue(option.IsUnsignedByte);
                 Assert.AreEqual(0L, option.MinimumWholeNumber);
                 Assert.AreEqual(255L, option.MaximumWholeNumber);
                 Assert.IsNull(option.DefaultValue.AsNullableWholeNumber());
                 Assert.AreEqual("Use default palette", option.NullActionLabel);
-                foreach (var token in new string?[] { null, "null", "0", "255", "-0" })
+                foreach (var token in new string?[] { null, "null", "0", "255" })
                 {
                     var member = option.Key.ToUpperInvariant();
                     var json = "{ \"future\":{\"escaped\":\"\\u0041\",\"n\":1e+02}" +
@@ -47,7 +48,7 @@ public sealed partial class ProcessingNodeOptionsTests
         foreach (var descriptor in new[] { Scene, ProcessingNodeOptionsDescriptors.ScenePresentationLayerV12, RetainedLayerOptionDescriptors.Environment })
             foreach (var option in descriptor.Options.Where(static option => option.Kind == ProcessingOptionKind.NullableWholeNumber))
             {
-                foreach (var (token, reason) in new[] { ("-1", ProcessingOptionReasonCodes.OutOfRange), ("256", ProcessingOptionReasonCodes.OutOfRange),
+                foreach (var (token, reason) in new[] { ("-0", ProcessingOptionReasonCodes.OutOfRange), ("-1", ProcessingOptionReasonCodes.OutOfRange), ("256", ProcessingOptionReasonCodes.OutOfRange),
                 ("9223372036854775808", ProcessingOptionReasonCodes.OutOfRange), ("1.5", ProcessingOptionReasonCodes.WrongType),
                 ("1e400", ProcessingOptionReasonCodes.WrongType), ("\"NaN\"", ProcessingOptionReasonCodes.WrongType),
                 ("\"255\"", ProcessingOptionReasonCodes.WrongType), ("true", ProcessingOptionReasonCodes.WrongType),
@@ -57,6 +58,14 @@ public sealed partial class ProcessingNodeOptionsTests
                     Assert.AreEqual(reason, ProcessingNodeOptionsCodec.Decode(descriptor, source).Diagnostics.Single().Code);
                     Assert.AreEqual(reason, ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>()).Diagnostics.Single().Code);
                     Assert.IsNotEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(Graph(Node("layer", descriptor.StepAlias, descriptor.StepVersion, source.GetRawText()))));
+                }
+                var signedZero = Json("{ \"" + option.Key.ToUpperInvariant() + "\" : -0, \"future\":[1e+02] }");
+                foreach (var repair in new long?[] { 0, null })
+                {
+                    var repaired = ProcessingNodeOptionsCodec.Encode(descriptor, signedZero,
+                        new Dictionary<string, ProcessingOptionValue> { [option.Key] = ProcessingOptionValue.FromNullableWholeNumber(repair) });
+                    Assert.IsTrue(repaired.IsValid);
+                    Assert.AreEqual(signedZero.GetRawText().Replace("-0", repair is null ? "null" : "0", StringComparison.Ordinal), repaired.Options!.Value.GetRawText());
                 }
                 var duplicate = Json("{\"" + option.Key + "\":null,\"" + option.Key.ToUpperInvariant() + "\":0}");
                 Assert.AreEqual(ProcessingOptionReasonCodes.DuplicateMember, ProcessingNodeOptionsCodec.Decode(descriptor, duplicate).Diagnostics.Single().Code);

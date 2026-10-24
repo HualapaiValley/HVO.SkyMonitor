@@ -320,6 +320,11 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":-0}", "processing.options.out-of-range")]
     public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
     {
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);

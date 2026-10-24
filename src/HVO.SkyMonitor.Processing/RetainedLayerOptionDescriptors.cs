@@ -23,9 +23,9 @@ public static class RetainedLayerOptionDescriptors
         "Environment layer",
         "Style the existing environment corner lines from retained facts. Dimensions, environmental selections and source/stack bindings stay in pipeline JSON. Missing and stale facts keep their current status. Save, validate and explicitly activate a new graph revision; retained products stay unchanged.",
         [
-            ProcessingOptionDescriptor.NullableWholeNumber("value", "value", "Environment intensity",
+            ProcessingOptionDescriptor.NullableByte("value", "value", "Environment intensity",
                 "Optional grayscale override for environment text. Clear to restore the existing palette; missing and stale facts keep their status.",
-                null, 0, 255, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
+                null, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
             ProcessingOptionDescriptor.WholeNumber("scale", "scale", "Environment text scale",
                 "Scale of the existing corner text; the producer fits text to the configured image.", 1, 1, 4, "×"),
             ProcessingOptionDescriptor.WholeNumber("inset", "inset", "Environment inset",
