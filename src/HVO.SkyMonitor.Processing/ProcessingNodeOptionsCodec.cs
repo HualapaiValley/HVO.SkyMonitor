@@ -39,7 +39,7 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// <summary>
 /// Typed reading and editing of a node's effective options against its descriptor (#1532). Members match ignoring
 /// case, as CameraAgent's options binding does. Values are strict JSON types: a whole number is an integer token, a
-/// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable whole number accepts
+/// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable number accepts
 /// <c>null</c>. Members the descriptor does not describe are never read or rewritten.
 /// </summary>
 /// <remarks>
@@ -77,6 +77,12 @@ public static class ProcessingNodeOptionsCodec
             return new([], diagnostics.ToImmutable());
         }
 
+        if (RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
+            !RollingCombinationOptionDescriptors.IsSameGain(options))
+        {
+            return new([], [new(ProcessingOptionReasonCodes.NotAllowed, path,
+                "This panel only edits the same-gain rolling mean; recipe and normalization bindings remain opaque.")]);
+        }
         var described = descriptor.Options.SelectMany(static option => option.Members)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var members = new Dictionary<string, JsonProperty>(StringComparer.OrdinalIgnoreCase);
@@ -112,7 +118,7 @@ public static class ProcessingNodeOptionsCodec
                     valid = false;
                     continue;
                 }
-                values[index] = ReadToken(MemberKind(option), member.Value, out _)!.Value;
+                values[index] = ReadOptionToken(option, member.Value, out _)!.Value;
             }
             if (!valid)
             {
@@ -137,6 +143,15 @@ public static class ProcessingNodeOptionsCodec
         {
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "blackPercentile"),
                 "BlackPercentile must be less than WhitePercentile."));
+        }
+        if (diagnostics.Count == 0 && RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowKind") is { } windowKind &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowSize") is { } windowSize &&
+            windowKind.Value.AsText() == nameof(ProcessingGraphWindowKind.Centered) &&
+            windowSize.Value.AsWholeNumber() > ProcessingGraphCompiler.MaximumContractsPerNode)
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
+                $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
         }
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
@@ -218,7 +233,7 @@ public static class ProcessingNodeOptionsCodec
                     // A member is unchanged only when it is valid as written and reads as the edited value, so an
                     // invalid spelling of that value, such as a signed-zero channel, is rewritten rather than kept.
                     if (ReadMember(option, properties[at], path) is not null ||
-                        ReadToken(values[index].Kind, properties[at].Value, out _) != values[index])
+                        ReadOptionToken(option, properties[at].Value, out _) != values[index])
                     {
                         replacements.Add((spans[at].Start, spans[at].End, WriteValue(values[index])));
                     }
@@ -237,10 +252,26 @@ public static class ProcessingNodeOptionsCodec
         return decoded.IsValid ? new(result, []) : new(null, decoded.Diagnostics);
     }
 
+    // WindowKind already accepts both enum numbers and names. Read its effective choice without rewriting
+    // an untouched numeric token or its casing when the operator opens and saves an existing graph.
+    private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
+    {
+        if (ReferenceEquals(option, RollingCombinationOptionDescriptors.Descriptor.Find("windowKind")))
+        {
+            outOfRange = false;
+            var text = token.ValueKind == JsonValueKind.String ? token.GetString() : token.GetRawText();
+            if (token.ValueKind is JsonValueKind.String or JsonValueKind.Number &&
+                Enum.TryParse<ProcessingGraphWindowKind>(text, true, out var kind) && Enum.IsDefined(kind))
+                return ProcessingOptionValue.FromChoice(kind.ToString());
+            return null;
+        }
+        return ReadToken(MemberKind(option), token, out outOfRange);
+    }
+
     private static ProcessingGraphDiagnostic? ReadMember(ProcessingOptionDescriptor option, JsonProperty member, string path)
     {
         var kind = MemberKind(option);
-        if (ReadToken(kind, member.Value, out var outOfRange) is not { } value)
+        if (ReadOptionToken(option, member.Value, out var outOfRange) is not { } value)
         {
             return outOfRange
                 ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name),
@@ -286,6 +317,9 @@ public static class ProcessingNodeOptionsCodec
                 }
                 outOfRange = true;
                 return null;
+            case ProcessingOptionKind.NullableRealNumber when token.ValueKind == JsonValueKind.Null:
+                return ProcessingOptionValue.FromNullableRealNumber(null);
+            case ProcessingOptionKind.NullableRealNumber:
             case ProcessingOptionKind.RealNumber:
                 if (token.ValueKind != JsonValueKind.Number)
                 {
@@ -293,7 +327,9 @@ public static class ProcessingNodeOptionsCodec
                 }
                 if (token.TryGetDouble(out var real) && double.IsFinite(real))
                 {
-                    return ProcessingOptionValue.FromRealNumber(real);
+                    return kind == ProcessingOptionKind.NullableRealNumber
+                        ? ProcessingOptionValue.FromNullableRealNumber(real)
+                        : ProcessingOptionValue.FromRealNumber(real);
                 }
                 outOfRange = true;
                 return null;
@@ -346,6 +382,7 @@ public static class ProcessingNodeOptionsCodec
         ProcessingOptionKind.WholeNumber => "a whole JSON number",
         ProcessingOptionKind.NullableWholeNumber => "a whole JSON number or null",
         ProcessingOptionKind.RealNumber => "a JSON number",
+        ProcessingOptionKind.NullableRealNumber => "a JSON number or null",
         _ => "a JSON string"
     };
 
@@ -367,6 +404,12 @@ public static class ProcessingNodeOptionsCodec
                 case ProcessingOptionKind.NullableWholeNumber:
                     if (value.AsNullableWholeNumber() is { } whole)
                         writer.WriteNumberValue(whole);
+                    else
+                        writer.WriteNullValue();
+                    break;
+                case ProcessingOptionKind.NullableRealNumber:
+                    if (value.AsNullableRealNumber() is { } real)
+                        writer.WriteNumberValue(real);
                     else
                         writer.WriteNullValue();
                     break;

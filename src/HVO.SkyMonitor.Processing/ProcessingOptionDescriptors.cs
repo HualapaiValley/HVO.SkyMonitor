@@ -18,7 +18,8 @@ public enum ProcessingOptionKind
     Color,
     Font,
     Glyph,
-    NullableWholeNumber
+    NullableWholeNumber,
+    NullableRealNumber
 }
 
 /// <summary>A typed option value. Text, choice, font and glyph values are strings; a colour is three channels.</summary>
@@ -28,6 +29,7 @@ public readonly record struct ProcessingOptionValue
     private readonly long _wholeNumber;
     private readonly double _realNumber;
     private readonly long? _nullableWholeNumber;
+    private readonly double? _nullableRealNumber;
     private readonly string? _text;
     private readonly PresentationColor _color;
 
@@ -38,7 +40,8 @@ public readonly record struct ProcessingOptionValue
         double realNumber = 0,
         string? text = null,
         PresentationColor color = default,
-        long? nullableWholeNumber = null)
+        long? nullableWholeNumber = null,
+        double? nullableRealNumber = null)
     {
         Kind = kind;
         _toggle = toggle;
@@ -47,6 +50,7 @@ public readonly record struct ProcessingOptionValue
         _text = text;
         _color = color;
         _nullableWholeNumber = nullableWholeNumber;
+        _nullableRealNumber = nullableRealNumber;
     }
 
     public ProcessingOptionKind Kind { get; }
@@ -67,6 +71,15 @@ public readonly record struct ProcessingOptionValue
         }
         return new(ProcessingOptionKind.RealNumber, realNumber: value);
     }
+
+    public static ProcessingOptionValue FromNullableRealNumber(double? value)
+    {
+        if (value is { } number && !double.IsFinite(number))
+            throw new ArgumentOutOfRangeException(nameof(value), value, "Option values must be finite.");
+        return new(ProcessingOptionKind.NullableRealNumber, nullableRealNumber: value);
+    }
+
+    public double? AsNullableRealNumber() => Kind == ProcessingOptionKind.NullableRealNumber ? _nullableRealNumber : throw WrongKind();
 
     public static ProcessingOptionValue FromText(string value) => FromString(ProcessingOptionKind.Text, value);
 
@@ -299,6 +312,21 @@ public sealed class ProcessingOptionDescriptor
             minimumRealNumber: minimum, maximumRealNumber: maximum);
     }
 
+    public static ProcessingOptionDescriptor NullableRealNumber(
+        string key, string member, string label, string help, double? defaultValue,
+        double minimum, double maximum, string? unit = null,
+        string nullValueLabel = "Default", string nullActionLabel = "Use default")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nullValueLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nullActionLabel);
+        if (!double.IsFinite(minimum) || !double.IsFinite(maximum) || minimum > maximum)
+            throw new ArgumentException("The range must be finite and ordered.", nameof(minimum));
+        return new(key, ProcessingOptionKind.NullableRealNumber, label, help, [member],
+            ProcessingOptionValue.FromNullableRealNumber(defaultValue), unit,
+            minimumRealNumber: minimum, maximumRealNumber: maximum,
+            nullValueLabel: nullValueLabel, nullActionLabel: nullActionLabel);
+    }
+
     public static ProcessingOptionDescriptor Text(
         string key,
         string member,
@@ -378,6 +406,10 @@ public sealed class ProcessingOptionDescriptor
                                                  value.AsRealNumber() > MaximumRealNumber
                 => (ProcessingOptionReasonCodes.OutOfRange, string.Create(CultureInfo.InvariantCulture,
                     $"Option '{Key}' must be between {MinimumRealNumber:R} and {MaximumRealNumber:R}.")),
+            ProcessingOptionKind.NullableRealNumber when value.AsNullableRealNumber() is { } real &&
+                (real < MinimumRealNumber || real > MaximumRealNumber)
+                => (ProcessingOptionReasonCodes.OutOfRange, string.Create(CultureInfo.InvariantCulture,
+                    $"Option '{Key}' must be null or between {MinimumRealNumber:R} and {MaximumRealNumber:R}.")),
             ProcessingOptionKind.Text when value.AsText().Length > MaximumLength
                 => (ProcessingOptionReasonCodes.TooLong, string.Create(CultureInfo.InvariantCulture,
                     $"Option '{Key}' must not exceed {MaximumLength} characters.")),
@@ -600,7 +632,7 @@ public static class ProcessingNodeOptionsDescriptors
         [ScenePresentationLayerV12, ScenePresentationLayer, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
-            CloudAssessmentOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
+            CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
             CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
             RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment,
             .. PreviewOptionDescriptors.All];
