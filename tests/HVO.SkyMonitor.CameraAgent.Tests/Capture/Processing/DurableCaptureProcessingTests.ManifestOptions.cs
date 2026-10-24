@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class DurableCaptureProcessingTests
 {
+    private static readonly int[] ManifestDefaultLayerOrders = [10, 15, 20, 25, 30, 40, 50];
     [TestMethod]
     [TestCategory("Unit")]
     public async Task ManifestOverridesKeepProducerDefaultsApplyOrderAndOpacityAndReconstructRetainedOutput()
@@ -25,12 +26,14 @@ public sealed partial class DurableCaptureProcessingTests
                 foreach (var node in graph.Nodes)
                 {
                     context.BeginNode(node.Id, node.Dependencies);
+                    var previous = context.ProcessingProducts.Count;
                     await node.Step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+                    foreach (var product in context.ProcessingProducts.Skip(previous)) context.RegisterProcessingProduct(product);
                 }
                 var original = context.ProcessingProducts[^1];
                 var oldManifestProduct = context.ProcessingProducts.Single(static product => product.SchemaVersion == OverlayManifestV1.CurrentSchemaVersion);
                 var oldManifest = LayeredPresentationJson.ParseManifest(oldManifestProduct.Payload).Document!;
-                CollectionAssert.AreEqual(new[] { 10, 15, 20, 25, 30, 40, 50 }, oldManifest.Layers.Select(static layer => layer.ZOrder).ToArray());
+                CollectionAssert.AreEqual(ManifestDefaultLayerOrders, oldManifest.Layers.Select(static layer => layer.ZOrder).ToArray());
                 Assert.IsTrue(oldManifest.Layers.All(static layer => layer.EnabledByDefault));
                 Assert.AreEqual(800_000, oldManifest.Layers.Single(static layer => layer.LayerKind == "scene-constellations").OpacityMillionths);
                 var upstream = context.ProcessingProducts.SkipLast(2).ToArray();
