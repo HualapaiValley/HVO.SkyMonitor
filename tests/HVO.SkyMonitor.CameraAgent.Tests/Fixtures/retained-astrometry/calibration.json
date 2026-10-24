@@ -1,0 +1,20 @@
+{
+  "Projection": {
+    "Aperture": 0,
+    "BoresightAltitudeDegrees": 72,
+    "BoresightAzimuthDegrees": 243,
+    "EnforceSensorBounds": true,
+    "FocalLengthXPixels": 144,
+    "FocalLengthYPixels": 144,
+    "HeightPixels": 512,
+    "HorizontalFlip": false,
+    "ImageCircleRadiusPixels": 232,
+    "Model": 0,
+    "PrincipalPointX": 256,
+    "PrincipalPointY": 256,
+    "RollDegrees": 17,
+    "WidthPixels": 512
+  },
+  "CalibrationVersion": "calibration-v1",
+  "ReadoutIdentitySha256": "ED1434A592FF62EEB3DC36B757B4166396D1181228BC4CC9506CFB98A1C2FE66"
+}

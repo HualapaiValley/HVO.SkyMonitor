@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -17,6 +18,27 @@ public sealed partial class CurrentSkyPageTests
 
     private static async Task<CameraAgentRetainedAstrometry> AstrometryEvidenceAsync(string scenario = "accepted")
     {
+        if (scenario == "accepted")
+        {
+            // Component consumers use real retained input; a cold solve belongs in producer tests.
+            var root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "retained-astrometry");
+            var bytes = await File.ReadAllBytesAsync(Path.Combine(root, "accepted-solution.json")).ConfigureAwait(false);
+            Assert.AreEqual("947DC629346E531E252FC89E251182BBC6B44FD569E4A49B97664E2970DA6AB1", ProcessingIdentity.ComputePayloadSha256(bytes));
+            var retained = MeasuredAstrometryJson.Parse(bytes);
+            var calibration = JsonSerializer.Deserialize<AstrometricCalibration>(
+                await File.ReadAllBytesAsync(Path.Combine(root, "calibration.json")).ConfigureAwait(false));
+            Assert.IsNotNull(calibration);
+            Assert.AreEqual(AstrometricAssessmentStatus.Accepted, retained.Assessment.Status);
+            Assert.AreEqual(calibration.ReadoutIdentitySha256, retained.ReadoutIdentitySha256);
+            return new(retained.Assessment.Frame.CaptureId, "Retained", retained.Assessment.ReasonCode,
+                SolutionIdentitySha256: retained.SolutionIdentitySha256, GeometryBasis: "MeasuredFit", Solution: retained)
+            {
+                Mapping = new AstrometricMapping(calibration, retained.Assessment),
+                CalibrationVersion = calibration.CalibrationVersion,
+                WidthPixels = calibration.Projection.WidthPixels,
+                HeightPixels = calibration.Projection.HeightPixels
+            };
+        }
         var f = await AstrometryFixture.Value.ConfigureAwait(false);
         if (scenario == "rejected") f = f.Keep(_ => false);
         var request = f.Request(context: scenario == "unavailable" ? f.Context with { CatalogComplete = false } : null,
