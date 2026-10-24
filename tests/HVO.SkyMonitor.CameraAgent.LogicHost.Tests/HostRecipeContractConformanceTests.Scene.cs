@@ -14,11 +14,13 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed partial class HostRecipeContractConformanceTests
 {
     [TestMethod]
-    [DataRow(ProjectedSceneKind.Predicted, false)]
-    [DataRow(ProjectedSceneKind.Predicted, true)]
-    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, false)]
-    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true)]
-    public async Task CentralSceneMetadataCanDriveDeterministicToggleablePresentation(ProjectedSceneKind kind, bool edited)
+    [DataRow(ProjectedSceneKind.Predicted, false, null)]
+    [DataRow(ProjectedSceneKind.Predicted, true, null)]
+    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, false, null)]
+    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true, null)]
+    [DataRow(ProjectedSceneKind.Predicted, true, 0)]
+    [DataRow(ProjectedSceneKind.VirtualRenderAuthoritative, true, 255)]
+    public async Task CentralSceneMetadataCanDriveDeterministicToggleablePresentation(ProjectedSceneKind kind, bool edited, int? intensity)
     {
         var source = Source(CameraPixelFormat.Mono8) with
         { CaptureId = Guid.NewGuid(), DescriptorIdentitySha256 = new string('A', 64) };
@@ -70,16 +72,41 @@ public sealed partial class HostRecipeContractConformanceTests
         CollectionAssert.AreEqual(product.SourceArtifactIds.ToArray(), edgeProduct.SourceArtifactIds.ToArray());
 #endif
         var sceneArtifact = AsTypedArtifact(product);
-        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
-            new PresentationAnnotationStyleV1(MarkerRadius: 1, CardinalScale: 1));
+        var sceneOptions = ProcessingNodeOptionsDescriptors.ScenePresentationLayer;
+        var originalOptions = JsonSerializer.Deserialize<JsonElement>("{ \"future\":[1e+02] }");
+        var intensityKeys = new[] { "markerValue", "labelValue", "imageCircleValue", "cardinalValue" };
+        var intensityOptions = ProcessingNodeOptionsCodec.Encode(sceneOptions, originalOptions,
+            intensityKeys.ToDictionary(static key => key, _ => ProcessingOptionValue.FromNullableWholeNumber(intensity)));
+        Assert.IsTrue(intensityOptions.IsValid);
+        PresentationAnnotationStyleV1 Style(JsonElement options)
+        {
+            var decoded = ProcessingNodeOptionsCodec.Decode(sceneOptions, options);
+            PresentationColor? Color(string key) => decoded.Get(key).Value.AsNullableWholeNumber() is { } value
+                ? new PresentationColor((byte)value, (byte)value, (byte)value) : null;
+            return new(MarkerRadius: 1, CardinalScale: 1, MarkerColor: Color("markerValue"), LabelColor: Color("labelValue"),
+                ImageCircleColor: Color("imageCircleValue"), CardinalColor: Color("cardinalValue"));
+        }
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(intensityOptions.Options!.Value));
+        var clearOptions = ProcessingNodeOptionsCodec.Encode(sceneOptions, intensityOptions.Options.Value,
+            intensityKeys.ToDictionary(static key => key, _ => ProcessingOptionValue.FromNullableWholeNumber(null)));
+        var restoredGroups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(clearOptions.Options!.Value));
+        var originalGroups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Style(originalOptions));
+        CollectionAssert.AreEqual(PresentationLayerPayloadJson.Serialize(originalGroups.StarAnnotations), PresentationLayerPayloadJson.Serialize(restoredGroups.StarAnnotations));
+        var environmentDescriptor = RetainedLayerOptionDescriptors.Environment;
+        var environmentOptions = ProcessingNodeOptionsCodec.Encode(environmentDescriptor, originalOptions,
+            new Dictionary<string, ProcessingOptionValue> { ["value"] = ProcessingOptionValue.FromNullableWholeNumber(intensity) });
+        var gray = ProcessingNodeOptionsCodec.Decode(environmentDescriptor, environmentOptions.Options!.Value).Get("value").Value.AsNullableWholeNumber();
+        var environment = PresentationLayerProducers.FromMetadataFacts(new PresentationMetadataFactsV1(scene.SceneIdentitySha256,
+            ["Temperature unavailable"], ["Humidity stale"], [], []), 8, 8,
+            gray is { } value ? new PresentationColor((byte)value, (byte)value, (byte)value) : null);
         var packed = await Execute(source, BuiltInProcessingRecipes.EncodedPreview, new EncodedPreviewOptions(OutputEncoding: "Packed"));
         var baseArtifact = AsTypedArtifact(packed);
         var reference = PresentationProcessingProducts.CreateReference(baseArtifact, source.DescriptorIdentitySha256);
-        var layers = new[] { groups.StarAnnotations, groups.CardinalDirections, groups.ImageCircle, groups.Constellations }
+        var layers = new[] { groups.StarAnnotations, groups.CardinalDirections, groups.ImageCircle, groups.Constellations, environment }
             .Select((layerPayload, index) =>
             {
                 var layerProduct = PresentationProcessingProducts.CreateLayerProduct(layerPayload, $"layer-{index}",
-                    [sceneArtifact], PresentationLayerProducers.SceneProducerVersion);
+                    [sceneArtifact], index == 4 ? PresentationLayerProducers.MetadataProducerVersion : PresentationLayerProducers.SceneProducerVersion);
                 var artifact = AsTypedArtifact(layerProduct);
                 var layer = LayeredPresentationJson.CreateLayer($"layer-{index}",
                     new PresentationProductReference(artifact.ArtifactId, layerPayload.ContentIdentitySha256, artifact.MediaType, reference.Compatibility),

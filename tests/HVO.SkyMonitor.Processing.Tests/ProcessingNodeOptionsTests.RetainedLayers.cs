@@ -23,7 +23,8 @@ public sealed partial class ProcessingNodeOptionsTests
             {
                 var valid = option.Kind == ProcessingOptionKind.Toggle ? new[] { "true", "false" }
                     : new[] { option.MinimumWholeNumber!.Value.ToString(CultureInfo.InvariantCulture), option.MaximumWholeNumber!.Value.ToString(CultureInfo.InvariantCulture) };
-                var invalid = new List<string> { "null", "\"1\"", "[]", "1.0", "1e0" };
+                var invalid = new List<string> { "\"1\"", "[]", "1.0", "1e0" };
+                if (option.Kind != ProcessingOptionKind.NullableWholeNumber) invalid.Add("null");
                 if (option.Kind == ProcessingOptionKind.Toggle) invalid.Add("1");
                 else
                 {
@@ -54,6 +55,7 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"), edits).Options!.Value.GetRawText());
             foreach (var key in new[] { "widthPixels", "heightPixels", "value", "environmentalKinds", "stackPreviewVariant", "factsOutputVariant", "outputVariant", "maskOutputVariant", "labelOutputVariant" })
             {
+                if (key == "value" && descriptor == RetainedLayerOptionDescriptors.Environment) continue;
                 Assert.IsNull(descriptor.Find(key));
                 Assert.AreEqual(ProcessingOptionReasonCodes.UnknownOption, ProcessingNodeOptionsCodec.Encode(descriptor, Json(source),
                     new Dictionary<string, ProcessingOptionValue> { [key] = ProcessingOptionValue.FromWholeNumber(2) }).Diagnostics.Single().Code);

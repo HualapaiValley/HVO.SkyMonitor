@@ -127,7 +127,9 @@ public sealed class ProcessingOptionDescriptor
         int? maximumLength = null,
         ImmutableArray<string> allowedValues = default,
         bool isIdentifier = false,
-        bool isRequired = false)
+        bool isRequired = false,
+        string nullValueLabel = "Default",
+        string nullActionLabel = "Use default")
     {
         RequireName(key, nameof(key), lowerCamel: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
@@ -148,6 +150,8 @@ public sealed class ProcessingOptionDescriptor
         Kind = kind;
         Label = label;
         Help = help;
+        NullValueLabel = nullValueLabel;
+        NullActionLabel = nullActionLabel;
         Members = members;
         DefaultValue = defaultValue;
         Unit = unit;
@@ -173,6 +177,11 @@ public sealed class ProcessingOptionDescriptor
     public string Label { get; }
 
     public string Help { get; }
+
+    /// <summary>The operator-facing meaning of an unset nullable number.</summary>
+    public string NullValueLabel { get; }
+
+    public string NullActionLabel { get; }
 
     /// <summary>The effective-options members, one per value or red, green and blue for a colour.</summary>
     public ImmutableArray<string> Members { get; }
@@ -231,15 +240,20 @@ public sealed class ProcessingOptionDescriptor
         long? defaultValue,
         long minimum,
         long maximum,
-        string? unit = null)
+        string? unit = null,
+        string nullValueLabel = "Default",
+        string nullActionLabel = "Use default")
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nullValueLabel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nullActionLabel);
         if (minimum > maximum)
         {
             throw new ArgumentException("The minimum must not exceed the maximum.", nameof(minimum));
         }
         return new(key, ProcessingOptionKind.NullableWholeNumber, label, help, [member],
             ProcessingOptionValue.FromNullableWholeNumber(defaultValue), unit,
-            minimumWholeNumber: minimum, maximumWholeNumber: maximum);
+            minimumWholeNumber: minimum, maximumWholeNumber: maximum,
+            nullValueLabel: nullValueLabel, nullActionLabel: nullActionLabel);
     }
 
     public static ProcessingOptionDescriptor RealNumber(
@@ -500,10 +514,16 @@ public static class ProcessingNodeOptionsDescriptors
                 "Draw markers and resolved solar-system outlines at the existing scene positions.", true),
             ProcessingOptionDescriptor.WholeNumber("markerRadius", "markerRadius", "Marker radius",
                 "The radius of point markers; resolved bodies retain their existing outline rules.", 6, 0, 32, "px"),
+            ProcessingOptionDescriptor.NullableWholeNumber("markerValue", "markerValue", "Marker intensity",
+                "Optional grayscale override for markers and resolved outlines. Clear to restore the existing palette.",
+                null, 0, 255, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
             ProcessingOptionDescriptor.Toggle("drawLabels", "drawLabels", "Show labels",
                 "Draw eligible labels using the existing measured/expected qualification rules.", true),
             ProcessingOptionDescriptor.WholeNumber("labelScale", "labelScale", "Label scale",
                 "The existing label size multiplier.", 2, 1, 8, "×"),
+            ProcessingOptionDescriptor.NullableWholeNumber("labelValue", "labelValue", "Label intensity",
+                "Optional grayscale override for eligible labels; qualification and captions stay unchanged. Clear to restore the existing palette.",
+                null, 0, 255, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
             ProcessingOptionDescriptor.WholeNumber("maximumLabelCharacters", "maximumLabelCharacters", "Maximum label length",
                 "The total label character budget; zero hides object labels. Expected markers stay complete or the label is suppressed.", 24, 0, 64, "characters"),
             ProcessingOptionDescriptor.RealNumber("maximumLabelMagnitude", "maximumLabelMagnitude", "Maximum label magnitude",
@@ -529,8 +549,14 @@ public static class ProcessingNodeOptionsDescriptors
                 "px"),
             ProcessingOptionDescriptor.Toggle("drawImageCircle", "drawImageCircle", "Show image circle",
                 "Draw the existing projection image circle when the scene supplies one.", true),
+            ProcessingOptionDescriptor.NullableWholeNumber("imageCircleValue", "imageCircleValue", "Image circle intensity",
+                "Optional grayscale override for the image circle. Clear to restore the existing palette.",
+                null, 0, 255, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
             ProcessingOptionDescriptor.Toggle("drawCardinalDirections", "drawCardinalDirections", "Show cardinal directions",
                 "Draw the available N, E, S and W landmarks using the existing layout.", true),
+            ProcessingOptionDescriptor.NullableWholeNumber("cardinalValue", "cardinalValue", "Cardinal intensity",
+                "Optional grayscale override for N, E, S and W. Clear to restore the existing palette.",
+                null, 0, 255, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),
             ProcessingOptionDescriptor.WholeNumber("cardinalScale", "cardinalScale", "Cardinal scale",
                 "The existing cardinal-direction size multiplier.", 2, 1, 8, "×")
         ]);

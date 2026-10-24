@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
+
 - Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
 
 - Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621

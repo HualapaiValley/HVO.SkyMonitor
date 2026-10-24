@@ -171,7 +171,7 @@ public sealed class ConstellationOptionsEditorTests
         foreach (var input in cut.FindAll(".node-options input[id]"))
         {
             Assert.IsNotNull(cut.Find($"label[for='{input.Id}']"));
-            Assert.IsNotNull(cut.Find("#" + input.GetAttribute("aria-describedby")));
+            foreach (var id in input.GetAttribute("aria-describedby")!.Split(' ')) Assert.IsNotNull(cut.Find("#" + id));
         }
         foreach (var member in new[] { "drawMarkers", "drawLabels", "drawConstellationLines", "drawImageCircle", "drawCardinalDirections" })
             cut.Find("#node-options-0-" + member).Change(false);
