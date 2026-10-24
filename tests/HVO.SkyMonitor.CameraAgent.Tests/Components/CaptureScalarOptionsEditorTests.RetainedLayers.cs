@@ -20,11 +20,11 @@ public sealed partial class CaptureScalarOptionsEditorTests
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=" + section + "#" + section);
         var cut = context.Render<ProcessingGraphEditorPage>();
         var panel = cut.Find("#" + section + "[aria-label='" + title + "']");
-        Assert.HasCount(section == "cloud-layer" ? 2 : 3, panel.QuerySelectorAll("input"));
+        Assert.HasCount(section == "cloud-layer" ? 2 : 4, panel.QuerySelectorAll("input"));
         foreach (var input in panel.QuerySelectorAll("input"))
         {
             Assert.IsNotEmpty(cut.Find("label[for='" + input.Id + "']").TextContent);
-            Assert.AreEqual(input.Id + "-help", input.GetAttribute("aria-describedby"));
+            foreach (var id in input.GetAttribute("aria-describedby")!.Split(' ')) Assert.IsNotNull(cut.Find("#" + id));
         }
         cut.Find("form").Submit();
         Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));

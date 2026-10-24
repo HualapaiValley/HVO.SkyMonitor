@@ -248,8 +248,10 @@ public static class ProcessingNodeOptionsCodec
                 : new(ProcessingOptionReasonCodes.WrongType, MemberPath(path, member.Name),
                     $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}.");
         }
-        // A channel is read as CameraAgent binds it, as an unsigned byte, so a signed zero is out of range like -1.
-        return option.Kind == ProcessingOptionKind.Color && !member.Value.TryGetByte(out _)
+        // Channels and nullable byte overrides must use the producer's unsigned token spelling. Null stays valid
+        // for a nullable byte; a signed zero must be rejected and rewritten by an explicit zero edit.
+        return (option.Kind == ProcessingOptionKind.Color || option.IsUnsignedByte && member.Value.ValueKind != JsonValueKind.Null) &&
+            !member.Value.TryGetByte(out _)
             ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name), string.Create(
                 CultureInfo.InvariantCulture,
                 $"Option '{option.Key}' member '{member.Name}' must be an unsigned whole number between 0 and {MaximumChannel}."))

@@ -63,9 +63,9 @@ public sealed class ProcessingNodeOptionsForm
 
     public string NullableNumberStatus(string key)
     {
-        if (_edited.Contains(key))
-            return Get(key).Length == 0 ? "No limit (cleared)." : "Limit edited.";
         var option = Descriptor.Find(key)!;
+        if (_edited.Contains(key))
+            return Get(key).Length == 0 ? $"{option.NullValueLabel} (cleared)." : "Value edited.";
         var single = new ProcessingNodeOptionsDescriptor(Descriptor.DescriptorId, Descriptor.StepAlias + ".field",
             Descriptor.StepVersion, Descriptor.Title, Descriptor.Help, [option]);
         var result = ProcessingNodeOptionsCodec.Decode(single, Source);
@@ -73,7 +73,7 @@ public sealed class ProcessingNodeOptionsForm
             return "Correct the invalid value before saving.";
         var decoded = result.Get(key);
         return !decoded.IsExplicit ? "Not specified; using default." : decoded.Value.AsNullableWholeNumber() is null
-            ? "No limit (explicitly selected)." : "Limit set.";
+            ? $"{option.NullValueLabel} (explicitly selected)." : "Value set.";
     }
 
     public void Set(string key, string value)
