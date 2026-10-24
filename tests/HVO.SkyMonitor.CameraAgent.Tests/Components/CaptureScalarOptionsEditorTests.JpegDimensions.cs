@@ -9,7 +9,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
 {
     [TestMethod]
     [DataRow(null, "Not specified")]
-    [DataRow("null", "Explicit null")]
+    [DataRow("null", "No limit (explicitly selected)")]
     [DataRow("4096", "Limit set")]
     public void JpegDimensionPanelPreservesNoOpAndSetsOrClearsOnlyTheLimit(string? token, string status)
     {

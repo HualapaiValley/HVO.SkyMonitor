@@ -73,7 +73,7 @@ public sealed class ProcessingNodeOptionsForm
             return "Correct the invalid value before saving.";
         var decoded = result.Get(key);
         return !decoded.IsExplicit ? "Not specified; using default." : decoded.Value.AsNullableWholeNumber() is null
-            ? "Explicit null; no limit." : "Limit set.";
+            ? "No limit (explicitly selected)." : "Limit set.";
     }
 
     public void Set(string key, string value)

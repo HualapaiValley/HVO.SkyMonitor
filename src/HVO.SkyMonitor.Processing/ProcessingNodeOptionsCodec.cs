@@ -39,8 +39,8 @@ public sealed record ProcessingNodeOptionsEncodeResult(
 /// <summary>
 /// Typed reading and editing of a node's effective options against its descriptor (#1532). Members match ignoring
 /// case, as CameraAgent's options binding does. Values are strict JSON types: a whole number is an integer token, a
-/// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable whole number accepts <c>null</c>. Members the descriptor
-/// does not describe are never read or rewritten.
+/// toggle is <c>true</c> or <c>false</c>, and a quoted number is the wrong type. Only a nullable whole number accepts
+/// <c>null</c>. Members the descriptor does not describe are never read or rewritten.
 /// </summary>
 /// <remarks>
 /// The declared differences from CameraAgent's options binding: a quoted number, which the binder reads, is the wrong
