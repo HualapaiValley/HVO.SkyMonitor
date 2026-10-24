@@ -190,7 +190,7 @@ public sealed class FrameFactsPresentationTests
         Assert.IsFalse(document.RootElement.TryGetProperty("richText", out _));
         Assert.AreEqual(payload.ContentIdentitySha256, PresentationLayerPayloadJson.Parse(bytes).Payload!.ContentIdentitySha256);
         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
-        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Opaque,
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve("EnvironmentPresentationLayer", PresentationLayerProducers.MetadataProducerVersion).Status);
     }
 

@@ -18,6 +18,8 @@ public sealed partial class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>();
         Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay']"));
         Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=legacy-annotation#legacy-annotation']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=cloud-layer#cloud-layer']"));
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=environment-layer#environment-layer']"));
         Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=weather-cloud-overlay#weather-cloud-overlay']"));
     }
 
