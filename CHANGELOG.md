@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620
+
 - Edit physical projected-scene magnitude, result limit and constellation endpoint stars in the processing graph editor, then explicitly validate and activate a revision; VirtualSky module settings and retained scenes keep their existing authority. #1619
 
 - The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)

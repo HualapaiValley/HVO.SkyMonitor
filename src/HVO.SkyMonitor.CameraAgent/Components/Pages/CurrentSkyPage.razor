@@ -277,6 +277,7 @@
                     </div>
                     <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=scene-overlay#scene-overlay">Edit scene visibility, sizes and constellation style</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=legacy-annotation#legacy-annotation">Edit legacy Annotation styling</a>
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=frame-facts#frame-facts">Edit Frame Facts corner templates</a>
                         @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
                         @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Sky annotations</strong><small>expected / not retained for this capture</small></span></label> }
