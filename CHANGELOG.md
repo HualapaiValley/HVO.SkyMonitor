@@ -62,6 +62,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Explicit post-admission processing can retain measured astrometric solutions with pinned capture/catalog/calibration lineage, fit quality, failure outcomes and uncertainty withhold reasons; applying an accepted mapping is a separate bounded operation. (#1642)
+
 - Explicitly constructed Processing recipes can produce retained satellite predictions for one capture's exact exposure, with pinned source/time/configured geometry, original versus retrospective identities, and truthful unavailable, partial and budget states. Host publication and viewer integration follow separately. (#1640)
 
 - CameraAgent graph drafts expose calibration enablement, output routing and the existing strategy choices, preserving nested models and retained masters with validation and explicit activation or rollback. (#1566)
