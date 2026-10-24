@@ -13,6 +13,18 @@ documents return stable validation results and are rejected before persistence.
 Local frame storage reads and writes only versioned v2 sidecars. A malformed or
 unsupported sidecar is never reinterpreted as an unversioned document.
 
+`captureGraphRevisionId` is an additive optional manifest field containing a
+64-character SHA-256 identity. CameraAgent uses it only to recover the immutable
+local graph selected before a new physical capture's optional scene query. It
+does not participate in `ReconstructionDescriptor`, descriptor hashing, capture
+or artifact identity, reconstruction, or central graph ownership. Null is omitted,
+preserving existing manifest bytes when absent; when present it participates in
+the manifest checksum. A local retry adopts the existing sidecar binding and
+does not restage its scene. Local recovery refuses missing or never validated
+referenced revisions rather than relabeling evidence with the current graph.
+Absent fields keep the existing unbound-capture recovery behavior. This metadata
+extension introduces no database schema, file layout or upgrade protocol.
+
 `descriptor.cycleEvidence` and `descriptor.timing.setpointAppliedUtc` are
 additive optional v2 fields. Their absence means the capture did not
 record those facts; readers do not infer them from current configuration. Null
