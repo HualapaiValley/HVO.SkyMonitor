@@ -15,7 +15,7 @@ public static class RollingCombinationOptionDescriptors
             ProcessingOptionDescriptor.Toggle("enabled", "enabled", "Enable rolling combination",
                 "Run the existing rolling mean when this graph node is enabled.", true),
             ProcessingOptionDescriptor.WholeNumber("windowSize", "windowSize", "Window size",
-                "Maximum compatible frames. Centered windows require the full size, including future frames.", 5, 1, 100, "frames"),
+                $"Maximum compatible frames: 100 trailing or {ProcessingGraphCompiler.MaximumContractsPerNode} centered. Centered windows require the full size, including future frames.", 5, 1, 100, "frames"),
             ProcessingOptionDescriptor.Choice("windowKind", "windowKind", "Window kind",
                 "Trailing accepts a partial window. Centered requires positions from -(size / 2) through size - (size / 2) - 1.",
                 "Trailing", ["Trailing", "Centered"]),

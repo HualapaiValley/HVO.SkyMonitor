@@ -144,6 +144,15 @@ public static class ProcessingNodeOptionsCodec
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "blackPercentile"),
                 "BlackPercentile must be less than WhitePercentile."));
         }
+        if (diagnostics.Count == 0 && RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowKind") is { } windowKind &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "windowSize") is { } windowSize &&
+            windowKind.Value.AsText() == nameof(ProcessingGraphWindowKind.Centered) &&
+            windowSize.Value.AsWholeNumber() > ProcessingGraphCompiler.MaximumContractsPerNode)
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
+                $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
+        }
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
         {

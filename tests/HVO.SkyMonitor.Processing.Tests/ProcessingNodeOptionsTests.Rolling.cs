@@ -62,6 +62,10 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor,
             Json("{\"Recipe\":\"mixed-gain-normalized-mean\"}"),
             new Dictionary<string, ProcessingOptionValue> { ["windowSize"] = ProcessingOptionValue.FromWholeNumber(3) }).IsValid);
+        var centeredFailure = ProcessingNodeOptionsCodec.Decode(descriptor,
+            Json("{\"windowKind\":1,\"windowSize\":65}"), "node.options").Diagnostics.Single();
+        Assert.AreEqual(ProcessingOptionReasonCodes.NotAllowed, centeredFailure.Code);
+        Assert.AreEqual("node.options.windowSize", centeredFailure.Path);
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ProcessingOptionValue.FromNullableRealNumber(double.NaN));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ProcessingOptionValue.FromNullableRealNumber(double.PositiveInfinity));
     }
@@ -70,7 +74,7 @@ public sealed partial class ProcessingNodeOptionsTests
     public void RollingDraftWindowContractMustMatchOptionsOnBothHosts()
     {
         var descriptor = RollingCombinationOptionDescriptors.Descriptor;
-        foreach (var size in new[] { 1, 2, 5, 100 })
+        foreach (var size in new[] { 1, 2, 5, 64, 65, 100 })
             foreach (var kind in new[] { ProcessingGraphWindowKind.Trailing, ProcessingGraphWindowKind.Centered })
             {
                 var window = new ProcessingGraphWindowRequirement(kind,

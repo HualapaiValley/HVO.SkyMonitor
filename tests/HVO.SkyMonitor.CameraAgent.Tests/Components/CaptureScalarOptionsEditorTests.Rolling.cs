@@ -63,5 +63,22 @@ public sealed partial class CaptureScalarOptionsEditorTests
         Assert.IsEmpty(service.Created);
         Assert.IsNull(HVO.SkyMonitor.CameraAgent.Services.ProcessingNodeOptionsForm.DescriptorFor("RollingCombination",
             System.Text.Json.JsonSerializer.SerializeToElement(new { Recipe = "mixed-gain-normalized-mean", normalizationPlan = new { keep = true } })));
+
+        using var centeredContext = new BunitContext();
+        var centeredService = Configure(centeredContext, "RollingCombination", "{\"windowKind\":\"Centered\",\"windowSize\":65}");
+        var centered = centeredContext.Render<ProcessingGraphEditorPage>();
+        Assert.AreEqual("65", centered.Find("#node-options-0-windowSize").GetAttribute("value"));
+        Assert.AreEqual("Centered", centered.Find("#node-options-0-windowKind").GetAttribute("value"));
+        centered.Find("form").Submit();
+        Assert.IsTrue(centered.Find("button.btn-primary").HasAttribute("disabled"));
+        StringAssert.Contains(centered.Find(".option-errors").TextContent, "64", StringComparison.Ordinal);
+        centered.Find("#node-options-0-windowSize").Change("64");
+        centered.Find("form").Submit();
+        Assert.IsFalse(centered.Find("button.btn-primary").HasAttribute("disabled"));
+        centered.Find("#node-options-0-windowKind").Change("Trailing");
+        centered.Find("#node-options-0-windowSize").Change("100");
+        centered.Find("form").Submit();
+        Assert.IsFalse(centered.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsEmpty(centeredService.Created);
     }
 }

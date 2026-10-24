@@ -64,7 +64,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     [TestMethod]
     [DataRow("maximumIntegrationMilliseconds", "1000.5")]
-    [DataRow("maximumAgeMilliseconds", "1999.5")]
+    [DataRow("maximumAgeMilliseconds", "500.5")]
     public async Task RollingEditedLimitsRequireActivationAndRollbackReconstructsRetainedWindows(string key, string limit)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-rolling-options");
@@ -82,6 +82,8 @@ public sealed partial class ProcessingGraphOperationsTests
             };
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var originalPipeline = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(originalPipeline);
             async Task<ProcessingGraphExecutionDetail> Capture(int sequence)
             {
                 var receipt = await ingress.AcceptAsync(config,
@@ -114,7 +116,11 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(initial.ActiveRevisionId, (await Capture(3).ConfigureAwait(false)).Execution.GraphRevisionId);
             await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "test", null, CancellationToken.None).ConfigureAwait(false);
             var active = await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false);
-            var changed = await Capture(4).ConfigureAwait(false);
+            await Capture(4).ConfigureAwait(false);
+            await Capture(5).ConfigureAwait(false);
+            // Raw creation is stamped at readout (start + 1.1s), while the current frame timestamp is its start;
+            // the previous retained input is 900ms older, so the 500.5ms age limit must cut it after warm-up.
+            var changed = await Capture(6).ConfigureAwait(false);
             var changedOutput = (await store.ReadNodeAsync(changed.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
             Assert.AreEqual(draft.RevisionId, changed.Execution.GraphRevisionId);
             Assert.AreEqual(TimeSpan.FromSeconds(1), changedOutput.TotalIntegration);
@@ -123,7 +129,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreNotEqual(Sha256OfFile(Path.Combine(root, originalOutput.PayloadRelativePath)),
                 Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath)));
             var retained = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(config.Pipeline.Steps[0].Options!.Value.GetRawText(), retained!.Steps[0].Options!.Value.GetRawText());
+            Assert.AreEqual(originalPipeline.Steps[0].Options!.Value.GetRawText(), retained!.Steps[0].Options!.Value.GetRawText());
             var replay = await operations.SubmitReplayAsync(new ProcessingReplaySubmission(original.Execution.CaptureId,
                 initial.ActiveRevisionId, original.Execution.PrimaryArtifactId), "old-revision-replay", "test", CancellationToken.None).ConfigureAwait(false);
             var reconstructed = await RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);
@@ -131,7 +137,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(originalOutput.OutputIdentitySha256, reconstructed.Nodes.Single().Outputs.Single().OutputIdentitySha256);
             Assert.IsFalse(reconstructed.Nodes.Single().Outputs.Single().Published);
             await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
-            var restored = await Capture(5).ConfigureAwait(false);
+            var restored = await Capture(7).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, restored.Execution.GraphRevisionId);
             Assert.AreEqual(TimeSpan.FromSeconds(3), (await store.ReadNodeAsync(restored.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single().TotalIntegration);
             Console.WriteLine($"{key}: warmup=1s; original=3s; edited=1s; rollback=3s; old={initial.ActiveRevisionId}; new={draft.RevisionId}; payload={Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath))}");
