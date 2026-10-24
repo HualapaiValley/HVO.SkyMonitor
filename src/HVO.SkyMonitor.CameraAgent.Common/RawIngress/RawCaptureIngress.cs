@@ -569,7 +569,8 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     previewDescriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene) { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                    frame.Metadata.Scene)
+                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 var validation = previewManifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -592,7 +593,8 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     descriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene) { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                    frame.Metadata.Scene)
+                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 validation = manifest.Validate();
                 if (!validation.IsValid)
                 {

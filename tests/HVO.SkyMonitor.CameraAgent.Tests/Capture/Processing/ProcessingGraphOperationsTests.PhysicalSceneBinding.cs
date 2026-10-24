@@ -416,7 +416,9 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public async Task PhysicalSceneQuery_VirtualSkyRenderedSceneSurvivesGraphQueryEditsUnchanged()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PhysicalSceneQuery_VirtualSkyRenderedSceneSurvivesGraphQueryEditsUnchanged(bool bindingFailure)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-physical-query-virtual");
         try
@@ -424,7 +426,7 @@ public sealed partial class ProcessingGraphOperationsTests
             using var provider = CreateProvider(root);
             var config = PhysicalQueryConfiguration() with
             {
-                Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+                Module = new CameraModuleDescriptor(bindingFailure ? "vIrTuAlSkY" : "VirtualSky", JsonSerializer.SerializeToElement(new
                 {
                     maximumMagnitude = 6.5,
                     maximumResults = 3,
@@ -463,8 +465,14 @@ public sealed partial class ProcessingGraphOperationsTests
             await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false);
             var queryCount = catalog.QueryCount;
             catalog.DuringQuery = () => throw new AssertFailedException("VirtualSky host staging must never query again.");
-            await PhysicalHost(provider, config, catalog).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
+            await PhysicalHost(provider, config, catalog, bindingFailure ? new PhysicalBindingFailureIngress(ingress) : null)
+                .PublishAsync(submission, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(queryCount, catalog.QueryCount);
+            var manifest = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
+                PhysicalRawPaths(provider, config, submission).SidecarAbsolutePath).ConfigureAwait(false)).Document!.Manifest;
+            Assert.IsNotNull(manifest.Scene, "An optional binding-lookup failure must not erase the captured VirtualSky scene.");
+            Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(provenance),
+                CaptureContractJson.ComputeCanonicalJsonSha256(manifest.Scene));
             await CompleteLiveAsync(provider, config).ConfigureAwait(false);
             var execution = await PhysicalExecutionAsync(provider, config, submission).ConfigureAwait(false);
             Assert.AreEqual(draft.RevisionId, execution.Execution.GraphRevisionId);
@@ -577,8 +585,8 @@ public sealed partial class ProcessingGraphOperationsTests
         };
     }
 
-    private static CaptureHostContext PhysicalHost(ServiceProvider provider, CameraModuleConfig config, PhysicalSceneCatalog catalog)
-        => new(config, provider.GetRequiredService<IRawCaptureIngress>(), new QueryTestDistributor(),
+    private static CaptureHostContext PhysicalHost(ServiceProvider provider, CameraModuleConfig config, PhysicalSceneCatalog catalog, IRawCaptureIngress? ingress = null)
+        => new(config, ingress ?? provider.GetRequiredService<IRawCaptureIngress>(), new QueryTestDistributor(),
             projectedSceneStaging: provider.GetRequiredService<IProjectedSceneStagingStore>(),
             projectedSceneLifecycle: provider.GetRequiredService<ProjectedSceneStageLifecycleCoordinator>(),
             projectedSceneStager: new CaptureProjectedSceneStager(provider.GetRequiredService<IProjectedSceneStagingStore>(), catalog,
@@ -665,6 +673,19 @@ public sealed partial class ProcessingGraphOperationsTests
         }
         public ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(IReadOnlyCollection<string> hipparcosIds, CancellationToken cancellationToken = default)
             => _catalog.GetByHipparcosIdsAsync(hipparcosIds, cancellationToken);
+    }
+
+    private sealed class PhysicalBindingFailureIngress(IRawCaptureIngress inner) : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken) => inner.InitializeAsync(cancellationToken);
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(CameraModuleConfig configuration, CaptureLoopSubmission submission,
+            CancellationToken cancellationToken) => inner.AcceptAsync(configuration, submission, cancellationToken);
+        ValueTask<RawCaptureGraphBinding?> IRawCaptureIngress.PrepareGraphBindingAsync(CameraModuleConfig configuration,
+            CaptureLoopSubmission submission, CancellationToken cancellationToken)
+            => ValueTask.FromException<RawCaptureGraphBinding?>(new IOException("fixture transient binding lookup failure"));
+        ValueTask<RawCaptureReceipt?> IRawCaptureIngress.AcceptAsync(CameraModuleConfig configuration,
+            CaptureLoopSubmission submission, RawCaptureGraphBinding? binding, CancellationToken cancellationToken)
+            => inner.AcceptAsync(configuration, submission, binding, cancellationToken);
     }
 
     private sealed class PhysicalQueryFault(RawIngressFaultPoint target) : IRawIngressFaultInjector

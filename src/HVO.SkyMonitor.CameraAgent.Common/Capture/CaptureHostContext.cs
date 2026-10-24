@@ -60,7 +60,9 @@ internal sealed class CaptureHostContext(
             {
                 stagingFailed = true;
                 var reason = ClassifyStagingFailure(exception);
-                submission = MarkProjectedSceneUnavailable(submission, reason);
+                // A binding lookup failure must not erase VirtualSky's already captured render evidence.
+                if (!string.Equals(_configuration.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
+                    submission = MarkProjectedSceneUnavailable(submission, reason);
                 ProjectedSceneStagingOutcomes.Add(1, new KeyValuePair<string, object?>("outcome", reason));
                 (logger ?? NullLogger.Instance).ProjectedSceneStagingUnavailable(reason);
             }
