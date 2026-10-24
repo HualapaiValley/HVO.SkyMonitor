@@ -50,6 +50,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     }
 
     [TestMethod]
+    [DataRow("Annotation")]
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
@@ -82,6 +83,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     }
 
     [TestMethod]
+    [DataRow("Annotation")]
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
@@ -132,6 +134,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     }
 
     [TestMethod]
+    [DataRow("Annotation")]
     [DataRow("ImageQuality")]
     [DataRow("Telemetry")]
     [DataRow("VirtualSkyCloudObservation")]
