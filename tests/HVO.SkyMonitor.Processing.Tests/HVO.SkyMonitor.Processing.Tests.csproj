@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/*.json" Link="Fixtures/Nominal/two-starlinks/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/leap-seconds.list" Link="Fixtures/Nominal/leap-seconds.list" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/iss/track-03.json" Link="Fixtures/Nominal/iss/track-03.json" CopyToOutputDirectory="PreserveNewest" />
