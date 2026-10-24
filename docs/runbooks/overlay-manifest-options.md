@@ -31,8 +31,9 @@ selection can include a layer disabled by default.
 Preview, save a draft, validate it and explicitly activate it. Saving never
 activates. Use the graph controls to roll back to the previous revision. Restored
 edits preserve unchanged source bytes and avoid an unnecessary revision. Invalid
-rows or opacity prevent preview/save; **Use producer defaults** explicitly repairs
-an invalid collection. Review JSON before saving that replacement.
+rows or opacity prevent preview/save. **Use producer defaults** explicitly replaces
+invalid row values or a null list; duplicate option members require correction in
+pipeline JSON. Review JSON before saving a replacement.
 
 Variants, exact producer versions, dependencies and `useRichFrameFacts` remain in
 pipeline JSON. Required dependencies still apply even when a layer is disabled.
