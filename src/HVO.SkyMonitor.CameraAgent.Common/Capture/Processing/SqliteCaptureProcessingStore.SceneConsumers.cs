@@ -12,7 +12,8 @@ internal sealed record SceneConsumerInventory(
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
-    internal sealed record SatelliteConsumer(Guid ArtifactId, string PayloadRelativePath, string SidecarRelativePath, bool Satellite, bool Unavailable);
+    internal sealed record SatelliteConsumer(Guid ArtifactId, string PayloadRelativePath, string SidecarRelativePath,
+        bool Satellite, bool Unavailable, bool ProjectedScene);
 
     internal async ValueTask<bool> VerifySatelliteRawAsync(Guid captureId, Guid artifactId, string payload, string sidecar,
         CancellationToken cancellationToken)
@@ -41,7 +42,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             SELECT artifact_id, payload_relative_path, sidecar_relative_path,
                 COALESCE(node_id = $node OR product_schema_version = $source OR
                     json_extract(descriptor_json, '$.artifact.recipe.implementationVersion') = $producer, 0),
-                availability_state <> 'Available'
+                availability_state <> 'Available', product_schema_version
             FROM processing_outputs WHERE capture_id = $capture LIMIT 4097;
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
@@ -53,7 +54,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             if (rows.Count == 4096) throw new InvalidDataException("Satellite capture consumer discovery exceeds its bound.");
-            rows.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetString(1), reader.GetString(2), reader.GetBoolean(3), reader.GetBoolean(4)));
+            var schema = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5);
+            rows.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetString(1), reader.GetString(2), reader.GetBoolean(3), reader.GetBoolean(4),
+                SceneProvenance.IsRetainedProjectedSceneSchemaVersion(schema)));
         }
         return rows;
     }

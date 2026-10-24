@@ -126,7 +126,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             var inventory = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken).ConfigureAwait(false);
             var archiveHeld = await guard.HasArchivedCaptureAsync(header.CaptureId, cancellationToken).ConfigureAwait(false);
             var support = inventory.Where(static p => p.Satellite).Where(p => p.Unavailable || Exists(p.PayloadRelativePath)).ToArray();
-            var external = inventory.Any(p => !p.Satellite && (p.Unavailable || Exists(p.PayloadRelativePath)));
+            // A canonical scene is independent support, and its existing guard waits for raw to expire.
+            // Treating it as a satellite consumer would form scene -> raw -> satellite -> scene holds.
+            var external = inventory.Any(p => !p.Satellite && !p.ProjectedScene && (p.Unavailable || Exists(p.PayloadRelativePath)));
             if (support.Length > 0 || archiveHeld)
                 holds.Add(new(header.RawArtifactId, header.RawPayloadPath, header.RawSidecarPath));
             if (external || archiveHeld)

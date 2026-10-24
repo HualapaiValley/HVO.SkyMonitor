@@ -121,9 +121,11 @@ requires an explicit future reassessment path; replay preserves original inputs.
 
 Existing capture/artifact retention owns cleanup. While another canonical node
 or a retained archive artifact needs the prediction, all satellite support
-products remain held. Raw is held while prediction products remain. Once other
+products remain held. Independent canonical projected-scene support is excluded
+from that consumer test: its existing guard waits for raw, and counting it here
+would form a scene/raw/satellite hold cycle. Raw is held while prediction products remain. Once other
 products expire, a later sweep expires support products; raw then becomes
-eligible under its other holds. Only after raw and all canonical/archive
+eligible under its other holds, followed by independent scene support. Only after raw and all canonical/archive
 consumers are absent does reconciliation release the orbital reference and
 remove the intent. The orbital store protects the original provider bytes,
 normalized records and manifest while referenced. Uncertain archive history,
