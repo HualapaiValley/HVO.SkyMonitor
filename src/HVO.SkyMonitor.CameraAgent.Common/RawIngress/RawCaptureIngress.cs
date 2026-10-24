@@ -366,9 +366,58 @@ internal sealed partial class RawCaptureIngress :
         return owned;
     }
 
-    public async ValueTask<RawCaptureReceipt?> AcceptAsync(
+    async ValueTask<RawCaptureGraphBinding?> IRawCaptureIngress.PrepareGraphBindingAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => await PrepareGraphBindingAsync(configuration, submission, cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<RawCaptureGraphBinding?> PrepareGraphBindingAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+    {
+        if (_graphOperations is null || submission.Result.Frame is not { } frame) return null;
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+        var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
+        var published = File.Exists(paths.SidecarAbsolutePath);
+        string? revisionId = null;
+        if (published)
+        {
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false));
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+                manifest.Descriptor.Capture.CaptureId != ids.CaptureId ||
+                manifest.Descriptor.Artifact.ArtifactId != ids.ArtifactId ||
+                manifest.Descriptor.Capture.AgentId != configuration.AgentId ||
+                manifest.RelativeArtifactPath != paths.PayloadRelativePath)
+                throw new RawIngressConflictException("Existing immutable sidecar differs from the capture identity.");
+            revisionId = manifest.CaptureGraphRevisionId;
+        }
+        var revision = await _graphOperations.SelectLiveRevisionAsync(
+            configuration, retainedCapture: false, cancellationToken, revisionId).ConfigureAwait(false);
+        return new(revision, published);
+    }
+
+    public ValueTask<RawCaptureReceipt?> AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => AcceptAsync(configuration, submission, binding: null, cancellationToken);
+
+    ValueTask<RawCaptureReceipt?> IRawCaptureIngress.AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        RawCaptureGraphBinding? binding,
+        CancellationToken cancellationToken)
+        => AcceptAsync(configuration, submission, binding, cancellationToken);
+
+    private async ValueTask<RawCaptureReceipt?> AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        RawCaptureGraphBinding? binding,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -398,6 +447,9 @@ internal sealed partial class RawCaptureIngress :
             {
                 await _laneStore.EnsureCanAcceptAsync(frame.PixelData.Length, cancellationToken).ConfigureAwait(false);
             }
+            // Physical staging has already selected this immutable revision. Other ingress callers select once
+            // here, before publication, so the sidecar also retains the choice across a pre-journal interruption.
+            binding ??= await PrepareGraphBindingAsync(configuration, submission, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(RawIngressFaultPoint.BeforeAcceptanceLifecycleLock);
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             lifecycleAcquired = true;
@@ -441,6 +493,17 @@ internal sealed partial class RawCaptureIngress :
                     frame.PixelData,
                     identity,
                     CancellationToken.None).ConfigureAwait(false);
+                if (manifest.CaptureGraphRevisionId is not null && frame.Metadata.Scene is { } retryScene &&
+                    (manifest.Scene is null || !string.Equals(
+                        CaptureContractJson.ComputeCanonicalJsonSha256(retryScene),
+                        CaptureContractJson.ComputeCanonicalJsonSha256(manifest.Scene), StringComparison.Ordinal)))
+                    throw new RawIngressConflictException("Existing immutable scene differs from the retry evidence.");
+                if (_graphOperations is not null && manifest.CaptureGraphRevisionId is { } retainedRevision &&
+                    !string.Equals(retainedRevision, binding?.Revision.State.RevisionId, StringComparison.Ordinal))
+                {
+                    binding = new(await _graphOperations.SelectLiveRevisionAsync(
+                        configuration, retainedCapture: false, CancellationToken.None, retainedRevision).ConfigureAwait(false), true);
+                }
                 var expectedDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -506,7 +569,7 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     previewDescriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene);
+                    frame.Metadata.Scene) { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 var validation = previewManifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -529,7 +592,7 @@ internal sealed partial class RawCaptureIngress :
                     ArtifactManifestV2.CurrentSchemaVersion,
                     descriptor,
                     paths.PayloadRelativePath,
-                    frame.Metadata.Scene);
+                    frame.Metadata.Scene) { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
                 validation = manifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -573,14 +636,14 @@ internal sealed partial class RawCaptureIngress :
             };
             ProcessingLiveExecutionSeed? liveExecution = null;
             var durableConfiguration = configuration;
-            if (_graphOperations is not null)
+            if (_graphOperations is not null && binding is not null)
             {
-                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                var prepared = _graphOperations.PrepareBoundLiveExecution(
                     configuration,
                     identity.CaptureId,
                     identity.ArtifactId,
                     committedDescriptor.Timing.DurableIngressUtc,
-                    CancellationToken.None).ConfigureAwait(false);
+                    binding.Revision);
                 liveExecution = prepared.Seed;
                 durableConfiguration = prepared.Configuration;
             }
@@ -775,8 +838,9 @@ internal sealed partial class RawCaptureIngress :
             await foreach (var entry in _journal.EnumerateUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
             {
                 var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
-                if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)
+                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
                     throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
+                var descriptor = manifest.Descriptor;
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
                 var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
@@ -784,13 +848,15 @@ internal sealed partial class RawCaptureIngress :
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,
                     descriptor.Timing.DurableIngressUtc,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, manifest.CaptureGraphRevisionId).ConfigureAwait(false);
                 var envelope = existingEnvelope is null
                     ? CreateRecoveredEnvelope(prepared.Configuration, descriptor)
                     : existingEnvelope with { Configuration = prepared.Configuration };
                 var context = CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
                 await _journal.BindRecoveredLiveExecutionAsync(
-                    entry, context.Json, context.Sha256, prepared.Seed, cancellationToken).ConfigureAwait(false);
+                    entry, context.Json, context.Sha256, prepared.Seed,
+                    manifestFallback: existingEnvelope is null && manifest.CaptureGraphRevisionId is not null,
+                    cancellationToken).ConfigureAwait(false);
             }
         }
         finally

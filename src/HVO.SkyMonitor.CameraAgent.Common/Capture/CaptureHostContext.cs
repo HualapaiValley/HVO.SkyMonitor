@@ -39,12 +39,21 @@ internal sealed class CaptureHostContext(
     {
         ArgumentNullException.ThrowIfNull(submission);
         var stagingFailed = false;
+        RawCaptureGraphBinding? binding = null;
         if (projectedSceneStager is not null)
         {
             try
             {
-                submission = await projectedSceneStager.StageAsync(_configuration, submission, cancellationToken)
-                    .ConfigureAwait(false);
+                binding = await _rawCaptureIngress.PrepareGraphBindingAsync(
+                    _configuration, submission, cancellationToken).ConfigureAwait(false);
+                if (binding?.AlreadyPublished != true)
+                {
+                    var sceneConfiguration = binding is null
+                        ? _configuration
+                        : _configuration with { Pipeline = binding.Revision.Pipeline };
+                    submission = await projectedSceneStager.StageAsync(sceneConfiguration, submission, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 ProjectedSceneStagingOutcomes.Add(1, new KeyValuePair<string, object?>("outcome", "staged"));
             }
             catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
@@ -62,7 +71,7 @@ internal sealed class CaptureHostContext(
             var ingressCancellation = stagingFailed && cancellationToken.IsCancellationRequested
                 ? CancellationToken.None
                 : cancellationToken;
-            receipt = await _rawCaptureIngress.AcceptAsync(_configuration, submission, ingressCancellation).ConfigureAwait(false);
+            receipt = await _rawCaptureIngress.AcceptAsync(_configuration, submission, binding, ingressCancellation).ConfigureAwait(false);
         }
         catch
         {
