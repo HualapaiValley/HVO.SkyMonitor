@@ -193,6 +193,27 @@ public sealed class MeasuredAstrometryIntegrityTests
     }
 
     [TestMethod]
+    public async Task F4PublicationRejectsRehashedZeroConditionalCovariance()
+    {
+        var f = await Fixture.Value.ConfigureAwait(false);
+        var usable = f.Keep(a => a.CovarianceXX is > 0 && a.CovarianceYY is > 0 &&
+            a.CovarianceXX * a.CovarianceYY - a.CovarianceXY * a.CovarianceXY > 0);
+        var request = usable.Request();
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        var solution = MeasuredAstrometryJson.Parse(product.Payload);
+        Assert.AreEqual("available", solution.Uncertainty!.ConditionalFit.Status);
+        Assert.IsTrue(solution.Uncertainty.ConditionalFit.BoresightStandardErrorDegrees > 0);
+        var changed = Rehash(solution, solution.Uncertainty with
+        {
+            ConditionalFit = new("available", "available", new double[16], 0, 0, 0)
+        });
+        AssertRejected(request, product, changed, "A constrained conditional fit cannot have zero covariance.");
+        Assert.Throws<ArgumentException>(() => MeasuredAstrometryJson.ReconstructMapping(changed, usable.Calibration, usable.Associations));
+    }
+
+    [TestMethod]
     [DataRow("residual-precision")]
     [DataRow("catalog-id")]
     [DataRow("verification")]

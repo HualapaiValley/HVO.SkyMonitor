@@ -112,8 +112,10 @@ role, media/schema, supported producer name/version/implementation, recomputed
 producer-descriptor identity and immediate raw parent.
 
 `AstrometricUncertaintyEvidence` validates component status/reason consistency,
-finite symmetric positive-semidefinite 4 x 4 covariances, derived standard errors,
-and the sum required for an available total. Publication binds the native
+finite symmetric 4 x 4 covariances, derived standard errors,
+and the sum required for an available total. An available conditional fit requires
+positive-definite covariance; systematic and shared contributions may be zero or
+rank deficient. Publication binds the native
 measurement identity to the exact sorted qualified centroids and usable retained
 covariances, and binds the native readout identity, exposure/convention tuple,
 clock facts and estimator settings to frozen inputs. The native readout hash

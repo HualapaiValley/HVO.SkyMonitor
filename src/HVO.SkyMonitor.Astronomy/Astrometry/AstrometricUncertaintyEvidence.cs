@@ -31,7 +31,8 @@ public static class AstrometricUncertaintyEvidence
         if (value.ClockComponent != AstrometricUncertaintyEstimator.Clock(value.Clock))
             throw new ArgumentException("Uncertainty clock component differs from reported clock facts.", nameof(value));
 
-        foreach (var component in new[] { value.ConditionalFit, value.Systematic, value.SharedCalibration.Pose, value.Total })
+        ValidateComponent(value.ConditionalFit, value.Estimate, requirePositiveDefinite: true);
+        foreach (var component in new[] { value.Systematic, value.SharedCalibration.Pose, value.Total })
             ValidateComponent(component, value.Estimate);
         var shared = value.SharedCalibration;
         if (shared.Parameters is null || shared.Parameters.Count > 4 || shared.Parameters.Any(p => !Parameters.Contains(p, StringComparer.Ordinal)) ||
@@ -145,7 +146,8 @@ public static class AstrometricUncertaintyEvidence
             throw new ArgumentException("Uncertainty components differ from declared estimator settings.", nameof(value));
     }
 
-    private static void ValidateComponent(AstrometricPoseCovarianceComponent component, AstrometricConditionalEstimate? estimate)
+    private static void ValidateComponent(AstrometricPoseCovarianceComponent component, AstrometricConditionalEstimate? estimate,
+        bool requirePositiveDefinite = false)
     {
         if (component is null || component.Status is not (Available or Withheld) || !Text(component.ReasonCode, 128))
             throw new ArgumentException("Invalid covariance component.", nameof(component));
@@ -166,6 +168,11 @@ public static class AstrometricUncertaintyEvidence
                 if (!Close(c[i * 4 + j], c[j * 4 + i])) throw new ArgumentException("Covariance must be symmetric.", nameof(component));
         }
         var scale = c.Max(Math.Abs);
+        // A fully constrained conditional fit has positive measurement variance in every pose direction.
+        // Systematic and shared contributions may instead be zero or rank deficient.
+        if (requirePositiveDefinite && (scale == 0 ||
+            AstrometricLinearAlgebra.SymmetricPositiveDefiniteInverse(c.Select(v => v / scale).ToArray(), 4) is null))
+            throw new ArgumentException("Available conditional covariance must be positive definite.", nameof(component));
         // Normalize only for a roundoff-relative PSD test. Zero and rank-deficient systematic budgets are valid.
         if (scale > 0 && AstrometricLinearAlgebra.SymmetricEigenvalues(c.Select(v => v / scale).ToArray(), 4, 1e-30).Any(v => v < -1e-12))
             throw new ArgumentException("Covariance must be positive semidefinite.", nameof(component));

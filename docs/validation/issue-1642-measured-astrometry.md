@@ -117,13 +117,13 @@ flock -o /tmp/hvo-heavy-gate.lock timeout 180 env -u HVO_PRODUCTION_CATALOG_BUND
   --logger 'trx;LogFileName=resources.trx' --results-directory "$EVIDENCE"
 ```
 
-The affected Processing Unit selection passed **978/978** and its focused
-measured-astrometry selection passed **54/54**. Astronomy Unit passed **791/791**;
+The affected Processing Unit selection passed **979/979** and its focused
+measured-astrometry selection passed **55/55**. Astronomy Unit passed **795/795**;
 both complete Unit selections collected XPlat coverage and built Release with
 warnings as errors. Astronomy's separate Integration selection passed **2/2**.
 Changed source/test formatting verification and the operations documentation
 audit passed. The representative resource method passed once and produced the
-report above. Astronomy adds **10** retained
+report above. Astronomy adds **14** retained
 uncertainty validation cases, including native available/withheld/shared/clock
 combinations and malformed available covariance. Focused acceptance includes membership replacement, fitting/outlier and
 fitting/verification swaps, self-consistent native evidence with nonexistent or
@@ -133,14 +133,17 @@ producer descriptor/envelope parity between execution and publication.
 The available-conditional/missing-shared/missing-clock case proves legitimate
 partial-withhold output still publishes and reconstructs. Native assessment and
 uncertainty identities preserve their existing algorithms.
+Rehashed zero conditional covariance is rejected at publication and reconstruction;
+native zero and singular conditional matrices reject while zero and common-mode
+systematic budgets remain valid.
 
 Actual `dotnet test --no-build --list-tests --diag <file>` discovery is read from
 `TestDiscovery.TestFound` and `TestDiscovery.Completed` messages, once unfiltered
-and once for each primary category. Processing discovery is **All=995, Unit=978,
+and once for each primary category. Processing discovery is **All=996, Unit=979,
 Manual=17, Integration=0, Soak=0, External=0, Hardware=0**; Astronomy discovery is
-**All=798, Unit=791, Integration=2, Manual=5, Soak=0, External=0, Hardware=0**.
+**All=802, Unit=795, Integration=2, Manual=5, Soak=0, External=0, Hardware=0**.
 Category membership is disjoint and its union equals unfiltered discovery.
-The aggregate runbook totals are Unit=14049, Integration=957 and Manual=286;
+The aggregate runbook totals are Unit=14054, Integration=957 and Manual=286;
 other project inventories remain unchanged. Whole-solution discovery, broad
 correction gates and canonical aggregate coverage refresh remain the owner's
 final gate, rather than evidence inferred from these component runs.

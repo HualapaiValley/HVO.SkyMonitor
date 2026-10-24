@@ -240,6 +240,42 @@ public sealed class AstrometricUncertaintyEstimatorTests
         Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEvidence.Validate(value, f.Result.Assessment));
     }
 
+    [TestMethod]
+    [DataRow("zero")]
+    [DataRow("singular")]
+    public void RetainedConditionalCovarianceRejectsZeroAndSingularPrecision(string mutation)
+    {
+        var f = Accepted.Value;
+        var value = Estimate(f, Covariances(f, Sigma));
+        Assert.IsTrue(value.IsAvailable);
+        var covariance = mutation == "zero" ? new double[16] : Enumerable.Repeat(1e-12, 16).ToArray();
+        var estimate = value.Estimate!;
+        value = value with
+        {
+            ConditionalFit = AstrometricUncertaintyEstimator.Component(covariance,
+                AstrometricRotation.FromPose(new(estimate.BoresightAltitudeDegrees, estimate.BoresightAzimuthDegrees, estimate.RollDegrees)),
+                estimate.FocalScale),
+            IdentitySha256 = string.Empty
+        };
+        value = value with { IdentitySha256 = AstrometricIdentity.Hash(value) };
+        Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEvidence.Validate(value, f.Result.Assessment));
+    }
+
+    [TestMethod]
+    [DataRow(0d)]
+    [DataRow(.001d)]
+    public void RetainedSystematicBudgetsAllowZeroAndCommonModeCovariance(double commonModeSigma)
+    {
+        var f = Accepted.Value;
+        var options = new AstrometricUncertaintyOptions(CommonModePixelSigma: commonModeSigma);
+        var covariance = Covariances(f, Sigma);
+        var value = Estimate(f, covariance, options: options);
+        Assert.IsTrue(value.IsAvailable, value.Reason);
+        Assert.AreEqual(commonModeSigma == 0, value.Systematic.Covariance!.All(v => v == 0));
+        AstrometricUncertaintyEvidence.ValidateInputs(value, f.Result.Assessment, f.Calibration,
+            f.Detections, covariance, f.Result.Associations, AstrometricClockFacts.NotSupplied, null, new(), options);
+    }
+
     private static AstrometricFrameUncertainty Estimate(Solved f, IReadOnlyList<AstrometricPixelCovariance> covariances, AstrometricClockFacts? clock = null,
         AstrometricCalibrationCovariance? shared = null, FrameReadoutDescriptor? readout = null, AstrometricUncertaintyOptions? options = null) =>
         AstrometricUncertaintyEstimator.Estimate(f.Calibration, f.Catalog, new(), f.Result, f.Detections, covariances, clock ?? AstrometricClockFacts.NotSupplied,
