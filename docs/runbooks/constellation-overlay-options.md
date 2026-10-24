@@ -7,6 +7,10 @@ opens a draft of the active processing graph at its **Scene overlay** section
 You can also open **Operations → Pipeline → Named graphs**, select a revision,
 and choose **Draft a new revision from this one**.
 
+Graphs using the separate legacy `Annotation` step have an
+[existing Annotation styling panel](legacy-annotation-options.md), with its own
+exact-version effectiveness limits. Opening either panel does not convert a graph.
+
 1. In the `ScenePresentationLayer` node, adjust the existing visibility and scalar
    controls below. The constellation colour picker also accepts `#RRGGBB`.
 2. Give the draft a new revision label, then select **Preview plan**. Errors show
