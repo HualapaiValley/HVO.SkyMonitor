@@ -322,7 +322,7 @@ public static class PresentationMaterializationExecutor
         LayeredPresentationJson.Validate(manifest);
         PresentationProcessingProducts.ValidateReference(manifest.BaseProduct, baseArtifact, requirePackedLayout: true);
         if (manifestArtifact.ArtifactId == Guid.Empty || manifestArtifact.ProductKind != ProcessingProductKind.Metadata ||
-            manifestArtifact.SchemaVersion is not (OverlayManifestV1.CurrentSchemaVersion or TransientTrailPresentation.CompositionSchemaVersion) ||
+            manifestArtifact.SchemaVersion is not (OverlayManifestV1.CurrentSchemaVersion or TransientTrailPresentation.CompositionSchemaVersion or AstrometricDiagnosticPresentation.CompositionSchema) ||
             !string.Equals(manifestArtifact.ContentIdentitySha256, manifest.ManifestIdentitySha256, StringComparison.Ordinal) ||
             !string.Equals(manifestArtifact.MediaType, PresentationProcessingProducts.ManifestMediaType, StringComparison.OrdinalIgnoreCase) ||
             !manifestArtifact.Payload.Span.SequenceEqual(LayeredPresentationJson.Serialize(manifest)))

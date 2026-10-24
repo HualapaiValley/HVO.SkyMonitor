@@ -249,6 +249,26 @@ public static class MeasuredAstrometryJson
         return new(calibration, solution.Assessment);
     }
 
+    /// <summary>Rebuilds shared residual diagnostics from the exact retained inputs, without executing a solver.</summary>
+    public static AstrometricResidualDiagnostics ReconstructDiagnostics(MeasuredAstrometrySolutionV1 solution,
+        MeasuredAstrometryContextV1 context, MeasuredStellarAssociationsV1 measured, MeasuredAstrometryOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(solution);
+        ArgumentNullException.ThrowIfNull(options);
+        options = options with { Solver = options.Solver ?? new(), Diagnostics = options.Diagnostics ?? new(), Uncertainty = options.Uncertainty ?? new() };
+        ValidateContext(context);
+        var calibration = new AstrometricCalibration(context.Projection, context.CalibrationVersion, context.ReadoutIdentitySha256);
+        _ = ReconstructMapping(solution, calibration, measured);
+        if (!MatchesContext(solution, context, options, solution.SceneIdentitySha256))
+            throw new ArgumentException("Diagnostic context differs from the retained assessment.", nameof(context));
+        var qualified = MeasuredAstrometryRecipe.Qualified(measured);
+        return AstrometricResidualAnalyzer.Analyze(calibration, Catalog(context), options.Solver!,
+            solution.Assessment, solution.Residuals.NativeAssociations, MeasuredAstrometryRecipe.Detections(qualified),
+            covariances: MeasuredAstrometryRecipe.Covariances(qualified), options: options.Diagnostics,
+            cancellationToken: cancellationToken);
+    }
+
     internal static bool MembershipMatchesMeasured(MeasuredAstrometrySolutionV1 solution, MeasuredStellarAssociationsV1 measured)
     {
         var qualified = MeasuredAstrometryRecipe.Qualified(measured);

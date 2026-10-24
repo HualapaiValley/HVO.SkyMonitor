@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Processing;
@@ -8,7 +10,20 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 /// <summary>Capture-bound evidence only. A previous fit is never projected onto a new capture by this read API.</summary>
 public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availability, string Reason,
     Guid? ArtifactId = null, string? SolutionIdentitySha256 = null, string? GeometryBasis = null,
-    MeasuredAstrometrySolutionV1? Solution = null);
+    MeasuredAstrometrySolutionV1? Solution = null)
+{
+    // In-process verified projections only: never serialize catalog rows, measured inputs or raw buffers to the UI.
+    [JsonIgnore] public AstrometricMapping? Mapping { get; init; }
+    [JsonIgnore] public AstrometricResidualDiagnostics? Diagnostics { get; init; }
+    [JsonIgnore] public ReconstructionDescriptor? SourceDescriptor { get; init; }
+    public string? CalibrationVersion { get; init; }
+    public string? ProjectionModel { get; init; }
+    public bool HorizontalFlip { get; init; }
+    public int WidthPixels { get; init; }
+    public int HeightPixels { get; init; }
+    public Guid? CompatibleBaseArtifactId { get; init; }
+    public string DiagnosticsReason { get; init; } = "Compatible measured diagnostics are unavailable.";
+}
 
 public interface ICameraAgentRetainedAstrometryService
 {
@@ -73,8 +88,24 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var options = solutionProduct.Recipe.Descriptor.Options.GetProperty("parameters").Deserialize<MeasuredAstrometryOptions>(Json)!;
             var request = RetainedAstrometryProducts.Request(raw, measured, scene, context, options, solutionProduct.Variant);
             solution = RetainedAstrometryProducts.Verify(request, solutionProduct, cancellationToken);
+            var frozen = MeasuredAstrometryJson.ParseContext(context.Payload);
+            var associations = MeasuredStellarAssociationJson.Parse(measured.Payload).Associations
+                ?? throw new InvalidDataException("Invalid retained associations.");
+            var calibration = new AstrometricCalibration(frozen.Projection, frozen.CalibrationVersion, frozen.ReadoutIdentitySha256);
             return new(captureId, "Retained", solution.Assessment.ReasonCode, solutionArtifact.ArtifactId,
-                solution.SolutionIdentitySha256, solution.Assessment.HasMeasuredMapping ? "MeasuredFit" : "Unavailable", solution);
+                solution.SolutionIdentitySha256, solution.Assessment.HasMeasuredMapping ? "MeasuredFit" : "Unavailable", solution)
+            {
+                Mapping = solution.Assessment.HasMeasuredMapping ? MeasuredAstrometryJson.ReconstructMapping(solution, calibration, associations) : null,
+                Diagnostics = solution.Assessment.HasMeasuredMapping
+                    ? MeasuredAstrometryJson.ReconstructDiagnostics(solution, frozen, associations, options, cancellationToken) : null,
+                SourceDescriptor = descriptor,
+                CalibrationVersion = frozen.CalibrationVersion,
+                ProjectionModel = frozen.Projection.Model.ToString(),
+                HorizontalFlip = frozen.Projection.HorizontalFlip,
+                WidthPixels = descriptor.Layout.Width,
+                HeightPixels = descriptor.Layout.Height,
+                DiagnosticsReason = solution.Assessment.HasMeasuredMapping ? "Source mapping to the displayed base has not been established." : "No accepted measured mapping for this capture."
+            };
 
             async ValueTask<(ProcessingArtifact Artifact, ProcessingProduct Product)> ReadProductAsync(Guid id, int maximum)
             {
@@ -112,7 +143,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 return bytes;
             }
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
             return new(captureId, "Unavailable", "retained-evidence-invalid-or-unavailable");
         }

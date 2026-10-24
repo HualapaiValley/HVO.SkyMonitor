@@ -116,3 +116,70 @@ and reconstruction seam. See [measured evidence](../validation/issue-1643-retain
 Optical review/activation UI, calibration write-back, stacking, physical
 qualification and production/full-resolution performance qualification remain
 outside this slice.
+
+## Current Sky and archived image inspection (#1644)
+
+Current Sky and `/gallery/{captureId}` read the selected capture through
+`OperationsReadV1`. The card shows retained failures as well as accepted fits;
+an absent or invalid source cannot borrow another capture's mapping. The active
+rig profile is never used to reconstruct a historical mapping. Live refreshes retry
+an assessment that has not yet been retained; completed outcomes stay immutable.
+Archived Retry image layers or Refresh measured evidence rereads the selected capture.
+The authenticated read projects only the compact solution, exact mapping and bounded shared
+residual diagnostics; catalog rows and raw buffers stay inside the read boundary.
+
+Measured stellar associations and astrometric residuals are separate typed layers,
+both initially off. Green marks fitting stars and amber marks held-out stars.
+Residual vectors run from the fitted prediction to the measured centroid at **1×**
+scale; rings locate fitted positions so subpixel vectors remain discoverable. They are neither the configured expected sky layer nor satellite
+predictions. A bounded immutable producer chain must preserve the source raster
+and exposure before these layers can be composed onto a base. A mismatch leaves
+the original manifest/base usable and withholds the measured layers. The existing
+metadata publisher retains a distinct `capture-astrometric-composition-v1`
+manifest revision and its typed layer payloads; the original manifest selector
+remains unique. Frozen export revalidates the current revision and uses those
+same payloads. It never reruns measurement or fitting on annotated pixels.
+
+Calculators use zero-based **source output** pixels, rather than scaled preview
+pixels. They require either the exact raw image or a verified compatible base.
+The retained projection already includes crop, binning, aperture and flip;
+these transforms must not be applied again. Equatorial input/output is mean of
+date at the retained exposure midpoint; horizontal coordinates are geometric,
+with no refraction. Non-finite, out-of-raster, out-of-aperture and below-horizon
+points are withheld. The card reports separately supported conditional,
+systematic, shared-calibration and total pose uncertainty and the clock bound.
+Point uncertainty is withheld; fitting/verification RMS is never promoted to a
+prediction error or an uncertainty band. No calculator writes calibration.
+
+### Reproducible virtual viewer fixture
+
+The integration test below runs actual measured production, durable publication,
+source verification, typed composition and frozen export for five 512-square
+virtual scenarios. It checks raw/base bytes remain unchanged and accepted
+calculator round trips. To preserve real products for browser inspection, first
+create registered scratch with `hvo scratch HVO.SkyMonitor 1644 viewer`, then use
+that returned directory as `HVO_ASTROMETRY_VIEWER_FIXTURE_ROOT`. It must be fresh.
+The environment variable is read **only by the test assembly**.
+
+```bash
+env -u HVO_PRODUCTION_CATALOG_BUNDLE \
+  HVO_ASTROMETRY_VIEWER_FIXTURE_ROOT="$FIXTURE_ROOT" \
+  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  flock -o /tmp/hvo-heavy-gate.lock timeout 10m \
+  dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+    --configuration Release -nodeReuse:false -p:UseSharedCompilation=false \
+    --filter 'FullyQualifiedName~RetainedAstrometry_ViewerPublishesTypedDiagnostics' \
+    --logger 'console;verbosity=normal'
+```
+
+Each `accepted`, `rejected`, `unavailable`, `budget` and `no-data` subdirectory is
+an ordinary CameraAgent raw-ingress root with real SQLite/file products.
+`viewer-fixture.json` names its capture, source/base checksums and manifest
+identity. Use that root with the existing authenticated browser host fixture or
+a capture-disabled local host, then open `/gallery/{CaptureId}`. For accepted
+evidence select Processed, enable each measured toggle separately, enter
+`X=280, Y=240`, calculate Pixel to sky, then Sky to pixel; the source coordinates
+return within `1e-7` pixels. Capture rejected/no-data cards and a narrow viewport
+as well. The parent issue owner completes screenshot and resource evidence on
+the reviewed candidate. These virtual fixtures establish software behavior,
+not physical accuracy or full-resolution qualification.
