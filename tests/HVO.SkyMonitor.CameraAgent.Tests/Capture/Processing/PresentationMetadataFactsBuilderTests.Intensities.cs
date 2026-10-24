@@ -36,8 +36,11 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         fixture.Context.BeginNode("scene", []);
         fixture.Context.RegisterProcessingProduct(fixture.Stack with
         {
-            Role = FrameArtifactRole.Metadata, Payload = bytes, SchemaVersion = scene.SchemaVersion,
-            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(bytes), ContentIdentitySha256 = scene.SceneIdentitySha256
+            Role = FrameArtifactRole.Metadata,
+            Payload = bytes,
+            SchemaVersion = scene.SchemaVersion,
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(bytes),
+            ContentIdentitySha256 = scene.SceneIdentitySha256
         });
         async Task<ProcessingProduct[]> Execute(JsonElement json)
         {
@@ -47,7 +50,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 .ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
             return fixture.Context.ProcessingOutcomes[^1].Products.ToArray();
         }
-        var source = JsonSerializer.Deserialize<JsonElement>("{ \"future\":[1e+02] }");
+        var source = JsonSerializer.Deserialize<JsonElement>("{ \"labelScale\":1, \"future\":[1e+02] }");
         var before = await Execute(source).ConfigureAwait(false);
         var index = key is "markerValue" or "labelValue" ? 0 : key == "cardinalValue" ? 1 : 2;
         foreach (var value in new[] { "0", "255" })
