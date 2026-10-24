@@ -7,10 +7,11 @@ qualification or scientific acceptance is included.
 
 ## Qualification state
 
-**VALID 0.** Both current full campaigns stopped at their quietness gates, after
-trial 2 and trial 1 respectively. No complete comparison, performance verdict or
-supported operating envelope has been established. The separate operational
-fitting run passed.
+**VALID 0.** Three current full campaigns across two hosts stopped at their
+quietness gates. No complete comparison, performance verdict or supported
+operating envelope has been established. Separate operational fitting runs
+passed on both hosts. Continuing the authorized host-move route requires a
+qualifying execution host or window.
 
 The original execution11 remains incomplete: ten source trials had quiet checks
 and individual validators return zero, but the finite work deadline stopped the
@@ -244,6 +245,61 @@ manifests independently verified after completion. This second consumed full
 allocation remains unchanged; repeated quietness failures do not justify
 relaxing the original predicate.
 
+The owner then authorized moving both comparison arms to another host using its
+normal heavy gate. A separate Linux x64 host passed fresh source/toolchain,
+capacity and read-only admission checks. Both arms retained SDK 10.0.402 and
+the original source/package/query identities. Its SDK compiler/MSBuild/config
+bytes match the original host; its different launcher and native file metadata
+are explicitly pinned. Original quietness and all numerical caps remain intact.
+
+The fresh `FIT-alt-r6` completed all 34 selected gates, seven bootstrap envelopes
+and three representative trials. Its native runner reported operational closure
+after 146.91 seconds; the separately recorded SSH transport returned zero after
+148.11 seconds. Native raw wait status zero, complete EOF, no signals, all six
+quiet boundaries, both strict release checks, the 57,344-byte postseal receipt,
+final root accounting and terminal reserve passed. Independent verification
+covered all 5,886 prepared inputs, 714 executor entries and twelve outer entries.
+The 1,109 selected native proof files matched their original hashes; an additional
+retrieval manifest records that selection. SSH client usage is transport evidence
+and is not native process resource usage.
+
+Full preparation also found four inherited seed Git reads that omitted
+`--no-optional-locks` in `allocation-copy.stdin.py`. Its actual extracted status
+argv returned clean while refreshing a stale Git index. The corrected argv
+preserved all metadata while returning clean and detecting a dirty tracked edit.
+All four seed reads now disable optional writes; fresh destination clone/fetch
+writes remain enabled. The native full guardian, standalone read-only precheck
+and projection module remain byte-identical to prior source. Historical sealed
+packets remain unchanged. The prepared report's virtual baseline count of 3,135
+is a prose typo: its unchanged sealed inventory contains 3,132 tracked files.
+
+The separately sealed `F7-alt-r6` occupied 339,546,112 allocated bytes, including
+60,227,584 bytes of complete selected read-only fitting and transport proof.
+Independent recomputation matched all three scenarios from the unchanged model.
+The selected scenario projects 1,000.75 seconds, 323,072,000 evidence bytes and
+3,883,913,216 workspace bytes, within the original caps. The adverse scenario's
+463,163,392 evidence bytes remain over the limit. These scenarios grant no
+quietness or worst-case guarantee; no fitting setup, build, cache or trial credit
+carries into the full campaign.
+
+The actual `F7-alt-r6` native runner reported failure after 133.08 seconds;
+transport returned 1 after 134.12 seconds. `quiet-after-source-t01` rejected steal
+207,617 to 207,618. Its totals are 23 passed, one failed and 95 unrun gates.
+No aggregate ran. Native raw wait status 256, exit 1, complete EOF, no signals,
+both strict releases, the 57,344-byte postseal receipt and final resource checks
+passed. All 7,027 prepared inputs, 586 executor entries and twelve outer entries
+independently verified afterward. This consumed allocation remains failed and
+unchanged, with zero comparison credit.
+
+Further read-only discovery found the checked CI runners below the original
+12-GiB available-RAM floor, an edge host outside the required architecture/RAM/
+SDK closure, another development host outside the current OOM admission, and
+unreachable desktop candidates through direct and proxy routes. Another eligible
+development host observed 21 steal ticks in a passive minute. These observations
+do not prove every future window must fail. They establish no currently verified
+alternative for completing the unchanged campaign. The owner-authorized move
+remains valid; a qualifying destination or execution window is needed.
+
 Durable native evidence is retained under
 `/home/roys/review-evidence/1188/jobs/`. Each job contains its admitted ruling,
 sealed prepared source/input manifests, `native/executor/result.json`, raw
@@ -255,6 +311,8 @@ manifest identities are:
 | `FIT-native-r4` | `66e5d066491ec58d616c55469c2fb1312423ef437f19cd23e254074f7cadb507` | Operational fit passed; three trials, no comparison credit |
 | `F7-native-r4` | `e146bc0132b487737e394a213426173161754417ceab7af523375d9e22925a66` | Quietness stop after trial 2 |
 | `F7-native-r5` | `2e0a361b909c6a1b83479ec4d1e7d5630f5c7b653acb0e9d58c4eef577551dd5` | Quietness stop after trial 1 |
+| `FIT-alt-r6` | `a9fad3185366d1a95eb6dd6796a4628fa45f0203499de6796c40cd8865cdc734` | Alternate-host operational fit passed; no comparison credit |
+| `F7-alt-r6` | `6e4b1dbad6fa3cfac97d7831b1a2bb01e29557f9fd3c6b260b38e8bda43a95a7` | Alternate-host quietness stop after trial 1 |
 
 The owning issue's append-only ledger records the recovered sources, exact
 per-file provenance, fail-first receipts and subsequent control runs. Retain all
