@@ -96,11 +96,11 @@ public sealed partial class ProcessingNodeOptionsTests
     public void JpegQualityEditsPreserveNullableResizeAndUnknownMembersByteForByte()
     {
         var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve("JpegEncoding", "packed-jpeg-v1").Descriptor!;
-        Assert.HasCount(2, descriptor.Options);
+        Assert.HasCount(3, descriptor.Options);
         var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}"));
         Assert.AreEqual(HVO.SkyMonitor.Imaging.JpegImageCodec.DefaultQuality, defaults.Get("jpegQuality").Value.AsWholeNumber());
         Assert.AreEqual("annotated-final-jpeg", defaults.Get("outputVariant").Value.AsText());
-        Assert.IsNull(descriptor.Find("maximumDimension"));
+        Assert.AreEqual(ProcessingOptionKind.NullableWholeNumber, descriptor.Find("maximumDimension")!.Kind);
         foreach (var resize in new[] { "", ", \"MaximumDimension\":null", ", \"MaximumDimension\":4096" })
         {
             var source = Json("{ \"JpegQuality\":90, \"future\":[1e+02]" + resize + " }");

@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
+
 - Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621
 
 - Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620

@@ -17,7 +17,8 @@ public enum ProcessingOptionKind
     Choice,
     Color,
     Font,
-    Glyph
+    Glyph,
+    NullableWholeNumber
 }
 
 /// <summary>A typed option value. Text, choice, font and glyph values are strings; a colour is three channels.</summary>
@@ -26,6 +27,7 @@ public readonly record struct ProcessingOptionValue
     private readonly bool _toggle;
     private readonly long _wholeNumber;
     private readonly double _realNumber;
+    private readonly long? _nullableWholeNumber;
     private readonly string? _text;
     private readonly PresentationColor _color;
 
@@ -35,7 +37,8 @@ public readonly record struct ProcessingOptionValue
         long wholeNumber = 0,
         double realNumber = 0,
         string? text = null,
-        PresentationColor color = default)
+        PresentationColor color = default,
+        long? nullableWholeNumber = null)
     {
         Kind = kind;
         _toggle = toggle;
@@ -43,6 +46,7 @@ public readonly record struct ProcessingOptionValue
         _realNumber = realNumber;
         _text = text;
         _color = color;
+        _nullableWholeNumber = nullableWholeNumber;
     }
 
     public ProcessingOptionKind Kind { get; }
@@ -51,6 +55,9 @@ public readonly record struct ProcessingOptionValue
 
     public static ProcessingOptionValue FromWholeNumber(long value)
         => new(ProcessingOptionKind.WholeNumber, wholeNumber: value);
+
+    public static ProcessingOptionValue FromNullableWholeNumber(long? value)
+        => new(ProcessingOptionKind.NullableWholeNumber, nullableWholeNumber: value);
 
     public static ProcessingOptionValue FromRealNumber(double value)
     {
@@ -74,6 +81,8 @@ public readonly record struct ProcessingOptionValue
     public bool AsToggle() => Kind == ProcessingOptionKind.Toggle ? _toggle : throw WrongKind();
 
     public long AsWholeNumber() => Kind == ProcessingOptionKind.WholeNumber ? _wholeNumber : throw WrongKind();
+
+    public long? AsNullableWholeNumber() => Kind == ProcessingOptionKind.NullableWholeNumber ? _nullableWholeNumber : throw WrongKind();
 
     public double AsRealNumber() => Kind == ProcessingOptionKind.RealNumber ? _realNumber : throw WrongKind();
 
@@ -213,6 +222,26 @@ public sealed class ProcessingOptionDescriptor
             minimumWholeNumber: minimum, maximumWholeNumber: maximum);
     }
 
+    /// <summary>A bounded whole number or explicit JSON null. An absent member uses the default without writing it.</summary>
+    public static ProcessingOptionDescriptor NullableWholeNumber(
+        string key,
+        string member,
+        string label,
+        string help,
+        long? defaultValue,
+        long minimum,
+        long maximum,
+        string? unit = null)
+    {
+        if (minimum > maximum)
+        {
+            throw new ArgumentException("The minimum must not exceed the maximum.", nameof(minimum));
+        }
+        return new(key, ProcessingOptionKind.NullableWholeNumber, label, help, [member],
+            ProcessingOptionValue.FromNullableWholeNumber(defaultValue), unit,
+            minimumWholeNumber: minimum, maximumWholeNumber: maximum);
+    }
+
     public static ProcessingOptionDescriptor RealNumber(
         string key,
         string member,
@@ -303,6 +332,10 @@ public sealed class ProcessingOptionDescriptor
                                                   value.AsWholeNumber() > MaximumWholeNumber
                 => (ProcessingOptionReasonCodes.OutOfRange, string.Create(CultureInfo.InvariantCulture,
                     $"Option '{Key}' must be between {MinimumWholeNumber} and {MaximumWholeNumber}.")),
+            ProcessingOptionKind.NullableWholeNumber when value.AsNullableWholeNumber() is { } whole &&
+                (whole < MinimumWholeNumber || whole > MaximumWholeNumber)
+                => (ProcessingOptionReasonCodes.OutOfRange, string.Create(CultureInfo.InvariantCulture,
+                    $"Option '{Key}' must be null or between {MinimumWholeNumber} and {MaximumWholeNumber}.")),
             ProcessingOptionKind.RealNumber when value.AsRealNumber() < MinimumRealNumber ||
                                                  value.AsRealNumber() > MaximumRealNumber
                 => (ProcessingOptionReasonCodes.OutOfRange, string.Create(CultureInfo.InvariantCulture,

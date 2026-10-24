@@ -25,8 +25,14 @@ switch or nested transfer editor in this slice.
 
 `JpegEncoding` uses the existing `packed-jpeg-v1` recipe. JPEG quality defaults
 to 80 and accepts integers 1–100. Its output variant defaults to
-`annotated-final-jpeg`. Nullable `MaximumDimension` and its absent/null/value
-semantics remain untouched; this panel does not change resize settings.
+`annotated-final-jpeg`. **Maximum JPEG dimension** optionally limits the longest
+side to an integer from 1–16384 pixels using the existing encoder's resize behavior;
+smaller images are never enlarged. A blank field or **Use original dimensions**
+clears an existing limit to explicit JSON null. The panel distinguishes an absent
+setting from explicit null and a numeric limit. Leaving the field untouched,
+returning it to its original value, or clearing an already absent setting preserves
+the original options bytes. Clearing the limit changes no quality, route or
+preview-transfer setting.
 All three shared recipes remain semantic version 1.0.0.
 
 Unknown members, explicit defaults, numeric spelling and source formatting are
@@ -36,6 +42,6 @@ Use **Preview plan → Save immutable draft → Validate → Activate**. Saving 
 does not change live capture. **Rollback** restores an eligible retained
 revision. Old graph definitions and retained products remain reconstructable.
 
-This is the bounded #1567 delivery, Refs #1386. New encoders, display transfers,
+This includes the bounded #1567 and #1622 deliveries, Refs #1386. New encoders, display transfers,
 precision/retention policy, automatic upgrades and physical qualification are
 outside this slice; #1386 stays open.
