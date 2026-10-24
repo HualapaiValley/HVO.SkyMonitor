@@ -5,7 +5,7 @@
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
-        <div class="option-field">
+        <div class="option-field @(option.Kind == ProcessingOptionKind.RowCollection ? "option-field--rows" : null)">
             @if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection))
             {
                 <label for="@inputId">@option.Label @option.Unit</label>
