@@ -912,7 +912,10 @@ def afterseal_terminal(rt,terminal):
  if 'identityAfterPidfd' in terminal:require(type(terminal['identityAfterPidfd']) is dict,'CHECK_TERMINAL_SHAPE','typed identity after pidfd')
  require(type(terminal['eof']) is dict and set(terminal['eof'])=={'stdout','stderr'} and all(type(v) is bool for v in terminal['eof'].values()),'CHECK_TERMINAL_SHAPE','typed stream EOF observations')
  require(all(type(terminal[k]) is list and all(type(v) is dict for v in terminal[k]) for k in ('ownSignalsSent','errors')) and (terminal['childIdentity'] is None or type(terminal['childIdentity']) is dict),'CHECK_TERMINAL_SHAPE','typed checker signal, error and identity containers')
- if terminal['actualWait'] is None:return
+ if terminal['actualWait'] is None:
+  require(not rt.wait_observations,'WAIT_REQUIRED','independently observed wait cannot be erased as UNKNOWN')
+  require(terminal['actualReturnCode'] is None,'CHECK_WAIT_STATUS','unknown wait has no return code')
+  return
  wait=terminal['actualWait'];keys={'pid','rawWaitStatus','WIFEXITED','WEXITSTATUS','WIFSIGNALED','WTERMSIG','actualReturnCode','wait4usage','rawWait4NotOwnRSS'}
  require(type(wait) is dict and set(wait)==keys and wait['rawWait4NotOwnRSS'] is True,'CHECK_WAIT_SHAPE','complete observed checker wait schema')
  require(len(rt.wait_observations)==1,'CHECK_WAIT_OBSERVATIONS','one independent actual fake wait')
@@ -1033,8 +1036,8 @@ def strict_oracle(case,state):
    if values:
     value=values[-1]
     require(value['passed'] is (code==0) or failure=='parent-close' and code==1 and any(v['passed'] is True for v in values),'PRECISE_RESULT','inner zero provisional only named close fault')
+    afterseal_terminal(rt,value['checkerTerminal'])
     if terminal is not None:
-     afterseal_terminal(rt,value['checkerTerminal'])
      require(same_json_types_and_values(value['checkerTerminal'],terminal),'EXACT_WAIT','receipt terminal types and values equal raw terminal')
     charges=value['adjacentRetentionChargedBytes'];components=value['combinedConservativeComponentsBytes']
     metas=[value['retentionJournal']]+list(value['obtainedEvidence']['artifacts'].values())+([value['checksumOutputFallback']] if 'checksumOutputFallback' in value else [])

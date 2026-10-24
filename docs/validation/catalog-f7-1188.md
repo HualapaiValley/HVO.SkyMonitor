@@ -257,12 +257,25 @@ both artifacts. The affected suite passes all 90 original controls and 119
 ordered fake gates, ten whole-execute terminal rejections, the 60 afterseal
 rejections, three-chunk reconstruction and four failure-preservation cases.
 Its 10,346,059 reconstructed snapshot bytes retain complete observations;
-the regression output totals 2,361,813 logical bytes with a 65,536-byte maximum
-record, within the unchanged 8 MiB aggregate and per-record caps. This corrects
+the first correction's regression output totals 2,361,813 logical bytes with a
+65,536-byte maximum record, within the unchanged 8 MiB aggregate and per-record
+caps. This corrects
 the private oracle; no selected executor or native measurement code changed.
 The review independently verified the real r7 typed receipts and found no
 malformed native wait. Original native packets and all failures remain unchanged;
 F1 requires no repeat performance campaign. Correction review remains required.
+
+The first correction review found F1 only partially corrected: the available
+printed terminal was still unchecked when raw-terminal serialization failed.
+New fail-first tests reproduce that path with all five original substitutions.
+Twenty printed-only schema/type mutations and three known/unknown wait checks
+now cover it. Every available printed terminal is validated independently of
+raw-file presence; an observed wait cannot be erased as UNKNOWN, and an
+unobserved wait cannot be asserted as known. The named serialization error,
+missing raw file, journal fallback and retained failure remain unchanged.
+All 23 new checks and the complete affected private suite pass within the same
+caps, including all 90 original controls and 119 ordered fake gate interactions.
+Native receipts, selected executor code, measurements and limits are untouched.
 
 Both 37-file campaign source sets match their recorded manifests. The complete
 original 621/894-entry packets and some dated serialized inventory bindings

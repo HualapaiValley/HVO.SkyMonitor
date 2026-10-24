@@ -128,14 +128,20 @@ def typed_terminal_regressions():
     return len(mutations)
 
 
-def afterseal_terminal_regressions():
+def afterseal_terminal_regressions(case_id="v5-normal-complete-owned-barrier-and-retention"):
     target = next(c for c in controls.V7_CASES
-                  if c["id"] == "v5-normal-complete-owned-barrier-and-retention")
+                  if c["id"] == case_id)
     state = controls.exercise(target)
     controls.strict_oracle(target, state)
     fs, rt = state["rt"].fs, state["rt"]
     path = "/f/executor.postseal.check-terminal.json"
-    original_node, original_output = dict(fs.nodes[path]), list(rt.output)
+    original_node = dict(fs.nodes[path]) if path in fs.nodes else None
+    original_output = list(rt.output)
+    if original_node is None:
+        check(target.get("failure") == "terminal-JSON-memory", "named raw-terminal retention failure")
+    original_terminal = (json.loads(original_node["raw"]) if original_node is not None
+                         else json.loads(original_output[-1])["checkerTerminal"])
+    channels = ("raw", "receipt", "both") if original_node is not None else ("receipt",)
     mutations = [
         ("raw-status-bool", lambda v: v["actualWait"].update(rawWaitStatus=False), "CHECK_WAIT_STATUS"),
         ("exited-int", lambda v: v["actualWait"].update(WIFEXITED=1), "CHECK_WAIT_STATUS"),
@@ -162,8 +168,8 @@ def afterseal_terminal_regressions():
     for name, mutate, predicate in mutations:
         # Exercise raw-only, receipt-only and mutually agreeing substitutions.
         # Equality between two identically malformed artifacts is no authority.
-        for channel in ("raw", "receipt", "both"):
-            value = json.loads(original_node["raw"])
+        for channel in channels:
+            value = copy.deepcopy(original_terminal)
             mutate(value)
             if channel in ("raw", "both"):
                 fs.json(path, value)
@@ -181,10 +187,51 @@ def afterseal_terminal_regressions():
             else:
                 failures.append([name, channel, "malformed terminal accepted"])
             finally:
-                fs.nodes[path], rt.output[:] = dict(original_node), original_output
+                if original_node is not None:
+                    fs.nodes[path] = dict(original_node)
+                else:
+                    check(path not in fs.nodes, "missing raw terminal stays absent")
+                rt.output[:] = original_output
     check(not failures, "afterseal terminal regressions: " + json.dumps(failures))
     controls.strict_oracle(target, state)
-    return len(mutations) * 3
+    return len(mutations) * len(channels)
+
+
+def afterseal_unretained_terminal_regressions():
+    return afterseal_terminal_regressions("v5-checker-terminal-JSON-MemoryError")
+
+
+def afterseal_wait_presence_regressions():
+    target = next(c for c in controls.V7_CASES if c.get("failure") == "terminal-JSON-memory")
+    state = controls.exercise(target)
+    controls.strict_oracle(target, state)
+    rt = state["rt"]
+    original_output = list(rt.output)
+    original_observations = list(rt.wait_observations)
+    receipt = json.loads(original_output[-1])
+    receipt["checkerTerminal"].update(actualWait=None, actualReturnCode=None)
+    rt.output[-1] = json.dumps(receipt)
+    failures = []
+    actions = [("observed-wait-erased", state, "WAIT_REQUIRED")]
+    # A real observation cannot be invented by a printed known-wait object.
+    unobserved = controls.exercise(target)
+    controls.strict_oracle(target, unobserved)
+    unobserved["rt"].wait_observations = []
+    actions.append(("unobserved-wait-asserted", unobserved, "CHECK_WAIT_OBSERVATIONS"))
+    unknown_case = next(c for c in controls.V7_CASES
+                        if c.get("route") == "afterseal" and c.get("checker") == "wait-unknown")
+    unknown = controls.exercise(unknown_case)
+    controls.strict_oracle(unknown_case, unknown)
+    unknown["rt"].wait_observations = copy.deepcopy(original_observations)
+    actions.append(("observed-wait-marked-unknown", unknown, "WAIT_REQUIRED"))
+    for name, changed_state, predicate in actions:
+        case = unknown_case if changed_state is unknown else target
+        try:
+            reject(lambda: controls.strict_oracle(case, changed_state), predicate)
+        except AssertionError as error:
+            failures.append([name, str(error)])
+    check(not failures, "afterseal wait-presence regressions: " + json.dumps(failures))
+    return len(actions)
 
 
 def codec_regressions(root):
@@ -333,6 +380,8 @@ def main(output_root):
     summary = verify_all90(root / "all90")
     summary["extraTypedTerminalRejections"] = typed_terminal_regressions()
     summary["aftersealTypedTerminalRejections"] = afterseal_terminal_regressions()
+    summary["aftersealUnretainedTerminalRejections"] = afterseal_unretained_terminal_regressions()
+    summary["aftersealWaitPresenceRejections"] = afterseal_wait_presence_regressions()
     summary["roundtripChunkCount"] = codec_regressions(root / "codec")
     summary["failurePreservationCases"] = failure_regressions(root / "failures")
     files = [p for p in root.rglob("*") if p.is_file()]

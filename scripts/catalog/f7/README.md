@@ -54,6 +54,10 @@ terminal discriminators. Its changes from recovered v7 are:
   Compare raw and printed terminals by both type and value. Sixty fail-first
   rejection cases cover raw-only, receipt-only and matching corruptions of
   both; Python's Boolean/integer equality cannot grant terminal credit.
+  Twenty more cases validate the printed terminal when raw-terminal retention
+  fails, and three cases require known/unknown waits to agree with independent
+  observations. Available printed evidence is checked even when raw evidence
+  is absent; the original serialization failure and journal remain retained.
 - Reset publication progress per case so an early failure cannot cite the
   previous case's evidence.
 - Encode the complete snapshot JSON with deterministic gzip, then publish
