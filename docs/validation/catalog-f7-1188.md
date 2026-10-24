@@ -255,7 +255,35 @@ hashes. New packet seals and original historical seals must stay distinct.
 
 ## Local validation and retained execution history
 
-The Tier C candidate gate passed on
+After merging target `6a1e13bd1c8942ec55c2ce7ba7d1e8b5ded505d3`, the
+complete Tier C candidate gate passed on
+`34bd74d985a94db88e32b12c39b2de2721cfa67e` at 2026-10-24 18:08:50 UTC.
+Its selector, `scripts/ci:classify pull_request 6a1e13bd 34bd74d9`, returned
+`mode=full`, `complete=true`, all component lanes and
+catalog/deployment/shards selected, with installer unselected. Both restores,
+warning-clean Debug and Release builds, format, package audit and all four
+CI-control guards passed. Docker-disabled Unit passed **14,188 cases with 124
+selected skips**; Integration passed **973 cases**. These totals come from all
+21 projects' TRX outcomes, checked against category inventories, and exclude
+stdout discovery-only skips.
+
+All 23 canonical coverage slots were joined through their TRX attachments.
+The first merge again failed the ReleaseTool line floor at 40.65% because
+the complete Unit gate intentionally omits the production catalog prerequisite.
+That failed report is retained. A separate focused Distribution Unit invocation
+with the exact pinned stars package passed **116/116** cases. Replacing only
+its coverage slot, with the other 22 inputs and package files unchanged,
+passed enforcement at **88.9240% line / 75.1947% branch**. ReleaseTool passed
+at **89.03% line / 62.50% branch**. The supplemental invocation does not replace
+the complete Unit totals or skips. The composite mapping SHA-256 is
+`252fb40007218633e143e4879ca834cadaab10172c3ea37de81e5267bad4893a`;
+merged report SHA-256 is
+`30f9ca57b24f4f6f90eec88137ceebce8cb405861e3caf5be07b35b1e639c9ac`.
+Later edits to this validation record do not change the tested executable tree.
+Final target synchronization and its affected validation remain separate
+lifecycle requirements.
+
+The earlier Tier C candidate gate passed on
 `dab7422b7d2a2db9bd7ffec1f085a78891072918`. Its selector was
 `scripts/ci:classify pull_request f57dfc1b dab7422b`, returning `mode=full`,
 `complete=true`, all component lanes and catalog/deployment/shards selected,
