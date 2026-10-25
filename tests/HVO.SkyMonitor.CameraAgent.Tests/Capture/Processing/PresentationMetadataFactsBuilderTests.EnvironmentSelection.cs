@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -23,6 +24,53 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     public Microsoft.VisualStudio.TestTools.UnitTesting.TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    public async Task EnvironmentProducerDeduplicatesRepeatedSourceOccurrencesWithEnabledAcquisition()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var kinds = new EnvironmentPresentationLayerProcessingStepOptions().EnvironmentalKinds;
+        var acquisition = EnvironmentSelectionAcquisition(kinds);
+        System.ComponentModel.DataAnnotations.Validator.ValidateObject(acquisition,
+            new System.ComponentModel.DataAnnotations.ValidationContext(acquisition), validateAllProperties: true);
+        var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        RegisterEnvironmentDependencies(fixture);
+        // More source occurrences than distinct enum values are legal; only effective kinds are bounded.
+        var source = JsonSerializer.SerializeToElement(new
+        {
+            widthPixels = 1936, heightPixels = 1216,
+            environmentalKinds = kinds.Reverse().Concat(Enumerable.Repeat(EnvironmentalObservationKind.AirTemperature, 13))
+        }, EnvironmentSelectionJson);
+        var sourceBytes = source.GetRawText();
+        var repeated = await Execute(source.Deserialize<EnvironmentPresentationLayerProcessingStepOptions>(EnvironmentSelectionJson)!).ConfigureAwait(false);
+        var repeatedInputs = fixture.Context.GetCurrentInputEvidence();
+        var distinct = await Execute(new() { WidthPixels = 1936, HeightPixels = 1216 }).ConfigureAwait(false);
+        CollectionAssert.AreEqual(distinct.Products.SelectMany(static product => product.Payload.ToArray()).ToArray(),
+            repeated.Products.SelectMany(static product => product.Payload.ToArray()).ToArray());
+        Assert.AreEqual(JsonSerializer.Serialize(fixture.Context.GetCurrentInputEvidence()), JsonSerializer.Serialize(repeatedInputs));
+        Assert.AreEqual(sourceBytes, source.GetRawText());
+
+        async Task<ProcessingOutcome> Execute(EnvironmentPresentationLayerProcessingStepOptions options)
+        {
+            fixture.Context.BeginNode("environment", ["scene", "preview"]);
+            await new EnvironmentPresentationLayerCaptureProcessingStep(new("environment", "EnvironmentPresentationLayer", 50), options, fixture.Builder)
+                .ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+            return fixture.Context.ProcessingOutcomes[^1];
+        }
+    }
+
+    internal static EnvironmentalAcquisitionOptions EnvironmentSelectionAcquisition(IEnumerable<EnvironmentalObservationKind> kinds) => new()
+    {
+        Enabled = true,
+        Sources = kinds.Select(kind => new EnvironmentalSourceConfiguration
+        {
+            Id = kind.ToString(), Type = "VirtualEnvironment", Kind = kind,
+            Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
+        }).ToArray()
+    };
+
+    [TestMethod]
     public async Task EnvironmentSelectionDraftActivationAndRollbackReachRetainedProducerAndSharedReconstruction()
     {
         using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
@@ -30,27 +78,16 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         var humidity = Fact(Guid.Parse("16630000-0000-0000-0000-000000000002"), EnvironmentalObservationKind.RelativeHumidity, 45, staleAfter: Epoch.AddSeconds(1));
         await CommitAsync(store, temperature).ConfigureAwait(false);
         await CommitAsync(store, humidity).ConfigureAwait(false);
-        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var acquisition = EnvironmentSelectionAcquisition(Enum.GetValues<EnvironmentalObservationKind>());
+        System.ComponentModel.DataAnnotations.Validator.ValidateObject(acquisition,
+            new System.ComponentModel.DataAnnotations.ValidationContext(acquisition), validateAllProperties: true);
+        var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
         // Capture associations are immutable evidence. Reconstruct every selection from one retained policy;
         // adding overlapping policies for the same capture is correctly rejected as ambiguous.
         await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
             fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
             fixture.Descriptor.Capture.RigId, Enum.GetValues<EnvironmentalObservationKind>(), CancellationToken.None).ConfigureAwait(false);
-        var sceneBytes = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Serialize(fixture.Scene);
-        fixture.Context.BeginNode("scene", []);
-        fixture.Context.RegisterProcessingProduct(fixture.Stack with
-        {
-            Role = FrameArtifactRole.Metadata,
-            Variant = "scene",
-            Payload = sceneBytes,
-            OutputIdentitySha256 = new string('E', 64),
-            Kind = ProcessingProductKind.Metadata,
-            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes),
-            SchemaVersion = fixture.Scene.SchemaVersion,
-            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
-        });
-        fixture.Context.BeginNode("preview", []);
-        fixture.Context.RegisterProcessingProduct(fixture.Stack with { Role = FrameArtifactRole.Preview });
+        RegisterEnvironmentDependencies(fixture);
         using var provider = ProcessingGraphOperationsTests.CreateProvider(_root!);
         await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var config = ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
@@ -164,6 +201,21 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             WriteEnvironmentRaster(name, layer);
             return (product, facts, layer, fixture.Context.GetCurrentInputEvidence());
         }
+    }
+
+    private static void RegisterEnvironmentDependencies(Fixture fixture)
+    {
+        var sceneBytes = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Serialize(fixture.Scene);
+        fixture.Context.BeginNode("scene", []);
+        fixture.Context.RegisterProcessingProduct(fixture.Stack with
+        {
+            Role = FrameArtifactRole.Metadata, Variant = "scene", Payload = sceneBytes,
+            OutputIdentitySha256 = new string('E', 64), Kind = ProcessingProductKind.Metadata,
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes),
+            SchemaVersion = fixture.Scene.SchemaVersion, ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
+        });
+        fixture.Context.BeginNode("preview", []);
+        fixture.Context.RegisterProcessingProduct(fixture.Stack with { Role = FrameArtifactRole.Preview });
     }
 
     private void WriteEnvironmentRaster(string name, PresentationLayerPayloadV1 layer)

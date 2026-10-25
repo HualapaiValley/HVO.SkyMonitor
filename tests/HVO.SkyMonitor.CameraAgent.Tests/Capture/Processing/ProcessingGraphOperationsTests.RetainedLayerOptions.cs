@@ -4,16 +4,75 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class ProcessingGraphOperationsTests
 {
+    [TestMethod]
+    public async Task EnvironmentSelectionOutsideEnabledAssociationPolicyIsRejectedBeforeDraftCreation()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-environment-policy");
+        try
+        {
+            var acquisition = PresentationMetadataFactsBuilderTests.EnvironmentSelectionAcquisition(
+                new EnvironmentPresentationLayerProcessingStepOptions().EnvironmentalKinds);
+            Validator.ValidateObject(acquisition, new ValidationContext(acquisition), validateAllProperties: true);
+            var settings = new Dictionary<string, string?> { ["CameraAgent:EnvironmentalAcquisition:Enabled"] = "true" };
+            for (var index = 0; index < acquisition.Sources.Count; index++)
+            {
+                var prefix = $"CameraAgent:EnvironmentalAcquisition:Sources:{index}:";
+                settings[prefix + "Id"] = acquisition.Sources[index].Id;
+                settings[prefix + "Type"] = acquisition.Sources[index].Type;
+                settings[prefix + "Kind"] = acquisition.Sources[index].Kind.ToString();
+                settings[prefix + "Triggers:0"] = "Periodic";
+            }
+            using var provider = CreateProvider(root, settings);
+            Assert.HasCount(6, provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition.Sources);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var config = CreateProjectedSceneConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig([
+                    new("Calibration", "calibration", 10, DependsOn: ["$raw"]),
+                    new("RollingCombination", "rolling", 20, DependsOn: ["calibration"]),
+                    new("CombinedPreview", "preview", 30, DependsOn: ["rolling"]),
+                    new("ProjectedScene", "scene", 40, DependsOn: ["$raw"]),
+                    new("EnvironmentPresentationLayer", "environment", 50,
+                        JsonSerializer.Deserialize<JsonElement>("""{"widthPixels":1936,"heightPixels":1216,"future":1e+02}"""), ["scene", "preview"])
+                ])
+            };
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "environment", "2");
+            var form = model.Nodes[^1].OptionsForm!;
+            form.ClearCollection("environmentalKinds");
+            form.AddCollectionItem("environmentalKinds");
+            form.SetCollectionItem("environmentalKinds", 0, "SkyQuality");
+            Assert.IsTrue(model.TryBuild(out var edited, out _));
+            var error = Assert.ThrowsExactly<ValidationException>(() =>
+                provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(config with { Pipeline = edited }));
+            StringAssert.Contains(error.Message, "SkyQuality");
+            StringAssert.Contains(error.Message, "configured association policy");
+            await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
+                await operations.CreateRevisionAsync("environment", "2", edited, "unsupported", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
+            Assert.AreEqual(config.Pipeline.Steps[^1].Options!.Value.GetRawText(),
+                (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     [DataRow("CloudPresentationLayer", "lineThickness", "4", "9")]
     [DataRow("EnvironmentPresentationLayer", "inset", "32", "65")]
