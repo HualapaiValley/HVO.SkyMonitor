@@ -73,7 +73,7 @@
                             <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" @onclick="() => CollectionChangedAsync(() => Form.ClearCollection(option.Key))">@option.ClearCollectionLabel</button>
                             <p role="status">@(Form.Collection(option.Key).Items.IsEmpty ? option.EmptyCollectionLabel : "Using an explicit selection.")</p>
                         }
-                        <span role="status">@Form.Collection(option.Key).Items.Length / @option.MaximumItems items</span>
+                        <span role="status">@Form.Collection(option.Key).Items.Length @(option.MaximumItems is { } maximum ? $"/ {maximum} " : null)items</span>
                     </fieldset>
                     break;
                 case ProcessingOptionKind.Color:

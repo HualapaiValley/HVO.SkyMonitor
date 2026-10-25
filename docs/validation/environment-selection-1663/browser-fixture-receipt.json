@@ -1,0 +1,14 @@
+{
+  "bootstrap.css": "d85327d99c7a3ee1f9b5d0500d1370acea3ad2db39c163c2f51f232baedbdede",
+  "theme.css": "2e034091db39ada49106025d280ccabeacbac8428bcb5668e23ee247f5a3aeaa",
+  "scoped.css": "4c1d5a4245f26c10dfc75f43267c607682370349a7dc99c91e78a5bc9f43a2db",
+  "default": {
+    "componentHtmlSha256": "f7da2979b6a95d69883e4314da852f61a7a8cf604cb7ed15f6135cca92bdb189"
+  },
+  "subset": {
+    "componentHtmlSha256": "0d36211e537f622a4290f47855507e82f3ec5bf208d9acf0b2b5b93ce2960dd7"
+  },
+  "empty": {
+    "componentHtmlSha256": "663abbc4adee194eafff9f6c7d2c47576039ad50aee7e2392d3cc195769c6df9"
+  }
+}

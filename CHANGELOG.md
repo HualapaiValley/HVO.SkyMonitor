@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
+
 - Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)
 
 - Explicitly upgrade scene-overlay graph drafts to choose RGB colours, packaged label/cardinal fonts and circle/crosshair markers, with validated activation, rollback and retained styling on both hosts. #1660

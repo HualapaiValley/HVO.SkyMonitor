@@ -5,6 +5,8 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>An immutable ordered selection. Source tokens travel with untouched occurrences during an edit.</summary>
 public sealed class ProcessingOptionSelection : IEquatable<ProcessingOptionSelection>
 {
+    public static ProcessingOptionSelection Empty { get; } = new([]);
+
     internal ProcessingOptionSelection(IEnumerable<string> items, IEnumerable<string?>? sourceTokens = null)
     {
         Items = items.ToImmutableArray();

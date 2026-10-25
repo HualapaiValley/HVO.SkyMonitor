@@ -80,7 +80,7 @@ public sealed class ProcessingNodeOptionsForm
     public void SetCollectionItem(string key, int index, string value) => SetCollection(key, Collection(key).Set(index, value));
     public void AddCollectionItem(string key) => SetCollection(key, Collection(key).Add(
         Descriptor.Find(key)!.Kind is ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection ? Descriptor.Find(key)!.AllowedValues[0] : string.Empty));
-    public void ClearCollection(string key) => SetCollection(key, Descriptor.Find(key)!.DefaultValue.AsCollection());
+    public void ClearCollection(string key) => SetCollection(key, ProcessingOptionSelection.Empty);
     public void RemoveCollectionItem(string key, int index) => SetCollection(key, Collection(key).RemoveAt(index));
     public void MoveCollectionItem(string key, int index, int destination) => SetCollection(key, Collection(key).Move(index, destination));
 

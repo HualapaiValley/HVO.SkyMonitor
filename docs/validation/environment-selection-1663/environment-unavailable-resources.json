@@ -1,0 +1,32 @@
+{
+  "State": "unavailable",
+  "Width": 1936,
+  "Height": 1216,
+  "SourceSha256": "BA1615981AE63D71C685759F4A8FADA59497DCF900BDE30867CE2DBA24A07472",
+  "PayloadSha256": "A3BA013C8FCBC6452A11DA0130B8CBFBEB253B4DCF3761BD3F28013762574E3B",
+  "OutputSha256": "3F11501F7597EB4076D509F928586313FAC30F3537C363C1FA750DE95B800DD3",
+  "Warmup": 3,
+  "Iterations": 15,
+  "MedianMs": 8.6065,
+  "P95Ms": 9.7961,
+  "CpuMs": 273.176,
+  "AllocatedBytesPerOperation": 7140289,
+  "WorkingSetBytes": 375681024,
+  "TimesMs": [
+    9.7961,
+    8.5739,
+    8.1404,
+    9.1769,
+    9.1558,
+    7.9404,
+    8.6651,
+    8.6065,
+    9.6898,
+    9.508,
+    9.0869,
+    8.2324,
+    8.3826,
+    8.5332,
+    8.186
+  ]
+}

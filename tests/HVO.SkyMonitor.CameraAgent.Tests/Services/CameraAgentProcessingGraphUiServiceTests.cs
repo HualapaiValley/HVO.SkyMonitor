@@ -20,6 +20,27 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
+    public async Task EnvironmentPolicyFailureIsInvalidAndExplainedWithoutExposingInternalDetails()
+    {
+        var pipeline = new CapturePipelineConfig([new("EnvironmentPresentationLayer", "environment",
+            Options: JsonSerializer.Deserialize<JsonElement>("""{"widthPixels":1936,"heightPixels":1216,"environmentalKinds":["SkyQuality"]}"""))]);
+        var failure = new ValidationException("Environmental observations SkyQuality are outside the configured association policy. /private/configuration.json");
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.CreateRevisionAsync("environment", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(failure);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>())).Throws(failure);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var saved = await service.CreateRevisionAsync("environment", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+        foreach (var result in new[] { (preview.Kind, preview.Message), (saved.Kind, saved.Message) })
+        {
+            Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+            Assert.AreEqual("Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider.", result.Message);
+        }
+    }
+
+    [TestMethod]
     [DataRow("Preview", "\"AsinhStrength\":\"4\"")]
     [DataRow("CalibratedPreview", "\"AsinhStrength\":\"4\"")]
     [DataRow("CombinedPreview", "\"AsinhStrength\":\"4\"")]
@@ -318,6 +339,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ScenePresentationLayer", "{\"labelValue\":-1}", "processing.options.out-of-range")]
     [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":true}", "processing.options.wrong-type")]
     [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[999]}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"Unknown\"]}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
     [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
@@ -353,6 +376,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
     [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
     [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"WindDirection\"]}")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
     [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexRegular\",\"pointGlyph\":\"Crosshair\"}")]
     public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)

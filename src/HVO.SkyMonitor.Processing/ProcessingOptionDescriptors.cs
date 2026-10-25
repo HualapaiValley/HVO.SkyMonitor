@@ -463,7 +463,15 @@ public sealed class ProcessingOptionDescriptor
     /// <summary>Uses the consumer's JsonStringEnumConverter, including numeric and equivalent source spellings.</summary>
     public static ProcessingOptionDescriptor EnumCollection<TEnum>(string key, string member, string label, string help)
         where TEnum : struct, Enum
+        => EnumCollection<TEnum>(key, member, label, help, [], Enum.GetValues<TEnum>().Length);
+
+    /// <summary>A consumer-specific absent-member default and optional occurrence limit; repeated source values remain intact.</summary>
+    public static ProcessingOptionDescriptor EnumCollection<TEnum>(string key, string member, string label, string help,
+        IEnumerable<TEnum> defaultValue, int? maximumItems = null)
+        where TEnum : struct, Enum
     {
+        ArgumentNullException.ThrowIfNull(defaultValue);
+        if (maximumItems is <= 0) throw new ArgumentOutOfRangeException(nameof(maximumItems));
         var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         json.Converters.Add(new JsonStringEnumConverter());
         string? Read(JsonElement token)
@@ -476,8 +484,8 @@ public sealed class ProcessingOptionDescriptor
             catch (JsonException) { return null; }
         }
         return new(key, ProcessingOptionKind.EnumCollection, label, help, [member],
-            ProcessingOptionValue.FromEnumCollection([]), allowedValues: [.. Enum.GetNames<TEnum>()],
-            maximumItems: Enum.GetValues<TEnum>().Length, readEnumItem: Read);
+            ProcessingOptionValue.FromEnumCollection(defaultValue.Select(static value => value.ToString())), allowedValues: [.. Enum.GetNames<TEnum>()],
+            maximumItems: maximumItems, readEnumItem: Read);
     }
 
     public static ProcessingOptionDescriptor Choice(

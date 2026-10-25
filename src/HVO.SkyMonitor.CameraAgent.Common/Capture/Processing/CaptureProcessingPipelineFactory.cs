@@ -6,10 +6,12 @@ using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Reflection;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -1289,6 +1291,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             if (!decoded.IsValid) throw new ValidationException(string.Join(' ', decoded.Diagnostics.Select(item => item.Message)));
         }
         var options = CreateOptionsInstance(config.Options, registration.OptionsType);
+        if (options is EnvironmentPresentationLayerProcessingStepOptions environment)
+        {
+            var acquisition = _serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition;
+            if (acquisition.Enabled)
+            {
+                var unavailable = environment.EnvironmentalKinds.Except(acquisition.Sources.Select(static source => source.Kind)).Order().ToArray();
+                if (unavailable.Length > 0)
+                    throw new ValidationException($"Environmental observations {string.Join(", ", unavailable)} are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider.");
+            }
+        }
         var effectiveOptions = SerializeEffectiveOptions(options, aliasesOnly);
         effectiveConfig = aliasesOnly
             ? config with
