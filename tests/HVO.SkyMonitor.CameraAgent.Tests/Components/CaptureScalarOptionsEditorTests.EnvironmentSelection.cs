@@ -100,5 +100,9 @@ public sealed partial class CaptureScalarOptionsEditorTests
             Assert.IsEmpty(service.Created);
             Assert.AreEqual(source, service.RevisionDetail!.Pipeline.Steps[0].Options!.Value.GetRawText());
         }
+        var form = new HVO.SkyMonitor.CameraAgent.Services.ProcessingNodeOptionsForm(HVO.SkyMonitor.Processing.RetainedLayerOptionDescriptors.Environment, null);
+        form.ClearCollection("environmentalKinds");
+        Assert.IsTrue(form.TryBuild(out var cleared, out _));
+        Assert.AreEqual(0, cleared!.Value.GetProperty("environmentalKinds").GetArrayLength());
     }
 }

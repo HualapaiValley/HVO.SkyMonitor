@@ -38,6 +38,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             Role = FrameArtifactRole.Metadata,
             Variant = "scene",
             Payload = sceneBytes,
+            OutputIdentitySha256 = new string('E', 64),
+            Kind = ProcessingProductKind.Metadata,
             ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes),
             SchemaVersion = fixture.Scene.SchemaVersion,
             ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
@@ -89,6 +91,11 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.AreNotEqual(original.Facts.Environment[0].AssociationIdentitySha256, subset.Facts.Environment[0].AssociationIdentitySha256);
         Assert.IsFalse(subset.Inputs.Any(static input => input.Name!.Contains("RelativeHumidity", StringComparison.Ordinal)));
         Assert.IsTrue(subset.Inputs.Any(static input => input.Name == "environment-observation-AirTemperature"));
+        Assert.AreEqual(subset.Facts.Environment[0].ObservationContentSha256,
+            subset.Inputs.Single(static input => input.Name == "environment-observation-AirTemperature").IdentitySha256);
+        Assert.AreEqual(subset.Facts.Environment[0].AssociationIdentitySha256,
+            subset.Inputs.Single(static input => input.Name == "environment-association-AirTemperature").IdentitySha256);
+        CollectionAssert.AreEqual(original.Product.SourceArtifactIds.ToArray(), subset.Product.SourceArtifactIds.ToArray());
         Assert.IsFalse(subset.Layer.TextBlocks.SelectMany(static block => block.Lines).Any(static line => line.Contains("HUMIDITY", StringComparison.Ordinal)));
         Assert.AreEqual(JsonSerializer.Serialize(original.Layer.TextBlocks.Where(static block => block.Anchor != PresentationTextAnchor.BottomLeft)),
             JsonSerializer.Serialize(subset.Layer.TextBlocks.Where(static block => block.Anchor != PresentationTextAnchor.BottomLeft)));
@@ -143,6 +150,12 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             var path = Path.Combine(TestContext.TestResultsDirectory!, "environment-" + name + ".json");
             await File.WriteAllBytesAsync(path, product.Payload.ToArray()).ConfigureAwait(false);
             TestContext.AddResultFile(path);
+            var factsPath = Path.Combine(TestContext.TestResultsDirectory!, "environment-" + name + "-facts.json");
+            await File.WriteAllBytesAsync(factsPath, outcome.Products.Single(product => product.Variant == options.FactsOutputVariant).Payload.ToArray()).ConfigureAwait(false);
+            TestContext.AddResultFile(factsPath);
+            var inputsPath = Path.Combine(TestContext.TestResultsDirectory!, "environment-" + name + "-inputs.json");
+            await File.WriteAllTextAsync(inputsPath, JsonSerializer.Serialize(fixture.Context.GetCurrentInputEvidence(), EnvironmentReceiptJson)).ConfigureAwait(false);
+            TestContext.AddResultFile(inputsPath);
             WriteEnvironmentRaster(name, layer);
             return (product, facts, layer, fixture.Context.GetCurrentInputEvidence());
         }
