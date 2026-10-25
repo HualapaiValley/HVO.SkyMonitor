@@ -79,7 +79,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("{\"environmentalKinds\":" + token + ",\"future\":1e+02}");
         Assert.IsFalse(ProcessingNodeOptionsCodec.Decode(descriptor, source).IsValid);
         Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
-        {}).IsValid);
+        { }).IsValid);
         Assert.IsFalse(ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"), new Dictionary<string, ProcessingOptionValue>
         { ["environmentalKinds"] = ProcessingOptionValue.FromEnumCollection(["Unknown"]) }).IsValid);
         Assert.AreEqual("{\"environmentalKinds\":" + token + ",\"future\":1e+02}", source.GetRawText());
