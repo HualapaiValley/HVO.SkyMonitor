@@ -162,7 +162,7 @@ It retains `build.log`, `interleaved.json` and `image-checks.json`. The
 ## Local gate
 
 The initial [gate and artifact receipt](environment-selection-1663/receipt.json) records
-source commits, selections, checksums and the effective results. Local evidence
+source commits, selections, checksums and the effective results. Initial candidate evidence
 is 1,167 shared Processing Unit passes and 572 effective affected CameraAgent
 passes, including the corrected producer fixture. The final 192 editor passes
 replace the affected earlier editor evidence rather than increasing that count.
@@ -196,6 +196,18 @@ and conflict behavior remains unchanged. The all-kind lifecycle fixture now
 uses valid nonempty sources matching its single retained policy; no source is
 started. The retained initial browser screenshots document `6a72c4a9`; the
 correction adds policy-prerequisite help without changing selector controls.
+
+The [correction receipt](environment-selection-1663/review1-receipt.json) pins
+the failing-before and passing-after TRX/log hashes. Final implementation
+`6c01b244` has 618 effective affected CameraAgent passes: the final 59 service
+and F2 cases replace their earlier results. The shared option selection passes
+317 cases. Warnings-as-errors Release builds, affected format verification,
+all four control guards, documentation audit and whitespace checks pass.
+Final CameraAgent Unit discovery is 7,510; the repository declared Unit total
+is 14,604. All 28 deterministic layer/facts/input/PNG artifacts reproduce
+byte for byte after the producer request correction and valid-policy fixture
+update. No rendering benchmark was repeated because its compositor and inputs
+are unchanged.
 
 No worker, queue, health check, metric label or log schema is introduced.
 Existing graph lifecycle audit records and retained canonical input identities
