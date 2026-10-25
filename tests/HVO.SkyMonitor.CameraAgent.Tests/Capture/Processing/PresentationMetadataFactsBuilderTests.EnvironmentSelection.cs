@@ -66,7 +66,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         };
         var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
         var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
-        var originalSource = config.Pipeline.Steps[^1].Options!.Value.GetRawText();
+        var originalSource = (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText();
         var original = await ExecuteActive("default").ConfigureAwait(false);
         Assert.HasCount(6, original.Facts.Environment);
         Assert.AreEqual("Stale", original.Facts.Environment.Single(static fact => fact.Kind == "RelativeHumidity").Status);
@@ -101,7 +101,9 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             subset.Inputs.Single(static input => input.Name == "environment-observation-AirTemperature").IdentitySha256);
         Assert.AreEqual(subset.Facts.Environment[0].AssociationIdentitySha256,
             subset.Inputs.Single(static input => input.Name == "environment-association-AirTemperature").IdentitySha256);
-        CollectionAssert.AreEqual(original.Product.SourceArtifactIds.ToArray(), subset.Product.SourceArtifactIds.ToArray());
+        CollectionAssert.AreEqual(original.Facts.SourceArtifactIds.ToArray(), subset.Facts.SourceArtifactIds.ToArray());
+        Assert.AreNotEqual(original.Product.SourceArtifactIds.Single(), subset.Product.SourceArtifactIds.Single(),
+            "The layer must bind the newly selected metadata-facts artifact while retaining upstream scene/stack lineage.");
         Assert.IsFalse(subset.Layer.TextBlocks.SelectMany(static block => block.Lines).Any(static line => line.Contains("HUMIDITY", StringComparison.Ordinal)));
         Assert.AreEqual(JsonSerializer.Serialize(original.Layer.TextBlocks.Where(static block => block.Anchor != PresentationTextAnchor.BottomLeft)),
             JsonSerializer.Serialize(subset.Layer.TextBlocks.Where(static block => block.Anchor != PresentationTextAnchor.BottomLeft)));
