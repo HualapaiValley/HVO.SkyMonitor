@@ -101,7 +101,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             subset.Inputs.Single(static input => input.Name == "environment-observation-AirTemperature").IdentitySha256);
         Assert.AreEqual(subset.Facts.Environment[0].AssociationIdentitySha256,
             subset.Inputs.Single(static input => input.Name == "environment-association-AirTemperature").IdentitySha256);
-        CollectionAssert.AreEqual(original.Facts.SourceArtifactIds.ToArray(), subset.Facts.SourceArtifactIds.ToArray());
+        CollectionAssert.AreEqual(original.Facts.SourceArtifactIds!.ToArray(), subset.Facts.SourceArtifactIds!.ToArray());
         Assert.AreNotEqual(original.Product.SourceArtifactIds.Single(), subset.Product.SourceArtifactIds.Single(),
             "The layer must bind the newly selected metadata-facts artifact while retaining upstream scene/stack lineage.");
         Assert.IsFalse(subset.Layer.TextBlocks.SelectMany(static block => block.Lines).Any(static line => line.Contains("HUMIDITY", StringComparison.Ordinal)));
