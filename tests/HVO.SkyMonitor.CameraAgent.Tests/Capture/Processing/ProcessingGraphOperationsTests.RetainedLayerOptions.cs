@@ -49,8 +49,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.IsTrue(model.TryBuild(out var edited, out _));
             var error = Assert.ThrowsExactly<ValidationException>(() =>
                 provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(config with { Pipeline = edited }));
-            StringAssert.Contains(error.Message, "SkyQuality");
-            StringAssert.Contains(error.Message, "configured association policy");
+            StringAssert.Contains(error.Message, "SkyQuality", StringComparison.Ordinal);
+            StringAssert.Contains(error.Message, "configured association policy", StringComparison.Ordinal);
             await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                 await operations.CreateRevisionAsync("environment", "2", edited, "unsupported", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
