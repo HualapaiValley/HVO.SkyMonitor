@@ -20,6 +20,7 @@ public sealed partial class DurableCaptureProcessingTests
     [DataRow("unavailable")]
     [DataRow("budget")]
     [DataRow("no-data")]
+    [DataRow("stack")]
     public async Task RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase(string scenario)
     {
         // Optional evidence destination belongs to this test assembly only. Production has no fixture switch.
@@ -32,7 +33,7 @@ public sealed partial class DurableCaptureProcessingTests
         }
         try
         {
-            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario == "no-data" ? "accepted" : scenario, hostCompatible: true).ConfigureAwait(false);
+            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario is "no-data" or "stack" ? "accepted" : scenario, hostCompatible: true, captureSequence: scenario == "stack" ? 61 : 1).ConfigureAwait(false);
             var descriptor = f.Fixture.Manifest.Descriptor;
             var id = descriptor.Capture.CaptureId;
             using var telemetry = new CaptureProcessingTelemetry();
@@ -49,8 +50,31 @@ public sealed partial class DurableCaptureProcessingTests
                 descriptor.Artifact.SourceArtifactIds, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc)
             { CaptureId = id, DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
             var executor = new ProcessingRecipeExecutor();
+            var inputs = new List<ProcessingArtifact> { raw };
+            if (scenario == "stack")
+            {
+                var prior = descriptor with
+                {
+                    Capture = descriptor.Capture with { CaptureId = Guid.NewGuid(), CaptureSequence = 60 },
+                    Timing = new(descriptor.Timing.ExposureStartedUtc.AddSeconds(-2), descriptor.Timing.ExposureStartedUtc.AddSeconds(-2),
+                        descriptor.Timing.ExposureEndedUtc.AddSeconds(-2), descriptor.Timing.ReadoutCompletedUtc.AddSeconds(-2), descriptor.Timing.DurableIngressUtc.AddSeconds(-2)),
+                    Artifact = descriptor.Artifact with { ArtifactId = Guid.NewGuid(), CreatedUtc = descriptor.Artifact.CreatedUtc.AddSeconds(-2) }
+                };
+                Assert.IsTrue(prior.Validate().IsValid);
+                inputs.Insert(0, raw with
+                {
+                    ArtifactId = prior.Artifact.ArtifactId,
+                    CaptureId = prior.Capture.CaptureId,
+                    CaptureSequence = prior.Capture.CaptureSequence,
+                    CreatedUtc = prior.Artifact.CreatedUtc,
+                    ObservationStartedUtc = prior.Timing.ExposureStartedUtc,
+                    ObservationEndedUtc = prior.Timing.ExposureEndedUtc,
+                    DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(prior)
+                });
+            }
             var rolling = (await executor.ExecuteAsync(new(BuiltInProcessingRecipes.RollingMean,
-                JsonSerializer.SerializeToElement(new { maximumFrameCount = 1 }), ProcessingInputSelector.Raw(), [raw], "rolling-mean")).ConfigureAwait(false)).Products.Single();
+                JsonSerializer.SerializeToElement(new { maximumFrameCount = 2 }), ProcessingInputSelector.Raw(), inputs, "rolling-mean")).ConfigureAwait(false)).Products.Single();
+            Assert.AreEqual(TimeSpan.FromSeconds(scenario == "stack" ? 2 : 1), rolling.TotalIntegration);
             ProcessingArtifact Artifact(ProcessingProduct p) => new(ProcessingIdentity.CreateArtifactId(p.OutputIdentitySha256), p.Role, p.Variant,
                 p.Recipe.IdentitySha256, p.MediaType, p.Layout, p.Payload, raw.CreatedUtc, p.TotalIntegration, p.Compatibility,
                 raw.CaptureSequence, p.SourceArtifactIds, raw.ObservationStartedUtc, raw.ObservationEndedUtc)
@@ -81,14 +105,19 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
             using var artifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
             using var retained = new CameraAgentRetainedAstrometryService(store, artifacts);
-            if (scenario == "accepted")
+            if (scenario is "accepted" or "stack")
             {
                 var verified = await retained.GetAsync(id, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual("Retained", verified.Availability, verified.Reason);
                 Assert.AreEqual(AstrometricAssessmentStatus.Accepted, verified.Solution!.Assessment.Status);
                 var composed = await persistence.PublishAstrometricCompositionAsync(id,
                     ProcessingIdentity.CreateArtifactId(manifest.OutputIdentitySha256), verified, CancellationToken.None).ConfigureAwait(false);
-                Assert.AreEqual(previewArtifact.ArtifactId, composed.Evidence.CompatibleBaseArtifactId, composed.Evidence.DiagnosticsReason);
+                if (scenario == "stack")
+                {
+                    Assert.IsNull(composed.Evidence.CompatibleBaseArtifactId, "Two exposures cannot use one capture's midpoint mapping.");
+                    Assert.AreEqual(ProcessingIdentity.CreateArtifactId(manifest.OutputIdentitySha256), composed.ManifestArtifactId);
+                }
+                else Assert.AreEqual(previewArtifact.ArtifactId, composed.Evidence.CompatibleBaseArtifactId, composed.Evidence.DiagnosticsReason);
             }
             var layers = new CameraAgentLayeredPresentationService(store, artifacts, persistence: persistence, astrometry: retained);
             var first = await layers.GetAsync(id, CancellationToken.None).ConfigureAwait(false);
@@ -97,6 +126,7 @@ public sealed partial class DurableCaptureProcessingTests
             var shown = first.Presentation;
             Assert.IsNotNull(shown.Astrometry);
             Assert.AreEqual(scenario == "accepted" ? 2 : 0, shown.Layers.Count);
+            if (scenario == "stack") Assert.IsNull(shown.Astrometry.CompatibleBaseArtifactId);
             if (scenario == "accepted")
             {
                 Assert.AreEqual(previewArtifact.ArtifactId, shown.Astrometry.CompatibleBaseArtifactId, shown.Astrometry.DiagnosticsReason);

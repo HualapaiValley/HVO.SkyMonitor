@@ -8,6 +8,7 @@ public sealed partial class CurrentSkyPage
 {
     private CameraAgentRetainedAstrometry? _astrometry;
     private bool _astrometryLoading;
+    private long _astrometryReadRevision;
     private string? _calculatorResult;
     private double? _pixelX;
     private double? _pixelY;
@@ -37,6 +38,7 @@ public sealed partial class CurrentSkyPage
 
     private void ClearAstrometry()
     {
+        _astrometryReadRevision++;
         _astrometry = null;
         _astrometryLoading = false;
         _calculatorResult = null;
@@ -45,6 +47,8 @@ public sealed partial class CurrentSkyPage
 
     private void ApplyAstrometry(Guid captureId, CameraAgentRetainedAstrometry value)
     {
+        // Layer evidence supersedes any earlier standalone read for this capture, including its error path.
+        _astrometryReadRevision++;
         if (value.CaptureId != captureId || value.Solution is { } solution &&
             (solution.Assessment.Frame.CaptureId != captureId || FactCapture?.ExposureStartedUtc != solution.Assessment.Frame.ExposureStartUtc ||
                 value.SourceDescriptor is { } source &&
@@ -60,6 +64,7 @@ public sealed partial class CurrentSkyPage
     {
         if (_astrometry?.Solution is not null || _astrometryLoading || _accessDenied || cancellation.IsCancellationRequested) return;
         _astrometryLoading = true;
+        var revision = ++_astrometryReadRevision;
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
@@ -69,7 +74,7 @@ public sealed partial class CurrentSkyPage
             {
                 // Authorization revocation is never hidden by a late response or by a changed capture.
                 if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
-                if (generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
+                if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
                 ApplyAstrometry(captureId, result.Value ?? new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });
@@ -79,7 +84,7 @@ public sealed partial class CurrentSkyPage
         {
             await InvokeAsync(() =>
             {
-                if (generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied) return;
+                if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied) return;
                 ApplyAstrometry(captureId, new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });

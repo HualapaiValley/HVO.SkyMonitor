@@ -299,7 +299,7 @@ public sealed partial class DurableCaptureProcessingTests
         ]);
     }
 
-    private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root, string scenario = "accepted", bool hostCompatible = false)
+    private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root, string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1)
     {
         var reference = await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var bytes = reference.Raw.Payload.ToArray();
@@ -322,7 +322,7 @@ public sealed partial class DurableCaptureProcessingTests
             RelativeArtifactPath = payloadRelativePath,
             Descriptor = manifest.Descriptor with
             {
-                Capture = manifest.Descriptor.Capture with { CaptureSequence = 1 },
+                Capture = manifest.Descriptor.Capture with { CaptureSequence = captureSequence },
                 Layout = reference.Raw.Layout!,
                 Timing = new(StoredTime(start), StoredTime(start), StoredTime(start.AddSeconds(1)), StoredTime(start.AddSeconds(1.1)), StoredTime(start.AddSeconds(1.2))),
                 Artifact = manifest.Descriptor.Artifact with { CreatedUtc = StoredTime(start.AddSeconds(1.2)) },
@@ -354,9 +354,11 @@ public sealed partial class DurableCaptureProcessingTests
         }
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        for (var sequence = 1; sequence < captureSequence; sequence++)
+            _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
-            descriptor.Capture.AgentId, 1, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+            descriptor.Capture.AgentId, captureSequence, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
             descriptor.Artifact.ChecksumSha256, bytes.Length, payloadRelativePath, sidecarRelativePath, manifestBytes, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
         if (hostCompatible)

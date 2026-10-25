@@ -31,7 +31,7 @@ internal sealed partial class CaptureProcessingPersistence
                 ?? throw new InvalidDataException("Invalid retained manifest.");
             var baseOutput = await RequireOutputAsync(manifest.BaseProduct.ArtifactId, captureId, cancellationToken).ConfigureAwait(false);
             if (baseOutput.Descriptor is not { } descriptor ||
-                !await HasSourcePixelMappingAsync(baseOutput, source, _store.ReadOutputByArtifactIdAsync, cancellationToken).ConfigureAwait(false))
+                !await HasSingleExposureAstrometricMappingAsync(baseOutput, source, _store.ReadOutputByArtifactIdAsync, cancellationToken).ConfigureAwait(false))
                 return (manifestArtifactId, evidence with { CompatibleBaseArtifactId = null, DiagnosticsReason = "The displayed base has no exact source/exposure mapping to the measured result." });
             var solutionOutput = await RequireOutputAsync(solutionId, captureId, cancellationToken).ConfigureAwait(false);
             var restoredSolution = await RestoreOutputAsync(solutionOutput, cancellationToken).ConfigureAwait(false);
@@ -140,4 +140,51 @@ internal sealed partial class CaptureProcessingPersistence
         }
         finally { gate.Release(); }
     }
+
+    // The trail helper permits any matching ancestor. A single-capture fit needs the entire science
+    // lineage to represent that same exposure, including integration: derivative timing copies alone
+    // cannot distinguish a rolling stack from its latest raw. Keep this stricter contract local.
+    internal static async ValueTask<bool> HasSingleExposureAstrometricMappingAsync(DurableProcessingOutput output,
+        ReconstructionDescriptor source, Func<Guid, CancellationToken, ValueTask<DurableProcessingOutput?>> readOutput,
+        CancellationToken cancellationToken)
+    {
+        if (source.Artifact.Role != FrameArtifactRole.Raw || source.Controls.EffectiveExposure <= TimeSpan.Zero)
+            return false;
+        var expected = CameraAgentRecipeExecutionAdapter.CreateCompatibility(source);
+        var examined = new HashSet<Guid>();
+        for (var remainingHops = MaximumLineageHops; ; remainingHops--)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!examined.Add(output.ArtifactId) || output.AvailabilityState != "Available" ||
+                output.Descriptor is not { } descriptor || descriptor.Artifact.ArtifactId != output.ArtifactId ||
+                descriptor.Capture != source.Capture || output.CaptureSequence != source.Capture.CaptureSequence ||
+                descriptor.Layout.Width != source.Layout.Width || descriptor.Layout.Height != source.Layout.Height ||
+                descriptor.Timing.ExposureStartedUtc != source.Timing.ExposureStartedUtc ||
+                descriptor.Timing.ExposureEndedUtc != source.Timing.ExposureEndedUtc ||
+                descriptor.Controls.EffectiveExposure != source.Controls.EffectiveExposure ||
+                output.TotalIntegration != source.Controls.EffectiveExposure ||
+                output.Compatibility.Rig != expected.Rig || output.Compatibility.Orientation != expected.Orientation ||
+                output.Compatibility.Sensor != expected.Sensor || output.Compatibility.LocationIdentitySha256 != expected.LocationIdentitySha256)
+                return false;
+            if (output.ArtifactId == source.Artifact.ArtifactId)
+                return CaptureContractJson.ComputeDescriptorSha256(descriptor) == CaptureContractJson.ComputeDescriptorSha256(source);
+            if (remainingHops < 1 || !TransientTrailPresentation.PreservesSourcePixels(output.Artifact.Role, output.Artifact.Recipe, output.Algorithms))
+                return false;
+            var ids = descriptor.Artifact.SourceArtifactIds;
+            if (ids.Count is < 1 or > 100 || ids.Distinct().Count() != ids.Count)
+                return false;
+            // Reference calibration's first canonical input is science; its remaining inputs are masters.
+            // Every other recognized producer must have one unambiguous science input, including RollingMean.
+            if (output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ReferenceCalibration && ids.Count != 1)
+                return false;
+            var scienceId = ids[0];
+            // The retained reader already authenticated this raw descriptor and payload. Raw ingress
+            // need not have a derivative-store row; this final edge still consumes the hop budget.
+            if (scienceId == source.Artifact.ArtifactId) return true;
+            var parent = await readOutput(scienceId, cancellationToken).ConfigureAwait(false);
+            if (parent is null || parent.ArtifactId != scienceId) return false;
+            output = parent;
+        }
+    }
+
 }

@@ -3,6 +3,9 @@
 The protected target profile is **Development v1 / Preflight** and
 **Development v1 / Build and Unit**. This record describes local Tier C evidence
 and its known qualification limitation; it is not production qualification.
+[Round 1 review corrections](issue-1644-review-corrections-r1.md) record the
+subsequent merged-source fixes and affected gates; the evidence below remains
+the preserved original candidate.
 [Viewer/browser/resource evidence](issue-1644-retained-viewer.md) supplies the
 explicit software acceptance, screenshots and reproducible virtual captures.
 

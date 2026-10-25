@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Threading.Tasks.Sources;
 using Bunit;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -257,6 +258,63 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    [DataRow("accepted")]
+    [DataRow("failure")]
+    [DataRow("timeout")]
+    [DataRow("denied")]
+    public async Task OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence(string completion)
+    {
+        var accepted = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var image = WithStructuredBase();
+        var capture = image.DisplayCapture! with { CaptureId = accepted.CaptureId, ExposureStartedUtc = accepted.Solution!.Assessment.Frame.ExposureStartUtc };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
+            image with { DisplayCapture = capture, LatestCapture = capture }));
+        // Complete on the renderer, allowing the awaiting continuation to finish synchronously before assertions.
+        var pending = new DeferredAstrometryRead();
+        var standaloneReads = 0;
+        service.AstrometryHandler = (_, _) => { standaloneReads++; return pending.Read(); };
+        var enriched = accepted with { CompatibleBaseArtifactId = image.Stages.Single(s => s.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId };
+        var layerReads = 0;
+        service.PresentationHandler = (id, _) => ++layerReads == 1
+            ? ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.NotFound, "Pending layers"))
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64)) with { Astrometry = enriched }));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, standaloneReads));
+        Assert.AreEqual("Loading", cut.Find(".astrometry-card .state-chip").TextContent);
+        await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("Accepted", cut.Find(".astrometry-card .state-chip").TextContent));
+        Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        await cut.InvokeAsync(() =>
+        {
+            if (completion == "failure") pending.Complete(error: new IOException("private-path"));
+            else if (completion == "timeout") pending.Complete(error: new OperationCanceledException("read deadline"));
+            else pending.Complete(completion == "denied"
+                ? OperatorUiResult<CameraAgentRetainedAstrometry>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+                : OperatorUiResult<CameraAgentRetainedAstrometry>.Success(accepted));
+        }).ConfigureAwait(false);
+        if (completion == "denied")
+        {
+            cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".astrometry-provenance"));
+            Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        }
+        else
+        {
+            Assert.AreEqual("Accepted", cut.Find(".astrometry-card .state-chip").TextContent);
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"), "The newer compatible base must survive the older standalone completion.");
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(2, layerReads, "The newer immutable enriched snapshot remains current.");
+            Assert.AreEqual(1, standaloneReads);
+            Assert.IsFalse(cut.Markup.Contains("private-path", StringComparison.Ordinal));
+        }
+    }
+
+    [TestMethod]
     public async Task AStaleLayerAuthorizationDenialClearsTheNewCapturesSensitiveEvidence()
     {
         using var context = new BunitContext();
@@ -282,6 +340,33 @@ public sealed partial class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
         Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
         Assert.IsEmpty(cut.FindAll(".astrometry-provenance"));
+    }
+
+    // A controllable service completion drives the actual component continuation on the renderer and
+    // lets the test observe its final state without sleeps or a race against a detached read task.
+    private sealed class DeferredAstrometryRead : IValueTaskSource<OperatorUiResult<CameraAgentRetainedAstrometry>>
+    {
+        private Action<object?>? _continuation;
+        private object? _state;
+        private OperatorUiResult<CameraAgentRetainedAstrometry>? _result;
+        private Exception? _error;
+        private bool _completed;
+        public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> Read() => new(this, 0);
+        public ValueTaskSourceStatus GetStatus(short token) => _completed ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
+        public OperatorUiResult<CameraAgentRetainedAstrometry> GetResult(short token) => _error is { } error ? throw error : _result!;
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
+            _continuation = continuation;
+            _state = state;
+        }
+        public void Complete(OperatorUiResult<CameraAgentRetainedAstrometry>? result = null, Exception? error = null)
+        {
+            Assert.IsNotNull(_continuation, "The initial missing-layer response must start the pending standalone read.");
+            _result = result;
+            _error = error;
+            _completed = true;
+            _continuation(_state);
+        }
     }
 
 }

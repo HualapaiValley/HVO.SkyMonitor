@@ -58,6 +58,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
+
 - Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
 
 - Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
