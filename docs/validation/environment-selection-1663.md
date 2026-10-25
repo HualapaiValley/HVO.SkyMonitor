@@ -161,7 +161,7 @@ It retains `build.log`, `interleaved.json` and `image-checks.json`. The
 
 ## Local gate
 
-The [gate and artifact receipt](environment-selection-1663/receipt.json) records
+The initial [gate and artifact receipt](environment-selection-1663/receipt.json) records
 source commits, selections, checksums and the effective results. Local evidence
 is 1,167 shared Processing Unit passes and 572 effective affected CameraAgent
 passes, including the corrected producer fixture. The final 192 editor passes
@@ -188,7 +188,10 @@ the form and requires graph preview and draft creation to reject the selection
 before activation. Both tests were added before implementation corrections.
 
 CameraAgent graph compilation now names selections outside an enabled
-acquisition policy in a validation error. Existing in-policy missing, stale
+acquisition policy in a validation error. The UI returns a fixed, safe
+association-policy explanation for both preview and save. Its service test
+checks that internal error text cannot enter the operator message.
+Existing in-policy missing, stale
 and conflict behavior remains unchanged. The all-kind lifecycle fixture now
 uses valid nonempty sources matching its single retained policy; no source is
 started. The retained initial browser screenshots document `6a72c4a9`; the

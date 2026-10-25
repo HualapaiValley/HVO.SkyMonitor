@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
@@ -330,9 +331,9 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (Exception exception)
         {
             logger.LogInformation(exception, "CameraAgent processing graph preview rejected.");
-            return (null, exception is InvalidOperationException invalid
+            return (null, EnvironmentalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
                 ? CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(invalid)
-                : "The graph definition is invalid for this CameraAgent.");
+                : "The graph definition is invalid for this CameraAgent."));
         }
     }
 
@@ -365,6 +366,11 @@ internal sealed class CameraAgentProcessingGraphUiService(
                 : System.Collections.Immutable.ImmutableArray<ProcessingGraphDiagnostic>.Empty).ToArray();
         return diagnostics.Length == 0 ? null : string.Join(' ', diagnostics.Select(static item => $"{item.Code} {item.Path}: {item.Message}"));
     }
+
+    private static string? EnvironmentalPolicyFailure(Exception exception)
+        => exception is ValidationException && exception.Message.Contains("outside the configured association policy", StringComparison.Ordinal)
+            ? "Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider."
+            : null;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
@@ -430,6 +436,11 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (KeyNotFoundException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The graph revision was not found.");
+        }
+        catch (ValidationException exception) when (EnvironmentalPolicyFailure(exception) is not null)
+        {
+            logger.LogInformation(exception, "CameraAgent processing graph UI mutation rejected.");
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, EnvironmentalPolicyFailure(exception)!);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or InvalidDataException)
         {

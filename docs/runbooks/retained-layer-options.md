@@ -28,7 +28,7 @@ Derived provenance and missing, stale, conflicting or unavailable status remain
 bound to retained observations and association identities. When CameraAgent
 environmental acquisition is enabled, the selected kinds must belong to its
 configured association policy. **Preview plan** and **Save immutable draft**
-reject other kinds and name them; choose a supported subset or remove all
+reject other kinds with an association-policy explanation; choose a supported subset or remove all
 items. Selecting an unconfigured kind cannot enable a provider. A configured
 kind with no retained reading keeps its existing missing status.
 The existing eight

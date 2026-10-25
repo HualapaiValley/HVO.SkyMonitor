@@ -41,6 +41,7 @@ public sealed partial class ProcessingGraphOperationsTests
             };
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var retainedSource = (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText();
             var model = ProcessingGraphDraftModel.FromPipeline(config.Pipeline, initial.ActiveRevisionId, "environment", "2");
             var form = model.Nodes[^1].OptionsForm!;
             form.ClearCollection("environmentalKinds");
@@ -54,7 +55,7 @@ public sealed partial class ProcessingGraphOperationsTests
             await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                 await operations.CreateRevisionAsync("environment", "2", edited, "unsupported", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
-            Assert.AreEqual(config.Pipeline.Steps[^1].Options!.Value.GetRawText(),
+            Assert.AreEqual(retainedSource,
                 (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText());
             form.ClearCollection("environmentalKinds");
             Assert.IsTrue(model.TryBuild(out var empty, out _));

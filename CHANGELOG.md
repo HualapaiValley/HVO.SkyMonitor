@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, validated activation and rollback. #1663
+- Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
 - Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)
 
