@@ -1,0 +1,98 @@
+[
+  {
+    "Ordinal": 0,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-AirTemperature",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "E29ACA4D4DE52D452AD3DB4E7230FA8815515FA321441730B4878B4F396A1A74",
+    "Selected": false
+  },
+  {
+    "Ordinal": 1,
+    "Kind": "CanonicalContext",
+    "Name": "environment-observation-AirTemperature",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "environmental-observation-v1",
+    "IdentitySha256": "C1F46CA3E7277B9D4FAC4CBACC5D8827CB68FC14FD1F506756C66286079ED27F",
+    "Selected": false
+  },
+  {
+    "Ordinal": 2,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-RelativeHumidity",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "8E889423DC2F9821B8CCC5B3D9543B57E058BD6DDA348E5EEC8097506A158084",
+    "Selected": false
+  },
+  {
+    "Ordinal": 3,
+    "Kind": "CanonicalContext",
+    "Name": "environment-observation-RelativeHumidity",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "environmental-observation-v1",
+    "IdentitySha256": "ECFDB84E516B9F4CFF99B9602D2FD7C412CC8D5BACE0A0054EFB8BAB1FE7D952",
+    "Selected": false
+  },
+  {
+    "Ordinal": 4,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-AtmosphericPressure",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "3D4FFAD9D82B93D70234BE2128292C0C06704E603275E03C4968529142A36FF0",
+    "Selected": false
+  },
+  {
+    "Ordinal": 5,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-WindSpeed",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "B6BCFE12C3F0BA1D884EE05790F4C4B314389D5AC53B777F25D2B5AD76D73B10",
+    "Selected": false
+  },
+  {
+    "Ordinal": 6,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-RainState",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "3F3CF42F9A13ADA155C995FAEC9957BCC416298B5CCC50004EEAEFBFAD7E2166",
+    "Selected": false
+  },
+  {
+    "Ordinal": 7,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-CloudCover",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "96EF7E9FCD25F7EC63FA0D46EF97D74A0654F613B336AD0E3FDDCA092EB27824",
+    "Selected": false
+  }
+]
