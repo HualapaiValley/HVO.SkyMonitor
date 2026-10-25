@@ -25,16 +25,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var acquisition = PresentationMetadataFactsBuilderTests.EnvironmentSelectionAcquisition(
                 new EnvironmentPresentationLayerProcessingStepOptions().EnvironmentalKinds);
             Validator.ValidateObject(acquisition, new ValidationContext(acquisition), validateAllProperties: true);
-            var settings = new Dictionary<string, string?> { ["CameraAgent:EnvironmentalAcquisition:Enabled"] = "true" };
-            for (var index = 0; index < acquisition.Sources.Count; index++)
-            {
-                var prefix = $"CameraAgent:EnvironmentalAcquisition:Sources:{index}:";
-                settings[prefix + "Id"] = acquisition.Sources[index].Id;
-                settings[prefix + "Type"] = acquisition.Sources[index].Type;
-                settings[prefix + "Kind"] = acquisition.Sources[index].Kind.ToString();
-                settings[prefix + "Triggers:0"] = "Periodic";
-            }
-            using var provider = CreateProvider(root, settings);
+            using var provider = CreateProvider(root, PresentationMetadataFactsBuilderTests.EnvironmentSelectionSettings(acquisition));
             Assert.HasCount(6, provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition.Sources);
             await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var config = CreateProjectedSceneConfiguration() with
@@ -65,6 +56,12 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
             Assert.AreEqual(config.Pipeline.Steps[^1].Options!.Value.GetRawText(),
                 (await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!.Steps[^1].Options!.Value.GetRawText());
+            form.ClearCollection("environmentalKinds");
+            Assert.IsTrue(model.TryBuild(out var empty, out _));
+            var draft = await operations.CreateRevisionAsync("environment", "empty", empty, "empty", "test", null, CancellationToken.None).ConfigureAwait(false);
+            await operations.ValidateRevisionAsync(draft.RevisionId, "validate-empty", "test", null, CancellationToken.None).ConfigureAwait(false);
+            var active = await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate-empty", "test", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(draft.RevisionId, active.ActiveRevisionId);
         }
         finally
         {

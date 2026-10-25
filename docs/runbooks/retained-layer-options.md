@@ -25,7 +25,13 @@ the effective kinds, so the editor order does not set the displayed order.
 Selecting a kind does not enable a sensor or provider, query live hardware, or
 manufacture a measurement. Existing Measured, Simulated, Imported, Manual and
 Derived provenance and missing, stale, conflicting or unavailable status remain
-bound to retained observations and association identities. The existing eight
+bound to retained observations and association identities. When CameraAgent
+environmental acquisition is enabled, the selected kinds must belong to its
+configured association policy. **Preview plan** and **Save immutable draft**
+reject other kinds and name them; choose a supported subset or remove all
+items. Selecting an unconfigured kind cannot enable a provider. A configured
+kind with no retained reading keeps its existing missing status.
+The existing eight
 lines per corner, 64 characters per line and image-fit rules still apply; the
 `ENVIRONMENT` heading consumes one line, so selecting every kind does not promise
 every reading will fit. The complete selected facts remain retained even when

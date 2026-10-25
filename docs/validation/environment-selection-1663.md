@@ -22,7 +22,8 @@ An omitted member displays the existing six code defaults: AirTemperature,
 RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover.
 An explicit empty list retains no environmental readings and displays
 `ENVIRONMENT / NOT RETAINED`. All twelve existing kinds are available. The
-producer continues to sort and deduplicate effective kinds; the editor retains
+producer sorts and deduplicates effective kinds before requesting retained
+associations; the editor retains
 source order, duplicate occurrences, numeric/string enum spellings, unknown
 members and unchanged bytes. The consumer has no occurrence-count limit, so
 repeated source values are not rejected at twelve occurrences. Existing graph
@@ -121,8 +122,9 @@ metadata-facts and selected-input JSON are retained beside each PNG.
 
 ## Focused resource result
 
-The producer, facts builder and compositor implementations are unchanged from
-`409a5b02`. The absent/default and explicitly selected-default payloads are
+The compositor and layer producer implementations are unchanged from
+`409a5b02`. The facts builder now deduplicates the effective request before
+calling the existing association service (review F1). The absent/default and explicitly selected-default payloads are
 byte-identical. Their output RGB SHA-256 is
 `ED70E0A11B2FB87E89E4D3E5FCCD432F59A198DC143E85BBBB00CD52D895933D`.
 
@@ -175,6 +177,22 @@ use `flock -o /tmp/hvo-heavy-gate.lock timeout ...`, disabled node reuse and
 shared compilation. Original failed fixture/build attempts remain in the
 recorded issue scratch directory; corrected assertions distinguish explicit
 source correction, immutable association policy and immediate facts lineage.
+
+## Initial review corrections
+
+Independent review of `409a5b02..6a72c4a9` found two blocking interactions. F1's
+regression executes the actual Environment producer with enabled acquisition,
+valid nonempty sources and a repeated list exceeding twelve source occurrences.
+F2's regression edits a six-kind enabled configuration to SkyQuality through
+the form and requires graph preview and draft creation to reject the selection
+before activation. Both tests were added before implementation corrections.
+
+CameraAgent graph compilation now names selections outside an enabled
+acquisition policy in a validation error. Existing in-policy missing, stale
+and conflict behavior remains unchanged. The all-kind lifecycle fixture now
+uses valid nonempty sources matching its single retained policy; no source is
+started. The retained initial browser screenshots document `6a72c4a9`; the
+correction adds policy-prerequisite help without changing selector controls.
 
 No worker, queue, health check, metric label or log schema is introduced.
 Existing graph lifecycle audit records and retained canonical input identities

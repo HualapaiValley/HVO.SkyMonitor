@@ -39,7 +39,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         // More source occurrences than distinct enum values are legal; only effective kinds are bounded.
         var source = JsonSerializer.SerializeToElement(new
         {
-            widthPixels = 1936, heightPixels = 1216,
+            widthPixels = 1936,
+            heightPixels = 1216,
             environmentalKinds = kinds.Reverse().Concat(Enumerable.Repeat(EnvironmentalObservationKind.AirTemperature, 13))
         }, EnvironmentSelectionJson);
         var sourceBytes = source.GetRawText();
@@ -65,10 +66,26 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Enabled = true,
         Sources = kinds.Select(kind => new EnvironmentalSourceConfiguration
         {
-            Id = kind.ToString(), Type = "VirtualEnvironment", Kind = kind,
+            Id = kind.ToString(),
+            Type = "VirtualEnvironment",
+            Kind = kind,
             Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
         }).ToArray()
     };
+
+    internal static IReadOnlyDictionary<string, string?> EnvironmentSelectionSettings(EnvironmentalAcquisitionOptions acquisition)
+    {
+        var settings = new Dictionary<string, string?> { ["CameraAgent:EnvironmentalAcquisition:Enabled"] = "true" };
+        for (var index = 0; index < acquisition.Sources.Count; index++)
+        {
+            var prefix = $"CameraAgent:EnvironmentalAcquisition:Sources:{index}:";
+            settings[prefix + "Id"] = acquisition.Sources[index].Id;
+            settings[prefix + "Type"] = acquisition.Sources[index].Type;
+            settings[prefix + "Kind"] = acquisition.Sources[index].Kind.ToString();
+            settings[prefix + "Triggers:0"] = "Periodic";
+        }
+        return settings;
+    }
 
     [TestMethod]
     public async Task EnvironmentSelectionDraftActivationAndRollbackReachRetainedProducerAndSharedReconstruction()
@@ -88,7 +105,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
             fixture.Descriptor.Capture.RigId, Enum.GetValues<EnvironmentalObservationKind>(), CancellationToken.None).ConfigureAwait(false);
         RegisterEnvironmentDependencies(fixture);
-        using var provider = ProcessingGraphOperationsTests.CreateProvider(_root!);
+        using var provider = ProcessingGraphOperationsTests.CreateProvider(_root!, EnvironmentSelectionSettings(acquisition));
         await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var config = ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
         {
@@ -209,10 +226,14 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         fixture.Context.BeginNode("scene", []);
         fixture.Context.RegisterProcessingProduct(fixture.Stack with
         {
-            Role = FrameArtifactRole.Metadata, Variant = "scene", Payload = sceneBytes,
-            OutputIdentitySha256 = new string('E', 64), Kind = ProcessingProductKind.Metadata,
+            Role = FrameArtifactRole.Metadata,
+            Variant = "scene",
+            Payload = sceneBytes,
+            OutputIdentitySha256 = new string('E', 64),
+            Kind = ProcessingProductKind.Metadata,
             ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes),
-            SchemaVersion = fixture.Scene.SchemaVersion, ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
+            SchemaVersion = fixture.Scene.SchemaVersion,
+            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
         });
         fixture.Context.BeginNode("preview", []);
         fixture.Context.RegisterProcessingProduct(fixture.Stack with { Role = FrameArtifactRole.Preview });
