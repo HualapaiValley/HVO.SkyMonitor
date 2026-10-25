@@ -21,6 +21,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         Assert.HasCount(12, cut.Find(id + "-0").Children);
         Assert.IsNotEmpty(cut.Find("label[for='node-options-0-environmentalKinds-0']").TextContent);
         Assert.AreEqual("node-options-0-environmentalKinds-help", cut.Find(id).GetAttribute("aria-describedby"));
+        Assert.DoesNotContain("Maximum", cut.Find(id + "-help").TextContent, StringComparison.Ordinal);
         SaveEnvironmentEditorFixture("default", cut.Markup);
         cut.Find("form").Submit();
         Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
