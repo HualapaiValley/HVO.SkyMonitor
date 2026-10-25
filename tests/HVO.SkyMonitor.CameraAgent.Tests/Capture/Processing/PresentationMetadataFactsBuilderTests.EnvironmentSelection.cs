@@ -31,6 +31,11 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         await CommitAsync(store, temperature).ConfigureAwait(false);
         await CommitAsync(store, humidity).ConfigureAwait(false);
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        // Capture associations are immutable evidence. Reconstruct every selection from one retained policy;
+        // adding overlapping policies for the same capture is correctly rejected as ambiguous.
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, Enum.GetValues<EnvironmentalObservationKind>(), CancellationToken.None).ConfigureAwait(false);
         var sceneBytes = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Serialize(fixture.Scene);
         fixture.Context.BeginNode("scene", []);
         fixture.Context.RegisterProcessingProduct(fixture.Stack with
@@ -88,7 +93,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.AreEqual("AirTemperature", subset.Facts.Environment.Single().Kind);
         Assert.AreEqual(temperature.ObservationId, subset.Facts.Environment.Single().ObservationId);
         Assert.AreNotEqual(original.Facts.FactsIdentitySha256, subset.Facts.FactsIdentitySha256);
-        Assert.AreNotEqual(original.Facts.Environment[0].AssociationIdentitySha256, subset.Facts.Environment[0].AssociationIdentitySha256);
+        Assert.AreEqual(original.Facts.Environment[0].AssociationIdentitySha256, subset.Facts.Environment[0].AssociationIdentitySha256);
+        Assert.IsTrue(original.Inputs.Count > subset.Inputs.Count);
         Assert.IsFalse(subset.Inputs.Any(static input => input.Name!.Contains("RelativeHumidity", StringComparison.Ordinal)));
         Assert.IsTrue(subset.Inputs.Any(static input => input.Name == "environment-observation-AirTemperature"));
         Assert.AreEqual(subset.Facts.Environment[0].ObservationContentSha256,
@@ -134,9 +140,6 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         async Task<(ProcessingProduct Product, PresentationMetadataFactsProductV1 Facts, PresentationLayerPayloadV1 Layer, IReadOnlyList<DurableProcessingNodeInput> Inputs)> Execute(JsonElement source, string name)
         {
             var options = source.Deserialize<EnvironmentPresentationLayerProcessingStepOptions>(EnvironmentSelectionJson)!;
-            await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
-                fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
-                fixture.Descriptor.Capture.RigId, options.EnvironmentalKinds, CancellationToken.None).ConfigureAwait(false);
             fixture.Context.BeginNode("environment", ["scene", "preview"]);
             await new EnvironmentPresentationLayerCaptureProcessingStep(new("environment", "EnvironmentPresentationLayer", 50), options, fixture.Builder)
                 .ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
