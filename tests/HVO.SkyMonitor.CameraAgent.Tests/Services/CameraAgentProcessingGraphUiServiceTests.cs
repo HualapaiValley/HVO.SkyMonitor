@@ -318,6 +318,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ScenePresentationLayer", "{\"labelValue\":-1}", "processing.options.out-of-range")]
     [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":true}", "processing.options.wrong-type")]
     [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[999]}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"Unknown\"]}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
     [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
     [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
@@ -353,6 +355,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
     [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
     [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"WindDirection\"]}")]
     [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
     [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexRegular\",\"pointGlyph\":\"Crosshair\"}")]
     public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)

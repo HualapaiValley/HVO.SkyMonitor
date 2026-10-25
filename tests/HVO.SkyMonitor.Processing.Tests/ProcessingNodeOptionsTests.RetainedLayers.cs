@@ -19,7 +19,7 @@ public sealed partial class ProcessingNodeOptionsTests
                 Assert.IsNull(resolution.Descriptor);
                 Assert.IsNull(resolution.Upgrade);
             }
-            foreach (var option in descriptor.Options)
+            foreach (var option in descriptor.Options.Where(static option => option.Kind != ProcessingOptionKind.EnumCollection))
             {
                 var valid = option.Kind == ProcessingOptionKind.Toggle ? new[] { "true", "false" }
                     : new[] { option.MinimumWholeNumber!.Value.ToString(CultureInfo.InvariantCulture), option.MaximumWholeNumber!.Value.ToString(CultureInfo.InvariantCulture) };
@@ -52,10 +52,10 @@ public sealed partial class ProcessingNodeOptionsTests
         {
             var edits = ProcessingNodeOptionsCodec.Decode(descriptor, Json(source)).Options.ToDictionary(static item => item.Descriptor.Key, static item => item.Value);
             Assert.AreEqual(source, ProcessingNodeOptionsCodec.Encode(descriptor, Json(source), edits).Options!.Value.GetRawText());
-            Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"), edits).Options!.Value.GetRawText());
+            Assert.AreEqual("{}", ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"), ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}")).Options.ToDictionary(static item => item.Descriptor.Key, static item => item.Value)).Options!.Value.GetRawText());
             foreach (var key in new[] { "widthPixels", "heightPixels", "value", "environmentalKinds", "stackPreviewVariant", "factsOutputVariant", "outputVariant", "maskOutputVariant", "labelOutputVariant" })
             {
-                if (key == "value" && descriptor == RetainedLayerOptionDescriptors.Environment) continue;
+                if (key is "value" or "environmentalKinds" && descriptor == RetainedLayerOptionDescriptors.Environment) continue;
                 Assert.IsNull(descriptor.Find(key));
                 Assert.AreEqual(ProcessingOptionReasonCodes.UnknownOption, ProcessingNodeOptionsCodec.Encode(descriptor, Json(source),
                     new Dictionary<string, ProcessingOptionValue> { [key] = ProcessingOptionValue.FromWholeNumber(2) }).Diagnostics.Single().Code);

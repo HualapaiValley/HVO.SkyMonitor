@@ -1,6 +1,6 @@
 namespace HVO.SkyMonitor.Processing;
 
-/// <summary>Scalar styling for the existing retained-fact layer producers at their exact versions.</summary>
+/// <summary>Typed configuration for the existing retained-fact layer producers at their exact versions.</summary>
 public static class RetainedLayerOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Cloud { get; } = new(
@@ -21,8 +21,13 @@ public static class RetainedLayerOptionDescriptors
         "EnvironmentPresentationLayer",
         "metadata-corner-presentation-v6-original-colours",
         "Environment layer",
-        "Style the existing environment corner lines from retained facts. Dimensions, environmental selections and source/stack bindings stay in pipeline JSON. Missing and stale facts keep their current status. Save, validate and explicitly activate a new graph revision; retained products stay unchanged.",
+        "Select and style the existing environment corner lines from retained facts. Dimensions and source/stack bindings stay in pipeline JSON. Missing, stale, conflicting and unavailable facts keep their current status. Save, validate and explicitly activate a new graph revision; retained products stay unchanged.",
         [
+            ProcessingOptionDescriptor.EnumCollection<EnvironmentalObservationKind>("environmentalKinds", "environmentalKinds", "Environmental observations",
+                "Choose existing retained observation kinds. This does not enable sensors or providers or manufacture measurements; Measured, Simulated, Imported, Manual and Derived provenance stays unchanged. An absent selection uses AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover. Remove every item to retain no environmental readings (NOT RETAINED). The producer sorts and deduplicates effective kinds; existing line, character and image-fit limits may truncate the display, so not every selected line is guaranteed to fit.",
+                [EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RelativeHumidity,
+                 EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationKind.WindSpeed,
+                 EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.CloudCover]),
             ProcessingOptionDescriptor.NullableByte("value", "value", "Environment intensity",
                 "Optional grayscale override for environment text. Clear to restore the existing palette; missing and stale facts keep their status.",
                 null, nullValueLabel: "Default palette", nullActionLabel: "Use default palette"),

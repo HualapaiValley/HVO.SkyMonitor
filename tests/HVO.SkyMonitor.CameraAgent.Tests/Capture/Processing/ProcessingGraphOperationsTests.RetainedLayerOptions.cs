@@ -53,10 +53,13 @@ public sealed partial class ProcessingGraphOperationsTests
             foreach (var option in descriptor.Options)
             {
                 Assert.AreEqual(option.DefaultValue, defaults.Get(option.Key).Value);
-                if (option.Kind is ProcessingOptionKind.TextCollection)
+                if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection)
                 {
-                    Assert.AreEqual(256, option.MaximumItems);
-                    Assert.AreEqual(16, option.MaximumLength);
+                    if (option.Kind == ProcessingOptionKind.TextCollection)
+                    {
+                        Assert.AreEqual(256, option.MaximumItems);
+                        Assert.AreEqual(16, option.MaximumLength);
+                    }
                     continue;
                 }
                 if (option.Kind is ProcessingOptionKind.Toggle or ProcessingOptionKind.Color or ProcessingOptionKind.RealNumber) continue;

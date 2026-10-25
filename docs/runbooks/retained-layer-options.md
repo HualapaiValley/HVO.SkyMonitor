@@ -1,4 +1,4 @@
-# Existing cloud and environment layer styling
+# Existing cloud and environment layer options
 
 In CameraAgent **Current Sky**, choose **Edit existing cloud layer** or **Edit
 existing environment layer**. The links open the named `cloud-layer` and
@@ -12,6 +12,24 @@ dimensions and dependencies.
 | --- | --- | --- |
 | Cloud layer / `cloud-presentation-v5-original-colours` | `drawLabels`, `lineThickness` | `true`; `1` px, range 1–8 |
 | Environment layer / `metadata-corner-presentation-v6-original-colours` | `scale`, `inset`, `lineSpacing` | `1`, range 1–4; `4` px, range 0–64; `2` px, range 0–16 |
+| Environment layer / same implementation | `environmentalKinds` | Absent: AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState, CloudCover. Explicit empty: no environmental readings, `NOT RETAINED`. |
+
+In **Environmental observations**, use each native dropdown to select an existing
+kind. **Add**, **Remove**, **Up** and **Down** work with keyboard Tab and Enter or
+Space as well as touch. All twelve existing kinds are available, including wind
+direction/gust, precipitation rate, sky brightness/quality and camera sensor
+temperature. Remove every item to request no environmental readings. Reordering
+or repeating source entries is preserved; the producer sorts and deduplicates
+the effective kinds, so the editor order does not set the displayed order.
+
+Selecting a kind does not enable a sensor or provider, query live hardware, or
+manufacture a measurement. Existing Measured, Simulated, Imported, Manual and
+Derived provenance and missing, stale, conflicting or unavailable status remain
+bound to retained observations and association identities. The existing eight
+lines per corner, 64 characters per line and image-fit rules still apply; the
+`ENVIRONMENT` heading consumes one line, so selecting every kind does not promise
+every reading will fit. The complete selected facts remain retained even when
+the display truncates them.
 
 These are the existing producer inputs. Environment text retains its image-size
 scaling and fit rules; scale can be reduced to fit. Inset retains the producer's
@@ -23,16 +41,19 @@ editors; missing and stale environmental facts retain their current status.
 
 Edit, **Preview plan**, then **Save immutable draft**. Validate the saved revision
 and explicitly activate it for subsequent captures. Roll back to the earlier
-validated revision to restore its styling. Saving never activates a revision or
+validated revision to restore its styling and observation selection. Saving never activates a revision or
 enables a disabled node. Retained products and reconstruction with the old
 revision retain their original bytes and identity.
 
 The shared exact-version descriptors and codec preserve source whitespace,
 member case, unknown fields, explicit nulls and absent defaults. Unchanged or
 restored edits create no new revision. Described scalars reject nulls, wrong
-types, duplicate members and values outside the bounds. Pipeline JSON remains
-authoritative for dimensions, output/input variants, nullable grayscale `Value`,
-`EnvironmentalKinds`, and all source/stack bindings. There are no dimension
+types, duplicate members and values outside the bounds. Undefined numeric or
+named observation kinds are rejected without repairing retained source on read.
+Equivalent supported enum spellings and duplicate/order representations survive
+unchanged saves. The existing nullable intensity control restores the original
+palette when cleared. Pipeline JSON remains authoritative for dimensions,
+output/input variants and all source/stack bindings. There are no dimension
 defaults, reference inputs, providers, new rendering identities or automatic
 conversion to Frame Facts. The shared descriptor validation applies on both
 hosts; LogicHost gains no edge collection or configuration surface. #1386
