@@ -38,6 +38,29 @@ public sealed class CameraAgentOperatorUiServiceTests
 {
     [TestMethod]
     [DataRow("denied", "Unauthorized")]
+    [DataRow("mismatch", "Unavailable")]
+    [DataRow("failure", "Unavailable")]
+    [DataRow("missing", "Success")]
+    public async Task RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures(string scenario, string expected)
+    {
+        var id = Guid.NewGuid();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(scenario == "denied" ? AuthorizationResult.Failed() : AuthorizationResult.Success());
+        var retained = new Mock<ICameraAgentRetainedAstrometryService>(MockBehavior.Strict);
+        if (scenario == "failure") retained.Setup(value => value.GetAsync(id, CancellationToken.None)).ThrowsAsync(new IOException("private-path"));
+        else if (scenario != "denied") retained.Setup(value => value.GetAsync(id, CancellationToken.None))
+            .ReturnsAsync(new CameraAgentRetainedAstrometry(scenario == "mismatch" ? Guid.NewGuid() : id, "NotRetained", "assessment-not-retained"));
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, retainedAstrometry: retained.Object);
+        var result = await service.GetRetainedAstrometryAsync(id, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(expected, result.Kind.ToString());
+        Assert.IsFalse(result.Message?.Contains("private-path", StringComparison.Ordinal) ?? false);
+        retained.Verify(value => value.GetAsync(id, CancellationToken.None), scenario == "denied" ? Times.Never() : Times.Once());
+    }
+
+    [TestMethod]
+    [DataRow("denied", "Unauthorized")]
     [DataRow("invalid", "Invalid")]
     [DataRow("failure", "Unavailable")]
     [DataRow("absent", "Success")]
@@ -862,7 +885,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         CaptureProcessingState? captureProcessingState = null,
         ITransientRuntimeManagement? transientRuntime = null,
         ICameraAgentProcessingCompletion? processingCompletion = null,
-        CurrentSkyRefreshSetting? currentSkyRefresh = null) => new(
+        CurrentSkyRefreshSetting? currentSkyRefresh = null,
+        ICameraAgentRetainedAstrometryService? retainedAstrometry = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -889,7 +913,7 @@ public sealed class CameraAgentOperatorUiServiceTests
             rawIngressState: rawIngressState,
             captureProcessingState: captureProcessingState,
             processingCompletion: processingCompletion,
-            currentSkyRefresh: currentSkyRefresh);
+            currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry);
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {

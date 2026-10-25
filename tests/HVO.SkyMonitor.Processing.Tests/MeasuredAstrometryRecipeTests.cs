@@ -48,6 +48,34 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
+    public async Task RetainedDiagnosticsReproduceFitEvidenceAndTypedGeometryWithoutChangingSolution()
+    {
+        var f = await Fixture.Value.ConfigureAwait(false);
+        var solution = await Accepted.Value.ConfigureAwait(false);
+        var bytes = MeasuredAstrometryJson.Serialize(solution);
+        var diagnostics = MeasuredAstrometryJson.ReconstructDiagnostics(solution, f.Context, f.Associations, MeasuredAstrometryFixture.Options);
+        Assert.AreEqual(solution.Assessment.IdentitySha256, diagnostics.AssessmentIdentitySha256);
+        Assert.AreEqual(solution.Residuals.NativeAssociations.Count, diagnostics.Residuals.Count);
+        Assert.AreEqual(solution.Residuals.FittingRmsPixels!.Value, diagnostics.FittingRmsPixels!.Value, 1e-10);
+        Assert.AreEqual(solution.Residuals.VerificationRmsPixels!.Value, diagnostics.VerificationRmsPixels!.Value, 1e-10);
+        var measured = AstrometricDiagnosticPresentation.CreatePayload(solution.SolutionIdentitySha256, diagnostics, 512, 512, false);
+        var residuals = AstrometricDiagnosticPresentation.CreatePayload(solution.SolutionIdentitySha256, diagnostics, 512, 512, true);
+        Assert.AreEqual(diagnostics.Residuals.Count, measured.Markers.Count);
+        Assert.IsEmpty(measured.Segments);
+        Assert.AreEqual(diagnostics.Residuals.Count, residuals.Markers.Count);
+        for (var i = 0; i < residuals.Segments.Count; i++)
+        {
+            Assert.AreEqual(diagnostics.Residuals[i].Predicted, residuals.Segments[i].From);
+            Assert.AreEqual(diagnostics.Residuals[i].Measured, residuals.Segments[i].To);
+        }
+        CollectionAssert.AreEqual(bytes, MeasuredAstrometryJson.Serialize(solution));
+        Assert.Throws<ArgumentException>(() => AstrometricDiagnosticPresentation.CreatePayload(solution.SolutionIdentitySha256, diagnostics, 2, 2, true));
+        Assert.Throws<ArgumentException>(() => MeasuredAstrometryJson.ReconstructDiagnostics(solution, f.Context with { CalibrationVersion = "different" }, f.Associations, MeasuredAstrometryFixture.Options));
+        Assert.Throws<OperationCanceledException>(() => MeasuredAstrometryJson.ReconstructDiagnostics(solution, f.Context, f.Associations,
+            MeasuredAstrometryFixture.Options, new CancellationToken(true)));
+    }
+
+    [TestMethod]
     public async Task CanonicalRoundTripRejectsTamperingMissingDuplicateUnknownAndOversizedMembers()
     {
         var solution = await Accepted.Value.ConfigureAwait(false);

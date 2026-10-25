@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)
+
 - Explicitly upgrade scene-overlay graph drafts to choose RGB colours, packaged label/cardinal fonts and circle/crosshair markers, with validated activation, rollback and retained styling on both hosts. #1660
 
 - Edit existing manifest layer enabled flags, optional ordering and constellation opacity in CameraAgent graph drafts, preserving producer defaults and retained revisions until explicit validation and activation. #1628
@@ -55,6 +57,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
 
 - Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
 

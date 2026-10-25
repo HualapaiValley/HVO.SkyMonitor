@@ -3,16 +3,23 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @attribute [StreamRendering]
 @rendermode InteractiveServer
 
-<PageTitle>@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
+<PageTitle>@(_accessDenied ? "Access denied" : IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
 
 @* Structure and class names follow docs/prototypes/pipeline-operations/dashboard.html element for element so the
    scoped stylesheet carries the prototype's cameraagent-pages.css rules unchanged. Features without a backend stay
    in the DOM as disabled controls that name the issue delivering them; fixture values are never rendered. *@
+@if (_accessDenied)
+{
+    <div class="state-notice state-notice--error" role="alert">You are not authorized to view this capture.</div>
+}
+else
+{
 <div class="current-sky-page site-main @(IsArchived ? "historical-sky" : "")">
     <header class="site-heading current-sky-heading">
         <div>
@@ -254,7 +261,10 @@
                 <div class="overlay-list sky-layer-controls">
                     <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
                         <button class="text-button refresh-measured-evidence" type="button" disabled="@(_layers is null || _layerLoading || _saving || _viewerOpen)" @onclick="RefreshMeasuredEvidenceAsync">@(_layerLoading ? "Reading measured evidence..." : "Refresh measured evidence")</button>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Associated stars</strong><small>source-association / arrives with #526</small></span></label>
+                        @if (!HasLayer(AstrometricDiagnosticPresentation.AssociationsLayer))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Measured stellar associations</strong><small>@(_astrometry?.DiagnosticsReason ?? "No compatible accepted result retained")</small></span></label>
+                        }
                         @foreach (var layer in RetainedLayers("Measured")) { @LayerToggle(layer) }
                         @if (!HasLayer("MeasuredTransientTrails"))
                         {
@@ -289,7 +299,10 @@
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=cloud-layer#cloud-layer">Edit existing cloud layer</a>
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=environment-layer#environment-layer">Edit existing environment layer</a>
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
+                        @if (!HasLayer(AstrometricDiagnosticPresentation.ResidualsLayer))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>@(_astrometry?.DiagnosticsReason ?? "No compatible accepted result retained")</small></span></label>
+                        }
                         @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))
                         {
                             <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>No compatible prediction retained for this capture</small></span></label>
@@ -312,18 +325,71 @@
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
             </section>
 
-            <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading">
-                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip pending">Not produced</span></header>
-                <dl>
-                    <div><dt>Solution</dt><dd class="fact-unavailable">arrives with #523</dd></div>
-                    <div><dt>Residual</dt><dd class="fact-unavailable">Unavailable</dd></div>
-                    <div><dt>Inliers</dt><dd class="fact-unavailable">Unavailable</dd></div>
-                    <div><dt>Projection</dt><dd class="fact-unavailable">No measured fit</dd></div>
-                </dl>
-                <form class="pixel-sky-calculator" @onsubmit:preventDefault>
-                    <p><strong>Pixel to sky</strong><span>Disabled until an astrometric solution is retained for this capture; it never updates rig calibration.</span></p>
-                    <div><label>X pixel<input type="number" min="0" disabled /></label><label>Y pixel<input type="number" min="0" disabled /></label><button class="button secondary small" type="submit" disabled>Calculate</button></div>
+            <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading" aria-busy="@(_astrometryLoading ? "true" : "false")">
+                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip @AstrometryChipClass">@AstrometryStatus</span></header>
+                @if (_astrometry?.Solution is { } solution)
+                {
+                    var assessment = solution.Assessment;
+                    <p class="astrometry-reason">@assessment.Reason (@assessment.ReasonCode). Retained capture evidence; no calibration activation.</p>
+                    <dl>
+                        <div><dt>Projection basis</dt><dd>@(_astrometry.GeometryBasis ?? "Unavailable") / @_astrometry.ProjectionModel</dd></div>
+                        <div><dt>Inliers / held-out</dt><dd>@(assessment.Quality is { } quality ? $"{quality.InlierCount} / {quality.VerificationCount}" : "Unavailable")</dd></div>
+                        <div><dt>Fit / held-out RMS</dt><dd>@(solution.Residuals.FittingRmsPixels is { } fit ? FormattableString.Invariant($"{fit:0.####} / {solution.Residuals.VerificationRmsPixels:0.####} px") : "Unavailable")</dd></div>
+                        <div><dt>Quality score</dt><dd>@(assessment.Quality is { } q ? FormattableString.Invariant($"{q.Score0To100:0.#} / 100 (engineering; not probability)") : "Unavailable")</dd></div>
+                        <div><dt>Conditioning</dt><dd>@(solution.Residuals.Conditioning?.Status ?? "Unavailable")</dd></div>
+                        <div><dt>Refraction</dt><dd>@assessment.RefractionModel</dd></div>
+                        <div><dt>Capture midpoint UTC</dt><dd><time datetime="@assessment.Frame.MidpointUtc.ToString("O")">@assessment.Frame.MidpointUtc.ToString("O")</time></dd></div>
+                        <div><dt>Coordinate model</dt><dd>@assessment.CoordinateModel; mean-of-date calculator</dd></div>
+                    </dl>
+                    <details class="astrometry-provenance"><summary>Capture-bound identities and uncertainty</summary>
+                        <dl>
+                            <div><dt>Capture / raw artifact</dt><dd><code>@_astrometry.CaptureId / @assessment.Frame.SourceArtifactId</code></dd></div>
+                            <div><dt>Source descriptor / pixels</dt><dd><code>@assessment.Frame.SourceDescriptorSha256 / @assessment.Frame.SourcePayloadSha256</code></dd></div>
+                            <div><dt>Solution identity</dt><dd><code>@solution.SolutionIdentitySha256</code></dd></div>
+                            <div><dt>Measured identity</dt><dd><code>@solution.MeasuredIdentitySha256</code></dd></div>
+                            <div><dt>Catalog package</dt><dd>@solution.CatalogPackage.CatalogId / @solution.CatalogPackage.PackageVersion / @solution.CatalogPackage.PackageKind</dd></div>
+                            <div><dt>Catalog / selection identity</dt><dd><code>@assessment.CatalogIdentitySha256 / @assessment.CatalogSelectionIdentitySha256</code></dd></div>
+                            <div><dt>Retained calibration</dt><dd>@_astrometry.CalibrationVersion <code>@assessment.CalibrationIdentitySha256</code></dd></div>
+                            <div><dt>Readout identity</dt><dd><code>@solution.ReadoutIdentitySha256</code></dd></div>
+                            <div><dt>Source output / horizontal flip</dt><dd>@_astrometry.WidthPixels × @_astrometry.HeightPixels / @_astrometry.HorizontalFlip</dd></div>
+                            @if (_astrometry.SourceDescriptor?.Layout.Readout is { } readout)
+                            {
+                                <div><dt>Native / crop / bin</dt><dd>@readout.NativeWidth × @readout.NativeHeight; ROI @readout.RoiX, @readout.RoiY, @readout.RoiWidth × @readout.RoiHeight; bin @readout.BinX × @readout.BinY (@readout.BinningAlgorithm)</dd></div>
+                            }
+                            <div><dt>Exposure UTC</dt><dd>@assessment.Frame.ExposureStartUtc.ToString("O") — @assessment.Frame.ExposureEndUtc.ToString("O")</dd></div>
+                            <div><dt>Uncertainty</dt><dd>@solution.UncertaintyReasonCode</dd></div>
+                            @if (solution.Uncertainty is { } uncertainty)
+                            {
+                                <div><dt>Uncertainty model validity</dt><dd>@uncertainty.Validity.Status</dd></div>
+                                @if (uncertainty.Estimate is { } estimate)
+                                {
+                                    <div><dt>Conditional estimate offset from accepted fit</dt><dd>@FormattableString.Invariant($"{estimate.OffsetFromAcceptedDegrees:0.########}°; focal ratio {estimate.FocalScaleOffsetFromAccepted:0.########}")</dd></div>
+                                }
+                                <div><dt>Conditional fit</dt><dd>@UncertaintyComponent(uncertainty.ConditionalFit)</dd></div>
+                                <div><dt>Systematic</dt><dd>@UncertaintyComponent(uncertainty.Systematic)</dd></div>
+                                <div><dt>Shared calibration</dt><dd>@UncertaintyComponent(uncertainty.SharedCalibration.Pose)</dd></div>
+                                <div><dt>Total pose</dt><dd>@UncertaintyComponent(uncertainty.Total)</dd></div>
+                                <div><dt>Clock source / synchronization</dt><dd>@uncertainty.Clock.Source / @uncertainty.Clock.Synchronization</dd></div>
+                                <div><dt>Horizontal clock bound</dt><dd>@(uncertainty.ClockComponent.MaximumHorizontalRotationDegrees is { } bound ? FormattableString.Invariant($"≤ {bound:0.########}° (bound, not probability)") : uncertainty.ClockComponent.ReasonCode)</dd></div>
+                            }
+                        </dl>
+                        <p>Pose uncertainties describe the retained conditional estimate. Fit and held-out RMS describe this capture only. Point uncertainty is withheld; no uncertainty band is inferred from RMS.</p>
+                    </details>
+                }
+                else
+                {
+                    <p class="astrometry-reason">@AstrometryAbsence</p>
+                }
+                <form class="pixel-sky-calculator" @onsubmit="CalculatePixelToSky" @onsubmit:preventDefault>
+                    <p><strong>Pixel to sky</strong><span>@CalculatorAvailability</span></p>
+                    <div><label>X pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelX" /></label><label>Y pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelY" /></label><button class="button secondary small" type="submit" disabled="@(!CanCalculate)">Pixel to sky</button></div>
                 </form>
+                <form class="pixel-sky-calculator sky-pixel-calculator" @onsubmit="CalculateSkyToPixel" @onsubmit:preventDefault>
+                    <p><strong>Sky to pixel</strong><span>Uses the same capture epoch, source readout, crop, binning, flip and aperture.</span></p>
+                    <label>Coordinates<select @bind="_skyCoordinates" disabled="@(!CanCalculate)"><option value="equatorial">Equatorial (mean of date)</option><option value="horizontal">Horizontal (geometric)</option></select></label>
+                    <div><label>@(_skyCoordinates == "horizontal" ? "Altitude degrees" : "RA hours")<input type="number" step="any" disabled="@(!CanCalculate)" @bind="_skyFirst" /></label><label>@(_skyCoordinates == "horizontal" ? "Azimuth degrees" : "Declination degrees")<input type="number" step="any" disabled="@(!CanCalculate)" @bind="_skySecond" /></label><button class="button secondary small" type="submit" disabled="@(!CanCalculate)">Sky to pixel</button></div>
+                </form>
+                @if (_calculatorResult is not null && CanCalculate) { <p role="status" class="astrometry-calculator-result">@_calculatorResult</p> }
             </section>
 
             <section class="inspector-card capture-facts current-sky-summary" aria-labelledby="acquisition-heading" aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
@@ -390,6 +456,7 @@
         </div>
     }
 </div>
+}
 
 @code {
     private RenderFragment OperationsStrip => __builder =>

@@ -744,7 +744,14 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 await openedManifest.Content.DisposeAsync().ConfigureAwait(false);
             }
-            var presentationService = new CameraAgentLayeredPresentationService(store, artifactService);
+            var captureId = fixture.Manifest.Descriptor.Capture.CaptureId;
+            var firstEvidence = new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained");
+            var refreshedEvidence = firstEvidence with { Availability = "Unavailable", Reason = "read-capacity" };
+            var astrometry = new Mock<ICameraAgentRetainedAstrometryService>(MockBehavior.Strict);
+            astrometry.SetupSequence(s => s.GetAsync(captureId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(firstEvidence)
+                .ReturnsAsync(refreshedEvidence);
+            var presentationService = new CameraAgentLayeredPresentationService(store, artifactService, astrometry: astrometry.Object);
             var presentation = await presentationService.GetAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
             var cachedPresentation = await presentationService.GetAsync(
@@ -753,7 +760,20 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(presentation.Presentation);
             Assert.AreEqual(manifest.Layers.Count, presentation.Presentation.Layers.Count);
             Assert.IsGreaterThan(0, presentation.Presentation.Svg.Length);
-            Assert.AreSame(presentation.Presentation, cachedPresentation.Presentation);
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, cachedPresentation.Status, cachedPresentation.Reason);
+            Assert.IsNotNull(cachedPresentation.Presentation);
+            Assert.AreEqual(captureId, cachedPresentation.Presentation.CaptureId);
+            Assert.AreEqual(presentation.Presentation.BaseArtifactId, cachedPresentation.Presentation.BaseArtifactId);
+            Assert.AreEqual(manifestOutput.ArtifactId, cachedPresentation.Presentation.ManifestArtifactId);
+            Assert.AreEqual(presentation.Presentation.ManifestIdentitySha256, cachedPresentation.Presentation.ManifestIdentitySha256);
+            Assert.AreEqual(presentation.Presentation.PresentationIdentitySha256, cachedPresentation.Presentation.PresentationIdentitySha256);
+            Assert.AreEqual(presentation.Presentation.SvgChecksumSha256, cachedPresentation.Presentation.SvgChecksumSha256);
+            Assert.AreEqual(presentation.Presentation.Svg, cachedPresentation.Presentation.Svg,
+                "An unchanged stack reuses the same SVG memory while evidence is read afresh.");
+            Assert.IsTrue(presentation.Presentation.Svg.Span.SequenceEqual(cachedPresentation.Presentation.Svg.Span));
+            Assert.AreSame(firstEvidence, presentation.Presentation.Astrometry);
+            Assert.AreSame(refreshedEvidence, cachedPresentation.Presentation.Astrometry);
+            astrometry.Verify(s => s.GetAsync(captureId, It.IsAny<CancellationToken>()), Times.Exactly(2));
 
             var first = await persistence.MaterializePresentationAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId,

@@ -317,7 +317,7 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".rig-facts").TextContent, "3.75 µm", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".rig-facts").TextContent, "2.8 mm · 180° field", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "configured; no measured fit", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "configured geometry", StringComparison.Ordinal);
             Assert.IsFalse(cut.Find(".rig-facts").TextContent.Contains("rig-test", StringComparison.Ordinal));
             StringAssert.Contains(cut.Find(".dashboard-status").TextContent, "5 s recorded interval", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "3 source frames", StringComparison.Ordinal);
@@ -470,7 +470,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("arrives with #525", StringComparison.Ordinal));
         Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Sun footprint", StringComparison.Ordinal));
         Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Moon footprint", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "arrives with #523", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "Unavailable", StringComparison.Ordinal);
         await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
         await cut.Find(".restore-layers").ClickAsync().ConfigureAwait(false);
@@ -631,7 +631,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsTrue(SpinWait.SpinUntil(() =>
             new Uri(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().Uri).AbsolutePath == "/Account/AccessDenied",
             TimeSpan.FromSeconds(5)));
-        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll("button.refresh-link"));
         Assert.AreEqual(1, reads);
     }
 
@@ -1409,7 +1409,7 @@ public sealed partial class CurrentSkyPageTests
         await refresh.ConfigureAwait(false);
 
         Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
-        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll("button.refresh-link"));
         Assert.AreEqual(2, reads);
     }
 

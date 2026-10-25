@@ -278,6 +278,9 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
+
     ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
         Guid captureId,
         CancellationToken cancellationToken);
@@ -382,7 +385,8 @@ internal sealed class CameraAgentOperatorUiService(
     CaptureProcessingState? captureProcessingState = null,
     IRawEvidenceOperations? rawEvidenceOperations = null,
     ICameraAgentProcessingCompletion? processingCompletion = null,
-    CurrentSkyRefreshSetting? currentSkyRefresh = null) : ICameraAgentOperatorUiService
+    CurrentSkyRefreshSetting? currentSkyRefresh = null,
+    ICameraAgentRetainedAstrometryService? retainedAstrometry = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -1157,6 +1161,27 @@ internal sealed class CameraAgentOperatorUiService(
         var selected = stages.FirstOrDefault(static slot =>
             slot.Availability == CameraAgentPresentationSlotAvailability.Available);
         return new(selected?.Stage, stages);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentRetainedAstrometry>();
+        try
+        {
+            var value = retainedAstrometry is null ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
+                : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return value.CaptureId == captureId
+                ? OperatorUiResult<CameraAgentRetainedAstrometry>.Success(value)
+                : Unavailable<CameraAgentRetainedAstrometry>("The retained assessment identity does not match this capture.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent retained astrometry UI read failed.");
+            return Unavailable<CameraAgentRetainedAstrometry>("Retained astrometry is temporarily unavailable.");
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]

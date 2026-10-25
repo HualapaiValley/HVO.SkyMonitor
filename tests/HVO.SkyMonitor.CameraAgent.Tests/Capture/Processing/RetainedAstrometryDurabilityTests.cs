@@ -299,7 +299,7 @@ public sealed partial class DurableCaptureProcessingTests
         ]);
     }
 
-    private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root, string scenario = "accepted")
+    private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root, string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1)
     {
         var reference = await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var bytes = reference.Raw.Payload.ToArray();
@@ -312,15 +312,20 @@ public sealed partial class DurableCaptureProcessingTests
         var config = CreateConfig();
         var manifest = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 512, 512, 1024, bytes);
         var start = reference.Context.Frame.ExposureStartUtc;
+        DateTimeOffset StoredTime(DateTimeOffset value) => hostCompatible
+            ? DateTimeOffset.FromUnixTimeMilliseconds(value.ToUnixTimeMilliseconds()) : value;
+        var paths = RawIngressFileStore.GetPaths(root, StoredTime(start), manifest.Descriptor.Artifact.ArtifactId);
+        var payloadRelativePath = hostCompatible ? paths.PayloadRelativePath : "raw.bin";
+        var sidecarRelativePath = hostCompatible ? paths.SidecarRelativePath : "raw.json";
         manifest = manifest with
         {
-            RelativeArtifactPath = "raw.bin",
+            RelativeArtifactPath = payloadRelativePath,
             Descriptor = manifest.Descriptor with
             {
-                Capture = manifest.Descriptor.Capture with { CaptureSequence = 1 },
+                Capture = manifest.Descriptor.Capture with { CaptureSequence = captureSequence },
                 Layout = reference.Raw.Layout!,
-                Timing = new(start, start, start.AddSeconds(1), start.AddSeconds(1.1), start.AddSeconds(1.2)),
-                Artifact = manifest.Descriptor.Artifact with { CreatedUtc = start.AddSeconds(1.2) },
+                Timing = new(StoredTime(start), StoredTime(start), StoredTime(start.AddSeconds(1)), StoredTime(start.AddSeconds(1.1)), StoredTime(start.AddSeconds(1.2))),
+                Artifact = manifest.Descriptor.Artifact with { CreatedUtc = StoredTime(start.AddSeconds(1.2)) },
                 Profiles = manifest.Descriptor.Profiles with { Processing = RawCaptureDescriptorFactory.CreateProcessingProfile(config) }
             }
         };
@@ -338,16 +343,35 @@ public sealed partial class DurableCaptureProcessingTests
         var manifestBytes = CaptureContractJson.Serialize(manifest);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), bytes).ConfigureAwait(false);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.json"), manifestBytes).ConfigureAwait(false);
+        if (hostCompatible)
+        {
+            // Native recovery requires canonical paths and millisecond timestamps, just as the
+            // production descriptor factory writes them. Root aliases are fixture conveniences.
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
+            await RawIngressFileStore.EnsureCompatibilityIndexAsync(root, manifestBytes, CancellationToken.None).ConfigureAwait(false);
+        }
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        for (var sequence = 1; sequence < captureSequence; sequence++)
+            _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
-            descriptor.Capture.AgentId, 1, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+            descriptor.Capture.AgentId, captureSequence, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
-            descriptor.Artifact.ChecksumSha256, bytes.Length, "raw.bin", "raw.json", manifestBytes, start, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
+            descriptor.Artifact.ChecksumSha256, bytes.Length, payloadRelativePath, sidecarRelativePath, manifestBytes, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
+        if (hostCompatible)
+        {
+            var recovered = await new RawIngressReconciler(root, journal)
+                .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, recovered.Inspected);
+            Assert.AreEqual(0, recovered.Quarantined);
+            Assert.AreEqual(0, recovered.MissingEvidence);
+        }
         Assert.IsTrue(FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame).IsValid);
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
-            new StoredFrameReference("raw.bin", Path.Combine(root, "raw.bin"), start, FrameArtifactRole.Raw), CaptureContractJson.ComputeManifestSha256(manifestBytes));
+            new StoredFrameReference(payloadRelativePath, Path.Combine(root, payloadRelativePath), descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw), CaptureContractJson.ComputeManifestSha256(manifestBytes));
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
         return new(new(manifest, options, new(config, CreateSubmission(frame!), receipt)), input,
             new()

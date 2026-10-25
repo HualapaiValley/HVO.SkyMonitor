@@ -50,6 +50,7 @@ public sealed record CameraAgentLayeredPresentation(
 {
     public Guid ManifestArtifactId { get; init; }
     public CameraAgentCaptureTrails? TrailEvidence { get; init; }
+    public CameraAgentRetainedAstrometry? Astrometry { get; init; }
 }
 
 public sealed record CameraAgentLayeredPresentationResult(
@@ -77,7 +78,8 @@ internal sealed class CameraAgentLayeredPresentationService(
     ICameraAgentArtifactService artifacts,
     ICameraAgentTransientOperatorProjection? trails = null,
     CaptureProcessingPersistence? persistence = null,
-    IOptions<CameraAgentHostOptions>? options = null) : ICameraAgentLayeredPresentationService
+    IOptions<CameraAgentHostOptions>? options = null,
+    ICameraAgentRetainedAstrometryService? astrometry = null) : ICameraAgentLayeredPresentationService
 {
     internal const int MaximumSvgBytes = GroupedSvgPresentationRenderer.MaximumSvgBytes;
     internal const int MaximumSvgElements = GroupedSvgPresentationRenderer.MaximumSvgElements;
@@ -194,6 +196,42 @@ internal sealed class CameraAgentLayeredPresentationService(
                 }
             }
 
+            CameraAgentRetainedAstrometry? astrometricEvidence = null;
+            if (astrometry is not null)
+            {
+                astrometricEvidence = await astrometry.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                if (persistence is not null)
+                {
+                    var beforeAstrometry = manifest;
+                    var beforeId = manifestArtifactId;
+                    try
+                    {
+                        var composition = await persistence.PublishAstrometricCompositionAsync(captureId,
+                            manifestArtifactId, astrometricEvidence, CancellationToken.None).ConfigureAwait(false);
+                        astrometricEvidence = composition.Evidence;
+                        if (composition.ManifestArtifactId != manifestArtifactId)
+                        {
+                            manifestArtifactId = composition.ManifestArtifactId;
+                            var composed = await ReadBytesAsync(manifestArtifactId,
+                                PresentationProcessingProducts.ManifestMediaType, CancellationToken.None).ConfigureAwait(false);
+                            manifest = LayeredPresentationJson.ParseManifest(composed.Content).Document
+                                ?? throw new InvalidDataException("Invalid astrometric composition.");
+                        }
+                    }
+                    catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or
+                        ArgumentException or InvalidOperationException or OverflowException or SqliteException or JsonException)
+                    {
+                        manifest = beforeAstrometry;
+                        manifestArtifactId = beforeId;
+                        astrometricEvidence = astrometricEvidence with
+                        {
+                            CompatibleBaseArtifactId = null,
+                            DiagnosticsReason = "Compatible measured diagnostics are temporarily unavailable."
+                        };
+                    }
+                }
+            }
+
             var baseRead = await artifacts.OpenContentAsync(manifest.BaseProduct.ArtifactId, CancellationToken.None)
                 .ConfigureAwait(false);
             if (baseRead.Status != CameraAgentArtifactReadStatus.Found || baseRead.Content is null)
@@ -256,20 +294,18 @@ internal sealed class CameraAgentLayeredPresentationService(
                 {
                     cached.Sequence = ++_sequence;
                     return new(CameraAgentLayeredPresentationStatus.Found,
-                        trailEvidence is null && cached.Presentation.ManifestArtifactId == manifestArtifactId
-                            ? cached.Presentation
-                            : cached.Presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence });
+                        cached.Presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence, Astrometry = astrometricEvidence });
                 }
             }
 
             var rendered = Render(captureId, manifest, payloads, baseChecksum);
             if (rendered.Status == CameraAgentLayeredPresentationStatus.Found && rendered.Presentation is { } presentation)
             {
-                presentation = presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence };
+                presentation = presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence, Astrometry = astrometricEvidence };
                 rendered = rendered with { Presentation = presentation };
                 // Evidence is freshly projected for each read. Keep potentially large source manifests and
                 // geometry out of the SVG cache's byte budget and reattach only the current snapshot.
-                AddCache(identity, trailEvidence is null ? presentation : presentation with { TrailEvidence = null });
+                AddCache(identity, presentation with { TrailEvidence = null, Astrometry = null });
             }
             return rendered;
         }

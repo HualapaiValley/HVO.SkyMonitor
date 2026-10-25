@@ -308,3 +308,10 @@
     .source-strip a[href] { display: block; }
     .image-tool { width: 44px; height: 44px; }
 }
+
+.astrometry-reason, .astrometry-provenance, .astrometry-calculator-result { font-size: .65rem; line-height: 1.5; overflow-wrap: anywhere; }
+.astrometry-provenance dl { display: block; }
+.astrometry-provenance dl > div { margin: .6rem 0; }
+.astrometry-provenance code, .astrometry-card dd { overflow-wrap: anywhere; }
+.astrometry-provenance summary { cursor: pointer; min-height: 2rem; padding-top: .5rem; }
+.pixel-sky-calculator select { min-height: 2rem; max-width: 100%; background: var(--surface); color: var(--text); }
