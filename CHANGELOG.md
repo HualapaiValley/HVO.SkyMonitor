@@ -33,6 +33,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
+
 - Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
 
 - Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622

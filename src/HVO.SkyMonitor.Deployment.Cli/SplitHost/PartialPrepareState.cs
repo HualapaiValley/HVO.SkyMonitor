@@ -23,9 +23,17 @@ internal sealed class PartialPrepareState : IDisposable
         runLock = NativeLinux.OpenLockFile(state + "/run.lock");
         try
         {
-            SafeFileSystem.ValidateOwnerFile(runLock, "run.lock");
+            if (phase == "preflight")
+            {
+                // Preflight's existing contract admits an owned single-link lock,
+                // then normalizes its permissions only after exclusive acquisition.
+                var identity = NativeLinux.GetOpenFileIdentity(runLock, "run.lock");
+                Require(identity.Uid == NativeLinux.getuid() && identity.LinkCount == 1, "unsafe-lock-entry");
+            }
+            else SafeFileSystem.ValidateOwnerFile(runLock, "run.lock");
             Require(NativeLinux.GetOpenNodeIdentity(runLock, "run.lock") == NativeLinux.GetNodeIdentity(state + "/run.lock"), "unsafe-lock-entry");
             Require(NativeLinux.TryLockExclusive(runLock, "run.lock"), "run-already-active");
+            if (phase == "preflight") File.SetUnixFileMode(runLock, (UnixFileMode.UserRead | UnixFileMode.UserWrite));
             stateIdentity = NativeLinux.GetNodeIdentity(state); evidenceIdentity = NativeLinux.GetNodeIdentity(evidence);
         }
         catch { runLock.Dispose(); throw; }
@@ -58,6 +66,13 @@ internal sealed class PartialPrepareState : IDisposable
         Require(stateIdentity with { LinkCount = current.LinkCount } == current, "state-directory-changed"); stateIdentity = current;
     }
     public void WriteState(string name, JsonNode value) { Revalidate(); SafeFileSystem.WriteTextAtomic(state + "/" + name, value.ToJsonString(Options) + "\n"); }
+    public void WritePreflightEvidence(JsonNode value) { Revalidate(); SafeFileSystem.WriteTextAtomic(evidence + "/preflight.json", value.ToJsonString(Options) + "\n"); }
+    public void ClearPreflightEvidence()
+    {
+        Revalidate(); var path = evidence + "/preflight.json";
+        Require(!Directory.Exists(path), "unsafe-evidence-entry");
+        File.Delete(path);
+    }
     public static string ReadPrivate(string path)
     {
         var identity = NativeLinux.GetNodeIdentity(path);

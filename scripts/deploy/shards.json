@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "description": "Closed inventory of deployment contract shards. scripts/test:deploy-environment reads this list and requires it to match the order of the shard bodies in that file exactly; that shared order is the serial execution order and the parallel dispatch order. Adding, removing, renaming or reordering a shard is a change to the protected deployment contract and requires the same change to the shard bodies in the harness.",
   "shards": [
-    { "name": "preflight", "proves": "inventory schema, split-host preflight rejection matrix, tampered-registry rejection, production script syntax" },
+    { "name": "preflight", "proves": "inventory schema, split-host preflight rejection matrix, tampered-registry rejection, production script syntax", "owner": "HVO.SkyMonitor.Deployment.Cli.Tests/Preflight*Tests", "retainedShell": "scripts/deploy-contracts/preflight-2.sh (production bash -n)" },
     { "name": "prepare-images", "proves": "image staging, registry digest binding, isolated and cross-case prepare failures" },
     { "name": "partial-prepare", "proves": "no-container recovery after a failed prepare, lock and state cleanup", "owner": "HVO.SkyMonitor.Deployment.Cli.Tests/PartialPrepareRecoveryTests" },
     { "name": "existing-catalog-up", "proves": "production catalog bundle install, lock blocking, resume failure, fixture transport" },
