@@ -71,7 +71,7 @@
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
     <PackageVersion Include="StackExchange.Redis" Version="3.4.5" />
     <PackageVersion Include="Microsoft.OpenApi" Version="2.12.2" />
-    <PackageVersion Include="Microsoft.Playwright.MSTest" Version="1.63.0" />
+    <PackageVersion Include="Microsoft.Playwright.MSTest" Version="1.64.1" />
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
     <PackageVersion Include="SSH.NET" Version="2026.0.0" />
     <PackageVersion Include="System.CommandLine" Version="2.0.13" />
