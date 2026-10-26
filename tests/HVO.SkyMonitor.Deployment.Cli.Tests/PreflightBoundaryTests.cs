@@ -99,6 +99,75 @@ public sealed class PreflightBoundaryTests
         CollectionAssert.AreEqual(content, await File.ReadAllBytesAsync(root + "/upload 'quoted'/certificate"));
     }
     [TestMethod]
+    [DataRow("0700")]
+    [DataRow("0755")]
+    [DataRow("0777")]
+    public async Task PrivateBinaryCopy_SecuresExistingDirectoriesBeforeCreatingPrivateFile(string mode)
+    {
+        using var f = new PreflightFixture(); await f.StageAsync(); var target = f.Host.Contract.Targets[1];
+        var root = f.Host.Physical(target.RuntimeRoot); var control = root + "/.hvo-deploy"; var uploads = control + "/uploads";
+        Directory.CreateDirectory(uploads, SafeFileSystem.OwnerDirectoryMode);
+        foreach (var directory in new[] { control, uploads }) File.SetUnixFileMode(directory, (UnixFileMode)Convert.ToInt32(mode, 8));
+        f.Host.UseShellPrimitives = true; f.Host.PrimitiveHandler = null; var created = false;
+        f.Host.BeforePrimitive = (operation, _) =>
+        {
+            if (operation != "create") return;
+            created = true;
+            Assert.AreEqual(SafeFileSystem.OwnerDirectoryMode, File.GetUnixFileMode(control));
+            Assert.AreEqual(SafeFileSystem.OwnerDirectoryMode, File.GetUnixFileMode(uploads));
+        };
+        var source = f.Host.Directory + "/private-source"; var content = "synthetic-private-content"u8.ToArray();
+        await File.WriteAllBytesAsync(source, content); File.SetUnixFileMode(source, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        using var state = new PartialPrepareState(f.Host.StateRoot, f.Host.EvidenceRoot, false, _ => { }, "preflight");
+        PreflightPrivateUploads.Initialize(state, f.Host.Contract, f.Host.StateRoot);
+        new PreflightUploadTransport(f.Host, f.Host.Contract, state, f.Host.StateRoot, "smoke").Copy(source, target, target.RuntimeRoot + "/private-copy", CancellationToken.None);
+        Assert.IsTrue(created);
+        CollectionAssert.AreEqual(content, await File.ReadAllBytesAsync(root + "/private-copy"));
+        Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(root + "/private-copy"));
+    }
+    [TestMethod]
+    [DataRow("failure")]
+    [DataRow("unchanged")]
+    public async Task PrivateBinaryCopy_RefusesWhenDirectoriesCannotBeSecured(string fault)
+    {
+        using var f = new PreflightFixture(); await f.StageAsync(); var target = f.Host.Contract.Targets[1];
+        var root = f.Host.Physical(target.RuntimeRoot); Directory.CreateDirectory(root + "/.hvo-deploy/uploads", SafeFileSystem.OwnerDirectoryMode);
+        File.SetUnixFileMode(root + "/.hvo-deploy", (UnixFileMode)511); File.SetUnixFileMode(root + "/.hvo-deploy/uploads", (UnixFileMode)511);
+        f.Host.UseShellPrimitives = true; f.Host.PrimitiveHandler = null;
+        f.Host.BeforePrimitive = (operation, _) => { if (operation == "chmod700" && fault == "failure") throw Error("fixture-directory-secure-failed"); };
+        f.Host.PrimitiveHandler = (operation, _) => operation == "chmod700" && fault == "unchanged" ? "secured" : null;
+        var source = f.Host.Directory + "/private-source"; await File.WriteAllTextAsync(source, "synthetic-private-content");
+        File.SetUnixFileMode(source, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        using var state = new PartialPrepareState(f.Host.StateRoot, f.Host.EvidenceRoot, false, _ => { }, "preflight");
+        PreflightPrivateUploads.Initialize(state, f.Host.Contract, f.Host.StateRoot);
+        Assert.ThrowsExactly<InstallerException>(() => new PreflightUploadTransport(f.Host, f.Host.Contract, state, f.Host.StateRoot, "smoke").Copy(source, target, target.RuntimeRoot + "/private-copy", CancellationToken.None));
+        Assert.IsFalse(File.Exists(root + "/private-copy"));
+        Assert.IsEmpty(Directory.GetFileSystemEntries(root + "/.hvo-deploy/uploads"));
+        Assert.AreEqual("[]", (await File.ReadAllTextAsync(f.Host.StateRoot + "/private-upload-registry.json")).Trim());
+    }
+    [TestMethod]
+    public async Task PrivateBinaryCopy_RejectsSubstitutedTemporaryFileBeforePublication()
+    {
+        using var f = new PreflightFixture(); await f.StageAsync(); var target = f.Host.Contract.Targets[1];
+        var root = f.Host.Physical(target.RuntimeRoot); Directory.CreateDirectory(root + "/.hvo-deploy/uploads", SafeFileSystem.OwnerDirectoryMode);
+        foreach (var path in new[] { root + "/.hvo-deploy", root + "/.hvo-deploy/uploads" }) File.SetUnixFileMode(path, (UnixFileMode)511);
+        f.Host.UseShellPrimitives = true; f.Host.PrimitiveHandler = null; var substituted = false;
+        f.Host.BeforePrimitive = (operation, arguments) =>
+        {
+            if (substituted || operation != "stat" || !arguments[0].StartsWith(target.RuntimeRoot + "/.hvo-deploy/uploads/hvo-upload-", StringComparison.Ordinal)) return;
+            var path = f.Host.Physical(arguments[0]); if (!File.Exists(path)) return;
+            File.Delete(path); DeploymentFakeHost.Write(path, "substituted-content"); File.SetUnixFileMode(path, (UnixFileMode)420); substituted = true;
+        };
+        var source = f.Host.Directory + "/private-source"; await File.WriteAllTextAsync(source, "synthetic-private-content");
+        File.SetUnixFileMode(source, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        using var state = new PartialPrepareState(f.Host.StateRoot, f.Host.EvidenceRoot, false, _ => { }, "preflight");
+        PreflightPrivateUploads.Initialize(state, f.Host.Contract, f.Host.StateRoot);
+        Assert.ThrowsExactly<InstallerException>(() => new PreflightUploadTransport(f.Host, f.Host.Contract, state, f.Host.StateRoot, "smoke").Copy(source, target, target.RuntimeRoot + "/private-copy", CancellationToken.None));
+        Assert.IsTrue(substituted); Assert.IsFalse(File.Exists(root + "/private-copy"));
+        Assert.IsEmpty(Directory.GetFileSystemEntries(root + "/.hvo-deploy/uploads"));
+        Assert.AreEqual("[]", (await File.ReadAllTextAsync(f.Host.StateRoot + "/private-upload-registry.json")).Trim());
+    }
+    [TestMethod]
     [DataRow("amd64", "amd64")]
     [DataRow("x86_64", "amd64")]
     [DataRow("arm64", "arm64")]

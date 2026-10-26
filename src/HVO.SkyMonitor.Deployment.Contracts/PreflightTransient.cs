@@ -50,7 +50,7 @@ public static class PreflightTransient
     });
     public static bool OidcDiscovery(string body, string status, string authority) => Safe(() =>
     {
-        if (status != "200" || body.Length > 65536 || JsonNode.Parse(body) is not JsonObject document) return false;
+        if (status != "200" || System.Text.Encoding.UTF8.GetByteCount(body) > 65536 || JsonNode.Parse(body) is not JsonObject document) return false;
         return Text(document, "issuer") == authority.TrimEnd('/') + "/" && Text(document, "token_endpoint") == authority.TrimEnd('/') + "/connect/token";
     });
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Globalization", "CA1308", Justification = "The retained evidence protocol canonicalizes UUIDs to lowercase.")]

@@ -146,6 +146,7 @@ internal sealed class SshDeploymentFiles : IDeploymentFiles
             unlink) rm -f -- "$a"; value=removed ;;
             rmdir) rmdir -- "$a"; value=removed ;;
             mkdir) mkdir -m 700 -- "$a"; value=created ;;
+            chmod700) chmod 700 -- "$a"; value=secured ;;
             write) (umask 077; set -C; printf '%s' "$b" > "$a"); value=written ;;
             http) value=$(curl "${args[@]}"); value="$value" ;;
             sync) sync -- "$a"; value=synced ;;

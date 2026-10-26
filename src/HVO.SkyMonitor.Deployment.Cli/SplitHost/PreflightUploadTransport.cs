@@ -46,6 +46,8 @@ internal sealed class PreflightUploadTransport(IDeploymentHost host, SplitHostIn
         {
             var node = DeploymentNode.Parse(files.Call("stat", directory)); Require(node is null || node.Directory, "unsafe-private-path");
             if (node is null) files.Call("mkdir", directory);
+            files.Call("chmod700", directory);
+            Require(DeploymentNode.Parse(files.Call("stat", directory)) is { Directory: true, Mode: 0x1c0 }, "unsafe-private-path");
         }
         Register(target, temporary, "upload-temp");
         try
@@ -54,7 +56,7 @@ internal sealed class PreflightUploadTransport(IDeploymentHost host, SplitHostIn
             while ((count = input.Read(buffer)) != 0) { token.ThrowIfCancellationRequested(); files.Call("append-bytes", descriptor, Convert.ToBase64String(buffer, 0, count)); }
             boundary?.Invoke("abrupt-after-private-scp-upload");
             RequireComponents(files, Path.GetDirectoryName(destination)!);
-            var node = DeploymentNode.Parse(files.Call("stat", temporary)); Require(node is { File: true, Links: 1 }, "unsafe-private-file");
+            var node = DeploymentNode.Parse(files.Call("stat", temporary)); Require(node is { File: true, Links: 1, Mode: 0x180 }, "unsafe-private-file");
             files.Call("replace", temporary, destination);
         }
         catch (PartialPrepareCrashException) { throw; }

@@ -102,6 +102,22 @@ public sealed class PreflightAncillaryTests
         Assert.AreEqual(valid, PreflightTransient.OidcDiscovery(fault == "malformed" ? "{" : doc.ToJsonString(), fault == "status" ? "302" : "200", authority));
     }
     [TestMethod]
+    [DataRow(65535, true)]
+    [DataRow(65536, true)]
+    [DataRow(65537, false)]
+    [DataRow(66125, false)]
+    public void OidcDiscovery_EnforcesUtf8ByteBoundary(int byteCount, bool accepted)
+    {
+        const string authority = "https://public.example.test:5174";
+        const string prefix = "{\"issuer\":\"https://public.example.test:5174/\",\"token_endpoint\":\"https://public.example.test:5174/connect/token\",\"padding\":\"";
+        const string suffix = "\"}";
+        var paddingBytes = byteCount - Encoding.UTF8.GetByteCount(prefix + suffix);
+        var body = prefix + new string('\u00e9', paddingBytes / 2) + (paddingBytes % 2 == 0 ? "" : "a") + suffix;
+        Assert.AreEqual(byteCount, Encoding.UTF8.GetByteCount(body));
+        Assert.IsTrue(body.Length < 65536);
+        Assert.AreEqual(accepted, PreflightTransient.OidcDiscovery(body, "200", authority));
+    }
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExampleSchemaAndExecutableInventory_Agree()
     {

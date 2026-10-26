@@ -281,3 +281,57 @@ warning-clean builds, format, category verification and the four control guards
 are recorded in the PR ledger before independent review. The accepted preflight
 production sources and their dependency inputs are unchanged by this
 synchronization, so its exact comparison and resource evidence remain applicable.
+
+## Review correction and host transfer (2026-10-26)
+
+The operator authorized transfer to a native Linux x64 owner. Exact source
+`07fc46530ad9abb7f4ca879374fb9f4c889da083` and both uncommitted regression
+files were recovered from a complete Git bundle and patch; an independent
+restore matched both file hashes. The former queue claim is explicitly released.
+The original temporary scratch named above is no longer present on its source
+host, and its recorded Docker socket is unavailable. Historical results above
+remain the original report, not a claim that their raw temporary files were
+transferred. The source worktree, initial review and original public ledgers
+remain preserved. Fresh comparison receipts below replace no historical result.
+
+F1 restores normalization and read-back of both private upload directories to
+0700 before staging, refuses failed or ineffective normalization before upload
+registration, and requires a single regular 0600 temporary file before rename.
+The bounded shell adapter exposes only the added chmod primitive; its read-only
+preflight adapter remains byte-identical. Tests cover 0700/0755/0777 starting
+modes, failure and ineffective chmod, exact private bytes and final mode, and a
+substituted 0644 temporary file that must never be published.
+
+F2 measures UTF-8 bytes before parsing discovery JSON. Multibyte cases at
+65,535 and 65,536 bytes pass; 65,537 and 66,125 bytes are refused. The original
+character-count implementation fails both oversized multibyte cases.
+
+Red receipts: the recovered cases produced five failures and four passing
+controls against unchanged production methods. A warning-clean build required
+changing the recovered test's synchronous read to its asynchronous equivalent;
+the first failed build log is preserved. The stronger F1 substitution/ineffective
+normalization cases then produced five failures and two passing controls with
+only the upload correction disabled. Restored corrections pass all 246 selected
+preflight Unit cases with zero skips. An earlier name-only selection also ran the
+Manual receipt audit without its input directory and failed; that original TRX
+is retained, and the positive Unit selector and fresh Manual audit pass.
+
+Fresh complete original/typed evidence uses immutable original base
+`75ad7d9de596585da4a35451a04d4b7806f60bdf` in an isolated fixture. Its original
+production entrypoint/libraries are preserved. Only the fixture SSH dispatcher
+is taught the existing typed primitive transport, and an entrypoint wrapper
+captures both commands, restores identical input state and records their exact
+exits and resulting state/evidence/remote trees. The fixture has its own
+synthetic Git commit so both commands observe one source identity; available
+space is pinned to 10,000,000 KiB. Only the previously documented timestamps and
+clock offset are normalized. All 69 original cases and both owned lock-mode
+cases match. The existing independent C# Manual receipt auditor also passes
+against the reconstructed complete 69-case evidence.
+
+The complete wrapper source, baseline fixture, raw outputs, input snapshots,
+source/binary hashes, GNU time results, failures and TRX are retained in the
+owner's `1593-corrections-20261026` evidence pack. This is a new native Linux x64
+measurement; the historical ARM64 values above are not mixed into it. Final
+synchronized-head pins, resource totals and local/classifier results are recorded
+in the PR ledger before the correction/base-sync review. No whole-lane speedup,
+production qualification or deployment is claimed.
