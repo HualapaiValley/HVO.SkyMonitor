@@ -874,7 +874,13 @@ public sealed class CaptureProcessingGraphTests
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
         Assert.HasCount(10, preview.EffectiveNodes);
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        Assert.HasCount(21, registrations);
+        Assert.HasCount(25, registrations);
+        foreach (var alias in new[] { CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
+            MeasuredAstrometryCaptureProcessingStep.Alias, SceneStylePresentation.StepAlias })
+        {
+            Assert.IsFalse(registrations.Single(registration => registration.Alias == alias).AutoInclude);
+            Assert.IsFalse(preview.EffectiveNodes.Any(node => node.Alias == alias));
+        }
         Assert.IsFalse(registrations.Single(static registration => registration.Alias ==
             FrameFactsPresentation.StepAlias).AutoInclude);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Alias == FrameFactsPresentation.StepAlias));

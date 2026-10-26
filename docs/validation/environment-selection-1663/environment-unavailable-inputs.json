@@ -1,0 +1,14 @@
+[
+  {
+    "Ordinal": 0,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-SkyQuality",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "FBC65E94D5B904E3ABEEFD4F16B8996514A3CCE9DA78FD307B3963B85871FA36",
+    "Selected": false
+  }
+]

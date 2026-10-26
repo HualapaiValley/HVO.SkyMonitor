@@ -483,6 +483,44 @@ internal sealed partial class SqliteCaptureProcessingStore
                 ];
                 auxiliaryOutputNodes.Add(node.NodeId);
             }
+            var astrometry = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+                string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId);
+            if (astrometry || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+                string.Equals(step.Type, CaptureSatelliteTracksProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId))
+            {
+                using var satellite = connection.CreateCommand();
+                satellite.Transaction = transaction;
+                satellite.CommandText = """
+                    SELECT output.output_identity_sha256, output.payload_relative_path, output.product_schema_version
+                    FROM processing_outputs output
+                    WHERE output.capture_id = $capture AND output.node_id = $node AND output.availability_state = 'Available'
+                      AND output.product_schema_version IN ($input, $result)
+                      AND EXISTS (SELECT 1 FROM processing_execution_outputs association
+                          JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                          WHERE association.output_identity_sha256 = output.output_identity_sha256
+                            AND execution.execution_class = 'Live' AND execution.capture_id = output.capture_id)
+                    ORDER BY output.output_identity_sha256 LIMIT 4;
+                    """;
+                satellite.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+                satellite.Parameters.AddWithValue("$node", node.NodeId);
+                var inputSchema = astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
+                satellite.Parameters.AddWithValue("$input", inputSchema);
+                satellite.Parameters.AddWithValue("$result", astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
+                var pinned = new List<ProcessingFrozenOutputInput>();
+                var schemas = new HashSet<string>(StringComparer.Ordinal);
+                using var reader = await satellite.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original satellite products are ambiguous.");
+                    pinned.Add(new(reader.GetString(0), 0, reader.GetString(1)));
+                }
+                if (!schemas.Contains(inputSchema) || astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
+                    throw new InvalidDataException("The original bounded analyzer evidence is not retained.");
+                outputInputsByNode[node.NodeId] = pinned;
+                auxiliaryOutputNodes.Add(node.NodeId);
+            }
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         foreach (var frozenInput in pinnedRawInputs.Values)

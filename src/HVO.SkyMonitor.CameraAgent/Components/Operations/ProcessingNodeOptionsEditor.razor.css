@@ -1,9 +1,18 @@
 .node-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; }
 .node-options-help { grid-column: 1 / -1; margin: 0; }
 .option-field { min-width: 0; }
+.option-field--rows { grid-column: 1 / -1; }
 .option-field > label { display: block; margin-bottom: .35rem; }
 .option-field > p { color: var(--hvo-muted-strong); margin: .35rem 0 0; font-size: .8rem; }
 .colour-inputs { display: flex; gap: .6rem; align-items: center; }
 .colour-inputs input[type=color] { width: 3rem; height: 2.5rem; }
 .colour-inputs .form-control { max-width: 12rem; }
 .option-errors { color: var(--hvo-danger-fg, #ffb4b4); overflow-wrap: anywhere; }
+.collection-editor { border: 1px solid var(--hvo-muted-strong); border-radius: .4rem; padding: .6rem; min-width: 0; }
+.collection-editor legend { float: none; width: auto; font-size: 1rem; }
+.collection-editor ol { padding-left: 1.5rem; }
+.collection-editor li { margin-bottom: .8rem; }
+.collection-editor label { display: block; }
+.collection-actions { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
+.collection-editor button { min-height: 44px; min-width: 44px; }
+.collection-editor [role=status] { display: block; margin-top: .35rem; }

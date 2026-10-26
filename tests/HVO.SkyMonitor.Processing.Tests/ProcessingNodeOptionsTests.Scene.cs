@@ -11,7 +11,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("""{ "DrawMarkers" : true, "constellationIds": [ "Ori", "UMa" ], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "expectedPositionDiagnostics":true, "future":{"x":1e+02} }""");
         var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(decoded.IsValid);
-        Assert.HasCount(version == SceneVersion ? 13 : 12, decoded.Options);
+        Assert.HasCount(version == SceneVersion ? 18 : 17, decoded.Options);
         Assert.AreEqual(6, decoded.Get("markerRadius").Value.AsWholeNumber());
         Assert.AreEqual(2, decoded.Get("labelScale").Value.AsWholeNumber());
         Assert.AreEqual(24, decoded.Get("maximumLabelCharacters").Value.AsWholeNumber());
@@ -45,7 +45,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(source.GetRawText().Replace("true, \"constellationIds\"", "false, \"constellationIds\"", StringComparison.Ordinal)
             .Replace(" }", ",\"maximumLabelMagnitude\":-1.25 }", StringComparison.Ordinal), edited.Options!.Value.GetRawText());
         Assert.IsFalse(edited.Options.Value.TryGetProperty("labelScale", out _), "An edit must not materialize other defaults.");
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]

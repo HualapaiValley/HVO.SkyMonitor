@@ -30,7 +30,9 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private string? _conversionBefore;
     private ElementReference _conversionReview;
     private ElementReference _conversionTrigger;
+    private ElementReference _sceneUpgradeTrigger;
     private string? _focusConvertedNode;
+    private bool _sceneStyleUpgrade;
 
     [SupplyParameterFromQuery(Name = "from")]
     public string? From { get; set; }
@@ -47,7 +49,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -100,7 +102,11 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         _conversionBefore = null;
     }
 
-    private async Task ReviewConversionAsync()
+    private Task ReviewConversionAsync() => ReviewConversionAsync(false);
+
+    private Task ReviewSceneStyleUpgradeAsync() => ReviewConversionAsync(true);
+
+    private async Task ReviewConversionAsync(bool sceneStyle)
     {
         FormChanged();
         if (!_model.TryBuild(out var pipeline, out var errors))
@@ -112,7 +118,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         var generation = _draftGeneration;
         try
         {
-            var converted = FrameFactsDraftConversion.Convert(pipeline);
+            var converted = sceneStyle ? SceneStyleDraftUpgrade.Upgrade(pipeline) : FrameFactsDraftConversion.Convert(pipeline);
             var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(true);
             if (preview.Kind == OperatorUiResultKind.Unauthorized)
             {
@@ -126,6 +132,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
                 return;
             }
             _conversionBefore = JsonSerializer.Serialize(pipeline, DisplayJson);
+            _sceneStyleUpgrade = sceneStyle;
             _conversion = converted;
             _focusConversion = true;
         }
@@ -142,9 +149,10 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     {
         if (_conversion is null) return;
         _model = _model.WithConvertedPipeline(_conversion);
-        _focusConvertedNode = _model.Nodes.First(node => node.OptionsForm?.Descriptor.StepAlias == HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias).Id;
+        _focusConvertedNode = _model.Nodes.First(node => node.OptionsForm?.Descriptor.StepAlias ==
+            (_sceneStyleUpgrade ? SceneStylePresentation.StepAlias : HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias)).Id;
         FormChanged();
-        SetMessage("Frame Facts conversion applied to this draft only. Review the templates and render frozen facts, then preview the plan and save a new revision. Validate and activate separately.", false);
+        SetMessage((_sceneStyleUpgrade ? "Scene style upgrade" : "Frame Facts conversion") + " applied to this draft only. Review the selected options, then preview the plan and save a new revision. Validate and activate separately.", false);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -164,7 +172,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private async Task CancelConversionAsync()
     {
         FormChanged();
-        await _conversionTrigger.FocusAsync().ConfigureAwait(false);
+        await (_sceneStyleUpgrade ? _sceneUpgradeTrigger : _conversionTrigger).FocusAsync().ConfigureAwait(false);
     }
 
     private bool _focusConversion;
@@ -180,18 +188,28 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
             "Calibration" => "calibration",
+            "ProjectedScene" => "projected-scene",
+            "Annotation" => "legacy-annotation",
+            "OverlayManifest" => "overlay-manifest",
+            "PresentationMaterializer" => "presentation-materializer",
+            "CloudPresentationLayer" => "cloud-layer",
+            "EnvironmentPresentationLayer" => "environment-layer",
             "Preview" => "preview",
             "CalibratedPreview" => "calibrated-preview",
             "CombinedPreview" => "combined-preview",
             "JpegEncoding" => "jpeg-encoding",
             _ => "constellations"
         };
-        var first = _model.Nodes.FirstOrDefault(row => row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
+        var first = _model.Nodes.FirstOrDefault(row => IsSceneOptions(node)
+            ? IsSceneOptions(row) : row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
     }
 
+    private static bool IsSceneOptions(ProcessingGraphDraftModel.NodeRow node)
+        => node.OptionsForm?.Descriptor.StepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias;
+
     private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
-        => node.OptionsForm?.Descriptor.StepAlias == ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias
+        => IsSceneOptions(node)
             ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
             : null;
 

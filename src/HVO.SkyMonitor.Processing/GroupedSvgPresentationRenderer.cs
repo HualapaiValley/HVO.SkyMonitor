@@ -49,7 +49,12 @@ public static class GroupedSvgPresentationRenderer
             throw new ArgumentException("Grouped SVG rendering supports ScenePixels layers only.", nameof(manifest));
         }
 
-        foreach (var payload in payloads) payload.ValidateStructure();
+        for (var index = 0; index < payloads.Count; index++)
+        {
+            payloads[index].ValidateStructure();
+            if (!SceneStylePresentation.MatchesRetainedLayer(payloads[index], manifest.Layers[index]))
+                throw new ArgumentException("The retained scene style requires its exact renderer and producer versions.", nameof(manifest));
+        }
         var elementCount = payloads.Sum(ElementCount);
         if (elementCount > MaximumSvgElements)
         {
@@ -117,6 +122,7 @@ public static class GroupedSvgPresentationRenderer
                 PresentationLayerCompositor.PreviousAlgorithmVersion => "cameraagent-grouped-svg-v3-plex",
                 PresentationLayerCompositor.SemanticAlgorithmVersion => SemanticRendererVersion,
                 PresentationLayerCompositor.RichTextAlgorithmVersion => RichTextRendererVersion,
+                PresentationLayerCompositor.SceneStyleAlgorithmVersion => "cameraagent-grouped-svg-v8-scene-style",
                 _ => RendererVersion
             },
             manifest.ManifestIdentitySha256,

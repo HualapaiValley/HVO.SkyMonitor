@@ -1,0 +1,32 @@
+{
+  "State": "empty",
+  "Width": 1936,
+  "Height": 1216,
+  "SourceSha256": "BA1615981AE63D71C685759F4A8FADA59497DCF900BDE30867CE2DBA24A07472",
+  "PayloadSha256": "41CB6EF1EE1A8FBF46EF19DEF2457A766C7A418A7155A1C7533947010AF5BF35",
+  "OutputSha256": "49FB0480D0435491189DBDC9AD15920F946287C212A8F298F7E8545321754BDE",
+  "Warmup": 3,
+  "Iterations": 15,
+  "MedianMs": 7.8165,
+  "P95Ms": 8.8014,
+  "CpuMs": 272.231,
+  "AllocatedBytesPerOperation": 7139923,
+  "WorkingSetBytes": 377745408,
+  "TimesMs": [
+    8.3777,
+    7.7512,
+    7.8165,
+    7.5932,
+    7.7039,
+    7.6799,
+    7.8923,
+    7.8461,
+    7.8176,
+    7.8273,
+    7.8648,
+    7.6447,
+    8.8014,
+    7.6874,
+    7.6165
+  ]
+}

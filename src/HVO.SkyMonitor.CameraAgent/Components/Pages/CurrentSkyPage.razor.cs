@@ -126,7 +126,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     protected override void OnParametersSet()
     {
-        if (ArchivedView is not { } archive || ReferenceEquals(archive, _appliedArchive)) return;
+        if (_accessDenied || _disposeStarted != 0 || ArchivedView is not { } archive || ReferenceEquals(archive, _appliedArchive)) return;
         _appliedArchive = archive;
         var capture = archive.Capture;
         var sameCapture = _runCaptureId == capture.CaptureId;
@@ -271,6 +271,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
                 ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
                 : null;
+            if (layers?.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                await InvokeAsync(RevokeAccess).ConfigureAwait(false);
+                return;
+            }
             timeout.Token.ThrowIfCancellationRequested();
             // Overlays the read advertised but that could not be read now leave the complete image in place until a
             // later refresh reads them. A capture whose processing ended without overlays still replaces it.
@@ -296,6 +301,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
+                var previouslyDisplayedCaptureId = _runCaptureId;
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
                 {
                     HoldDisplayedCapture(result.Value);
@@ -343,7 +349,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _bindGeneration++;
                         _bindLayers = true;
                     }
-                    if (layers is null) TryLoadLayers(displayCaptureId);
+                    if (layers is null)
+                    {
+                        TryLoadLayers(displayCaptureId);
+                    }
                     _errorMessage = null;
                 }
                 else
@@ -353,6 +362,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 _refreshDeadlineMessage = null;
                 _initialLoading = false;
                 _refreshing = false;
+                // Optional astrometry can finish after display layers. Poll only an unchanged capture's pending
+                // read; immutable retained assessments (including rejection/budget outcomes) need no polling.
+                if (result.IsSuccess && previouslyDisplayedCaptureId == _runCaptureId &&
+                    _layers?.Astrometry is { Solution: null }) _ = RefreshMeasuredEvidenceAsync();
                 StateHasChanged();
             }).ConfigureAwait(false);
             if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
@@ -510,6 +523,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _transient = null;
         _transientMessage = null;
         _layers = null;
+        ClearAstrometry();
         _combinedProduct = null;
         _combinedObservationSpan = null;
         _selectedLayers.Clear();
@@ -530,6 +544,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             previous.Dispose();
         }
         _layers = null;
+        ClearAstrometry();
         _deferredLayers = null;
         _layerMessage = null;
         _saveMessage = null;
@@ -570,7 +585,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
         var result = await ReadLayersAsync(captureId, cancellation).ConfigureAwait(false);
-        if (result is null || cancellation.IsCancellationRequested || Volatile.Read(ref _disposeStarted) != 0) return;
+        if (result is null || Volatile.Read(ref _disposeStarted) != 0 ||
+            cancellation.IsCancellationRequested && result.Kind != OperatorUiResultKind.Unauthorized) return;
         await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
     }
 
@@ -598,13 +614,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
     {
-        if (generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
-            _layerCancellation?.IsCancellationRequested != false) return;
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
-            RevokeAccess();
+            if (!_accessDenied) RevokeAccess();
             return;
         }
+        if (generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
+            _layerCancellation?.IsCancellationRequested != false) return;
         // Keep the actual displayed base and controls frozen, including terminal absence/failure.
         // Retain one completed result, not a waiting task or its timeout/cancellation resources.
         if (_viewerOpen)
@@ -617,6 +633,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {
             _layers = value;
+            if (value.Astrometry is { } astrometry) ApplyAstrometry(captureId, astrometry);
             _layersNotRetained = false;
             _layerMessage = null;
             _selectedLayers = RememberedSelection(value);
@@ -629,6 +646,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
             _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
         }
+        if (_astrometry?.Solution is null && result.Value?.Astrometry is null && !_astrometryLoading &&
+            _layerCancellation is { } astrometryCancellation)
+            _ = LoadAstrometryAsync(captureId, generation, astrometryCancellation.Token);
         StateHasChanged();
     }
 
@@ -832,13 +852,36 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerGroup(string kind) => kind switch
     {
-        "MeasuredTransientTrails" => "Measured",
+        "MeasuredTransientTrails" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
 
+    private static string SatelliteDescription(CaptureSatelliteStatusV1? status)
+    {
+        if (status is null) return string.Empty;
+        var reason = status.Reason switch
+        {
+            "NoActiveSnapshot" => "no installed orbital snapshot",
+            "TimeCoverageUnavailable" => "time inputs do not cover this exposure",
+            "TimeAvailabilityUnknown" => "time-input availability is unknown",
+            "SnapshotRetiredBeforePin" => "source retired before prediction could be retained",
+            "NoExposureSegments" => "no predicted exposure segment in this image",
+            "SelectionWithheld" => "source selection withheld",
+            "ObjectMissing" => "requested object missing",
+            "TimeInputsUnavailable:Disabled" => "time inputs disabled",
+            _ => status.Reason
+        };
+        var retrieved = status.SourceRetrievedUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+        var age = status.MaximumEpochAgeHours is { } hours
+            ? (Math.Ceiling(hours * 10) / 10).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : "unknown";
+        return FormattableString.Invariant($"{status.Status}: {reason}; {status.TrackCount} tracks; population {status.Coverage.Completeness}; source retrieved {retrieved}; epoch age <= {age} h; freshness {status.ElementFreshness}; configured geometry; {status.TimeSource} time inputs.");
+    }
+
     private static string LayerDescription(string kind) => kind switch
     {
+        AstrometricDiagnosticPresentation.AssociationsLayer => "measured centroids associated by the accepted fit / green fitting, amber held-out",
+        AstrometricDiagnosticPresentation.ResidualsLayer => "measured minus fitted prediction / actual 1× pixel vectors; rings locate fitted positions; no uncertainty band",
         "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
         OrbitalTrackPresentation.LayerKind => "predicted / exact exposure segment; geometry only, not a detection or visibility claim",
         "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
@@ -1077,8 +1120,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         : "Not retained for this capture";
 
     private string ProjectionLabel => _facts?.CaptureProfile is { } profile
-        ? $"{profile.ProjectionModel} (configured; no measured fit)"
-        : "No retained model or measured fit";
+        ? $"{profile.ProjectionModel} (configured geometry)"
+        : "No configured model retained for this capture";
 
     private string SiteLabel => _facts?.Location switch
     {
@@ -1110,6 +1153,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerLabel(string kind) => kind switch
     {
+        AstrometricDiagnosticPresentation.AssociationsLayer => "Measured stellar associations",
+        AstrometricDiagnosticPresentation.ResidualsLayer => "Astrometric residuals",
         "MeasuredTransientTrails" => "Measured transient trails",
         OrbitalTrackPresentation.LayerKind => "Predicted satellite tracks",
         "scene-annotation" or "star-annotations" => "Sky annotations",
@@ -1142,13 +1187,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 ? await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token)
                 : await OperatorService.SaveFrozenLayeredPresentationAsync(captureId,
                     _layers.ManifestIdentitySha256, selected, cancellation.Token);
-            if (!IsCurrentLayer(generation, captureId, cancellation)) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                _accessDenied = true;
-                NavigationManager.NavigateTo("/Account/AccessDenied");
+                RevokeAccess();
+                return;
             }
-            else if (result.IsSuccess && result.Value is { } receipt)
+            if (!IsCurrentLayer(generation, captureId, cancellation)) return;
+            if (result.IsSuccess && result.Value is { } receipt)
             {
                 // The saved stack is full-resolution packed pixels; preview JPEG may be scaled to 2048px.
                 _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/preview?download=1";
@@ -1245,7 +1290,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         if (_lifetime is not null)
         {
-            if (IsArchived) TryLoadLayers(_runCaptureId);
+            if (IsArchived)
+            {
+                if (_layers?.Astrometry is { Solution: null }) await RefreshMeasuredEvidenceAsync();
+                else TryLoadLayers(_runCaptureId);
+            }
             Interlocked.Exchange(ref _manualRefreshRequested, 1);
             await RequestRefreshAsync(_lifetime.Token);
             await InvokeAsync(() =>
@@ -1268,6 +1317,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 slot.Stage == stage && slot.Availability == CameraAgentPresentationSlotAvailability.Available) == true)
         {
             _selectedStage = stage;
+            _calculatorResult = null;
             _bindGeneration++;
             _layerInteractive = false;
             if (stage == CameraAgentPresentationStage.Annotated && _layers is not null) _bindLayers = true;

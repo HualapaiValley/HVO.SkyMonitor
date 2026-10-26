@@ -726,6 +726,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         byte[] contextJson,
         string contextSha256,
         ProcessingLiveExecutionSeed execution,
+        bool manifestFallback,
         CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -756,7 +757,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             rawRowId = Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
         }
         await UpsertRecoveredContextAsync(
-            connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
+            connection, transaction, rawRowId, contextJson, contextSha256, manifestFallback, cancellationToken).ConfigureAwait(false);
         await InsertLiveExecutionAsync(
             connection, transaction, rawRowId, entry, execution, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1053,6 +1054,9 @@ internal sealed partial class SqliteRawCaptureJournal(
         {
             throw new InvalidDataException("The live processing execution source manifest is invalid.");
         }
+        if (parsedManifest.Document.Manifest.CaptureGraphRevisionId is { } retainedRevision &&
+            !string.Equals(retainedRevision, execution.Revision.State.RevisionId, StringComparison.Ordinal))
+            throw new RawIngressConflictException("The live execution differs from the immutable sidecar graph binding.");
         var primaryInput = new ProcessingFrozenRawInput(
             rawRowId,
             0,
@@ -1062,16 +1066,16 @@ internal sealed partial class SqliteRawCaptureJournal(
             entry.PayloadRelativePath);
         var pinnedInputs = new Dictionary<long, ProcessingFrozenRawInput> { [rawRowId] = primaryInput };
 
+        // Activation can advance while physical scene staging runs. Validate the selected immutable revision,
+        // rather than asking whether it is still active; recovery must honor exactly the same sidecar binding.
         using (var active = connection.CreateCommand())
         {
             active.Transaction = transaction;
             active.CommandText = """
                 SELECT COUNT(*)
-                FROM processing_graph_registry_state registry
-                JOIN processing_graph_revisions revision
-                  ON revision.revision_id = registry.active_revision_id
-                WHERE registry.state_key = 1
-                  AND revision.revision_id = $revision
+                FROM processing_graph_revisions revision
+                WHERE revision.revision_id = $revision
+                  AND revision.validated_unix_ms IS NOT NULL
                   AND revision.definition_identity_sha256 = $definition
                   AND revision.shared_plan_identity_sha256 = $shared_plan
                   AND revision.local_plan_identity_sha256 = $local_plan;
@@ -1085,7 +1089,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     System.Globalization.CultureInfo.InvariantCulture) != 1)
             {
                 throw new ProcessingGraphStoreConflictException(
-                    "The active processing graph revision changed during raw capture acceptance.");
+                    "The selected immutable processing graph revision is unavailable or differs from the capture binding.");
             }
         }
 
@@ -1229,12 +1233,14 @@ internal sealed partial class SqliteRawCaptureJournal(
 
         using var verify = connection.CreateCommand();
         verify.Transaction = transaction;
-        verify.CommandText = "SELECT context_sha256 FROM capture_lane_contexts WHERE raw_capture_row_id = $raw;";
+        verify.CommandText = "SELECT context_sha256 FROM capture_lane_contexts WHERE raw_capture_row_id = $raw AND context_source != 'manifest-fallback';";
         verify.Parameters.AddWithValue("$raw", rawRowId);
         var existing = Convert.ToString(
             await verify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture);
-        if (!string.Equals(existing, contextSha256, StringComparison.Ordinal))
+        // A sidecar-only recovery cannot recreate transient loop timing. Keep its descriptor-derived context;
+        // the retry's immutable descriptor/payload were already checked, and must not overwrite frozen evidence.
+        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal))
         {
             throw new RawIngressConflictException("Capture lane context differs from the committed retry context.");
         }
@@ -1246,13 +1252,14 @@ internal sealed partial class SqliteRawCaptureJournal(
         long rawRowId,
         byte[] contextJson,
         string contextSha256,
+        bool manifestFallback,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO capture_lane_contexts(raw_capture_row_id, context_json, context_sha256, context_source)
-            VALUES ($raw, $json, $sha, 'capture')
+            VALUES ($raw, $json, $sha, $source)
             ON CONFLICT(raw_capture_row_id) DO UPDATE SET
                 context_json = excluded.context_json,
                 context_sha256 = excluded.context_sha256,
@@ -1261,6 +1268,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$raw", rawRowId);
         command.Parameters.AddWithValue("$json", contextJson);
         command.Parameters.AddWithValue("$sha", contextSha256);
+        command.Parameters.AddWithValue("$source", manifestFallback ? "manifest-fallback" : "capture");
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

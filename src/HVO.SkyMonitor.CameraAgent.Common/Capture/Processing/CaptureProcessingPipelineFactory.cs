@@ -6,10 +6,12 @@ using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Reflection;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -262,6 +264,33 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            if (configured.Count(static item => item.Step is MeasuredAstrometryCaptureProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded astrometry producer.");
+            foreach (var astrometry in configured.Where(static item => item.Step is MeasuredAstrometryCaptureProcessingStep))
+            {
+                if (!explicitV2 || astrometry.Config.Required || astrometry.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal ||
+                    astrometry.Config.DependsOn is not { Count: 2 } || astrometry.Config.DependsOn.Any(id =>
+                        !nodesById.TryGetValue(id, out var producer) ||
+                        producer.Step is not (ProjectedSceneCaptureProcessingStep or MeasuredStellarAssociationCaptureProcessingStep) ||
+                        producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
+                    throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
+            }
+            if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
+                throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
+            foreach (var satellite in configured.Where(static item => item.Step is CaptureSatelliteTracksProcessingStep))
+            {
+                if (!explicitV2 || satellite.Config.DependsOn?.Count != 1 ||
+                    !IsRawDependency(satellite.Config.DependsOn[0]) ||
+                    satellite.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteTracks requires an explicit v2 raw dependency and durable local publication.");
+            }
+            foreach (var layer in configured.Where(static item => item.Step is CaptureSatelliteLayerProcessingStep))
+            {
+                if (!explicitV2 || layer.Config.DependsOn?.Count != 1 ||
+                    !nodesById.TryGetValue(layer.Config.DependsOn[0], out var producer) || producer.Step is not CaptureSatelliteTracksProcessingStep ||
+                    layer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                    throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
+            }
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
@@ -1255,7 +1284,23 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             id,
             registration.ImplementationType.FullName ?? registration.ImplementationType.Name,
             order);
+        if (registration.Alias == SceneStylePresentation.StepAlias)
+        {
+            var decoded = ProcessingNodeOptionsCodec.Decode(SceneStylePresentation.Descriptor,
+                config.Options ?? JsonSerializer.SerializeToElement(new { }));
+            if (!decoded.IsValid) throw new ValidationException(string.Join(' ', decoded.Diagnostics.Select(item => item.Message)));
+        }
         var options = CreateOptionsInstance(config.Options, registration.OptionsType);
+        if (options is EnvironmentPresentationLayerProcessingStepOptions environment)
+        {
+            var acquisition = _serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition;
+            if (acquisition.Enabled)
+            {
+                var unavailable = environment.EnvironmentalKinds.Except(acquisition.Sources.Select(static source => source.Kind)).Order().ToArray();
+                if (unavailable.Length > 0)
+                    throw new ValidationException($"Environmental observations {string.Join(", ", unavailable)} are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider.");
+            }
+        }
         var effectiveOptions = SerializeEffectiveOptions(options, aliasesOnly);
         effectiveConfig = aliasesOnly
             ? config with

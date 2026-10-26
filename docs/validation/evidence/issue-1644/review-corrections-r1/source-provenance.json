@@ -1,0 +1,331 @@
+{
+  "red": {
+    "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+    "manifest": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-source.json",
+    "manifestSha256": "0e4887f459bc53caac0a2747e9bd39d8ddbe6c6b7b9c8570281f4c3e9f85e611",
+    "sourceUnchangedProof": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-source-unchanged.txt",
+    "testPatch": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-final-tests.patch",
+    "testPatchSha256": "90151c19b4befd57cbb43c3122e7357f403d41ac7b9dc3769e5666b3fcdc26b2"
+  },
+  "candidate": {
+    "baseHead": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+    "sourceTree": "795fa4a2e54b80860a1651f595aae84268d18bee",
+    "changedFiles": {
+      "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureAstrometricCompositionPersistence.cs": "a06b4c8ec74cb9b471bd937a53e613b27953c0ded149f70e0e5274a2b1c60350",
+      "src/HVO.SkyMonitor.CameraAgent/Components/Pages/CurrentSkyPage.Astrometry.cs": "dc27029717449b4f0bb5a56f00032842b9be4e24cd940d2808d54c3764f48a4a",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/AstrometricSourceMappingTests.cs": "3809fb84e1a053697435b50ed73058e43c3e9398636da50fb77fc3832f5c259e",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryDurabilityTests.cs": "81ff1d7062bcc6c7b897d8ff15db7269566ce431c90b4f2c45a3abb2ee327057",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryViewerTests.cs": "6d84199f3bf0dc7c8c2e17ab652dfc398479c88d23608bb96c1cb75650b73621",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/CurrentSkyPageTests.Astrometry.cs": "00e4022b9f91573a473aa2c9b105dd23398c920625172cb5240d4ad0aa541adb",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json": "b6da5c22a5d0b8429e4c5fb61b47cc9e39d738126ba129131e9d99eb2ee537f9"
+    },
+    "sdk": "10.0.402",
+    "profile": "development-v1"
+  },
+  "baseInteraction": {
+    "previousReviewedHead": "d80d0dd6dde9dc98ca2d6c73f94dc127964733c2",
+    "syncedHead": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+    "target": "edb63ef898b14a8da369dc0b116ac6873a7b059c",
+    "projects": [
+      {
+        "path": "src/HVO.SkyMonitor.Fleet.Contracts",
+        "oldTree": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672",
+        "syncedTree": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Common",
+        "oldTree": "fbaac57aeb332df0fb1f8466519b6103e3ac2dc8",
+        "syncedTree": "fbaac57aeb332df0fb1f8466519b6103e3ac2dc8",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Processing",
+        "oldTree": "af74eb42540169abb08c676cf0e40b337d2a43da",
+        "syncedTree": "6c1ba1c5f707c543b22939250cd51422fbb9cf38",
+        "unchanged": false
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Cli",
+        "oldTree": "fb8c6e10525eb56328856f8efa43bb408288d56a",
+        "syncedTree": "fb8c6e10525eb56328856f8efa43bb408288d56a",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common",
+        "oldTree": "1c5b6105863654fa276d5d59c6e0ffc69bb1aba2",
+        "syncedTree": "238de35971b2626ff77d9fd276e5bd6ef0b0f523",
+        "unchanged": false
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Catalog.Sqlite",
+        "oldTree": "974fa7355e8dec842b987b264bf5794f7b241b22",
+        "syncedTree": "974fa7355e8dec842b987b264bf5794f7b241b22",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.AgentCore",
+        "oldTree": "129f1e1a78604431b469855b7560e060901dc4a6",
+        "syncedTree": "129f1e1a78604431b469855b7560e060901dc4a6",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner",
+        "oldTree": "8a5e46c53d272ff79c569a23df6c612eab0f5c08",
+        "syncedTree": "8a5e46c53d272ff79c569a23df6c612eab0f5c08",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Video.FFmpeg",
+        "oldTree": "a9b10ba7417a5fcf1a95908a6efcca796f05564e",
+        "syncedTree": "a9b10ba7417a5fcf1a95908a6efcca796f05564e",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo",
+        "oldTree": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad",
+        "syncedTree": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TestSupport",
+        "oldTree": "49f2de4d871d0f83893dc12abc1e052d32715a93",
+        "syncedTree": "49f2de4d871d0f83893dc12abc1e052d32715a93",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TerminalUi",
+        "oldTree": "feb1939a7fac45aedec2376b1f42174a8d47ac90",
+        "syncedTree": "feb1939a7fac45aedec2376b1f42174a8d47ac90",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Imaging",
+        "oldTree": "11fbfc7cde705b7fb5321abf90a2a84d6f42dead",
+        "syncedTree": "62147c85f3074ed2aa2c254b2388fc44d9a4fbf0",
+        "unchanged": false
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Astronomy",
+        "oldTree": "cc591097dafd1ca744a86d30515e0e183dfe8e44",
+        "syncedTree": "cc591097dafd1ca744a86d30515e0e183dfe8e44",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.LogicHost",
+        "oldTree": "badb2ea2333d2a270857fd69ef95d57668bb0666",
+        "syncedTree": "8d960b31e967ebfe880afd4423fadbd3dc3a7e12",
+        "unchanged": false
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent",
+        "oldTree": "65c02eb020a24cb765af4026b00ac705925d6308",
+        "syncedTree": "cfb0deefab9d23d657d1b5d6fba99e2cbc3e25a5",
+        "unchanged": false
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner.Contracts",
+        "oldTree": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b",
+        "syncedTree": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Cli",
+        "oldTree": "f2ddad6633461cfb7803f96b0c1870e960350a12",
+        "syncedTree": "f2ddad6633461cfb7803f96b0c1870e960350a12",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Replay",
+        "oldTree": "cff78397d68d35bc60273492c3533d5f4e19965f",
+        "syncedTree": "cff78397d68d35bc60273492c3533d5f4e19965f",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Contracts",
+        "oldTree": "f1f3e45f74aa26679ff930bd9990c8efcc58e1b5",
+        "syncedTree": "f1f3e45f74aa26679ff930bd9990c8efcc58e1b5",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Storage.FileSystem",
+        "oldTree": "a0f7c5ab486ee35518422e1fb89f417a927696a7",
+        "syncedTree": "a0f7c5ab486ee35518422e1fb89f417a927696a7",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.ReplayRunner",
+        "oldTree": "9cb9a1db14d294af90e8f06a3b94623dd4983b69",
+        "syncedTree": "9cb9a1db14d294af90e8f06a3b94623dd4983b69",
+        "unchanged": true
+      }
+    ],
+    "changedPaths": [
+      "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureProcessingPipelineFactory.cs",
+      "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/LayeredPresentationCaptureProcessingSteps.cs",
+      "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/SceneStylePresentationCaptureProcessingStep.cs",
+      "src/HVO.SkyMonitor.CameraAgent.Common/DependencyInjection/CameraAgentServiceCollectionExtensions.cs",
+      "src/HVO.SkyMonitor.CameraAgent/Components/Operations/ProcessingNodeOptionsEditor.razor",
+      "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphEditorPage.razor",
+      "src/HVO.SkyMonitor.CameraAgent/Components/Pages/ProcessingGraphEditorPage.razor.cs",
+      "src/HVO.SkyMonitor.CameraAgent/Services/ProcessingNodeOptionsForm.cs",
+      "src/HVO.SkyMonitor.CameraAgent/Services/SceneStyleDraftUpgrade.cs",
+      "src/HVO.SkyMonitor.Imaging/PresentationFont.cs",
+      "src/HVO.SkyMonitor.Imaging/PresentationLayerPayload.cs",
+      "src/HVO.SkyMonitor.LogicHost/Services/CentralPresentationMaterializer.cs",
+      "src/HVO.SkyMonitor.Processing/GroupedSvgPresentationRenderer.cs",
+      "src/HVO.SkyMonitor.Processing/PresentationLayerPayloadJson.cs",
+      "src/HVO.SkyMonitor.Processing/PresentationLayerProducers.cs",
+      "src/HVO.SkyMonitor.Processing/PresentationProcessingProducts.cs",
+      "src/HVO.SkyMonitor.Processing/ProcessingNodeOptionsCatalog.cs",
+      "src/HVO.SkyMonitor.Processing/ProcessingOptionDescriptors.cs",
+      "src/HVO.SkyMonitor.Processing/SceneStylePresentation.cs",
+      "src/HVO.SkyMonitor.Processing/StructuredProcessingProductManifest.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HostRecipeContractConformanceTests.Scene.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/test-categories.json",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/CaptureProcessingGraphTests.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/ProcessingGraphOperationsTests.SceneStyle.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/CaptureScalarOptionsEditorTests.SceneStyle.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Components/CaptureScalarOptionsEditorTests.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Services/CameraAgentProcessingGraphUiServiceTests.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json",
+      "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/ArtifactIngestTests.cs",
+      "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/test-categories.json",
+      "tests/HVO.SkyMonitor.LogicHost.Tests/test-categories.json",
+      "tests/HVO.SkyMonitor.Processing.Tests/FrameFactsPresentationTests.cs",
+      "tests/HVO.SkyMonitor.Processing.Tests/ProcessingNodeOptionsTests.Scene.cs",
+      "tests/HVO.SkyMonitor.Processing.Tests/ProcessingNodeOptionsTests.SceneStyle.cs",
+      "tests/HVO.SkyMonitor.Processing.Tests/ProcessingNodeOptionsTests.cs",
+      "tests/HVO.SkyMonitor.Processing.Tests/SceneStylePresentationEvidenceTests.cs",
+      "tests/HVO.SkyMonitor.Processing.Tests/test-categories.json"
+    ],
+    "findingSourceLocationsUnchangedAtSync": {
+      "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureAstrometricCompositionPersistence.cs": true,
+      "src/HVO.SkyMonitor.CameraAgent/Components/Pages/CurrentSkyPage.Astrometry.cs": true
+    },
+    "validationInputs": {
+      "global.json": {
+        "previousSha256": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+        "candidateSha256": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+        "unchanged": true
+      },
+      "Directory.Packages.props": {
+        "previousSha256": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+        "candidateSha256": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+        "unchanged": true
+      },
+      "Directory.Build.props": {
+        "previousSha256": "6b675b178c3db9f2ce38249cf6bbd7f044c0a8790c7ee9cb765451bca6642d33",
+        "candidateSha256": "6b675b178c3db9f2ce38249cf6bbd7f044c0a8790c7ee9cb765451bca6642d33",
+        "unchanged": true
+      },
+      "Directory.Build.targets": {
+        "previousSha256": "679aafb0c6e9ece824e30e448e2d1d99d98569319a2884015ec68ad2b5e3f408",
+        "candidateSha256": "679aafb0c6e9ece824e30e448e2d1d99d98569319a2884015ec68ad2b5e3f408",
+        "unchanged": true
+      },
+      "HVO.SkyMonitor.v9.slnx": {
+        "previousSha256": "c31eab5f7a6c0073f0ed9d7d833966bc0efa4171131418edb61ffb02cc86b2b6",
+        "candidateSha256": "c31eab5f7a6c0073f0ed9d7d833966bc0efa4171131418edb61ffb02cc86b2b6",
+        "unchanged": true
+      },
+      "tests/coverage.runsettings": {
+        "previousSha256": "1bc4fc093e52e3683c66e78ebbee34f0d1e003f170f27aab7a2a9f27eaa4f231",
+        "candidateSha256": "1bc4fc093e52e3683c66e78ebbee34f0d1e003f170f27aab7a2a9f27eaa4f231",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.cameraagent.json": {
+        "previousSha256": "c5409027eceb5d21be18ce13b5c4a9511aef35f3eaaa871164f73c900d0cd085",
+        "candidateSha256": "c5409027eceb5d21be18ce13b5c4a9511aef35f3eaaa871164f73c900d0cd085",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.combined.json": {
+        "previousSha256": "340590f065ea25a558c8fbbdf81cbf5123e6610884083d74664935578c0cd575",
+        "candidateSha256": "340590f065ea25a558c8fbbdf81cbf5123e6610884083d74664935578c0cd575",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.delivery.json": {
+        "previousSha256": "1dd2b2e69d372184d4b5887d3b1683c6d5d716687a57dc0b8704d390e3319801",
+        "candidateSha256": "1dd2b2e69d372184d4b5887d3b1683c6d5d716687a57dc0b8704d390e3319801",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.json": {
+        "previousSha256": "5ed3229e564c1207656d7bf16fd61163786d1b01e43f653c9ff10ca8f3dcdc21",
+        "candidateSha256": "5ed3229e564c1207656d7bf16fd61163786d1b01e43f653c9ff10ca8f3dcdc21",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.logichost.json": {
+        "previousSha256": "2afc1ead640d65d3f8edc09af217ef7037c057dc70b1bc13b6da0d3688c757d5",
+        "candidateSha256": "2afc1ead640d65d3f8edc09af217ef7037c057dc70b1bc13b6da0d3688c757d5",
+        "unchanged": true
+      },
+      "scripts/coverage/baseline.shared.json": {
+        "previousSha256": "b8724fa116d12f9be5e11951209d08903fd1330a013461289c03360d2f45fac0",
+        "candidateSha256": "b8724fa116d12f9be5e11951209d08903fd1330a013461289c03360d2f45fac0",
+        "unchanged": true
+      }
+    },
+    "browserAndResourceWorkloadUnchanged": {
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/RetainedAstrometryBrowserAcceptanceTests.cs": true,
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/RetainedAstrometryBrowserAcceptanceTests.Reads.cs": true,
+      "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/RetainedAstrometryBrowserFixture.cs": true,
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryResourceTests.cs": true
+    }
+  },
+  "categoryScope": {
+    "source": "scripts/test-categories/Program.cs",
+    "sourceSha256": "b06d00a743218e80d428e3af9b1eba2495edf577c5d4fb976cdc0a0e5374ff83",
+    "scopedSha256": "7df174625bd1451ba5c49719ef4ae0966a66081133c847f459fb4cea18c908c9",
+    "change": "Only restrict discovery project selection to CameraAgent, Processing, combined contract and LogicHost integration inventories changed by this correction/base sync; preserve canonical parser, uniqueness, category-disjointness, known-category and unexpandable-data checks."
+  },
+  "frozenBeforeAfter": {
+    "originalArtifact": {
+      "ArtifactId": "20fa3577-1db6-881c-bfb2-f209eb4797dc",
+      "Role": 4,
+      "SourceId": "gallery-materialization",
+      "Variant": "operator-stack-v1",
+      "CreatedUtc": "2026-08-25T00:00:01.1+00:00",
+      "SourceArtifactIds": [
+        "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+        "3f15fb8a-8b72-8644-81f8-481be7bd214a",
+        "588eabf2-666c-8691-8994-bfe11cde63cb"
+      ],
+      "Recipe": {
+        "Name": "presentation-materialization",
+        "SemanticVersion": "1.0.0",
+        "ImplementationVersion": "typed-presentation-materialization-v1",
+        "Options": {
+          "MaterializationIdentitySha256": "E185727D14C80C70A5EDB40AD7CD89991BC4970235C597DAAAACFD7E6CF6242F"
+        },
+        "OptionsSha256": "716CCA1C53DAE8E2F84B6AFCDC7F8961BA234A0E572346D8AF4553B6F07B0CC1"
+      },
+      "MediaType": "application/x-hvo-packed-image",
+      "ChecksumSha256": "D2E38F8E7DD5FA461EFDF9288F4A1C4001375B9AD689DCAFFE65514FB3DA49E7"
+    },
+    "correctedArtifact": {
+      "ArtifactId": "20fa3577-1db6-881c-bfb2-f209eb4797dc",
+      "Role": 4,
+      "SourceId": "gallery-materialization",
+      "Variant": "operator-stack-v1",
+      "CreatedUtc": "2026-08-25T00:00:01.1+00:00",
+      "SourceArtifactIds": [
+        "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+        "3f15fb8a-8b72-8644-81f8-481be7bd214a",
+        "588eabf2-666c-8691-8994-bfe11cde63cb"
+      ],
+      "Recipe": {
+        "Name": "presentation-materialization",
+        "SemanticVersion": "1.0.0",
+        "ImplementationVersion": "typed-presentation-materialization-v1",
+        "Options": {
+          "MaterializationIdentitySha256": "E185727D14C80C70A5EDB40AD7CD89991BC4970235C597DAAAACFD7E6CF6242F"
+        },
+        "OptionsSha256": "716CCA1C53DAE8E2F84B6AFCDC7F8961BA234A0E572346D8AF4553B6F07B0CC1"
+      },
+      "MediaType": "application/x-hvo-packed-image",
+      "ChecksumSha256": "D2E38F8E7DD5FA461EFDF9288F4A1C4001375B9AD689DCAFFE65514FB3DA49E7"
+    },
+    "samePayloadChecksum": true,
+    "sameSources": true
+  }
+}

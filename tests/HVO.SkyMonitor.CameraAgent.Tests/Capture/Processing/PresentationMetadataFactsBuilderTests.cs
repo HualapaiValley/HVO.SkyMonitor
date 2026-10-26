@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class PresentationMetadataFactsBuilderTests
+public sealed partial class PresentationMetadataFactsBuilderTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 8, 25, 12, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions ProductJson = new(JsonSerializerDefaults.Web);
@@ -429,7 +429,8 @@ public sealed class PresentationMetadataFactsBuilderTests
             fixture.Descriptor.Capture.RigId, [EnvironmentalObservationKind.AirTemperature],
             CancellationToken.None).ConfigureAwait(false);
 
-    private async Task<Fixture> CreateFixtureAsync(SqliteEnvironmentalObservationOutbox store)
+    private async Task<Fixture> CreateFixtureAsync(SqliteEnvironmentalObservationOutbox store,
+        EnvironmentalAcquisitionOptions? acquisition = null)
     {
         var payload = new byte[8];
         var original = ReconstructableCaptureContractTests.CreateManifest(
@@ -499,7 +500,7 @@ public sealed class PresentationMetadataFactsBuilderTests
         var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = _root!,
-            EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions { Enabled = true }
+            EnvironmentalAcquisition = acquisition ?? new EnvironmentalAcquisitionOptions { Enabled = true }
         });
         var associations = new EnvironmentalAssociationService(
             store, store, options, new FixedTimeProvider(Epoch.AddMinutes(1)));

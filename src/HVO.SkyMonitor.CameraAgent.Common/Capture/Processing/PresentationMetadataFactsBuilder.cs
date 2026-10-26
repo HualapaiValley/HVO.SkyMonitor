@@ -29,15 +29,15 @@ internal sealed class PresentationMetadataFactsBuilder(
         var fromUtc = descriptor.Timing.ExposureStartedUtc.ToUniversalTime();
         var throughUtc = descriptor.Timing.ExposureEndedUtc.ToUniversalTime();
         if (throughUtc <= fromUtc) throughUtc = fromUtc.AddMilliseconds(1);
+        var expectedKinds = kinds.Distinct().Order().ToArray();
         IReadOnlyList<LocalEnvironmentalCaptureAssociation>? associated = null;
-        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && kinds.Count > 0)
+        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && expectedKinds.Length > 0)
         {
             associated = await associations.ReadCompletedAsync(
                 descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, fromUtc, throughUtc,
-                descriptor.Capture.RigId, kinds, cancellationToken).ConfigureAwait(false);
+                descriptor.Capture.RigId, expectedKinds, cancellationToken).ConfigureAwait(false);
             if (associated is null) return null;
         }
-        var expectedKinds = kinds.Distinct().Order().ToArray();
         var configuredPolicyIdentity = EnvironmentalAssociationService.CreatePolicyIdentity(expectedKinds);
         associated ??= expectedKinds.Select(kind => new LocalEnvironmentalCaptureAssociation(
             descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, kind, descriptor.Capture.RigId,

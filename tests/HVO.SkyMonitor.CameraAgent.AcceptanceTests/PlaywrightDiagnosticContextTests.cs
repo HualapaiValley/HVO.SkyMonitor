@@ -111,6 +111,31 @@ public sealed class PlaywrightDiagnosticContextTests
             await success.CompleteAsync().ConfigureAwait(false);
         }
         Assert.AreEqual(retainedCount, Directory.GetFiles(directory).Length);
+
+        var acceptanceDirectory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "playwright-acceptance", Guid.NewGuid().ToString("N"));
+        await using (var retainedSuccess = await PlaywrightDiagnosticContext.CreateAsync(browser, null, TestContext, 3, acceptanceDirectory).ConfigureAwait(false))
+        {
+            var page = await retainedSuccess.Context.NewPageAsync().ConfigureAwait(false);
+            await page.SetContentAsync("<main>DOM_FREE_TEXT_7f91<input type='password' value='diagnostic-secret'></main>").ConfigureAwait(false);
+            await page.EvaluateAsync("console.error('CONSOLE_FREE_TEXT_7f91');").ConfigureAwait(false);
+            await retainedSuccess.CompleteAsync().ConfigureAwait(false);
+        }
+        var acceptanceFiles = Directory.GetFiles(acceptanceDirectory);
+        Assert.IsTrue(acceptanceFiles.Any(path => path.EndsWith(".console.log", StringComparison.Ordinal)));
+        await using (var trace = await ZipFile.OpenReadAsync(acceptanceFiles.Single(path => path.EndsWith(".trace.zip", StringComparison.Ordinal))).ConfigureAwait(false))
+        {
+            Assert.HasCount(1, trace.Entries);
+            await using var stream = await trace.Entries[0].OpenAsync().ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+            var text = await reader.ReadToEndAsync().ConfigureAwait(false);
+            AssertNoSentinels(text);
+            using var manifest = JsonDocument.Parse(text);
+            Assert.AreEqual("hvo-playwright-acceptance-trace-v1", manifest.RootElement.GetProperty("schema").GetString());
+        }
+        foreach (var path in acceptanceFiles.Where(path => path.EndsWith(".log", StringComparison.Ordinal) || path.EndsWith(".html", StringComparison.Ordinal)))
+            AssertNoSentinels(await File.ReadAllTextAsync(path).ConfigureAwait(false));
+        Assert.AreEqual(rawTraceCount, Directory.GetFiles(Path.GetTempPath(), "hvo-playwright-*.zip").Length);
+
     }
 
     [TestMethod]

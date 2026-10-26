@@ -115,14 +115,22 @@
                     <button type="button" class="btn btn-outline-light" disabled="@_busy" @ref="_conversionTrigger" @onclick="ReviewConversionAsync">Review whole-draft Frame Facts conversion</button>
                 </section>
             }
+            @if (_model.Nodes.Any(node => SceneStyleDraftUpgrade.IsLegacy(node.Type)))
+            {
+                <section class="editor-group" aria-label="Scene style upgrade">
+                    <h2>Versioned scene style</h2>
+                    <p>Upgrade every legacy scene producer and its manifest/materializer consumers together. The new draft adds RGB colours, packaged label/cardinal fonts and circle/crosshair points. Retained products keep their original style.</p>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" @ref="_sceneUpgradeTrigger" @onclick="ReviewSceneStyleUpgradeAsync">Review whole-draft scene style upgrade</button>
+                </section>
+            }
             @if (_conversion is not null)
             {
                 <section class="conversion-review" tabindex="-1" @ref="_conversionReview" aria-label="Review whole-draft conversion">
                     <h2>Before and after</h2>
                     <p>This is a preview of the entire draft. Confirming changes only this form. Saving, validation and activation remain separate. Retained revisions and products keep their former output.</p>
                     <div class="conversion-columns">
-                        <div><h3>Before: legacy presets</h3><pre>@_conversionBefore</pre></div>
-                        <div><h3>After: opt-in rich templates</h3><pre>@System.Text.Json.JsonSerializer.Serialize(_conversion, DisplayJson)</pre></div>
+                        <div><h3>Before: current draft</h3><pre>@_conversionBefore</pre></div>
+                        <div><h3>After: explicit upgrade</h3><pre>@System.Text.Json.JsonSerializer.Serialize(_conversion, DisplayJson)</pre></div>
                     </div>
                     <button type="button" class="btn btn-primary" @onclick="AcceptConversion">Apply conversion to draft</button>
                     <button type="button" class="btn btn-outline-light" @onclick="CancelConversionAsync">Cancel conversion</button>
@@ -135,11 +143,31 @@
                 @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
             </div>
         </form>
-        @if (Section is "scene-overlay" or "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ScenePresentationLayer"))
+        @if (Section is "scene-overlay" or "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias))
         {
             <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
         }
 
+        @if (Section == "overlay-manifest" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "OverlayManifest"))
+        {
+            <p role="status">This graph has no supported Overlay manifest node. Existing layer producers and required dependencies must be configured explicitly.</p>
+        }
+        @if (Section == "cloud-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudPresentationLayer"))
+        {
+            <p role="status">This graph has no supported cloud layer node. Select a retained graph with CloudPresentationLayer to edit labels and line thickness. Dimensions and assessment bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "environment-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "EnvironmentPresentationLayer"))
+        {
+            <p role="status">This graph has no supported environment layer node. Select a retained graph with EnvironmentPresentationLayer to edit scale, inset and line spacing. Dimensions and source/stack bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "legacy-annotation" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Annotation"))
+        {
+            <p role="status">This graph has no supported legacy Annotation node. Select a retained graph with Annotation to edit its existing styling. Missing or unsupported nodes are not replaced or upgraded; saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "projected-scene" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ProjectedScene"))
+        {
+            <p role="status">This graph has no supported projected scene node. Add ProjectedScene with an explicit raw dependency to configure physical predicted-scene queries. VirtualSky keeps its separate module settings and authoritative rendered scene; saving, validation and activation remain separate.</p>
+        }
         @if (Section == "calibration" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Calibration"))
         {
             <p role="note">This graph has no calibration node. Add Calibration with an explicit raw dependency to configure it. Existing models and master provisioning stay unchanged; saving, validation and activation remain separate.</p>

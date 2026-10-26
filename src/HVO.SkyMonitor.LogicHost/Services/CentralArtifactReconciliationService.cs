@@ -2081,6 +2081,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
+                && candidate.DevicePublicId == frame.DevicePublicId
                 && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (!usable)

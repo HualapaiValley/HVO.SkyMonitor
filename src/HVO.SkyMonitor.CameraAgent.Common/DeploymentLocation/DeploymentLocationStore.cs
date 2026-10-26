@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ReadStage = HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.DeploymentLocationReadAttribution.Stage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
@@ -755,14 +756,31 @@ public sealed class ProtectedDeploymentLocationStore(
 
     private async ValueTask<DeploymentLocationHistory> ReadAsync(string path, CancellationToken cancellationToken)
     {
+        using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.read-protected-history");
+        using var attribution = DeploymentLocationReadAttribution.Create(activity);
         try
         {
-            RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetDirectoryName(path)!, path);
-            var protectedPayload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-            var plaintext = _protector.Unprotect(protectedPayload);
-            var history = JsonSerializer.Deserialize<DeploymentLocationHistory>(plaintext, SerializerOptions)
-                ?? throw new InvalidDataException("Protected deployment-location history is empty.");
-            ValidateHistory(history);
+            using (attribution?.Measure(ReadStage.Security))
+                RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetDirectoryName(path)!, path);
+            byte[] protectedPayload;
+            using (attribution?.Measure(ReadStage.Read, synchronous: false))
+            {
+                protectedPayload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+                attribution?.AddBytes(ReadStage.Read, protectedPayload.LongLength);
+            }
+            byte[] plaintext;
+            using (attribution?.Measure(ReadStage.Unprotect))
+            {
+                plaintext = _protector.Unprotect(protectedPayload);
+                attribution?.AddBytes(ReadStage.Unprotect, plaintext.LongLength);
+            }
+            DeploymentLocationHistory history;
+            attribution?.AddBytes(ReadStage.Deserialize, plaintext.LongLength);
+            using (attribution?.Measure(ReadStage.Deserialize))
+                history = JsonSerializer.Deserialize<DeploymentLocationHistory>(plaintext, SerializerOptions)
+                    ?? throw new InvalidDataException("Protected deployment-location history is empty.");
+            using (attribution?.Measure(ReadStage.Validate))
+                ValidateHistory(history);
             return history;
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException or
@@ -1056,14 +1074,34 @@ public sealed class ProtectedDeploymentLocationStore(
             AttributesToSkip = FileAttributes.ReparsePoint,
             IgnoreInaccessible = false
         };
-        using (DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-files"))
+        using (var fileActivity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-files"))
         {
-            foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
+            using var attribution = DeploymentLocationReadAttribution.Create(fileActivity);
+            IEnumerator<string> paths;
+            using (attribution?.Measure(ReadStage.Enumeration))
+                paths = Directory.EnumerateFiles(root, "*.json", enumeration).GetEnumerator();
+            using var retainedPaths = paths;
+            while (true)
             {
+                bool hasNext;
+                string? path;
+                using (attribution?.Measure(ReadStage.Enumeration))
+                {
+                    hasNext = retainedPaths.MoveNext();
+                    path = hasNext ? retainedPaths.Current : null;
+                }
+                if (!hasNext) break;
                 try
                 {
-                    RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                    ValidateRetainedManifest(history, File.ReadAllBytes(path));
+                    using (attribution?.Measure(ReadStage.Security))
+                        RawIngressFileStore.EnsureNoSymbolicLinks(root, path!);
+                    byte[] manifestJson;
+                    using (attribution?.Measure(ReadStage.Read))
+                    {
+                        manifestJson = File.ReadAllBytes(path!);
+                        attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
+                    }
+                    ValidateRetainedManifest(history, manifestJson, attribution);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -1075,9 +1113,14 @@ public sealed class ProtectedDeploymentLocationStore(
         ValidateJournalEvidence(root, history);
     }
 
-    private static void ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson)
+    private static void ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
+        DeploymentLocationReadAttribution? attribution)
     {
-        var manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest;
+        attribution?.AddManifest(manifestJson.LongLength);
+        ArtifactManifestV2? manifest;
+        using (attribution?.Measure(ReadStage.Parse))
+            manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest;
+        using var provenanceStage = attribution?.Measure(ReadStage.Provenance);
         var provenance = manifest?.Descriptor.Location;
         if (manifest is null || provenance is null)
         {
@@ -1097,12 +1140,14 @@ public sealed class ProtectedDeploymentLocationStore(
     private static void ValidateJournalEvidence(string root, DeploymentLocationHistory history)
     {
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-journal");
+        using var attribution = DeploymentLocationReadAttribution.Create(activity);
         var path = Path.Combine(root, "journal", "raw-ingress.db");
         if (!File.Exists(path))
         {
             return;
         }
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+        using (attribution?.Measure(ReadStage.Security))
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         var builder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
         {
             DataSource = path,
@@ -1110,19 +1155,35 @@ public sealed class ProtectedDeploymentLocationStore(
             Pooling = false
         };
         using var connection = new Microsoft.Data.Sqlite.SqliteConnection(builder.ConnectionString);
-        connection.Open();
+        using (attribution?.Measure(ReadStage.Open))
+            connection.Open();
         using var table = connection.CreateCommand();
         table.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'raw_captures';";
-        if (Convert.ToInt64(table.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        long tableCount;
+        using (attribution?.Measure(ReadStage.Query))
+            tableCount = Convert.ToInt64(table.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+        if (tableCount == 0)
         {
             return;
         }
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT manifest_json FROM raw_captures WHERE CAST(manifest_json AS TEXT) LIKE '%\"location\"%';";
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        Microsoft.Data.Sqlite.SqliteDataReader reader;
+        using (attribution?.Measure(ReadStage.Query))
+            reader = command.ExecuteReader();
+        using var retainedReader = reader;
+        while (true)
         {
-            ValidateRetainedManifest(history, (byte[])reader.GetValue(0));
+            bool hasNext;
+            byte[]? manifestJson;
+            using (attribution?.Measure(ReadStage.Read))
+            {
+                hasNext = retainedReader.Read();
+                manifestJson = hasNext ? (byte[])retainedReader.GetValue(0) : null;
+                if (manifestJson is not null) attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
+            }
+            if (!hasNext) break;
+            ValidateRetainedManifest(history, manifestJson!, attribution);
         }
     }
 
@@ -1300,14 +1361,31 @@ public sealed class ProtectedDeploymentLocationStore(
         string path,
         CancellationToken cancellationToken)
     {
+        using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.read-protected-manual");
+        using var attribution = DeploymentLocationReadAttribution.Create(activity);
         try
         {
-            RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetDirectoryName(path)!, path);
-            var protectedPayload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-            var plaintext = _protector.Unprotect(protectedPayload);
-            var record = JsonSerializer.Deserialize<ManualDeploymentLocationRecord>(plaintext, SerializerOptions)
-                ?? throw new InvalidDataException("Protected manual deployment-location state is empty.");
-            ValidateManual(record);
+            using (attribution?.Measure(ReadStage.Security))
+                RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetDirectoryName(path)!, path);
+            byte[] protectedPayload;
+            using (attribution?.Measure(ReadStage.Read, synchronous: false))
+            {
+                protectedPayload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+                attribution?.AddBytes(ReadStage.Read, protectedPayload.LongLength);
+            }
+            byte[] plaintext;
+            using (attribution?.Measure(ReadStage.Unprotect))
+            {
+                plaintext = _protector.Unprotect(protectedPayload);
+                attribution?.AddBytes(ReadStage.Unprotect, plaintext.LongLength);
+            }
+            ManualDeploymentLocationRecord record;
+            attribution?.AddBytes(ReadStage.Deserialize, plaintext.LongLength);
+            using (attribution?.Measure(ReadStage.Deserialize))
+                record = JsonSerializer.Deserialize<ManualDeploymentLocationRecord>(plaintext, SerializerOptions)
+                    ?? throw new InvalidDataException("Protected manual deployment-location state is empty.");
+            using (attribution?.Measure(ReadStage.Validate))
+                ValidateManual(record);
             return record;
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException or

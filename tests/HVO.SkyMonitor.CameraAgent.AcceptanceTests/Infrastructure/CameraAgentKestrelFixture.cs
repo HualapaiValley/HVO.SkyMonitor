@@ -42,6 +42,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private readonly CatalogFixtureInstallation _catalog;
     private readonly Dictionary<string, string?> _overrides;
     private readonly Action<IServiceCollection>? _configureServices;
+    private bool _preserveRoot;
     private BrowserWebApplicationFactory? _factory;
     private HttpClient? _lifetimeClient;
 
@@ -82,7 +83,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         Func<string, Task>? prepareRoot = null,
         bool useTransientEvidence = false,
         string ownerPassword = OwnerPassword,
-        string? scratchRoot = null)
+        string? scratchRoot = null,
+        bool preserveRoot = false)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -185,7 +187,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
         }
 
-        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices);
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices) { _preserveRoot = preserveRoot };
         try
         {
             if (prepareRoot is not null) await prepareRoot(root).ConfigureAwait(false);
@@ -422,8 +424,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopHostAsync().ConfigureAwait(false);
-        _catalog.Dispose();
-        await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
+        if (!_preserveRoot)
+        {
+            _catalog.Dispose();
+            await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
+        }
     }
 
     private static async Task DeleteWithRetriesAsync(string path)

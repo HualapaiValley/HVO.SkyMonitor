@@ -19,14 +19,26 @@ Mono16/BayerRggb16 input. Existing Mono8/Rgb24 input keeps its packed-copy
 behavior.
 
 When `FixedTransfer` is present, the existing `fixed-preview-v1` recipe stays
-active. Its nested levels and gamma are preserved exactly. Percentile/asinh
-controls are omitted because they do not affect that mode. There is no mode
-switch or nested transfer editor in this slice.
+active. The panel edits its existing nested **Fixed black level**, **Fixed white
+level** and **Fixed gamma**. Native levels range from 0 to 65535, and black must
+be less than white; gamma accepts 0.1–10. All values must be finite. Missing
+members use the existing defaults (64, 4095 and 2.2) without writing them into
+JSON. Use the input's native sample scale (for example 0–255 for 8-bit input).
+Percentile/asinh controls are omitted because they do not affect that mode.
+The panel cannot create/remove FixedTransfer or switch modes. Unknown nested
+members and untouched formatting survive edits; restoring the original values
+preserves the exact original bytes.
 
 `JpegEncoding` uses the existing `packed-jpeg-v1` recipe. JPEG quality defaults
 to 80 and accepts integers 1–100. Its output variant defaults to
-`annotated-final-jpeg`. Nullable `MaximumDimension` and its absent/null/value
-semantics remain untouched; this panel does not change resize settings.
+`annotated-final-jpeg`. **Maximum JPEG dimension** optionally limits the longest
+side to an integer from 1–16384 pixels using the existing encoder's resize behavior;
+smaller images are never enlarged. A blank field or **Use original dimensions**
+clears an existing limit to explicit JSON null. The panel distinguishes an absent
+setting from explicit null and a numeric limit. Leaving the field untouched,
+returning it to its original value, or clearing an already absent setting preserves
+the original options bytes. Clearing the limit changes no quality, route or
+preview-transfer setting.
 All three shared recipes remain semantic version 1.0.0.
 
 Unknown members, explicit defaults, numeric spelling and source formatting are
@@ -36,6 +48,6 @@ Use **Preview plan → Save immutable draft → Validate → Activate**. Saving 
 does not change live capture. **Rollback** restores an eligible retained
 revision. Old graph definitions and retained products remain reconstructable.
 
-This is the bounded #1567 delivery, Refs #1386. New encoders, display transfers,
+This includes the bounded #1567, #1622 and #1625 deliveries, Refs #1386. New encoders, display transfers,
 precision/retention policy, automatic upgrades and physical qualification are
 outside this slice; #1386 stays open.

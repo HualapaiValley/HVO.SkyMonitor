@@ -166,9 +166,24 @@ public static class PresentationLayerProducers
         bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false)
+    => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
+            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics);
+
+    internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
+        ProjectedSceneV1 scene,
+        PresentationAnnotationStyleV1? style = null,
+        bool includeMarkers = true,
+        bool includeLabels = true,
+        bool includeConstellations = true,
+        bool includeImageCircle = true,
+        bool includeCardinalDirections = true,
+        MeasuredStellarAssociationsV1? associations = null,
+        bool expectedPositionDiagnostics = false,
+        ScenePresentationStyleV1? selectedStyle = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
+        var sceneStyleIdentity = selectedStyle?.IdentitySha256;
         if (associations is not null &&
             (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
              !string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase)))
@@ -191,7 +206,7 @@ public static class PresentationLayerProducers
         var width = scene.ImageTransform.OutputWidthPixels;
         var height = scene.ImageTransform.OutputHeightPixels;
         var cardinalScale = PresentationFont.FrameScale(width, height, style.CardinalScale);
-        var cardinalAppearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+        var cardinalAppearance = new PresentationTextAppearanceV3(new(selectedStyle?.CardinalFace ?? PresentationFontFaceV3.MonoBold,
             9_000 * style.CardinalScale, 360 * style.CardinalScale, cardinalColor, new(3, 8, 14), 950_000, 4_000));
         var cardinalTexts = new List<PresentationTextBlockV1>();
         var reserved = new List<SKRect>();
@@ -208,9 +223,9 @@ public static class PresentationLayerProducers
         // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
         var markers = includeMarkers ? annotatedObjects
             .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
-            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor))
+            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, selectedStyle?.PointGlyph == "Crosshair"))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
-                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor))).ToArray() : [];
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, selectedStyle?.PointGlyph == "Crosshair"))).ToArray() : [];
         var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
             style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
             .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor))
@@ -297,7 +312,7 @@ public static class PresentationLayerProducers
         {
             var scale = PresentationFont.StarFrameScale(width, height, style.LabelScale);
             var labelSize = Math.Min(112_000, 9_000 * scale);
-            var appearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+            var appearance = new PresentationTextAppearanceV3(new(selectedStyle?.LabelFace ?? PresentationFontFaceV3.MonoBold,
                 labelSize, labelSize / 25, labelColor, new(3, 8, 14), 950_000, 5_000));
             using var font = PresentationFont.Create(appearance.Body);
             var occupied = new List<SKRect>();
@@ -358,13 +373,14 @@ public static class PresentationLayerProducers
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,
                 curated is null ? footprintSegments : footprintSegments.Concat(curated.Segments).ToArray(),
-                textBlocks: curated is null ? starTexts : starTexts.Concat(curated.TextBlocks).ToArray()),
+                textBlocks: curated is null ? starTexts : starTexts.Concat(curated.TextBlocks).ToArray(),
+                sceneStyleIdentitySha256: sceneStyleIdentity),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
+                scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts, sceneStyleIdentitySha256: sceneStyleIdentity),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, ellipses: ellipses),
+                scene.ImageTransform.OutputHeightPixels, ellipses: ellipses, sceneStyleIdentitySha256: sceneStyleIdentity),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, segments: segments));
+                scene.ImageTransform.OutputHeightPixels, segments: segments, sceneStyleIdentitySha256: sceneStyleIdentity));
 
         void AddCardinal(string label, PixelPoint point)
         {
