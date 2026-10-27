@@ -367,6 +367,13 @@ advisory build passes resolved native references through the same arguments.
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- `devcontainers/base` receives reviewed stable patch/minor tag updates within
+  major `3` and digest refreshes, staying on Ubuntu `24.04`. Dependabot ignores
+  major updates; `ci:base-images` also checks the complete `3.x.y-ubuntu24.04`
+  tag, since a distribution suffix can change without a semver-major bump.
+  Major-version or Ubuntu-release upgrades require a deliberate, reviewed
+  change to this policy and its regression tests. This policy does not upgrade
+  the currently pinned image or authorize deployment.
 
 Every Development v1 Preflight, including drafts, runs
 `./scripts/ci:base-images`. This offline check enumerates tracked and non-ignored
@@ -379,6 +386,9 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
+Quoted or escaped global ARG defaults used by FROM are explicitly unsupported; use an
+unquoted default or a literal pinned FROM instead. Equivalent numeric HTTPS
+default-port spellings are normalized before image identity/policy checks.
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
