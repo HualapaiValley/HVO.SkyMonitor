@@ -14,6 +14,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("\u009d0;SecretKey\u009c ")]
     [DataRow("\u001b]2;ObjectStorage__SecretKey\u0007 ")]
     [DataRow("\u001bPSecretKey\u001b\\ ")]
+    [DataRow("\u001b]0;https://password@example.test/SecretKey\u0007 ")]
     public void Diagnostic1546_HiddenCredentialIndicatorSuppressesAmbiguousTail(string prefix)
     {
         var raw = prefix + Diagnostic1546Value + " tail";
@@ -102,5 +103,42 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(error.Contains(Diagnostic1546Value, StringComparison.Ordinal), error);
         if (malformed) StringAssert.Contains(error, "\uFFFD text", StringComparison.Ordinal);
         _ = JsonEncodedText.Encode(error);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task Diagnostic1546_UrlDecorationInteractionCannotExposeTailOrComposedReason(bool json, bool composed)
+    {
+        var raw = "\u001b]0;https://password@example.test/SecretKey\u0007 " + Diagnostic1546Value + " tail";
+        var message = composed ? "Rollback failed: " + CameraAgentStateDiagnostics.Reason(raw) + "; second-reason-value" : raw;
+        var (exit, error) = await RunDiagnostic1491Async(
+            new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
+            (_, _) => throw new InstallerException(message));
+        Assert.AreEqual(1, exit);
+        if (json)
+        {
+            using var document = JsonDocument.Parse(error);
+            error = document.RootElement.GetProperty("message").GetString()!;
+        }
+        Assert.IsFalse(error.Contains(Diagnostic1546Value, StringComparison.Ordinal), error);
+        Assert.IsFalse(error.Contains("tail", StringComparison.Ordinal), error);
+        Assert.IsFalse(error.Contains("second-reason-value", StringComparison.Ordinal), error);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Diagnostic1546_IdentityRepairsTheOriginalInputEvenWhenDecorationChangedItsValidity(bool insideDecoration)
+    {
+        var raw = insideDecoration ? "\u001b]0;\uD800\u0007counter" : "\uD83C\u001b[0m\uDF0C";
+        var shown = CameraAgentStateDiagnostics.Identity(raw);
+        var decoded = JsonSerializer.Deserialize<string>("\"" + shown + "\"")!;
+        _ = JsonEncodedText.Encode(decoded);
+        StringAssert.Contains(decoded, "\uFFFD", StringComparison.Ordinal);
+        Assert.AreEqual(JsonEncodedText.Encode("valid \U0001F30C").ToString(), CameraAgentStateDiagnostics.Identity("valid \U0001F30C"));
     }
 }
