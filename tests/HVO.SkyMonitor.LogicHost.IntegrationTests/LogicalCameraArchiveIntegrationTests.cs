@@ -54,6 +54,7 @@ public sealed class LogicalCameraArchiveIntegrationTests
         unavailable.Capture!.CaptureId.Should().Be(selected.Capture.CaptureId);
         unavailable.ArtifactId.Should().Be(preview.ArtifactId);
         unavailable.ContentPath.Should().BeNull();
+        unavailable.ExaminedArtifacts.Should().Be(1);
         await PutAsync(services, preview).ConfigureAwait(false);
         (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, unavailable).ConfigureAwait(false))!
             .ArtifactId.Should().Be(preview.ArtifactId);

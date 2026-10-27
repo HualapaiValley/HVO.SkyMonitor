@@ -16,9 +16,7 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     private bool loading = true;
     private string message = "Selecting the latest eligible retained presentation…";
     private CameraCurrentSelection? selection;
-    private CameraCurrentSelection? position;
-    private Guid? selectedCaptureId;
-    private (Guid Observatory, Guid Camera)? loadedScope;
+    private readonly CurrentSkyPosition localPosition = new();
     private OperationsCaptureDetail? detail;
     private ElementReference root;
     private IJSObjectReference? module;
@@ -28,6 +26,8 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
 
     [Parameter] public Guid ObservatoryId { get; set; }
     [Parameter] public Guid CameraId { get; set; }
+    [CascadingParameter] internal CurrentSkyPosition? PagePosition { get; set; }
+    private CurrentSkyPosition Position => PagePosition ?? localPosition;
     [Inject] private IServiceScopeFactory ScopeFactory { get; set; } = default!;
     [Inject] private AuthenticationStateProvider Authentication { get; set; } = default!;
     [Inject] private TimeProvider Clock { get; set; } = default!;
@@ -38,8 +38,13 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     protected override Task OnParametersSetAsync()
     {
         var scope = (ObservatoryId, CameraId);
-        if (loadedScope == scope) return LoadAsync(null, revalidate: true);
-        loadedScope = scope;
+        if (Position.Scope == scope && Position.Selection is not null) return LoadAsync(null, revalidate: true);
+        if (Position.Scope != scope)
+        {
+            Position.Scope = scope;
+            Position.Selection = null;
+            Position.CaptureId = null;
+        }
         return LoadAsync(null);
     }
 
@@ -68,13 +73,10 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         var token = cancellation.Token;
         var observatory = ObservatoryId;
         var camera = CameraId;
-        if (!revalidate)
-        {
-            position = null;
-            selectedCaptureId = null;
-        }
-        var retained = position;
-        var retainedCaptureId = selectedCaptureId;
+        // Commit a new navigation only after its authorized response succeeds. A superseding authority/parameter
+        // recheck must still be able to revalidate the previous search position while navigation is pending.
+        var retained = Position.Selection;
+        var retainedCaptureId = Position.CaptureId;
         // Remove the old image before awaiting authority or storage, even on a same-capture refresh.
         detail = null;
         selection = null;
@@ -111,8 +113,8 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             selection = result;
             if (result is not null)
             {
-                position = result;
-                selectedCaptureId = requestedCapture;
+                Position.Selection = result;
+                Position.CaptureId = requestedCapture;
             }
             if (capture is not null && capture.Capture.CaptureId == requestedCapture &&
                 capture.Capture.ObservatoryId == observatory && capture.Capture.LogicalCameraId == camera)

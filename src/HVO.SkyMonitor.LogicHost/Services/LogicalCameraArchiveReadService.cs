@@ -196,6 +196,7 @@ internal sealed class LogicalCameraArchiveReadService(
                 artifact.ByteLength > 0 && artifact.ByteLength <= MaximumPreviewBytes)
             .Select(artifact => new { artifact.DevicePublicId }).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (candidate is null) return await FinishAsync(unavailable).ConfigureAwait(false);
+        unavailable = unavailable with { ExaminedArtifacts = 1 };
         var lookup = await retrieval.FindAsync(candidate.DevicePublicId, artifactId, principal, null, cancellationToken).ConfigureAwait(false);
         if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact is not { } artifact ||
             artifact.ChecksumSha256 != selection.ChecksumSha256)

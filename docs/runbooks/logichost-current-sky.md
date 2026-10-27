@@ -30,3 +30,10 @@ that same Preview when it becomes available again. The previous display is
 cleared while revalidation is pending. Authorization failures clear protected content; unavailable bytes retain only
 authorized metadata. Existing protected content endpoints reauthorize requests;
 Current Sky introduces no shared image cache or saved selection policy.
+
+The page keeps its committed navigation identity in memory while the access shell
+temporarily removes the viewer. Recovery reauthorizes and revalidates that same
+position; protected content remains absent while access is unavailable. An older
+search in flight does not replace the committed position until its authorized
+response completes. Leaving the page or changing observatory/camera scope starts
+a new position; no navigation state is persisted.
