@@ -279,6 +279,23 @@ FROM build AS final
         self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com/devcontainers/base@sha256:{A}\n")
         self.check("devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag")
 
+    def test_devcontainer_quoted_and_escaped_args_fail_closed(self):
+        for default in ('"mcr.microsoft.com/devcontainers/base"', "'mcr.microsoft.com/devcontainers/base'",
+                        r'mcr\.microsoft.com/devcontainers/base'):
+            for tag in ("3.0.10-ubuntu22.04", "4.0.0-ubuntu24.04", "3.1.0-ubuntu24.04"):
+                with self.subTest(default=default, tag=tag):
+                    self.dockerfile("Dockerfile", f"ARG IMAGE={default}\nFROM ${{IMAGE}}:{tag}@sha256:{A}\n")
+                    self.check("unsupported quoted or escaped ARG default")
+
+    def test_devcontainer_zero_padded_default_port_cannot_bypass_policy(self):
+        for port in ("0443", "000443"):
+            for tag, error in (("3.0.11-ubuntu24.04", None), ("3.1.0-ubuntu24.04", None),
+                               ("3.0.11-ubuntu22.04", "devcontainers/base must use"),
+                               ("4.0.0-ubuntu24.04", "devcontainers/base must use")):
+                with self.subTest(port=port, tag=tag):
+                    self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com:{port}/devcontainers/base:{tag}@sha256:{A}\n")
+                    self.check(error)
+
     def test_devcontainer_dependabot_ignores_major_but_keeps_minor_patch(self):
         config = (ROOT / ".github/dependabot.yml").read_text()
         rule = re.search(r'      - dependency-name: "devcontainers/base"\n((?:        [^\n]*\n)+)', config)

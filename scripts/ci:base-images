@@ -178,7 +178,7 @@ def normalized_name(name):
     # Compare Docker Hub's short forms and the default HTTPS registry port equally.
     host, slash, rest = name.partition("/")
     if slash and ("." in host or ":" in host or host.lower() == "localhost"):
-        host = host.lower().removesuffix(":443")
+        host = re.sub(r":0*443$", "", host.lower())
         if host in ("docker.io", "index.docker.io"):
             return rest.removeprefix("library/")
         return host + "/" + rest
@@ -210,6 +210,8 @@ def check(root):
                     raise ValueError(f"unknown Dockerfile instruction: {instruction}")
                 if instruction == "ARG" and not found_from:
                     key, separator, default = value.partition("=")
+                    if separator and any(character in default for character in "\"'\\"):
+                        raise ValueError("unsupported quoted or escaped ARG default; use an unquoted default or literal FROM")
                     arguments[key] = expand(default, arguments) if separator else None
                 if instruction != "FROM":
                     continue

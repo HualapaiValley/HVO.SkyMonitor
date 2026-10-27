@@ -386,6 +386,9 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
+Quoted or escaped global ARG defaults are explicitly unsupported; use an
+unquoted default or a literal pinned FROM instead. Equivalent numeric HTTPS
+default-port spellings are normalized before image identity/policy checks.
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
