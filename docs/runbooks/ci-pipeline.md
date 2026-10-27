@@ -367,6 +367,13 @@ advisory build passes resolved native references through the same arguments.
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- `devcontainers/base` receives reviewed stable patch/minor tag updates within
+  major `3` and digest refreshes, staying on Ubuntu `24.04`. Dependabot ignores
+  major updates; `ci:base-images` also checks the complete `3.x.y-ubuntu24.04`
+  tag, since a distribution suffix can change without a semver-major bump.
+  Major-version or Ubuntu-release upgrades require a deliberate, reviewed
+  change to this policy and its regression tests. This policy does not upgrade
+  the currently pinned image or authorize deployment.
 
 Every Development v1 Preflight, including drafts, runs
 `./scripts/ci:base-images`. This offline check enumerates tracked and non-ignored

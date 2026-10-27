@@ -12,6 +12,7 @@ import sys
 VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))")
 PIN = re.compile(r"([^@\s]+)@sha256:([0-9a-f]{64})")
 SDK = "mcr.microsoft.com/dotnet/sdk"
+DEVCONTAINER = "mcr.microsoft.com/devcontainers/base"
 INSTRUCTIONS = set("ADD ARG CMD COPY ENTRYPOINT ENV EXPOSE FROM HEALTHCHECK LABEL MAINTAINER ONBUILD RUN SHELL STOPSIGNAL USER VOLUME WORKDIR".split())
 
 
@@ -230,6 +231,11 @@ def check(root):
                     if tag == SDK or tag.startswith(SDK + ":"):
                         if tag != f"{SDK}:{sdk}":
                             raise ValueError(f"SDK tag must equal global.json ({sdk}): {tag}")
+                    if tag == DEVCONTAINER or tag.startswith(DEVCONTAINER + ":"):
+                        # The Ubuntu suffix can change without a semver-major bump.
+                        if not re.fullmatch(re.escape(DEVCONTAINER) + r":3\.[0-9]+\.[0-9]+-ubuntu24\.04", tag):
+                            raise ValueError(f"devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag; "
+                                             f"major or OS upgrades require a reviewed policy change: {tag}")
                     # Digest-only references pin different content without asserting a shared tag.
                     tagged = ":" in tag.rsplit("/", 1)[-1]
                     if tagged and tag in digests and digests[tag][0] != digest:
