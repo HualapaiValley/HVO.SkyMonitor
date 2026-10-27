@@ -33,6 +33,7 @@ public sealed partial class LifecycleContractTests
             .Concat(Diagnostic1509Cases().Select(row => (string)row[1]).Distinct())
             .Concat(Diagnostic1523Cases().Select(row => (string)row[1]).Distinct())
             .Concat(Diagnostic1569Cases().Select(row => (string)row[0]).Distinct())
+            .Concat(["\u001b]0;SecretKey\u0007 value", "\u009d0;ObjectStorage__SecretKey\u009c value", "\u001b]0;tokenid\u0007 safe"])
             .Concat(["<redacted>… tail", @"\u003Credacted\u003E\u2026 tail", @"\\u003credacted\\u003e\\u2026 tail",
                 @"<redacted>\u2026 tail", @"\u003Credacted>… tail", "<redacted> tail", @"\u003Credacted\u003E\u202"])
             .ToList();
