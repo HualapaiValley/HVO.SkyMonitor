@@ -266,6 +266,8 @@ public sealed class CameraArchiveViewTests
 
     private sealed class Archive : ILogicalCameraArchiveReadService
     {
+        public Task<CameraCurrentSelection?> RevalidateCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, CameraCurrentSelection selection, CancellationToken cancellationToken = default)
+            => throw new AssertFailedException("Archive navigation does not revalidate Current Sky.");
         internal Func<string?, Task<CameraCurrentSelection?>> Select { get; set; } = _ => Task.FromResult<CameraCurrentSelection?>(Selected());
         internal OperationsCaptureDetail? Detail { get; set; } = CameraArchiveViewTests.Detail();
         internal List<string?> Cursors { get; } = [];

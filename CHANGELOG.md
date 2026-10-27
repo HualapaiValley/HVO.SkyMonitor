@@ -62,6 +62,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
+
 - Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
 
 - Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639

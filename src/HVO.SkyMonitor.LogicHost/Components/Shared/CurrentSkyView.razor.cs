@@ -16,6 +16,9 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     private bool loading = true;
     private string message = "Selecting the latest eligible retained presentation…";
     private CameraCurrentSelection? selection;
+    private CameraCurrentSelection? position;
+    private Guid? selectedCaptureId;
+    private (Guid Observatory, Guid Camera)? loadedScope;
     private OperationsCaptureDetail? detail;
     private ElementReference root;
     private IJSObjectReference? module;
@@ -32,24 +35,30 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     [Inject] private ILogger<CurrentSkyView> Logger { get; set; } = default!;
 
     protected override void OnInitialized() => Authentication.AuthenticationStateChanged += AuthenticationChanged;
-    protected override Task OnParametersSetAsync() => LoadAsync(null);
+    protected override Task OnParametersSetAsync()
+    {
+        var scope = (ObservatoryId, CameraId);
+        if (loadedScope == scope) return LoadAsync(null, revalidate: true);
+        loadedScope = scope;
+        return LoadAsync(null);
+    }
 
     [JSInvokable]
-    public Task RefreshAsync() => InvokeAsync(() => LoadAndRenderAsync(null));
-    private Task ManualRefreshAsync() => loading ? Task.CompletedTask : RefreshAsync();
+    public Task RefreshAsync() => InvokeAsync(() => loading ? Task.CompletedTask : LoadAndRenderAsync(null, revalidate: true));
+    private Task ManualRefreshAsync() => loading ? Task.CompletedTask : LoadAndRenderAsync(null);
     private Task ContinueAsync() => loading || selection?.NextCursor is not { } cursor
         ? Task.CompletedTask : LoadAndRenderAsync(cursor);
 
-    private async Task LoadAndRenderAsync(string? cursor)
+    private async Task LoadAndRenderAsync(string? cursor, bool revalidate = false)
     {
-        var pending = LoadAsync(cursor);
+        var pending = LoadAsync(cursor, revalidate);
         StateHasChanged();
         await pending;
         if (!disposed) StateHasChanged();
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Clear protected content on any read failure without exposing infrastructure diagnostics.")]
-    private async Task LoadAsync(string? cursor)
+    private async Task LoadAsync(string? cursor, bool revalidate = false)
     {
         if (disposed) return;
         var version = ++generation;
@@ -59,11 +68,18 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         var token = cancellation.Token;
         var observatory = ObservatoryId;
         var camera = CameraId;
+        if (!revalidate)
+        {
+            position = null;
+            selectedCaptureId = null;
+        }
+        var retained = position;
+        var retainedCaptureId = selectedCaptureId;
         // Remove the old image before awaiting authority or storage, even on a same-capture refresh.
         detail = null;
         selection = null;
         loading = true;
-        message = "Selecting the latest eligible retained presentation…";
+        message = revalidate ? "Rechecking the current item and access…" : "Selecting the latest eligible retained presentation…";
         try
         {
             if (previous is not null) await previous.CancelAsync();
@@ -77,29 +93,38 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             }
             await using var scope = ScopeFactory.CreateAsyncScope();
             var archive = scope.ServiceProvider.GetRequiredService<ILogicalCameraArchiveReadService>();
-            var result = await archive.SelectCurrentAsync(principal, observatory, camera, cursor, token);
+            var result = revalidate
+                ? await archive.RevalidateCurrentAsync(principal, observatory, camera,
+                    retained ?? new("no-result", null, null, null, null, 0, 0, null), token)
+                : await archive.SelectCurrentAsync(principal, observatory, camera, cursor, token);
             OperationsCaptureDetail? capture = null;
-            Guid? requestedCapture = result?.Capture?.CaptureId;
-            if (result is { Status: "no-result" or "dependency-unavailable" })
+            Guid? requestedCapture = revalidate ? retainedCaptureId : result?.Capture?.CaptureId;
+            if (!revalidate && result is { Status: "no-result" or "dependency-unavailable" })
             {
                 var latest = await archive.ListCapturesAsync(principal, observatory, camera, new(), 1, null, token);
                 requestedCapture = latest.Items.Count > 0 ? latest.Items[0].CaptureId : null;
             }
-            if (requestedCapture is { } exactId)
+            if (result is not null && requestedCapture is { } exactId)
                 capture = await archive.GetCaptureAsync(principal, observatory, camera, exactId, token);
             token.ThrowIfCancellationRequested();
             if (version != generation || disposed) return;
             selection = result;
+            if (result is not null)
+            {
+                position = result;
+                selectedCaptureId = requestedCapture;
+            }
             if (capture is not null && capture.Capture.CaptureId == requestedCapture &&
                 capture.Capture.ObservatoryId == observatory && capture.Capture.LogicalCameraId == camera)
                 detail = capture;
             message = result switch
             {
                 null => "Camera not found or access was removed.",
-                { Status: "found" } when detail is not null => "Latest eligible retained presentation. Refresh to recheck content and access.",
+                { Status: "found" } when detail is not null => "Selected retained presentation. Automatic refresh rechecks this item and access.",
                 { Status: "found" } => "Selected capture not found or access was removed.",
                 { Status: "continue" } => "No eligible presentation in this bounded search. Search older retained captures to continue.",
                 { Status: "no-result" } => "No eligible retained presentation is available for this camera.",
+                { Status: "unavailable" } => "The selected item is unavailable. No other capture was selected.",
                 _ => "Presentation storage is temporarily unavailable. Refresh to try again."
             };
         }
@@ -120,7 +145,7 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void AuthenticationChanged(Task<AuthenticationState> state) => _ = RefreshAsync();
+    private void AuthenticationChanged(Task<AuthenticationState> state) => _ = InvokeAsync(() => LoadAndRenderAsync(null, revalidate: true));
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
