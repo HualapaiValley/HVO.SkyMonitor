@@ -64,6 +64,7 @@ internal static class Redaction
         $"""(?i)({CredentialWord}["']?\s*[=: ]\s*)(?:(?:\x1B\[|\x9B)[0-?]*[ -/]*[@-~]\s*)*["']""");
 
     private static readonly System.Text.RegularExpressions.Regex KeyWord = LinearPattern($"(?i){KeyWords}");
+    private static readonly System.Text.RegularExpressions.Regex HiddenCredential = LinearPattern($"(?i){SecondKeyWords}");
 
     // Anchored where decoration ends, so it reads only the few characters of a key there.
     private static readonly System.Text.RegularExpressions.Regex KeyStart = new(
@@ -140,7 +141,7 @@ internal static class Redaction
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [TruncatedDiagnostic, QuotedCredential, KeyWord, KeyAssignment, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
+        [TruncatedDiagnostic, QuotedCredential, KeyWord, HiddenCredential, KeyAssignment, DanglingKey, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue,
             UnquotedValue, SpacedValue, NestedValue, NestedQuotedCredential, SecondQuotedCredential, SecondUnquotedValue, SecondSpacedValue,
             ConfigurationSpacedValue];
 
@@ -172,6 +173,9 @@ internal static class Redaction
     {
         // Read before removing URL user information or decoration, either of which could consume an embedded marker.
         var carried = TruncatedDiagnostic.Match(text);
+        var hiddenCredential = HiddenCredentialDecoration(text);
+        var carriedStart = carried.Success ? carried.Index : -1;
+        if (hiddenCredential >= 0) carriedStart = carriedStart < 0 ? hiddenCredential : Math.Min(carriedStart, hiddenCredential);
         var source = Tracked.Of(text);
         // A URL's user information is also found as the text stood, so punctuation inside removed decoration still counts.
         // Without a control character the two texts are the same, and without :// neither holds a URL.
@@ -181,8 +185,44 @@ internal static class Redaction
         // the text apart from the merge base's, and the merge base's output ends where they first hide more.
         var shown = Passes(source, extended: false);
         var redacted = WithHidden(shown, Passes(source, extended: true), text.Length, ShownEnd(shown.Text, length),
-            carried.Success ? carried.Index : -1, length);
-        return redacted.Length <= length ? redacted : redacted[..length];
+            carriedStart, length);
+        return ValidUnicode(redacted.Length <= length ? redacted : redacted[..length]);
+    }
+
+    // A removed title/control string can hide a key the extended passes recognize (for example SecretKey). Its following
+    // text is ambiguous. End at that decoration using the existing provenance-aware marker, so composition cannot expose
+    // either its value or a later reason. Ordinary titles and links with no credential indicator retain their old behavior.
+    private static int HiddenCredentialDecoration(string value)
+    {
+        var position = 0;
+        while (position < value.Length)
+        {
+            var next = value.AsSpan(position).IndexOfAny(Introducers);
+            if (next < 0) break;
+            position += next;
+            var end = DecorationEnd(value, position);
+            if (end > position && HiddenCredential.IsMatch(value.AsSpan(position, end - position))) return position;
+            position = end > position ? end : position + 1;
+        }
+        return -1;
+    }
+
+    private static string ValidUnicode(string value)
+    {
+        char[]? repaired = null;
+        for (var position = 0; position < value.Length; position++)
+        {
+            var character = value[position];
+            if (!char.IsSurrogate(character)) continue;
+            if (char.IsHighSurrogate(character) && position + 1 < value.Length && char.IsLowSurrogate(value[position + 1]))
+            {
+                position++;
+                continue;
+            }
+            repaired ??= value.ToCharArray();
+            repaired[position] = '\uFFFD';
+        }
+        return repaired is null ? value : new string(repaired);
     }
 
     /// <summary>

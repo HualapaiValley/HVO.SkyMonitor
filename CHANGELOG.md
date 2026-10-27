@@ -62,6 +62,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Installer diagnostics suppress ambiguous values after credential indicators hidden in terminal decoration, and replace malformed Unicode with readable replacement characters without losing redaction or failing JSON output. (#1546)
+
 - Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
 
 - Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
