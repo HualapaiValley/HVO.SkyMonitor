@@ -79,6 +79,41 @@ public sealed partial class CurrentSkyViewTests
         cut.FindAll("button").Should().Contain(b => b.TextContent == "Search older retained captures");
     }
 
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task AutomaticRefresh_ChangingScopeWhileShellIsAbsentStartsAFreshPosition(bool changeObservatory, bool continuationOnly)
+    {
+        using var context = CreateContext(out var archive, out _);
+        var operations = new RecoveringScope();
+        context.Services.AddSingleton<INetworkOperationsReadService>(operations);
+        context.Services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
+        context.JSInterop.SetupModule("./Components/Shared/OperationsScopeShell.razor.js");
+        archive.Select = cursor => Task.FromResult<CameraCurrentSelection?>(cursor is null
+            ? new("continue", null, null, null, null, 5, 5, "older-search") : Selected());
+        var cut = context.Render<OperationsCurrentSky>(p => p.Add(c => c.ObservatoryId, Observatory).Add(c => c.CameraId, Camera));
+        if (!continuationOnly)
+            await cut.FindAll("button").Single(b => b.TextContent == "Search older retained captures").ClickAsync(new());
+        var cursors = archive.Cursors.ToList();
+        operations.Fail = true;
+        cut.Render(p => p.Add(c => c.ObservatoryId, changeObservatory ? Guid.NewGuid() : Observatory)
+            .Add(c => c.CameraId, changeObservatory ? Camera : Guid.NewGuid()));
+        cut.WaitForAssertion(() => cut.FindComponents<CurrentSkyView>().Should().BeEmpty());
+        cut.FindAll("img").Should().BeEmpty();
+        operations.Fail = false;
+        archive.Select = _ => Task.FromResult<CameraCurrentSelection?>(new("continue", null, null, null, null, 5, 5, "fresh-search"));
+        cut.Render(p => p.Add(c => c.ObservatoryId, Observatory).Add(c => c.CameraId, Camera));
+        cursors.Add(null);
+        cut.WaitForAssertion(() => archive.Cursors.Should().Equal(cursors));
+        archive.Revalidations.Should().BeEmpty("a changed scope must start a new position");
+        cut.FindAll("img").Should().BeEmpty();
+        archive.Select = _ => Task.FromResult<CameraCurrentSelection?>(Selected());
+        await cut.FindAll("button").Single(b => b.TextContent == "Search older retained captures").ClickAsync(new());
+        archive.Cursors.Last().Should().Be("fresh-search");
+    }
+
     private sealed class RecoveringScope : INetworkOperationsReadService
     {
         internal bool Fail { get; set; }

@@ -37,15 +37,9 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     protected override void OnInitialized() => Authentication.AuthenticationStateChanged += AuthenticationChanged;
     protected override Task OnParametersSetAsync()
     {
-        var scope = (ObservatoryId, CameraId);
-        if (Position.Scope == scope && Position.Selection is not null) return LoadAsync(null, revalidate: true);
-        if (Position.Scope != scope)
-        {
-            Position.Scope = scope;
-            Position.Selection = null;
-            Position.CaptureId = null;
-        }
-        return LoadAsync(null);
+        var revalidate = Position.Scope == (ObservatoryId, CameraId) && Position.Selection is not null;
+        Position.SetScope(ObservatoryId, CameraId);
+        return LoadAsync(null, revalidate);
     }
 
     [JSInvokable]
@@ -73,10 +67,14 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         var token = cancellation.Token;
         var observatory = ObservatoryId;
         var camera = CameraId;
+        var navigation = Position;
+        var scopeGeneration = navigation.ScopeGeneration;
+        bool IsCurrent() => version == generation && !disposed && ReferenceEquals(navigation, Position) &&
+            navigation.ScopeGeneration == scopeGeneration;
         // Commit a new navigation only after its authorized response succeeds. A superseding authority/parameter
         // recheck must still be able to revalidate the previous search position while navigation is pending.
-        var retained = Position.Selection;
-        var retainedCaptureId = Position.CaptureId;
+        var retained = navigation.Selection;
+        var retainedCaptureId = navigation.CaptureId;
         // Remove the old image before awaiting authority or storage, even on a same-capture refresh.
         detail = null;
         selection = null;
@@ -90,7 +88,7 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             if (!CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
                 !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, observatory))
             {
-                if (version == generation) message = "Camera not found or access was removed.";
+                if (IsCurrent()) message = "Camera not found or access was removed.";
                 return;
             }
             await using var scope = ScopeFactory.CreateAsyncScope();
@@ -109,12 +107,12 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             if (result is not null && requestedCapture is { } exactId)
                 capture = await archive.GetCaptureAsync(principal, observatory, camera, exactId, token);
             token.ThrowIfCancellationRequested();
-            if (version != generation || disposed) return;
+            if (!IsCurrent()) return;
             selection = result;
             if (result is not null)
             {
-                Position.Selection = result;
-                Position.CaptureId = requestedCapture;
+                navigation.Selection = result;
+                navigation.CaptureId = requestedCapture;
             }
             if (capture is not null && capture.Capture.CaptureId == requestedCapture &&
                 capture.Capture.ObservatoryId == observatory && capture.Capture.LogicalCameraId == camera)
@@ -133,17 +131,17 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (ArgumentException)
         {
-            if (version == generation) message = "This selection continuation is no longer available. Refresh to start again.";
+            if (IsCurrent()) message = "This selection continuation is no longer available. Refresh to start again.";
         }
         catch (Exception exception)
         {
             LogReadFailed(Logger, exception);
-            if (version == generation) message = "Current Sky is temporarily unavailable. Refresh to try again.";
+            if (IsCurrent()) message = "Current Sky is temporarily unavailable. Refresh to try again.";
         }
         finally
         {
             if (ReferenceEquals(activeLoad, cancellation)) activeLoad = null;
-            if (version == generation) loading = false;
+            if (IsCurrent()) loading = false;
         }
     }
 
