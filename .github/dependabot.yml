@@ -80,6 +80,11 @@ updates:
       - dependency-name: "dotnet/runtime-deps"
         update-types:
           - "version-update:semver-major"
+      # Keep devcontainers/base on major 3. Patch/minor tags and digest refreshes remain eligible;
+      # ci:base-images separately enforces Ubuntu 24.04 because a suffix change is not necessarily semver-major.
+      - dependency-name: "devcontainers/base"
+        update-types:
+          - "version-update:semver-major"
       # Ubuntu stays on its LTS release (24.04, Noble), whose packages the Stellarium image pins. Dependabot only
       # refreshes the digest of the pinned tag and never proposes an interim release such as 25.10; moving to the
       # next LTS is a deliberate manual change (#1429).
