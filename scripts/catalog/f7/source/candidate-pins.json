@@ -1,0 +1,26 @@
+{
+  "resource": {
+    "host": "f7-fixture.invalid",
+    "inode": 1179670,
+    "lockPath": "/tmp/hvo-520-heavy.lock",
+    "timeoutSeconds": 3600,
+    "graceSeconds": 30,
+    "startAvailableBytes": 19864223744,
+    "workspaceBytes": 11274289152,
+    "reserveBytes": 8589934592,
+    "ramStartAvailableBytes": 12884901888,
+    "wholeCohortRamAllowanceBytes": 8589934592,
+    "ramReserveBytes": 4294967296,
+    "componentCeilingsBytes": {
+      "sourceGit": 1073741824,
+      "retainedPacketAndBundle": 1342177280,
+      "normalHttpCache": 1207959552,
+      "privateNugetCache": 4294967296,
+      "binObj": 2684354560,
+      "evidence": 402653184,
+      "cliHomeTmpAndOther": 268435456
+    },
+    "status": "NEW F7 SOURCE PROPOSAL; no allocation; one serial quiet session",
+    "sampling": "Startup/gate boundaries/10s observer idle delay; transient peak containment UNPROVEN; first observed unknown/excess/OOM stops"
+  }
+}

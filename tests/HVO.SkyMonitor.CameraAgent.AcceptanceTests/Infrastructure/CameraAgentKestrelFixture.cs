@@ -42,6 +42,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private readonly CatalogFixtureInstallation _catalog;
     private readonly Dictionary<string, string?> _overrides;
     private readonly Action<IServiceCollection>? _configureServices;
+    private bool _preserveRoot;
     private BrowserWebApplicationFactory? _factory;
     private HttpClient? _lifetimeClient;
 
@@ -81,12 +82,15 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool useEnvironmentalAcquisition = false,
         Func<string, Task>? prepareRoot = null,
         bool useTransientEvidence = false,
-        string ownerPassword = OwnerPassword)
+        string ownerPassword = OwnerPassword,
+        string? scratchRoot = null,
+        bool preserveRoot = false)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
             : Path.GetTempPath();
-        var root = Path.Combine(temporaryRoot, $"hvo-cameraagent-browser-{Guid.NewGuid():N}");
+        var rootName = scratchRoot is null ? $"hvo-cameraagent-browser-{Guid.NewGuid():N}" : $"iv-{Guid.NewGuid():N}";
+        var root = Path.Combine(scratchRoot ?? temporaryRoot, rootName);
         Directory.CreateDirectory(root);
         var catalog = CatalogFixtureInstallation.Create(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
@@ -183,7 +187,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
         }
 
-        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices);
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices) { _preserveRoot = preserveRoot };
         try
         {
             if (prepareRoot is not null) await prepareRoot(root).ConfigureAwait(false);
@@ -420,8 +424,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopHostAsync().ConfigureAwait(false);
-        _catalog.Dispose();
-        await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
+        if (!_preserveRoot)
+        {
+            _catalog.Dispose();
+            await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
+        }
     }
 
     private static async Task DeleteWithRetriesAsync(string path)

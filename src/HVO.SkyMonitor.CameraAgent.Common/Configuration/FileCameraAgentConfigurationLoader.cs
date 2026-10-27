@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -20,6 +21,9 @@ public sealed class FileCameraAgentConfigurationLoader(
     IDeploymentLocationStore? deploymentLocationStore = null,
     ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null) : ICameraAgentConfigurationLoader
 {
+    // Opt-in attribution only: no listener means no activities or measurement state.
+    internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
+    internal static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
     private const string SampleAgentId = "replace-with-registered-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -44,6 +48,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
     {
+        using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
         if (!File.Exists(path))
         {
@@ -52,8 +57,12 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
 
         using var stream = File.OpenRead(path);
-        var document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
-            .ConfigureAwait(false);
+        CameraModuleDocument? document;
+        using (ActivitySource.StartActivity("configuration.deserialize"))
+        {
+            document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (document is null)
         {
@@ -120,14 +129,14 @@ public sealed class FileCameraAgentConfigurationLoader(
         };
 
         ValidateCurrentFileContract(config);
-        ValidateConfig(config);
+        var validatedSchedule = ValidateConfigCore(config);
         if (_deploymentLocationStore is not null)
         {
             location = await _deploymentLocationStore.InitializeAsync(locationSeed, cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };
             if (config.Schedule is not null)
             {
-                ValidateScheduleCompatibility(config);
+                _ = ValidateScheduleCompatibility(config, validatedSchedule);
             }
         }
         _logger.ConfigurationLoaded(path);
@@ -135,7 +144,11 @@ public sealed class FileCameraAgentConfigurationLoader(
     }
 
     internal static void ValidateConfig(CameraModuleConfig config)
+        => _ = ValidateConfigCore(config);
+
+    private static ScheduleCompatibilityInputs ValidateConfigCore(CameraModuleConfig config)
     {
+        using var activity = ActivitySource.StartActivity("configuration.validate");
         if (config.Module is null || string.IsNullOrWhiteSpace(config.Module.Type))
         {
             throw new InvalidOperationException("Camera module type must be specified.");
@@ -160,7 +173,7 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException(
                 $"Capture schedule is invalid ({scheduleValidation.ReasonCode}, {scheduleValidation.FieldPath}).");
         }
-        ValidateScheduleCompatibility(config);
+        var validatedSchedule = ValidateScheduleCompatibility(config);
 
         if (config.Rig.Sensor.WidthPixels <= 0 || config.Rig.Sensor.HeightPixels <= 0)
         {
@@ -197,6 +210,7 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
 
         ValidateControlPolicy(config.Rig);
+        return validatedSchedule;
     }
 
     private static void ValidateCurrentFileContract(CameraModuleConfig config)
@@ -228,8 +242,11 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
     }
 
-    private static void ValidateScheduleCompatibility(CameraModuleConfig config)
+    private static ScheduleCompatibilityInputs ValidateScheduleCompatibility(
+        CameraModuleConfig config,
+        ScheduleCompatibilityInputs? validatedSchedule = null)
     {
+        using var activity = ActivitySource.StartActivity("configuration.schedule-compatibility");
         var schedule = config.Schedule!;
         var envelope = config.Rig.Pipeline.Envelope;
         if (envelope is not null && schedule.SetpointProfiles.Any(profile =>
@@ -250,14 +267,22 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             var observer = config.ResolveObservatory();
             var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
+            var inputs = ScheduleCompatibilityInputs.Capture(config, observer, timeZone);
+            if (inputs.Matches(validatedSchedule))
+            {
+                return inputs;
+            }
             var solarEvents = new AstronomyEngineSolarEventCalculator();
-            _ = CaptureScheduleIntervalExpander.Expand(
-                schedule,
-                new DateOnly(2024, 1, 1),
-                366,
-                timeZone,
-                observer,
-                solarEvents);
+            using (ActivitySource.StartActivity("configuration.schedule-expand-366-days"))
+            {
+                _ = CaptureScheduleIntervalExpander.Expand(
+                    schedule,
+                    new DateOnly(2024, 1, 1),
+                    366,
+                    timeZone,
+                    observer,
+                    solarEvents);
+            }
             foreach (var date in (schedule.DateExceptions ?? []).Select(static rule => rule.Date).Distinct())
             {
                 _ = CaptureScheduleIntervalExpander.Expand(
@@ -268,11 +293,47 @@ public sealed class FileCameraAgentConfigurationLoader(
                     observer,
                     solarEvents);
             }
+            return inputs;
         }
         catch (Exception exception) when (exception is ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
             throw new InvalidOperationException("Capture schedule expansion is invalid.", exception);
         }
+    }
+
+    // A successful result is held only by this LoadAsync invocation. Compare complete
+    // values, including nested schedule/control collections, rather than record/list
+    // references or a hash. Expansion dates and the solar implementation are constants
+    // above; the resolved time-zone rules are compared as well as the observer's ID.
+    internal sealed record ScheduleCompatibilityInputs(
+        string ScheduleJson,
+        string RigCompatibilityJson,
+        ObservatoryLocation Observer,
+        TimeZoneInfo TimeZone)
+    {
+        private static readonly JsonSerializerOptions SnapshotOptions = new()
+        {
+            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
+        };
+
+        internal static ScheduleCompatibilityInputs Capture(
+            CameraModuleConfig config, ObservatoryLocation observer, TimeZoneInfo timeZone)
+            => new(
+                JsonSerializer.Serialize(config.Schedule, SnapshotOptions),
+                JsonSerializer.Serialize(new
+                {
+                    config.Rig.Pipeline.Envelope,
+                    config.Rig.Sensor.SimulationResponse,
+                    config.Rig.ControlPolicy
+                }, SnapshotOptions),
+                observer,
+                timeZone);
+
+        internal bool Matches(ScheduleCompatibilityInputs? other)
+            => other is not null &&
+                string.Equals(ScheduleJson, other.ScheduleJson, StringComparison.Ordinal) &&
+                string.Equals(RigCompatibilityJson, other.RigCompatibilityJson, StringComparison.Ordinal) &&
+                Observer == other.Observer && TimeZone.HasSameRules(other.TimeZone);
     }
 
     private static void ValidateControlPolicy(CameraRigConfig rig)

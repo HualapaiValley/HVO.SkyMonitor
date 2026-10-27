@@ -1,0 +1,146 @@
+{
+  "schema": "additional-orbital-pass-reference-summary-v1",
+  "gravity": "WGS72",
+  "operationMode": "a",
+  "nominalZeroEopDiagnostic": true,
+  "independentBracketMaximumSeconds": 0.001,
+  "rootEngineAgreementMaximumSeconds": 0.02,
+  "cases": [
+    {
+      "catalogNumber": "08195",
+      "epochUtc": "2006-06-25T07:58:18.143616Z",
+      "numericalSupportProfile": {
+        "nominalKeplerPerigeeKilometers": 1918.2680824160434,
+        "supported": true
+      },
+      "seed": {
+        "keplerPerigeeAngularRateRadiansPerSecond": 0.0010853850126989887,
+        "maxKeplerPhaseStepDegrees": 2,
+        "primaryStepSeconds": 30.0,
+        "qualificationStepSeconds": 15.0,
+        "qualificationPhaseSeconds": 7.5,
+        "caveat": "This nominal Kepler rate selects a practical seed for these retained records; it is not a rigorous SGP4/topocentric rate or whole-cell cap."
+      },
+      "endpoints": {
+        "start": {
+          "secondsSinceWindowStart": 0,
+          "utc": "2006-06-24T19:58:18.143616Z",
+          "altitudeDegrees": -66.48054936147776,
+          "azimuthDegrees": 0.6259040251746596,
+          "rangeKilometers": 20213.555617970887,
+          "rangeRateKilometersPerSecond": 2.8013897714125338
+        },
+        "end": {
+          "secondsSinceWindowStart": 216000.0,
+          "utc": "2006-06-27T07:58:18.143616Z",
+          "altitudeDegrees": 45.61993197962486,
+          "azimuthDegrees": 177.8557049095627,
+          "rangeKilometers": 11331.603381549914,
+          "rangeRateKilometersPerSecond": 2.3491036998762973
+        }
+      },
+      "negativeEpochOffsetPropagationSucceeded": true,
+      "comparisons": [
+        {
+          "thresholdDegrees": 0,
+          "crossingCount": 11,
+          "peakCount": 7,
+          "passCount": 6,
+          "maximumCrossingTimestampDifferenceSeconds": 0.0,
+          "maximumPeakTimestampDifferenceSeconds": 0.0002827200951287523
+        },
+        {
+          "thresholdDegrees": 10,
+          "crossingCount": 5,
+          "peakCount": 4,
+          "passCount": 3,
+          "maximumCrossingTimestampDifferenceSeconds": 0.0,
+          "maximumPeakTimestampDifferenceSeconds": 0.00020261580357328057
+        }
+      ],
+      "finiteSuccessfulStateEvaluations": 23350
+    },
+    {
+      "catalogNumber": "28623",
+      "epochUtc": "2006-06-26T19:27:32.414976Z",
+      "numericalSupportProfile": {
+        "nominalKeplerPerigeeKilometers": 134.43598224783364,
+        "supported": true
+      },
+      "seed": {
+        "keplerPerigeeAngularRateRadiansPerSecond": 0.001531279279405553,
+        "maxKeplerPhaseStepDegrees": 2,
+        "primaryStepSeconds": 22.795,
+        "qualificationStepSeconds": 11.3975,
+        "qualificationPhaseSeconds": 5.69875,
+        "caveat": "This nominal Kepler rate selects a practical seed for these retained records; it is not a rigorous SGP4/topocentric rate or whole-cell cap."
+      },
+      "endpoints": {
+        "start": {
+          "secondsSinceWindowStart": 0,
+          "utc": "2006-06-26T07:27:32.414976Z",
+          "altitudeDegrees": -47.86542734308324,
+          "azimuthDegrees": 315.4534540198701,
+          "rangeKilometers": 29432.170777917392,
+          "rangeRateKilometersPerSecond": -1.6654234239348422
+        },
+        "end": {
+          "secondsSinceWindowStart": 216000.0,
+          "utc": "2006-06-28T19:27:32.414976Z",
+          "altitudeDegrees": 12.868799118345738,
+          "azimuthDegrees": 205.58932971335875,
+          "rangeKilometers": 18274.175351802944,
+          "rangeRateKilometersPerSecond": 1.7861615574405134
+        }
+      },
+      "negativeEpochOffsetPropagationSucceeded": true,
+      "comparisons": [
+        {
+          "thresholdDegrees": 0,
+          "crossingCount": 9,
+          "peakCount": 4,
+          "passCount": 5,
+          "maximumCrossingTimestampDifferenceSeconds": 0.0,
+          "maximumPeakTimestampDifferenceSeconds": 0.0006096286306274123
+        },
+        {
+          "thresholdDegrees": 10,
+          "crossingCount": 9,
+          "peakCount": 4,
+          "passCount": 5,
+          "maximumCrossingTimestampDifferenceSeconds": 5.820766091346741e-11,
+          "maximumPeakTimestampDifferenceSeconds": 0.0006096286306274123
+        }
+      ],
+      "finiteSuccessfulStateEvaluations": 30778
+    }
+  ],
+  "softwareVersions": {
+    "sgp4": "2.27",
+    "skyfield": "1.55",
+    "numpy": "2.5.4",
+    "jplephem": "2.24"
+  },
+  "generator": {
+    "path": "additional_pass_generator.py",
+    "bytes": 15576,
+    "sha256": "9EF0904C87B3101236E318E3BD9954AEC21801C705EDB4BDD2A0F845D13D3C67"
+  },
+  "inputs": [
+    {
+      "path": "SGP4-VER.TLE",
+      "bytes": 8505,
+      "sha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7"
+    },
+    {
+      "path": "leap-seconds.list",
+      "bytes": 5065,
+      "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433"
+    },
+    {
+      "path": "coordinate-reference-generator.py",
+      "bytes": 13890,
+      "sha256": "47DEFF6FA0B236598EB6EBF99716C69E2A6A8E08256E4695C3F7048BED51F4D7"
+    }
+  ]
+}

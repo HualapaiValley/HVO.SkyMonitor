@@ -1,0 +1,14 @@
+CI classification: mode=full deployment=false complete=false shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request does not change deployment-contract inputs complete-reason=pull request changes only component-scoped paths paths=62
+mode=full
+deployment=false
+deployment_catalog=false
+deployment_shards=false
+deployment_installer=false
+complete=false
+shared=true
+cameraagent=true
+logichost=true
+combined=true
+delivery=true
+secret_scan_contract=false
+release_scripts=false

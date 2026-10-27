@@ -21,6 +21,11 @@ internal static class CameraAgentSettingsCatalogue
     public const string SkyMapGroup = "skyMap";
     public const string CameraGroup = "camera";
     public const string ScheduleGroup = "schedule";
+    public const string CurrentSkyGroup = "currentSky";
+    public const string OrbitalElementsGroup = "orbitalElements";
+    public const string SatellitePlanningGroup = "satellitePlanning";
+    public const string SpaceWeatherGroup = "spaceWeather";
+    public const string TimeDataRefreshGroup = "timeDataRefresh";
 
     public const string SettingsFileStore = "settingsFile";
     public const string DeploymentLocationStore = "deploymentLocation";
@@ -144,6 +149,52 @@ internal static class CameraAgentSettingsCatalogue
         Application = CameraAgentSettingApplication.NextCaptureBoundary
     };
 
+    public static CameraAgentSettingDefinition MinimumRefreshInterval { get; } = new()
+    {
+        Key = "currentSky.minimumRefreshSeconds",
+        Group = CurrentSkyGroup,
+        Title = "Minimum image refresh",
+        Description = "The shortest time the Current Sky page shows one capture before it moves to a newer one. It moves " +
+                      "only to a capture whose overlays are complete, and once this time has passed it shows the newest " +
+                      "such capture, skipping any in between. Refresh image moves at once. Captures are not affected. " +
+                      "Clear it to use the default.",
+        Type = CameraAgentSettingType.Integer,
+        Safety = CameraAgentSettingSafety.Descriptive,
+        Application = CameraAgentSettingApplication.Immediate,
+        Nullable = true,
+        Minimum = CurrentSkyRefreshSetting.MinimumSeconds,
+        Maximum = CurrentSkyRefreshSetting.MaximumSeconds,
+        Unit = "seconds",
+        Default = CurrentSkyRefreshSetting.DefaultSeconds,
+        ConfigurationKey = CurrentSkyRefreshSetting.ConfigurationKey
+    };
+
+    public static CameraAgentSettingDefinition OrbitalRefreshEnabled { get; } = FeatureSwitch(
+        OrbitalElementsGroup, "CameraAgent:OrbitalElements:Enabled", "Orbital refresh",
+        "Allow bounded CelesTrak orbital refresh attempts. After restarting, Software & Catalog offers guided " +
+        "creation of the refresh automation. Retained snapshots stay readable when refresh is off.",
+        CameraAgentSettingApplication.Restart);
+
+    public static CameraAgentSettingDefinition SatellitePlanningEnabled { get; } = FeatureSwitch(
+        SatellitePlanningGroup, "CameraAgent:SatellitePlanning:Enabled", "Satellite planning",
+        "Allow diagnostic pass planning from local orbital snapshots and verified Earth-orientation and leap-second " +
+        "data: the pair bundled with this release, a newer refreshed pair, or a hand-configured override. Nothing is " +
+        "captured or scheduled.",
+        CameraAgentSettingApplication.Immediate);
+
+    public static CameraAgentSettingDefinition TimeDataRefreshEnabled { get; } = FeatureSwitch(
+        TimeDataRefreshGroup, "CameraAgent:SatellitePlanning:TimeDataRefreshEnabled", "Time-data refresh",
+        "Allow an at-most-daily download of newer Earth-orientation (IERS/USNO finals2000A) and leap-second (IERS) files " +
+        "from their approved HTTPS endpoints. Each pair is checked against the providers' checksums and parsed before " +
+        "it is adopted; a failed refresh keeps the current pair. Runs only as the reserved time-data automation.",
+        CameraAgentSettingApplication.Immediate);
+
+    public static CameraAgentSettingDefinition SpaceWeatherEnabled { get; } = FeatureSwitch(
+        SpaceWeatherGroup, "CameraAgent:SpaceWeather:Enabled", "Space weather",
+        "Allow bounded SWPC space-weather refresh attempts. After restarting, the Space weather page offers guided " +
+        "creation of the refresh automation. Retained notices stay readable when refresh is off; cloud is never assessed.",
+        CameraAgentSettingApplication.Restart);
+
     /// <summary>Groups in display order.</summary>
     public static IReadOnlyList<CameraAgentSettingsGroup> Groups { get; } =
     [
@@ -165,7 +216,18 @@ internal static class CameraAgentSettingsCatalogue
             RigRevisionStore, [SkyLighting]),
         new(ScheduleGroup, "Capture schedule",
             "Which capture schedule revision is in effect. Schedules are edited and saved as drafts on the Schedule page.",
-            ScheduleRevisionStore, [ActiveScheduleRevision])
+            ScheduleRevisionStore, [ActiveScheduleRevision]),
+        new(CurrentSkyGroup, "Current sky",
+            "How the Current Sky page follows new captures. It changes only what the page shows.",
+            SettingsFileStore, [MinimumRefreshInterval]),
+        new(OrbitalElementsGroup, "Orbital refresh", OrbitalRefreshEnabled.Description,
+            SettingsFileStore, [OrbitalRefreshEnabled]),
+        new(SatellitePlanningGroup, "Satellite planning", SatellitePlanningEnabled.Description,
+            SettingsFileStore, [SatellitePlanningEnabled]),
+        new(TimeDataRefreshGroup, "Time-data refresh", TimeDataRefreshEnabled.Description,
+            SettingsFileStore, [TimeDataRefreshEnabled]),
+        new(SpaceWeatherGroup, "Space weather", SpaceWeatherEnabled.Description,
+            SettingsFileStore, [SpaceWeatherEnabled])
     ];
 
     public static IReadOnlyList<CameraAgentSettingDefinition> All { get; } = [.. Groups.SelectMany(group => group.Settings)];
@@ -185,6 +247,22 @@ internal static class CameraAgentSettingsCatalogue
                 group.Description,
                 group.Store,
                 [.. group.Settings.Select(setting => setting.ToDescriptor())]))]);
+
+    // On/off choices reuse the settings v1 enum wire shape, including clients from earlier releases.
+    private static CameraAgentSettingDefinition FeatureSwitch(string group, string configurationKey, string title,
+        string description, CameraAgentSettingApplication application) => new()
+        {
+            Key = group + ".enabled",
+            Group = group,
+            Title = title,
+            Description = description,
+            Type = CameraAgentSettingType.Enum,
+            Safety = CameraAgentSettingSafety.Descriptive,
+            Application = application,
+            AllowedValues = [new("false", "Off", "Disabled"), new("true", "On", "Enabled")],
+            Default = "false",
+            ConfigurationKey = configurationKey
+        };
 
     private static CameraAgentSettingDefinition SiteText(
         string key,

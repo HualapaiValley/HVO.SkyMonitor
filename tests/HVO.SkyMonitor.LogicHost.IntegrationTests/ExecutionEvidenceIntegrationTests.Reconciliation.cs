@@ -28,15 +28,32 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             services.GetRequiredService<ExecutionEvidenceService>(), metadataOnly, names, clock,
             services.GetRequiredService<IOptions<ExecutionEvidenceOptions>>(), services.GetRequiredService<ExecutionEvidenceTelemetry>());
         var before = await db.Set<ImportedExecutionEvidenceUnit>().AsNoTracking().SingleAsync(u => u.BindingId == setup.Device.BindingId && u.OriginSequence == 3).ConfigureAwait(false);
+        var readService = services.GetRequiredService<ExecutionEvidenceService>();
+        var cameraId = await BindingCameraAsync(setup.Device).ConfigureAwait(false);
+        var mapped = (await readService.ListUnitArtifactsAsync(setup.Device.ObservatoryId, cameraId, setup.Device.InstallationId,
+            setup.Device.BindingId, before.Id, setup.Device.OwnerId, setup.Device.ObservatoryId).ConfigureAwait(false))!.Artifacts.Single();
+        async Task AssertReadAsync(string state, string reason)
+        {
+            var read = await readService.GetArtifactReconciliationAsync(setup.Device.ObservatoryId, cameraId, setup.Device.InstallationId,
+                setup.Device.BindingId, before.Id, mapped.ArtifactReferenceId, mapped.CaptureId, mapped.ArtifactId,
+                setup.Device.OwnerId, setup.Device.ObservatoryId).ConfigureAwait(false);
+            Assert.IsNotNull(read);
+            Assert.IsNotEmpty(read.Observations);
+            Assert.AreEqual(state, read.Observations[0].State);
+            Assert.AreEqual(reason, read.Observations[0].ReasonCode);
+        }
+
         await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
         _ = await reconciler.ReconcileAsync(32).ConfigureAwait(false);
         var check = await CurrentCheckAsync(db, setup.ReferenceId).ConfigureAwait(false);
         Assert.AreEqual("Missing", check.State);
         Assert.AreEqual("evidence.artifact-not-received", check.ReasonCode);
+        await AssertReadAsync("Missing", "evidence.artifact-not-received").ConfigureAwait(false);
         await SeedCentralArtifactAsync(db, setup, names).ConfigureAwait(false);
         await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
         _ = await reconciler.ReconcileAsync(32).ConfigureAwait(false);
         Assert.AreEqual("evidence.object-missing", (await CurrentCheckAsync(db, setup.ReferenceId).ConfigureAwait(false)).ReasonCode);
+        await AssertReadAsync("Missing", "evidence.object-missing").ConfigureAwait(false);
         await using (var bytes = new MemoryStream(setup.Payload))
         {
             await store.PutAsync(names.ArtifactBucket, setup.ObjectKey, bytes, bytes.Length, "application/octet-stream", CancellationToken.None).ConfigureAwait(false);
@@ -44,6 +61,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
         _ = await reconciler.ReconcileAsync(32).ConfigureAwait(false);
         Assert.AreEqual("Available", (await CurrentCheckAsync(db, setup.ReferenceId).ConfigureAwait(false)).State);
+        await AssertReadAsync("Available", "evidence.metadata-matched").ConfigureAwait(false);
         await store.DeleteAsync(names.ArtifactBucket, setup.ObjectKey, CancellationToken.None).ConfigureAwait(false);
         await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
         _ = await reconciler.ReconcileAsync(32).ConfigureAwait(false);
@@ -55,12 +73,19 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             .OrderBy(o => o.Id).Select(o => o.State).ToListAsync().ConfigureAwait(false);
         CollectionAssert.AreEqual(ExpectedAvailabilityTransitions, states.TakeLast(4).ToArray());
         Assert.IsTrue(metadataOnly.StatCalls >= 3);
+        var unavailableStore = new MetadataOnlyStore((_, _, _) => throw new ObjectStoreException(ObjectStoreFailureKind.Transient, "stat"));
+        var unavailable = new ExecutionEvidenceReconciler(services.GetRequiredService<ExecutionEvidenceDatabase>(), readService,
+            unavailableStore, names, clock, services.GetRequiredService<IOptions<ExecutionEvidenceOptions>>(), services.GetRequiredService<ExecutionEvidenceTelemetry>());
+        await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
+        _ = await unavailable.ReconcileAsync(32).ConfigureAwait(false);
+        await AssertReadAsync("Unresolved", "evidence.object-unavailable").ConfigureAwait(false);
         // The optional supplied metadata is checked before touching object storage.
         await db.CentralArtifacts.Where(a => a.DevicePublicId == setup.Device.DevicePublicId && a.ArtifactId == setup.ArtifactId)
             .ExecuteUpdateAsync(update => update.SetProperty(a => a.ChecksumSha256, new string('B', 64))).ConfigureAwait(false);
         await ScheduleOnlyReferenceAsync(db, setup.ReferenceId, now).ConfigureAwait(false);
         _ = await reconciler.ReconcileAsync(32).ConfigureAwait(false);
         Assert.AreEqual("Quarantined", (await CurrentCheckAsync(db, setup.ReferenceId).ConfigureAwait(false)).State);
+        await AssertReadAsync("Quarantined", "evidence.metadata-mismatch").ConfigureAwait(false);
     }
 
     [TestMethod]

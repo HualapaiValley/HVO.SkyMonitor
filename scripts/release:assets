@@ -9,8 +9,8 @@
 #   THIRD-PARTY-NOTICES.md                                    the third-party notices, the installers' bundled packages among them
 #   release.json, SHA256SUMS                                  the manifest, and every file's SHA-256
 #
-# The CameraAgent image is built once, for every platform, into the OCI archive --image-oci names. That archive is what
-# scripts/release:push-image pushes, byte for byte, so the registry's digest is the digest release.json names, and the
+# The CameraAgent image is built for every platform, or supplied with --prebuilt-image, in the OCI archive
+# --image-oci names. scripts/release:push-image pushes that archive byte for byte, so the registry's digest is the digest release.json names, and the
 # offline archives are split from it. The image is labelled with the release's version, commit and created time, and
 # release.json repeats its state contract label (install contract sections 1 and 6), which scripts/release:check-image-labels
 # checks once release.json is written. The release workflow (.github/workflows/prerelease.yml) runs exactly this script;
@@ -25,12 +25,14 @@ Required:
   --version <version>          The release's version: the product version in Directory.Build.props or a pre-release of
                                it, such as 0.9.0, 0.9.0-rc.1 or 0.9.0-dev.3 (no build metadata; scripts/release:version).
   --output <folder>            The folder to write the release's files into. Must not exist.
-  --image-oci <file>           Where to write the multi-platform OCI image archive the release pushes. Must not exist.
+  --image-oci <file>           Where to write the multi-platform OCI image archive the release pushes. Must not exist,
+                               except when it is also --prebuilt-image.
 
 Options:
   --commit <sha>               The commit to build; it must be this checkout's HEAD. Default: HEAD.
   --created <utc>              The release's time, such as 2026-10-17T18:00:00Z. Default: the commit's time.
   --platforms <list>           linux/amd64,linux/arm64 (the default), or one of them for a local single-platform build.
+  --prebuilt-image <file>      Use a combined, digest-verified OCI archive instead of building the image.
   --builder <name>             The buildx builder to build the image with. Default: the current one.
   --image-repository <repo>    Default: ghcr.io/hualapaivalley/skymonitor-cameraagent.
   --catalog-bundle <folder>    The approved catalog bundle. Default: build HYG 4.2 with scripts/catalog/build-hyg-v42.sh --fetch.
@@ -46,7 +48,7 @@ fail() {
 }
 
 version="" output="" image_oci="" commit="" created="" platforms="linux/amd64,linux/arm64" builder=""
-repository="ghcr.io/hualapaivalley/skymonitor-cameraagent" catalog_bundle="" install_script="" allow_dirty=0
+repository="ghcr.io/hualapaivalley/skymonitor-cameraagent" catalog_bundle="" install_script="" allow_dirty=0 prebuilt_image=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) version="${2:-}"; shift 2 ;;
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --commit) commit="${2:-}"; shift 2 ;;
         --created) created="${2:-}"; shift 2 ;;
         --platforms) platforms="${2:-}"; shift 2 ;;
+        --prebuilt-image) prebuilt_image="${2:-}"; shift 2 ;;
         --builder) builder="${2:-}"; shift 2 ;;
         --image-repository) repository="${2:-}"; shift 2 ;;
         --catalog-bundle) catalog_bundle="${2:-}"; shift 2 ;;
@@ -71,7 +74,8 @@ identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
 [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-${identifier}(\.${identifier})*)?$ ]] ||
     fail "--version must be a release version such as 1.2.0 or 1.2.0-dev.3, not '$version'."
 [[ ! -e "$output" ]] || fail "$output already exists."
-[[ ! -e "$image_oci" ]] || fail "$image_oci already exists."
+[[ ! -e "$image_oci" || "$prebuilt_image" == "$image_oci" ]] || fail "$image_oci already exists."
+[[ -z "$prebuilt_image" || -f "$prebuilt_image" ]] || fail "--prebuilt-image $prebuilt_image is not a file."
 [[ -z "$catalog_bundle" || -d "$catalog_bundle" ]] || fail "--catalog-bundle $catalog_bundle is not a folder."
 [[ -z "$install_script" || -f "$install_script" ]] || fail "--install-script $install_script is not a file."
 case "$platforms" in
@@ -97,6 +101,7 @@ notes_error="$(./scripts/release:notes --check "$version" 2>&1)" || fail "${note
 # Every release ships the notices of what it bundles, as an asset of their own: a single-file installer carries Terminal.Gui
 # and the packages it brings in, Onigwrap's native Oniguruma library among them, and cannot carry their notices beside it.
 [[ -s THIRD-PARTY-NOTICES.md ]] || fail "THIRD-PARTY-NOTICES.md, the release's third-party notices, is missing or empty."
+source_date_epoch="$(git show -s --format=%ct "$commit")"
 created="${created:-$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)}"
 [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
     fail "--created must be a UTC time such as 2026-10-17T18:00:00Z."
@@ -154,18 +159,28 @@ done
 
 # The image, every platform at once, into the OCI archive that is pushed as it is. No BuildKit provenance or SBOM: the
 # release's build-provenance attestation covers the image, and BuildKit's would add an unknown/unknown platform.
-builder_arguments=()
-[[ -z "$builder" ]] || builder_arguments=(--builder "$builder")
-docker buildx build "${builder_arguments[@]}" \
-    --platform "$platforms" \
-    --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
-    --build-arg "HVO_VERSION=$version" \
-    --build-arg "HVO_SOURCE_REVISION=$commit" \
-    --build-arg "HVO_CREATED=$created" \
-    --provenance=false \
-    --sbom=false \
-    --output "type=oci,dest=$image_oci" \
-    . >&2
+if [[ -n "$prebuilt_image" ]]; then
+    # The workflow verified the two job-output digests when combining. The release tool below still validates every
+    # image blob, platform and release label, and creates the identical per-platform offline archive contract.
+    if [[ "$prebuilt_image" != "$image_oci" ]]; then
+        mkdir -p "$(dirname "$image_oci")"
+        cp "$prebuilt_image" "$image_oci"
+    fi
+else
+    builder_arguments=()
+    [[ -z "$builder" ]] || builder_arguments=(--builder "$builder")
+    docker buildx build "${builder_arguments[@]}" \
+        --platform "$platforms" \
+        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --build-arg "HVO_VERSION=$version" \
+        --build-arg "HVO_SOURCE_REVISION=$commit" \
+        --build-arg "HVO_CREATED=$created" \
+        --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
+        --provenance=false \
+        --sbom=false \
+        --output "type=oci,dest=$image_oci,rewrite-timestamp=true" \
+        . >&2
+fi
 
 # The approved catalog bundle, its bytes checked against the catalog registry by the release tool.
 if [[ -z "$catalog_bundle" ]]; then

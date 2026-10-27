@@ -17,6 +17,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
     private readonly IProcessingRecipeExecutor _executor;
     private readonly ReplayExecutionProfile _replayProfile;
     private readonly LocalReplayRunnerClient? _localRunner;
+    private readonly Func<GainNormalizationPreparer>? _normalization;
 
     public CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
         : this(executor, ReplayExecutionProfile.InProcess, null)
@@ -34,12 +35,27 @@ public sealed class CameraAgentRecipeExecutionAdapter
     internal CameraAgentRecipeExecutionAdapter(
         IProcessingRecipeExecutor executor,
         ReplayExecutionProfile replayProfile,
-        LocalReplayRunnerClient? localRunner)
+        LocalReplayRunnerClient? localRunner,
+        Func<GainNormalizationPreparer>? normalization = null)
     {
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _replayProfile = replayProfile;
         _localRunner = localRunner;
+        _normalization = normalization;
     }
+
+    /// <summary>
+    /// The frozen normalization plan and masters the mixed-gain recipe executes with for the current node (#1475), or
+    /// none when this host supplies no plans, so the recipe skips the window. The plan is frozen for
+    /// <paramref name="shape"/>.
+    /// </summary>
+    internal ValueTask<GainNormalizationPreparation> PrepareNormalizationAsync(
+        CaptureProcessingContext context,
+        NormalizationWindowShape shape,
+        CancellationToken cancellationToken)
+        => _normalization is null
+            ? ValueTask.FromResult(GainNormalizationPreparation.None)
+            : _normalization().PrepareAsync(context, cancellationToken, shape);
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(
         ProcessingExecutionRequest request,
@@ -160,7 +176,8 @@ public sealed class CameraAgentRecipeExecutionAdapter
             CaptureId = reconstructionDescriptor?.Capture.CaptureId,
             DescriptorIdentitySha256 = reconstructionDescriptor is null
                 ? null
-                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor)
+                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor),
+            RecipeDescriptor = product?.Recipe.Descriptor
         };
     }
 
@@ -188,7 +205,8 @@ public sealed class CameraAgentRecipeExecutionAdapter
             SchemaVersion = product.SchemaVersion,
             ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256,
             CaptureId = descriptor?.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = product.Recipe.Descriptor
         };
     }
 
@@ -284,8 +302,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
             rigProfile,
             HashText($"calibration:{config.Rig.Optics.CalibrationVersion}"),
             HashText("mask:none"),
-            CaptureContractJson.ComputeCanonicalJsonSha256(
-                JsonSerializer.SerializeToElement(config.Rig.Sensor)),
+            SensorProfileIdentity.ComputeSha256(config.Rig.Sensor),
             setpoint,
             CaptureContractJson.ComputeCanonicalJsonSha256(processing),
             config.DeploymentLocation?.ToProvenance().IdentitySha256);
@@ -302,6 +319,14 @@ public sealed class CameraAgentRecipeExecutionAdapter
                 $"exposure={descriptor.Controls.EffectiveExposure.TotalMilliseconds:R};gain={descriptor.Controls.EffectiveGain:R};offset={descriptor.Controls.EffectiveOffset:R};temperatureSetpoint={descriptor.Controls.TemperatureSetpointC:R}"),
             descriptor.Profiles.Processing.Sha256,
             descriptor.Location?.IdentitySha256);
+
+    /// <summary>
+    /// The capture's compatibility under a frozen normalization plan (#1475): its gain segment becomes the plan's
+    /// normalization identity and its calibration axis the plan's family. Only the mixed-gain recipe uses this; every
+    /// other caller keeps <see cref="CreateCompatibility(ReconstructionDescriptor)"/>, where gain stays a boundary.
+    /// </summary>
+    internal static ProcessingCompatibilityIdentity CreateCompatibility(ReconstructionDescriptor descriptor, NormalizationPlanV1 plan)
+        => GainNormalizationCompatibility.Normalize(CreateCompatibility(descriptor), plan);
 
     private static double? TryGetLevel(IReadOnlyDictionary<string, string>? metadata, string key) =>
         metadata is not null && metadata.TryGetValue(key, out var value) &&

@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -32,6 +33,19 @@ public interface IRawCaptureIngress
         CaptureLoopSubmission submission,
         CancellationToken cancellationToken);
 
+    internal ValueTask<RawCaptureGraphBinding?> PrepareGraphBindingAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult<RawCaptureGraphBinding?>(null);
+
+    internal ValueTask<RawCaptureReceipt?> AcceptAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        RawCaptureGraphBinding? binding,
+        CancellationToken cancellationToken)
+        => AcceptAsync(configuration, submission, cancellationToken);
+
     internal ValueTask<RawCapturePublicationState> GetPublicationStateAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
@@ -43,6 +57,8 @@ public interface IRawCaptureIngress
         CancellationToken cancellationToken)
         => ValueTask.CompletedTask;
 }
+
+internal sealed record RawCaptureGraphBinding(ProcessingGraphRevisionSnapshot Revision, bool AlreadyPublished);
 
 internal enum RawCapturePublicationState
 {
@@ -116,4 +132,5 @@ internal sealed record RawIngressPlannedQuarantine(
     string? CompanionRelativePath,
     string QuarantineRelativePath,
     string Reason,
-    long ObservedBytes);
+    long ObservedBytes,
+    Guid? CaptureId = null);

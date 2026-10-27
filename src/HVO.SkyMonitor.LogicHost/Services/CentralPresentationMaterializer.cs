@@ -188,7 +188,8 @@ internal sealed class CentralPresentationMaterializer(
                 var payloadBytes = await ReadBytesAsync(
                     artifact, LayeredPresentationJson.MaximumPayloadBytes, cancellationToken).ConfigureAwait(false);
                 var payload = PresentationLayerPayloadJson.Parse(payloadBytes).Payload;
-                if (payload is null || payload.ContentIdentitySha256 != layer.SourceProduct.ProductIdentitySha256)
+                if (payload is null || payload.ContentIdentitySha256 != layer.SourceProduct.ProductIdentitySha256 ||
+                    !SceneStylePresentation.MatchesRetainedLayer(payload, layer))
                 {
                     return new(CentralPresentationMaterializationStatus.Conflict);
                 }

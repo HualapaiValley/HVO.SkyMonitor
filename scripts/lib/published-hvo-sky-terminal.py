@@ -74,34 +74,48 @@ def check_ui(client: str, environment: dict[str, str], columns: int, rows: int, 
     child, terminal = pty.fork()
     if child == 0:
         os.execve(client, [client, "ui"], environment)
+    status = None
+    shown = False
     try:
         fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
         output = bytearray()
         deadline = time.monotonic() + TIMEOUT_SECONDS
-        shown = False
+        terminal_open = True
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([terminal], [], [], 0.2)
+            exited, child_status = os.waitpid(child, os.WNOHANG)
+            if exited:
+                status = child_status
+                break
+            if not terminal_open:
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+                continue
+            ready, _, _ = select.select([terminal], [], [], min(0.2, max(0, deadline - time.monotonic())))
             if not ready:
                 continue
             try:
                 chunk = os.read(terminal, 65536)
             except OSError:
-                break
+                terminal_open = False
+                continue
             if not chunk:
-                break
+                terminal_open = False
+                continue
             output += chunk
             screen = ESCAPES.sub("", output.decode("utf-8", "replace"))
             if not shown and all(text in screen for text in ("HVO SKYMONITOR", "[NOT SIGNED IN]", "CAMERAAGENT", "F10 Quit")):
                 shown = True
-                time.sleep(0.5)
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
                 os.write(terminal, F10)
-        if not shown:
-            os.kill(child, signal.SIGKILL)
-            os.waitpid(child, 0)
-            fail(f"the interface's System page did not appear at {columns} x {rows}")
-        _, status = os.waitpid(child, 0)
     finally:
+        # Only this recorded child can be killed, and every path reaps it before closing its terminal.
+        if status is None:
+            os.kill(child, signal.SIGKILL)
+            _, status = os.waitpid(child, 0)
         os.close(terminal)
+    if not shown:
+        fail(f"the interface's System page did not appear at {columns} x {rows}")
+    if time.monotonic() >= deadline:
+        fail(f"the interface did not exit before the deadline at {columns} x {rows}")
     code = os.waitstatus_to_exitcode(status)
     if code != 0:
         fail(f"F10 on the interface at {columns} x {rows} exited {code}")

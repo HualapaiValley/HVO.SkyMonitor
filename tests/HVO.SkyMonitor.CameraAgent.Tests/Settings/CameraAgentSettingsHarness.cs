@@ -48,6 +48,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
     public CaptureScheduleRuntimeCoordinator Runtime { get; private set; } = default!;
     public CameraModuleConfig CameraConfiguration { get; private set; } = default!;
     public ISceneObjectBound SceneObjectBound { get; private set; } = default!;
+    public CurrentSkyRefreshSetting CurrentSkyRefresh { get; private set; } = default!;
     public CameraAgentSettingsService Service { get; private set; } = default!;
     public string SettingsPath => SettingsFile.FilePath;
 
@@ -60,7 +61,10 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         bool realLocation = false,
         ILogger<CameraAgentSettingsService>? logger = null,
         Func<string, CancellationToken, Task>? beforeStoreWrite = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Action<ConfigurationManager>? configureOverrides = null,
+        bool orbitalInitiallyEnabled = false,
+        bool spaceWeatherInitiallyEnabled = false)
     {
         var clock = timeProvider ?? TimeProvider.System;
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
@@ -79,10 +83,17 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             {
                 configuration.AddInMemoryCollection(overrides);
             }
+            configureOverrides?.Invoke(configuration);
             var settingsFile = harness.Own(new OperatorSettingsFile(
                 local.FilePath, local.Reload, local.FindOverriddenKeys,
                 NullLogger<OperatorSettingsFile>.Instance));
-            var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, DisplayName = InstalledName });
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                DisplayName = InstalledName,
+                OrbitalElements = new() { Enabled = orbitalInitiallyEnabled },
+                SpaceWeather = new() { Enabled = spaceWeatherInitiallyEnabled }
+            });
             var site = harness.Own(new SettingsFileSiteProfileStore(
                 hostOptions, NullLogger<SettingsFileSiteProfileStore>.Instance, settingsFile));
             var sceneObjects = new ConfigurationSceneObjectBound(
@@ -123,9 +134,11 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             harness.Runtime = runtime;
             harness.CameraConfiguration = camera;
             harness.SceneObjectBound = sceneObjects;
+            harness.CurrentSkyRefresh = new CurrentSkyRefreshSetting(configuration);
             harness.Service = new CameraAgentSettingsService(
                 new CameraAgentSettingSources(configuration, local.IsSettingsFileProvider),
                 sceneObjects,
+                harness.CurrentSkyRefresh,
                 site,
                 harness.LocationStore,
                 named,
@@ -133,7 +146,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 new FixedConfigurationAccessor(configured ? camera : null),
                 harness.Own(new CameraAgentOperatorTelemetry()),
                 logger ?? NullLogger<CameraAgentSettingsService>.Instance,
-                settingsFile)
+                settingsFile, hostOptions)
             {
                 BeforeStoreWriteAsync = beforeStoreWrite
             };

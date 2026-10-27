@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.CameraAgent.Extensions;
@@ -87,6 +88,7 @@ public class Program
         builder.Services.AddSingleton(provider => new CameraAgentSettingSources(
             provider.GetRequiredService<IConfiguration>(),
             localSettings is null ? static _ => false : localSettings.IsSettingsFileProvider));
+        builder.Services.AddSingleton(provider => new CurrentSkyRefreshSetting(provider.GetRequiredService<IConfiguration>()));
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -247,6 +249,8 @@ public class Program
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(LocalAutomationTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
@@ -303,6 +307,7 @@ public class Program
         builder.Services.AddCameraAgentAuthorization();
         builder.Services.AddScoped<CameraAgentApiKeyStore>();
         builder.Services.AddScoped<CameraAgentSettingsService>();
+        builder.Services.AddScoped<ICameraAgentSatelliteSetupUiService, CameraAgentSatelliteSetupUiService>();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
@@ -322,6 +327,9 @@ public class Program
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
+        builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
+        builder.Services.AddSingleton<SpaceWeatherUiProjectionSource>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
@@ -332,6 +340,9 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddCameraAgentSatellitePlanning(builder.Configuration);
+        builder.Services.AddCameraAgentTimeDataRefresh();
+        builder.Services.AddCameraAgentSatellitePlanningUi();
         builder.Services.AddSingleton<CalibrationOperationsTokenService>();
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);
@@ -345,6 +356,8 @@ public class Program
             "deployment-location-reconciliation", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
+        healthChecks.AddCheck<OrbitalElementsHealthCheck>("orbital-elements", tags: ["dependency"]);
+        healthChecks.AddCheck<SpaceWeatherHealthCheck>("space-weather", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
         healthChecks.AddCheck<TransientCandidateDeliveryHealthCheck>(
             "transient-candidate-delivery", tags: ["dependency"]);
@@ -439,6 +452,9 @@ public class Program
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
+        app.MapCameraAgentOrbitalOperationsEndpoints();
+        app.MapCameraAgentTimeDataOperationsEndpoints();
+        app.MapCameraAgentSpaceWeatherOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentSettingsEndpoints();
         app.MapCameraAgentNamedRigEndpoints();

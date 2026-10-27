@@ -1,0 +1,480 @@
+{
+  "orderedSteps": [
+    {
+      "id": "sdk",
+      "argv": []
+    },
+    {
+      "id": "clock-ticks",
+      "argv": []
+    },
+    {
+      "id": "install-pinned-packages",
+      "argv": []
+    },
+    {
+      "id": "prepare-cpu-proof-source",
+      "argv": []
+    },
+    {
+      "id": "restore-baseline",
+      "argv": []
+    },
+    {
+      "id": "actual-normal-restore-baseline",
+      "argv": []
+    },
+    {
+      "id": "build-baseline",
+      "argv": []
+    },
+    {
+      "id": "properties-baseline",
+      "argv": []
+    },
+    {
+      "id": "discovery-baseline",
+      "argv": []
+    },
+    {
+      "id": "account-discovery-baseline",
+      "argv": []
+    },
+    {
+      "id": "restore-candidate",
+      "argv": []
+    },
+    {
+      "id": "actual-normal-restore-candidate",
+      "argv": []
+    },
+    {
+      "id": "build-candidate",
+      "argv": []
+    },
+    {
+      "id": "properties-candidate",
+      "argv": []
+    },
+    {
+      "id": "discovery-candidate",
+      "argv": []
+    },
+    {
+      "id": "account-discovery-candidate",
+      "argv": []
+    },
+    {
+      "id": "restore-cpu-proof",
+      "argv": []
+    },
+    {
+      "id": "build-cpu-proof",
+      "argv": []
+    },
+    {
+      "id": "actual-helper-cpu-proof-baseline",
+      "argv": []
+    },
+    {
+      "id": "actual-helper-cpu-proof-candidate",
+      "argv": []
+    },
+    {
+      "id": "before-quiet-source-and-binaries",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t01",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t01",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t01",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t01",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t02",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t02",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t02",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t02",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t03",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t03",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t03",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t03",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t04",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t04",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t04",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t04",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t05",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t05",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t05",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t05",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t06",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t06",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t06",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t06",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t07",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t07",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t07",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t07",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t08",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t08",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t08",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t08",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t09",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t09",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t09",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t09",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t10",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t10",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t10",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t10",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t11",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t11",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t11",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t11",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-source-t12",
+      "argv": []
+    },
+    {
+      "id": "measure-source-t12",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-source-t12",
+      "argv": []
+    },
+    {
+      "id": "validate-source-t12",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t01",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t01",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t01",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t01",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t02",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t02",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t02",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t02",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t03",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t03",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t03",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t03",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t04",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t04",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t04",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t04",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t05",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t05",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t05",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t05",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t06",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t06",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t06",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t06",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t07",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t07",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t07",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t07",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t08",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t08",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t08",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t08",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t09",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t09",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t09",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t09",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t10",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t10",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t10",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t10",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t11",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t11",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t11",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t11",
+      "argv": []
+    },
+    {
+      "id": "quiet-before-composition-t12",
+      "argv": []
+    },
+    {
+      "id": "measure-composition-t12",
+      "argv": []
+    },
+    {
+      "id": "quiet-after-composition-t12",
+      "argv": []
+    },
+    {
+      "id": "validate-composition-t12",
+      "argv": []
+    },
+    {
+      "id": "after-quiet-source-and-binaries",
+      "argv": []
+    },
+    {
+      "id": "f7-campaign-regression-and-equivalence",
+      "argv": []
+    }
+  ]
+}

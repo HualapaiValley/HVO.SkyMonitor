@@ -1,0 +1,250 @@
+@using HVO.SkyMonitor.Processing
+<section class="imported-inspector" @ref="root" data-session-check="@SessionCheckPath" aria-labelledby="imported-heading" aria-busy="@(loading ? "true" : "false")">
+    <header><h2 id="imported-heading" tabindex="-1">Imported executions</h2>
+        <p>CameraAgent evidence is read-only. Producer facts, central receipts and byte observations have separate meanings.</p>
+        <button type="button" disabled="@loading" @onclick="RefreshAsync">Refresh imported evidence</button>
+    </header>
+    <p role="status">@message</p>
+    @if (!loading && data is null) { <a href="@Path">Start from the first page</a> }
+    @if (data is { } view)
+    {
+        <div class="imported-protected">
+        @if (Query.Installation is null) { <p>Imported execution evidence is unavailable until a retained installation and binding are selected. Current camera state does not supply execution evidence.</p> }
+        <details open="@(Query.Installation is null)">
+            <summary>Retained installations</summary>
+            @if (view.Installations.Items.Count == 0) { <p>Imported evidence unavailable: no retained installations on this page.</p> }
+            <ul class="imported-installations">
+                @foreach (var item in view.Installations.Items)
+                {
+                    <li><a href="@Url(new() { Installation = item.Id, InstallationsPage = Query.InstallationsPage, Focus = "imported-bindings-heading" })">Installation @item.Id</a>
+                        <span>Public identity @item.PublicId · assigned @Time(item.AssignedUtc) · @(item.RetiredUtc is null ? "Retained" : $"Retired {Time(item.RetiredUtc)}")</span></li>
+                }
+            </ul>
+            @if (Query.InstallationsPage is not null) { <a href="@Url(Query with { InstallationsPage = null })">First installation page</a> }
+            @if (view.Installations.NextCursor is { } installationsNext) { <a href="@Url(Query with { InstallationsPage = installationsNext })">Next installation page</a> }
+        </details>
+        @if (view.Bindings is { } bindings)
+        {
+            <section aria-labelledby="imported-bindings-heading">
+                <h3 id="imported-bindings-heading" tabindex="-1">Imported origin bindings</h3>
+                <p>Selected retained installation @Query.Installation</p>
+                @if (bindings.Bindings.Count == 0) { <p>Imported evidence unavailable: no imported binding for this installation.</p> }
+                <ul>
+                    @foreach (var item in bindings.Bindings)
+                    {
+                        <li><a href="@Url(new() { Installation = Query.Installation, Binding = item.Id, InstallationsPage = Query.InstallationsPage, Focus = "imported-units-heading" })">Binding @item.Id</a>
+                            <span>Origin installation @item.OriginInstallationId · agent @item.AgentInstanceId</span></li>
+                    }
+                </ul>
+                @if (bindings.Truncated) { <p>Binding history truncated at 16. This is not the complete retained history.</p> }
+            </section>
+        }
+        @if (view.Binding is { } binding && view.Status is { } status)
+        {
+            <details>
+                <summary>Binding identity and receiver health</summary>
+                <dl>
+                    <dt>Binding</dt><dd>@binding.Id</dd><dt>Pinned installation public identity</dt><dd>@binding.InstallationPublicId</dd>
+                    <dt>Origin installation / agent</dt><dd>@binding.OriginInstallationId / @binding.AgentInstanceId</dd>
+                    <dt>Retained units / bytes</dt><dd>@status.UnitCount / @status.StoredBytes</dd>
+                    <dt>Sequence conflicts</dt><dd>@status.ConflictCount · originals retained unchanged</dd>
+                    <dt>Origins with gaps</dt><dd>@status.OriginsWithGaps · oldest @Time(status.OldestGapDetectedAtUtc)</dd>
+                    <dt>Due artifact checks</dt><dd>@status.DueArtifactChecks @(status.DueArtifactChecksTruncated ? "(count truncated at 1,000)" : "") · oldest @Time(status.OldestDueArtifactCheckAtUtc)</dd>
+                    <dt>Receipt storage pressure</dt><dd>@(status.StoragePressure ? "Degraded: receiver capacity pressure" : "Not reported")</dd>
+                </dl>
+            </details>
+            @if (view.Origins is { } origins)
+            {
+                <details><summary>Origin sequence spaces</summary><ul>
+                    @foreach (var item in origins.Items)
+                    {
+                        <li><a href="@Url(Query with { Origin = item.IdentitySha256, UnitsPage = null, Unit = null, Artifact = null, Node = null, NodesPage = null, Focus = "imported-units-heading" })">Origin @item.IdentitySha256</a>
+                            <span>Boot @item.BootSessionId · software @item.SoftwareVersion · first receipt @Time(item.FirstReceivedAtUtc)</span>
+                            <span>Highest seen @item.HighestSeenSequence · contiguous accepted through @item.ContiguousThroughSequence</span></li>
+                    }
+                    </ul>
+                    @if (Query.OriginsPage is not null) { <a href="@Url(Query with { OriginsPage = null })">First origin page</a> }
+                    @if (origins.NextCursor is { } originsNext) { <a href="@Url(Query with { OriginsPage = originsNext })">Next origin page</a> }
+                </details>
+            }
+            @if (view.Units is { } units)
+            {
+                <section aria-labelledby="imported-units-heading">
+                    <h3 id="imported-units-heading" tabindex="-1">Retained evidence units</h3>
+                    <nav aria-label="Evidence kind filters">
+                        @foreach (var kind in new[] { "GraphRevision", "GraphExecution", "ArtifactAvailability" })
+                        {
+                            <a href="@Url(new() { Installation = Query.Installation, Binding = Query.Binding, Origin = Query.Origin, Kind = kind, Focus = "imported-units-heading" })" aria-current="@(Query.Kind == kind ? "true" : null)">@kind</a>
+                        }
+                        <a href="@Url(new() { Installation = Query.Installation, Binding = Query.Binding, Focus = "imported-units-heading" })">All kinds and origins</a>
+                    </nav>
+                    @if (units.Items.Count == 0) { <p>Imported evidence unavailable on this page for these filters.</p> }
+                    <ul class="imported-units">
+                        @foreach (var item in units.Items)
+                        {
+                            <li><a id="@($"imported-unit-{item.Id}")" data-evidence-focus="@($"imported-unit-{item.Id}")" href="@SelectUnit(item.Id)">@item.Kind · unit @item.Id · sequence @item.OriginSequence</a>
+                                <span>Evidence @item.EvidenceId · execution @(item.ExecutionId?.ToString() ?? "Not recorded")</span>
+                                <span>Payload SHA-256 @item.PayloadSha256</span>
+                                <span>Produced @Time(item.ProducedAtUtc) · received @Time(item.ReceivedAtUtc) · @(item.Accepted ? "Accepted" : $"Rejected: {item.RejectionReasonCode}")</span></li>
+                        }
+                    </ul>
+                    @if (Query.UnitsPage is not null) { <a href="@Url(Query with { UnitsPage = null })">First evidence page</a> }
+                    @if (units.NextCursor is { } unitsNext) { <a href="@Url(Query with { UnitsPage = unitsNext })">Next evidence page</a> }
+                    <p>One page of at most 25 units, increasing retained ID. No history is searched automatically.</p>
+                </section>
+            }
+        }
+        @if (view.Envelope is { } envelope)
+        {
+            <section class="imported-exact" aria-labelledby="imported-unit-heading">
+                <h3 id="imported-unit-heading" tabindex="-1">Exact immutable unit @Query.Unit</h3>
+                <a href="@Url(Query with { Unit = null, Node = null, Artifact = null, Central = null, Focus = $"imported-unit-{Query.Unit}" })">Back to evidence page</a>
+                <dl>
+                    <dt>Contract</dt><dd>@envelope.SchemaVersion</dd><dt>Kind</dt><dd>@envelope.Kind</dd>
+                    <dt>Evidence identity</dt><dd>@envelope.EvidenceId</dd><dt>Origin identity SHA-256</dt><dd>@envelope.Origin.IdentitySha256</dd>
+                    <dt>Origin installation / agent / boot</dt><dd>@envelope.Origin.OriginInstallationId / @envelope.Origin.AgentInstanceId / @envelope.Origin.BootSessionId</dd>
+                    <dt>Software version</dt><dd>@envelope.Origin.SoftwareVersion</dd><dt>Origin sequence</dt><dd>@envelope.OriginSequence</dd>
+                    <dt>Canonical payload SHA-256</dt><dd>@envelope.PayloadSha256</dd><dt>Produced</dt><dd>@Time(envelope.ProducedAtUtc)</dd>
+                    <dt>Central receipt</dt><dd>@Time(view.Artifacts?.Association.Unit.ReceivedAtUtc)</dd>
+                    <dt>Operator identity redaction</dt><dd>Trigger references: @envelope.Redaction.RedactTriggerReferences · lease owners: @envelope.Redaction.RedactLeaseOwners</dd>
+                </dl>
+                @if (envelope.Correction is { } correction)
+                {
+                    <p>Append-only correction of evidence @correction.CorrectsEvidenceId, sequence @correction.CorrectsOriginSequence: @correction.ReasonCode. The predecessor remains unchanged.</p>
+                }
+                @if (view.Receipt is { } receipt)
+                {
+                    <h4>Exact receipt facts and sequence gaps</h4>
+                    <ul>@foreach (var fact in receipt.Facts.Where(f => f.EvidenceId == envelope.EvidenceId && f.OriginSequence == envelope.OriginSequence && f.PayloadSha256 == envelope.PayloadSha256))
+                    { <li>@fact.Kind · @Time(fact.OccurredAtUtc) · @Text(fact.ReasonCode)</li> }</ul>
+                    <p>Contiguous accepted through @receipt.ContiguousThroughSequence. Acknowledgement permits sender retention release; it does not mean an image is available.</p>
+                    <ul>@foreach (var gap in receipt.MissingRanges) { <li>Missing sequences @gap.FromSequence–@gap.ToSequence</li> }</ul>
+                    @if (receipt.MissingRangesTruncated) { <p>Missing ranges truncated. Further gaps may exist.</p> }
+                }
+                else { <p>Receipt facts unavailable. No acknowledgement is inferred.</p> }
+                @if (envelope.GraphRevision is { } revision)
+                {
+                    <h4>Imported graph revision</h4>
+                    <dl><dt>Revision identity / name / version</dt><dd>@revision.RevisionId / @revision.Name / @revision.Revision</dd>
+                        <dt>Origin</dt><dd>@revision.Origin</dd><dt>Definition SHA-256</dt><dd>@revision.DefinitionIdentitySha256</dd>
+                        <dt>Shared plan SHA-256</dt><dd>@revision.SharedPlanIdentitySha256</dd><dt>Local plan SHA-256</dt><dd>@revision.LocalPlanIdentitySha256</dd>
+                        <dt>Created / validated / activated / retired</dt><dd>@Time(revision.CreatedUtc) / @Time(revision.ValidatedUtc) / @Time(revision.ActivatedUtc) / @Time(revision.RetiredUtc)</dd></dl>
+                    @if (revision.Assignment is { } assignment)
+                    {
+                        <p>Assignment provenance: proposal @assignment.ProposalId · catalog revision @assignment.CatalogRevisionId · assignment @assignment.AssignmentId · registration @assignment.RegistrationId · installation @assignment.LogicalCameraInstallationId · public identity @assignment.InstallationPublicId · capability SHA-256 @assignment.CapabilitySnapshotSha256 · issued @Time(assignment.IssuedAtUtc) · accepted @Time(assignment.AcceptedAtUtc)</p>
+                    }
+                    else { <p>No central assignment provenance recorded.</p> }
+                    <details><summary>Canonical definition (bounded display)</summary><pre>@Document(revision.CanonicalDefinition)</pre></details>
+                    <details><summary>Frozen plan (bounded display)</summary><pre>@Document(revision.FrozenPlan)</pre></details>
+                    <p>Frozen-plan hashes are authenticated producer claims. Graph levels or role presence do not establish node success.</p>
+                }
+                @if (envelope.Execution is { } execution)
+                {
+                    <h4>Imported execution facts</h4>
+                    <dl><dt>Execution identity / class</dt><dd>@execution.ExecutionId / @execution.ExecutionClass</dd><dt>Recorded execution status / reason</dt><dd>@execution.Status / @Text(execution.FailureReasonCode)</dd>
+                        <dt>Capture / primary artifact</dt><dd>@execution.CaptureId / @execution.PrimaryArtifactId</dd><dt>Graph revision</dt><dd>@execution.GraphRevisionId</dd>
+                        <dt>Definition SHA-256</dt><dd>@execution.DefinitionIdentitySha256</dd><dt>Shared plan SHA-256</dt><dd>@execution.SharedPlanIdentitySha256</dd><dt>Local plan SHA-256</dt><dd>@execution.LocalPlanIdentitySha256</dd>
+                        <dt>Trigger / reference / priority</dt><dd>@execution.TriggerKind / @Text(execution.TriggerReference) / @execution.Priority</dd>
+                        <dt>Accepted / scheduled availability</dt><dd>@Time(execution.AcceptedUtc) / @Time(execution.AvailableUtc) (execution scheduling, not image availability)</dd>
+                        <dt>Deadline / maximum age</dt><dd>@Time(execution.DeadlineUtc) / @Time(execution.MaximumAgeUtc)</dd>
+                        <dt>Started / completed</dt><dd>@Time(execution.StartedUtc) / @Time(execution.CompletedUtc)</dd><dt>Attempt count / cancellation requested</dt><dd>@execution.AttemptCount / @execution.CancellationRequested</dd></dl>
+                    @if (view.Nodes is { } nodes)
+                    {
+                        <h4>Recorded nodes</h4><ul class="imported-nodes">
+                        @foreach (var node in nodes.Items)
+                        {
+                            <li><a href="@Url(Query with { Node = node.Id, AttemptsPage = null, InputsPage = null, OutputsPage = null, Focus = "imported-node-heading" })">Node @node.Id</a>
+                                <span>@node.Status · @(node.Required ? "Required" : "Optional") · @Text(node.Reason) · plan SHA-256 @node.PlanSha256</span></li>
+                        }</ul>
+                        @if (nodes.Items.Count == 0) { <p>No recorded nodes on this page. Success is not inferred.</p> }
+                        @if (Query.NodesPage is not null) { <a href="@Url(Query with { NodesPage = null })">First node page</a> }
+                        @if (nodes.NextCursor is { } nodeNext) { <a href="@Url(Query with { NodesPage = nodeNext })">Next node page</a> }
+                    }
+                    @if (view.Node is { } selectedNode)
+                    {
+                        <section aria-labelledby="imported-node-heading"><h4 id="imported-node-heading" tabindex="-1">Node @selectedNode.NodeId — exact attempts and lineage</h4>
+                            <p>@selectedNode.Status · @Text(selectedNode.ReasonCode) · started @Time(selectedNode.StartedUtc) · completed @Time(selectedNode.CompletedUtc)</p>
+                            <h5>Attempts</h5><ul class="imported-attempts">@foreach (var attempt in selectedNode.Attempts)
+                            { <li>Attempt @attempt.AttemptNumber · @attempt.Status · outcome @(attempt.Outcome?.ToString() ?? "Not recorded") · @Text(attempt.ReasonCode) · @Time(attempt.StartedUtc)–@Time(attempt.CompletedUtc) · duration ticks @(attempt.DurationTicks?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Not recorded")</li> }</ul>
+                            @if (selectedNode.Attempts.Length == 0) { <p>No attempts recorded on this page.</p> }
+                            @if (Query.AttemptsPage is not null) { <a href="@Url(Query with { AttemptsPage = null })">First attempt page</a> }
+                            @if (view.AttemptsNext is { } attemptNext) { <a href="@Url(Query with { AttemptsPage = attemptNext })">Next attempt page</a> }
+                            <h5>Exact selected inputs</h5><ul class="imported-inputs">@foreach (var input in selectedNode.Inputs)
+                            { <li><p>Input ordinal @input.Ordinal · window position @input.WindowPosition · @input.Kind</p><ImportedArtifactIdentity Value="input.Artifact" ReconciliationPath="@Mapping(input.Artifact)" /></li> }</ul>
+                            @if (selectedNode.Inputs.Length == 0) { <p>No inputs recorded on this page.</p> }
+                            @if (Query.InputsPage is not null) { <a href="@Url(Query with { InputsPage = null })">First input page</a> }
+                            @if (view.InputsNext is { } inputNext) { <a href="@Url(Query with { InputsPage = inputNext })">Next input page</a> }
+                            <h5>Exact recorded outputs</h5><ul class="imported-outputs">@foreach (var output in selectedNode.Outputs)
+                            { <li><p>Output ordinal @output.Ordinal</p><ImportedArtifactIdentity Value="output.Artifact" ReconciliationPath="@Mapping(output.Artifact)" /></li> }</ul>
+                            @if (selectedNode.Outputs.Length == 0) { <p>No outputs recorded on this page.</p> }
+                            @if (Query.OutputsPage is not null) { <a href="@Url(Query with { OutputsPage = null })">First output page</a> }
+                            @if (view.OutputsNext is { } outputNext) { <a href="@Url(Query with { OutputsPage = outputNext })">Next output page</a> }
+                        </section>
+                    }
+                    <section aria-labelledby="imported-comparison-heading"><h4 id="imported-comparison-heading" tabindex="-1">Compare two explicit executions</h4>
+                        <form @onsubmit="Compare" @onsubmit:preventDefault><label for="central-execution-identity">Exact central execution UUID</label>
+                            <input id="central-execution-identity" @bind="centralIdentity" maxlength="36" /><button type="submit">Compare selected executions</button></form>
+                        <p>Imported execution @execution.ExecutionId from selected unit @Query.Unit. Central comparison uses only the entered execution identity. It does not use the camera's current assignment.</p>
+                        @if (view.CentralRequested && view.Central is null) { <p>Central execution unavailable or not authorized. Missing facts are not inferred.</p> }
+                        @if (view.Central is { } central)
+                        {
+                            <dl><dt>Central execution / revision</dt><dd>@central.Execution.Id / @central.Execution.RevisionId</dd><dt>Central installation</dt><dd>@central.LogicalCameraInstallationId</dd>
+                                <dt>Recorded central status / reason</dt><dd>@central.Execution.Status / @central.Execution.ReasonCode</dd>
+                                <dt>Definition SHA-256</dt><dd>@central.DefinitionIdentitySha256 · @(central.DefinitionIdentitySha256 == execution.DefinitionIdentitySha256 ? "Exact match" : "Different")</dd>
+                                <dt>Central plan SHA-256</dt><dd>@central.CentralPlanIdentitySha256 (distinct host plan)</dd>
+                                <dt>Predecessor / successor</dt><dd>@(central.PredecessorExecutionId?.ToString() ?? "Not recorded") / @(central.SuccessorExecutionId?.ToString() ?? "Not recorded")</dd></dl>
+                            <h5>Frozen central sources</h5><ul>@foreach (var source in central.Sources) { <li>@source.Ordinal · @source.SourceId · artifact @source.ArtifactId · SHA-256 @source.ArtifactChecksumSha256 · @source.ArtifactByteLength bytes · selected @Time(source.SelectedAtUtc)</li> }</ul>
+                            <h5>Recorded central nodes (one independent page)</h5><ul class="central-nodes">@foreach (var node in central.Nodes.Items)
+                            { <li>@node.NodeId · job @node.JobId · @node.Status · @Text(node.StateReasonCode) · attempts @node.AttemptCount · inputs @node.ResolvedInputCount resolved of @node.InputCount · outputs @node.BoundOutputCount bound of @node.OutputCount · shared plan SHA-256 @Text(node.SharedNodePlanIdentitySha256)</li> }</ul>
+                            @if (central.Nodes.Items.Count == 0) { <p>No central nodes on this page. No matching-node result is inferred.</p> }
+                            @if (Query.CentralNodesPage is not null) { <a href="@Url(Query with { CentralNodesPage = null })">First central node page</a> }
+                            @if (central.Nodes.NextCursor is { } centralNext) { <a href="@Url(Query with { CentralNodesPage = centralNext })">Next central node page</a> }
+                            <p>Node statuses are recorded independently. Matching roles, plan levels or artifact-report membership do not prove equivalent execution or production.</p>
+                        }
+                    </section>
+                }
+                @if (envelope.Availability is { } report && view.Availability is { } availability)
+                {
+                    <h4>Producer availability observations</h4><p>Associated execution @report.ExecutionId. Report membership does not establish production or central byte availability.</p>
+                    <ul>@foreach (var observation in availability.Items) { <li><p>Producer observed @observation.State at @Time(observation.ObservedAtUtc): @Text(observation.ReasonCode)</p><ImportedArtifactIdentity Value="observation.Artifact" ReconciliationPath="@Mapping(observation.Artifact)" /></li> }</ul>
+                    @if (availability.Items.Count == 0) { <p>No observations on this page.</p> }
+                    @if (Query.NodesPage is not null) { <a href="@Url(Query with { NodesPage = null })">First producer observation page</a> }
+                    @if (availability.NextCursor is { } availabilityNext) { <a href="@Url(Query with { NodesPage = availabilityNext })">Next producer observation page</a> }
+                }
+                @if (view.Artifacts is { } artifacts)
+                {
+                    <h4>Exact artifact mappings (one page)</h4><p>Reference ordinals deduplicate the unit's artifact tuples. They are not input or output ordinals.</p>
+                    <ul class="imported-artifacts">@foreach (var item in artifacts.Artifacts)
+                    { <li><a href="@Url(Query with { Artifact = item.ArtifactReferenceId, Focus = "imported-observations-heading" })">Reference @item.ArtifactReferenceId · ordinal @item.Ordinal</a>
+                        <span>Capture @item.CaptureId · artifact @item.ArtifactId · @Text(item.Role) / @Text(item.Variant)</span></li> }</ul>
+                    @if (artifacts.Artifacts.Count == 0) { <p>No artifact references in this unit.</p> }
+                    @if (Query.ArtifactsPage is not null) { <a href="@Url(Query with { ArtifactsPage = null, Artifact = null })">First artifact page</a> }
+                    @if (artifacts.NextCursor is { } artifactsNext) { <a href="@Url(Query with { ArtifactsPage = artifactsNext, Artifact = null })">Next artifact page</a> }
+                }
+                @if (view.Reconciliation is { } reconciliation)
+                {
+                    <section aria-labelledby="imported-observations-heading"><h4 id="imported-observations-heading" tabindex="-1">Exact central byte observations</h4>
+                        <p>Reference @reconciliation.Artifact.ArtifactReferenceId · capture @reconciliation.Artifact.CaptureId · artifact @reconciliation.Artifact.ArtifactId</p>
+                        <dl><dt>Output identity SHA-256</dt><dd>@Text(reconciliation.Artifact.OutputIdentitySha256)</dd>
+                            <dt>Payload SHA-256</dt><dd>@Text(reconciliation.Artifact.PayloadSha256)</dd><dt>Descriptor SHA-256</dt><dd>@Text(reconciliation.Artifact.DescriptorSha256)</dd>
+                            <dt>Payload length / media type</dt><dd>@(reconciliation.Artifact.PayloadLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Not recorded") / @Text(reconciliation.Artifact.MediaType)</dd>
+                            <dt>Role / variant</dt><dd>@Text(reconciliation.Artifact.Role) / @Text(reconciliation.Artifact.Variant)</dd></dl>
+                        @if (reconciliation.Observations.Count == 0) { <p>No retained central observation. Metadata only; byte availability is unknown.</p> }
+                        <ol class="imported-observations">@foreach (var observation in reconciliation.Observations)
+                        { <li>Observation @observation.Id · @observation.State · @observation.ReasonCode · @Time(observation.ObservedAtUtc) · generation @Text(observation.ObjectGeneration)</li> }</ol>
+                        @if (reconciliation.ObservationsTruncated) { <p>Observation history truncated: latest 50 only, including repeated states. Refresh reads the latest result.</p> }
+                        @if (reconciliation.Observations.FirstOrDefault()?.State == "Available")
+                        {
+                            <p>Available was observed at the stated time and may now be stale. The viewer rechecks current access and bytes.</p>
+                            @if (view.ViewerCapture is { } viewerCapture)
+                            { <a href="@($"/app/network/observatories/{ObservatoryId:D}/cameras/{CameraId:D}/archive/{viewerCapture:D}")">Open exact capture viewer</a> }
+                            else { <p>No authorized retained central capture mapping is available for this reference.</p> }
+                        }
+                        else { <p>Metadata only. Missing, late, unresolved or conflicting bytes never borrow another image.</p> }
+                    </section>
+                }
+            </section>
+        }
+        </div>
+    }
+</section>

@@ -230,7 +230,19 @@ expect_release_scripts false pull_request "$base_sha" "$head_sha"
 expect_release_scripts true push "$base_sha" "$head_sha"
 expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
 release_scripts_paths=(
+  "scripts/build:cameraagent-image"
+  "scripts/test:cameraagent-image-reproducibility"
+  "scripts/release:check-cameraagent-image"
+  "scripts/test:cameraagent-arm64-ci"
+  "src/HVO.SkyMonitor.CameraAgent/Dockerfile"
+  "scripts/release:cameraagent-publish"
+  "scripts/release:check-cameraagent-publish"
+  "scripts/cameraagent-release.targets"
+  "scripts/test:cameraagent-r2r"
+  "scripts/time-data:update"
   "scripts/release:assets"
+  "scripts/release:combine-images"
+  "scripts/test:release-images"
   "scripts/release:check-image-labels"
   "scripts/release:push-image"
   "scripts/release:prerelease-gate"
@@ -252,6 +264,7 @@ release_scripts_paths=(
   "tests/fixtures/install-sh/fake-command"
   "tests/fixtures/install-sh/hvo-sky-install"
   ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
   ".github/workflows/release.yml"
   "Directory.Build.props"
   "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
@@ -369,7 +382,24 @@ verify_deployment_installer_path() {
   expect_suites false false true pull_request "$deployment_base" "$deployment_head"
 }
 
+# Typed preflight ownership must retain both shard and installer selection (#1593).
+verify_preflight_owner_path() {
+  local path="$1" deployment_base deployment_head
+  deployment_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$path"
+  deployment_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_plan full true pull_request "$deployment_base" "$deployment_head"
+  expect_suites false true true pull_request "$deployment_base" "$deployment_head"
+}
+verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs"
+verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Contracts/PreflightContracts.cs"
+verify_preflight_owner_path "tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightTests.cs"
+
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
+verify_deployment_installer_path "scripts/release:cameraagent-publish"
+verify_deployment_installer_path "scripts/release:check-cameraagent-publish"
+verify_deployment_installer_path "scripts/cameraagent-release.targets"
+verify_deployment_installer_path "scripts/test:cameraagent-r2r"
 verify_deployment_installer_path "scripts/release:gate"
 verify_deployment_installer_path "scripts/release:publish"
 verify_deployment_installer_path "scripts/release:assets"
@@ -609,6 +639,7 @@ complete_matrix_paths=(
   ".github/workflows/ci.yml"
   ".github/workflows/release.yml"
   ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
   "scripts/ci:classify"
   "scripts/ci:require"
   "scripts/ci:component-build"
@@ -718,6 +749,7 @@ verify_targeted_suites() {
 verify_targeted_suites ".github/workflows/ci.yml" true true true
 verify_targeted_suites ".github/workflows/release.yml" true false true
 verify_targeted_suites ".github/workflows/prerelease.yml" true false true
+verify_targeted_suites ".github/workflows/release-image.yml" true false true
 verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
 verify_targeted_suites "scripts/ci:component-build" true true true
 verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false

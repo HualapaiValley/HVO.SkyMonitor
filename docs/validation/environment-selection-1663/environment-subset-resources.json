@@ -1,0 +1,32 @@
+{
+  "State": "subset",
+  "Width": 1936,
+  "Height": 1216,
+  "SourceSha256": "BA1615981AE63D71C685759F4A8FADA59497DCF900BDE30867CE2DBA24A07472",
+  "PayloadSha256": "4B3366DB3471313958DEB5ACE5D9C8B2CC0E6E48F79A44D228A6229FA35FEE70",
+  "OutputSha256": "A9908137F13610329EF0FF2649CC6E2E79D1EA25C241FD9741003605CA64B62B",
+  "Warmup": 3,
+  "Iterations": 15,
+  "MedianMs": 8.4924,
+  "P95Ms": 9.6256,
+  "CpuMs": 337.727,
+  "AllocatedBytesPerOperation": 7139741,
+  "WorkingSetBytes": 381624320,
+  "TimesMs": [
+    9.248,
+    9.4103,
+    9.5093,
+    8.333,
+    8.3036,
+    8.232,
+    8.2564,
+    8.457,
+    8.2796,
+    8.313,
+    8.4924,
+    8.5904,
+    9.2895,
+    9.5442,
+    9.6256
+  ]
+}

@@ -161,6 +161,94 @@ public sealed class CameraAgentHostOptionsTests
         => new() { RawIngressRoot = "raw-ingress", SiteMap = siteMap };
 
     [TestMethod]
+    public void OrbitalElementsDefaults_AreDisabledBoundedAndValid()
+    {
+        var options = new CameraAgentHostOptions { RawIngressRoot = "raw-ingress" };
+        var orbital = options.OrbitalElements;
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsTrue(valid, string.Join("; ", results.Select(static result => result.ErrorMessage)));
+        Assert.IsFalse(orbital.Enabled);
+        Assert.AreEqual(30, orbital.RequestTimeoutSeconds);
+        Assert.AreEqual(32 * 1024 * 1024, orbital.MaximumWireBytes);
+        Assert.AreEqual(12, orbital.MaximumRetainedSnapshots);
+        Assert.AreEqual(48, orbital.MinimumRetentionHours);
+        Assert.AreEqual(4, orbital.MaximumQuarantinedPayloads);
+        Assert.AreEqual(12, orbital.StaleAfterHours);
+    }
+
+    [TestMethod]
+    [DataRow("timeout-zero", nameof(OrbitalElementsOptions.RequestTimeoutSeconds))]
+    [DataRow("timeout-high", nameof(OrbitalElementsOptions.RequestTimeoutSeconds))]
+    [DataRow("wire-low", nameof(OrbitalElementsOptions.MaximumWireBytes))]
+    [DataRow("wire-high", nameof(OrbitalElementsOptions.MaximumWireBytes))]
+    [DataRow("snapshots-low", nameof(OrbitalElementsOptions.MaximumRetainedSnapshots))]
+    [DataRow("snapshots-high", nameof(OrbitalElementsOptions.MaximumRetainedSnapshots))]
+    [DataRow("retention-zero", nameof(OrbitalElementsOptions.MinimumRetentionHours))]
+    [DataRow("retention-high", nameof(OrbitalElementsOptions.MinimumRetentionHours))]
+    [DataRow("quarantine-zero", nameof(OrbitalElementsOptions.MaximumQuarantinedPayloads))]
+    [DataRow("quarantine-high", nameof(OrbitalElementsOptions.MaximumQuarantinedPayloads))]
+    [DataRow("stale-low", nameof(OrbitalElementsOptions.StaleAfterHours))]
+    [DataRow("stale-high", nameof(OrbitalElementsOptions.StaleAfterHours))]
+    public void Validate_WhenAnOrbitalSettingIsOutOfBounds_NamesIt(string scenario, string member)
+    {
+        var orbital = scenario switch
+        {
+            "timeout-zero" => new OrbitalElementsOptions { RequestTimeoutSeconds = 0 },
+            "timeout-high" => new OrbitalElementsOptions { RequestTimeoutSeconds = 31 },
+            "wire-low" => new OrbitalElementsOptions { MaximumWireBytes = (1024 * 1024) - 1 },
+            "wire-high" => new OrbitalElementsOptions { MaximumWireBytes = (32 * 1024 * 1024) + 1 },
+            "snapshots-low" => new OrbitalElementsOptions { MaximumRetainedSnapshots = 1 },
+            "snapshots-high" => new OrbitalElementsOptions { MaximumRetainedSnapshots = 65 },
+            "retention-zero" => new OrbitalElementsOptions { MinimumRetentionHours = 0 },
+            "retention-high" => new OrbitalElementsOptions { MinimumRetentionHours = 721 },
+            "quarantine-zero" => new OrbitalElementsOptions { MaximumQuarantinedPayloads = 0 },
+            "quarantine-high" => new OrbitalElementsOptions { MaximumQuarantinedPayloads = 17 },
+            "stale-low" => new OrbitalElementsOptions { StaleAfterHours = 2 },
+            _ => new OrbitalElementsOptions { StaleAfterHours = 169 }
+        };
+        var options = new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", OrbitalElements = orbital };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(
+            results.Any(result => result.MemberNames.Contains(member)),
+            string.Join("; ", results.Select(static result => $"{result.ErrorMessage} [{string.Join(",", result.MemberNames)}]")));
+    }
+
+    [TestMethod]
+    public void OrbitalElements_BindsFromItsSectionAndTheStandaloneProfileKeepsItDisabled()
+    {
+        var configured = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OrbitalElementsOptions.SectionName + ":Enabled"] = "true",
+                [OrbitalElementsOptions.SectionName + ":RequestTimeoutSeconds"] = "20",
+                [OrbitalElementsOptions.SectionName + ":StaleAfterHours"] = "6"
+            })
+            .Build()
+            .GetSection(OrbitalElementsOptions.SectionName)
+            .Get<OrbitalElementsOptions>()!;
+        var profile = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.StandaloneW6.json"))
+            .Build()
+            .GetSection("CameraAgent")
+            .Get<CameraAgentHostOptions>()!;
+
+        Assert.IsTrue(configured.Enabled);
+        Assert.AreEqual(20, configured.RequestTimeoutSeconds);
+        Assert.AreEqual(6, configured.StaleAfterHours);
+        Assert.AreEqual(12, configured.MaximumRetainedSnapshots);
+        Assert.IsFalse(profile.OrbitalElements.Enabled);
+    }
+
+    [TestMethod]
     public void CaptureLanePolicy_DisabledCentralIntegrationSuppressesConfiguredUploadLane()
     {
         var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions

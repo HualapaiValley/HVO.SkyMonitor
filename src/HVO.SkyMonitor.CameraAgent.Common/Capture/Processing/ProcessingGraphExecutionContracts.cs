@@ -137,6 +137,9 @@ public sealed record ProcessingGraphNodeAttemptState(
     TimeSpan? Duration,
     ProcessingNodeExecutionRoute ExecutionRoute);
 
+public sealed record ProcessingNormalizationInputDiagnostic(
+    int WindowPosition, Guid CaptureId, Guid ArtifactId, double Gain, string Disposition, string? ExclusionReason);
+
 public sealed record ProcessingGraphExecutionNodeState(
     string NodeId,
     bool Required,
@@ -150,6 +153,11 @@ public sealed record ProcessingGraphExecutionNodeState(
     IReadOnlyList<ProcessingGraphNodeAttemptState> Attempts,
     IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
 {
+    public string? NormalizationPlanIdentitySha256 { get; init; }
+    public IReadOnlyList<ProcessingNormalizationInputDiagnostic> NormalizationInputs { get; init; } = [];
+    public MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
+    public string? MixedGainDiagnosticsUnavailableReason { get; init; }
+
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];

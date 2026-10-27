@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -1168,6 +1169,128 @@ public sealed class ObservatoryLocationPageTests
     }
 
     [TestMethod]
+    public void CurrentSkyRefresh_ShowsTheSavedValueWithTheDefaultAndRange()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(currentSkyRefresh: new CameraAgentCurrentSkyRefreshSetting("v1", "45", false))));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var input = cut.WaitForElement("#site-current-sky-refresh");
+        Assert.AreEqual("45", input.GetAttribute("value"));
+        Assert.AreEqual("15", input.GetAttribute("placeholder"));
+        Assert.AreEqual("Minimum image refresh (seconds, 15 to 3,600)", input.ParentElement!.TextContent.Trim());
+        Assert.AreEqual("Minimum image refresh", input.Closest("fieldset")!.QuerySelector("legend")!.TextContent);
+        Assert.IsFalse(SettingsButton(cut, "Use default interval").HasAttribute("disabled"));
+        Assert.DoesNotContain("Another setting source supplies the minimum image refresh", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CurrentSkyRefresh_SavesAWholeNumberAndUseDefaultRemovesIt()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-current-sky-refresh");
+        Assert.IsTrue(SettingsButton(cut, "Use default interval").HasAttribute("disabled"));
+
+        cut.Find("#site-current-sky-refresh").Change(" 60 ");
+        SettingsButton(cut, "Save interval").Click();
+
+        Assert.AreEqual(new CurrentSkyRefreshCommand(60, "v1"), service.CurrentSkyRefreshCommands.Single());
+        Assert.IsEmpty(service.ObjectLimitCommands);
+        Assert.Contains("Saved a minimum image refresh of 60 seconds.", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("60", cut.Find("#site-current-sky-refresh").GetAttribute("value"));
+
+        SettingsButton(cut, "Use default interval").Click();
+
+        Assert.AreEqual(new CurrentSkyRefreshCommand(null, "v2"), service.CurrentSkyRefreshCommands[1]);
+        Assert.Contains("back to its default of 15 seconds.", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual(string.Empty, cut.Find("#site-current-sky-refresh").GetAttribute("value") ?? string.Empty);
+    }
+
+    [TestMethod]
+    [DataRow("14")]
+    [DataRow("3601")]
+    [DataRow("0")]
+    [DataRow("1.5")]
+    [DataRow("soon")]
+    public void CurrentSkyRefresh_OutsideTheAdvertisedRange_IsRefusedWithoutACommand(string input)
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-current-sky-refresh");
+
+        cut.Find("#site-current-sky-refresh").Change(input);
+        SettingsButton(cut, "Save interval").Click();
+
+        Assert.IsEmpty(service.CurrentSkyRefreshCommands);
+        Assert.AreEqual(
+            "Minimum image refresh must be a whole number from 15 to 3,600.",
+            cut.Find(".site-message[role='alert']").TextContent.Trim());
+    }
+
+    [TestMethod]
+    public void CurrentSkyRefresh_OnConflict_KeepsTheEntryAndSavesAgainstTheFileAsItIsNow()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            currentSkyRefreshResults:
+            [
+                OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                    OperatorUiResultKind.Conflict, "The settings file changed since this page was read. Refresh before retrying.")
+            ]);
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-current-sky-refresh");
+        cut.Find("#site-current-sky-refresh").Change("120");
+        service.Site = SiteView(currentSkyRefresh: new CameraAgentCurrentSkyRefreshSetting("v2", "90", false));
+
+        SettingsButton(cut, "Save interval").Click();
+
+        Assert.Contains("changed since this page was read", cut.Find(".site-message[role='alert']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("120", cut.Find("#site-current-sky-refresh").GetAttribute("value"));
+
+        SettingsButton(cut, "Save interval").Click();
+
+        Assert.AreEqual(new CurrentSkyRefreshCommand(120, "v1"), service.CurrentSkyRefreshCommands[0]);
+        Assert.AreEqual(new CurrentSkyRefreshCommand(120, "v2"), service.CurrentSkyRefreshCommands[1]);
+    }
+
+    [TestMethod]
+    public void CurrentSkyRefresh_AnUnchangedSave_SaysNothingChanged()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(currentSkyRefresh: new CameraAgentCurrentSkyRefreshSetting("v1", "60", false)),
+            currentSkyRefreshResults:
+            [
+                OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Success(
+                    new CameraAgentCurrentSkyRefreshSetting("v1", "60", false, Unchanged: true))
+            ]);
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-current-sky-refresh");
+
+        SettingsButton(cut, "Save interval").Click();
+
+        Assert.AreEqual(new CurrentSkyRefreshCommand(60, "v1"), service.CurrentSkyRefreshCommands.Single());
+        Assert.AreEqual(
+            "The minimum image refresh already has this value, so nothing changed.",
+            cut.Find(".site-message[role='status']").TextContent.Trim());
+    }
+
+    [TestMethod]
     public void Render_WhenTheSiteCannotBeRead_KeepsTheLocationAndOffersNoProfileEdit()
     {
         using var context = CreateContext();
@@ -1185,6 +1308,95 @@ public sealed class ObservatoryLocationPageTests
         Assert.Contains("map settings could not be read", cut.Markup, StringComparison.Ordinal);
         Assert.AreEqual("35.200000° N", Facts(cut, "site-profile-heading")["Latitude"]);
         Assert.AreEqual("Deployment location", cut.Find(".ops-map-label").TextContent);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_ShowsTheInstalledSnapshotAbovePassPlanningAndOnlyReadsIt()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var orbital = new TestOrbitalUiService();
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(orbital);
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains("Orbital elements installed.", notice.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Requested population:", notice.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Orbital data installed now. A completed pass search keeps the snapshot it was computed from.",
+            cut.Find(".observatory-orbital-notice-label").TextContent, StringComparison.Ordinal);
+        // The notice sits in the pass area, directly before the planner, and is a separate element from it.
+        var noticeAt = cut.Markup.IndexOf("id=\"observatory-orbital-data-notice\"", StringComparison.Ordinal);
+        var plannerAt = cut.Markup.IndexOf("id=\"satellite-planner-heading\"", StringComparison.Ordinal);
+        Assert.IsTrue(noticeAt >= 0 && plannerAt > noticeAt, "The orbital notice must precede the pass planner.");
+        Assert.IsEmpty(cut.FindAll("section.satellite-planner #observatory-orbital-data-notice"));
+        Assert.AreEqual(1, orbital.Reads);
+        Assert.IsEmpty(orbital.RefreshKeys);
+        Assert.IsEmpty(orbital.Resumes);
+        Assert.DoesNotContain(TestOrbitalUiService.SyntheticEntityTag, cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain(TestOrbitalUiService.SyntheticStoreRoot, cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("unavailable")]
+    [DataRow("unauthorized")]
+    public void OrbitalDataNotice_WhenTheStatusCannotBeRead_SaysSoAndKeepsThePage(string failure)
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(new TestOrbitalUiService
+        {
+            GetHandler = _ => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Failure(
+                failure == "unauthorized" ? OperatorUiResultKind.Unauthorized : OperatorUiResultKind.Unavailable,
+                "Orbital data status is unavailable.")),
+        });
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText, notice.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Observatory & location", cut.Find("h1").TextContent.Trim());
+        Assert.HasCount(1, cut.FindAll("#satellite-planner-heading"));
+        // The page-level authorization already admitted the operator; a failed notice read never navigates away.
+        Assert.DoesNotContain("AccessDenied", context.Services.GetRequiredService<NavigationManager>().Uri, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_WithoutTheOrbitalService_SaysTheStatusIsUnavailable()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText,
+            cut.WaitForElement("#observatory-orbital-data-notice").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_WhenTheReadIsCanceledWhileMounted_SaysTheStatusIsUnavailable()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var pending = new TaskCompletionSource<OperatorUiResult<OrbitalDataStatusView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(new TestOrbitalUiService
+        {
+            GetHandler = _ => new ValueTask<OperatorUiResult<OrbitalDataStatusView>>(pending.Task),
+        });
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        // While the read is outstanding the notice makes no claim.
+        cut.WaitForElement("#satellite-planner-heading");
+        Assert.IsEmpty(cut.FindAll("#observatory-orbital-data-notice"));
+
+        // The read is canceled by something other than the notice's own disposal, while the page is still mounted.
+        pending.SetCanceled();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText, notice.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Observatory & location", cut.Find("h1").TextContent.Trim());
+        Assert.HasCount(1, cut.FindAll("#satellite-planner-heading"));
     }
 
     private static BunitContext CreateContext(OperatorUiResultKind? rigFailure = null)
@@ -1325,7 +1537,8 @@ public sealed class ObservatoryLocationPageTests
         bool mapEnabled = true,
         int zoom = 13,
         CameraAgentObjectLimitSetting? objectLimit = null,
-        bool withoutObjectLimit = false)
+        bool withoutObjectLimit = false,
+        CameraAgentCurrentSkyRefreshSetting? currentSkyRefresh = null)
         => new(
             profile ?? ProfileState(),
             OwnerEmail,
@@ -1337,7 +1550,8 @@ public sealed class ObservatoryLocationPageTests
                 new Uri("https://www.openstreetmap.org/copyright"),
                 zoom),
             withoutObjectLimit ? null : objectLimit ?? new CameraAgentObjectLimitSetting("v1", null, false),
-            new Dictionary<string, string>(StringComparer.Ordinal) { [OwnerId] = OwnerEmail });
+            new Dictionary<string, string>(StringComparer.Ordinal) { [OwnerId] = OwnerEmail },
+            withoutObjectLimit ? null : currentSkyRefresh ?? new CameraAgentCurrentSkyRefreshSetting("v1", null, false));
 
     internal sealed class SiteUiService(
         CameraAgentSkyMapProjectionResult? state,
@@ -1347,13 +1561,15 @@ public sealed class ObservatoryLocationPageTests
         CameraAgentSiteView? site = null,
         OperatorUiResult<CameraAgentSiteView>? siteFailure = null,
         IReadOnlyList<OperatorUiResult<SiteProfileResult>>? profileResults = null,
-        IReadOnlyList<OperatorUiResult<CameraAgentObjectLimitSetting>>? objectLimitResults = null)
+        IReadOnlyList<OperatorUiResult<CameraAgentObjectLimitSetting>>? objectLimitResults = null,
+        IReadOnlyList<OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>>? currentSkyRefreshResults = null)
         : ICameraAgentSkyMapUiService
     {
         private ManualDeploymentLocationState? _manual = manual;
         private int _applyIndex;
         private int _profileIndex;
         private int _objectLimitIndex;
+        private int _currentSkyRefreshIndex;
 
         internal CameraAgentSiteView Site { get; set; } = site ?? SiteView();
 
@@ -1364,6 +1580,8 @@ public sealed class ObservatoryLocationPageTests
         internal List<ProfileCommand> ProfileCommands { get; } = [];
 
         internal List<ObjectLimitCommand> ObjectLimitCommands { get; } = [];
+
+        internal List<CurrentSkyRefreshCommand> CurrentSkyRefreshCommands { get; } = [];
 
         internal int ManualReads { get; private set; }
 
@@ -1471,6 +1689,29 @@ public sealed class ObservatoryLocationPageTests
             return ValueTask.FromResult(result);
         }
 
+        /// <summary>Without scripted results, each save succeeds and advances the settings file version.</summary>
+        public ValueTask<OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>> SaveCurrentSkyRefreshAsync(
+            int? seconds,
+            string expectedVersion,
+            CancellationToken cancellationToken)
+        {
+            CurrentSkyRefreshCommands.Add(new CurrentSkyRefreshCommand(seconds, expectedVersion));
+            var current = Site.CurrentSkyRefresh ?? new CameraAgentCurrentSkyRefreshSetting("v1", null, false);
+            var result = currentSkyRefreshResults is { Count: > 0 } scripted
+                ? scripted[Math.Min(_currentSkyRefreshIndex, scripted.Count - 1)]
+                : OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Success(current with
+                {
+                    Version = $"v{CurrentSkyRefreshCommands.Count + 1}",
+                    SavedValue = seconds?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                });
+            _currentSkyRefreshIndex++;
+            if (result.IsSuccess && result.Value is { } saved)
+            {
+                Site = Site with { CurrentSkyRefresh = saved };
+            }
+            return ValueTask.FromResult(result);
+        }
+
         internal sealed record ManualCommand(
             double LatitudeDegrees,
             double LongitudeDegrees,
@@ -1485,4 +1726,6 @@ public sealed class ObservatoryLocationPageTests
     }
 
     internal sealed record ObjectLimitCommand(int? MaximumObjects, string ExpectedVersion);
+
+    internal sealed record CurrentSkyRefreshCommand(int? Seconds, string ExpectedVersion);
 }

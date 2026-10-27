@@ -1,0 +1,69 @@
+{
+  "candidate": "c163d0ebc23a00a5b427e2d6c16750ea878e9d82",
+  "fixtureKind": "Actual bUnit component markup with shipped CSS; disposable loopback, no deployed host session.",
+  "defaultDesktop": {
+    "viewport": {
+      "width": 1280,
+      "height": 900
+    },
+    "scrollWidth": 1280,
+    "duplicateIds": 0,
+    "values": {
+      "markerColor": "#909090",
+      "labelColor": "#ffffff",
+      "cardinalColor": "#ffffff",
+      "imageCircleColor": "#606060",
+      "labelFont": "MonoBold",
+      "cardinalFont": "MonoBold",
+      "pointGlyph": "Circle"
+    },
+    "fonts": [
+      "MonoRegular",
+      "MonoBold",
+      "PlexRegular"
+    ],
+    "glyphs": [
+      "Circle",
+      "Crosshair"
+    ]
+  },
+  "changedDesktop": {
+    "viewport": {
+      "width": 1280,
+      "height": 900
+    },
+    "scrollWidth": 1280,
+    "duplicateIds": 0,
+    "values": {
+      "markerColor": "#ff8000",
+      "labelColor": "#50f08c",
+      "cardinalColor": "#78b4ff",
+      "imageCircleColor": "#dc78c8",
+      "labelFont": "PlexRegular",
+      "cardinalFont": "PlexRegular",
+      "pointGlyph": "Crosshair"
+    }
+  },
+  "defaultMobile": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "scrollWidth": 390,
+    "duplicateIds": 0
+  },
+  "changedMobile": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "scrollWidth": 390,
+    "duplicateIds": 0,
+    "focused": "node-options-0-labelFont"
+  },
+  "keyboard": {
+    "from": "node-options-0-labelFont",
+    "key": "Tab",
+    "to": "node-options-0-cardinalFont"
+  }
+}

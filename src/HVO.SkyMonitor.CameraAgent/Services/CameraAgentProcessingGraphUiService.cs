@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
@@ -137,6 +138,10 @@ public sealed record CameraAgentProcessingNodeView(
     IReadOnlyList<CameraAgentProcessingNodeAttemptView> Attempts,
     IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
 {
+    public string? NormalizationPlanIdentitySha256 { get; init; }
+    public IReadOnlyList<ProcessingNormalizationInputDiagnostic> NormalizationInputs { get; init; } = [];
+    public HVO.SkyMonitor.Processing.MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
+    public string? MixedGainDiagnosticsUnavailableReason { get; init; }
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
 }
@@ -213,7 +218,15 @@ internal static class CameraAgentProcessingExecutionProjection
                     attempt.Duration,
                     attempt.ExecutionRoute.ToString())).ToArray(),
                 node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())
-            { Dependencies = node.Dependencies, OutputContracts = node.OutputContracts }).ToArray());
+            {
+                Dependencies = node.Dependencies,
+                OutputContracts = node.OutputContracts,
+                NormalizationPlanIdentitySha256 = node.NormalizationPlanIdentitySha256,
+                NormalizationInputs = node.NormalizationInputs.Select(static input => input with
+                { ExclusionReason = CameraAgentReplayUiService.Sanitize(input.ExclusionReason) }).ToArray(),
+                MixedGainDiagnostics = node.MixedGainDiagnostics,
+                MixedGainDiagnosticsUnavailableReason = node.MixedGainDiagnosticsUnavailableReason
+            }).ToArray());
     }
 }
 
@@ -303,6 +316,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
     {
         try
         {
+            if (ValidateOptions(pipeline) is { } optionsFailure)
+            {
+                return (null, optionsFailure);
+            }
             var configuration = scheduleRuntime?.Snapshot?.Configuration
                 ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
             return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
@@ -314,9 +331,9 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (Exception exception)
         {
             logger.LogInformation(exception, "CameraAgent processing graph preview rejected.");
-            return (null, exception is InvalidOperationException invalid
+            return (null, EnvironmentalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
                 ? CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(invalid)
-                : "The graph definition is invalid for this CameraAgent.");
+                : "The graph definition is invalid for this CameraAgent."));
         }
     }
 
@@ -338,7 +355,22 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
         string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken)
-        => MutateAsync((actor, token) => operations.CreateRevisionAsync(name, revision, pipeline, idempotencyKey, actor, reason, token), cancellationToken);
+        => MutateAsync((actor, token) => operations.CreateRevisionAsync(name, revision, pipeline, idempotencyKey, actor, reason, token), cancellationToken, pipeline);
+
+    private static string? ValidateOptions(CapturePipelineConfig pipeline)
+    {
+        var diagnostics = pipeline.Steps.SelectMany((step, index) =>
+            ProcessingNodeOptionsForm.DescriptorFor(step.Type, step.Options) is { } descriptor
+                ? ProcessingNodeOptionsCodec.Decode(descriptor,
+                    step.Options ?? System.Text.Json.JsonSerializer.SerializeToElement(new { }), $"steps[{index}].options").Diagnostics
+                : System.Collections.Immutable.ImmutableArray<ProcessingGraphDiagnostic>.Empty).ToArray();
+        return diagnostics.Length == 0 ? null : string.Join(' ', diagnostics.Select(static item => $"{item.Code} {item.Path}: {item.Message}"));
+    }
+
+    private static string? EnvironmentalPolicyFailure(Exception exception)
+        => exception is ValidationException && exception.Message.Contains("outside the configured association policy", StringComparison.Ordinal)
+            ? "Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider."
+            : null;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
@@ -375,7 +407,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<T>> MutateAsync<T>(
         Func<string, CancellationToken, ValueTask<T>> mutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CapturePipelineConfig? pipeline = null)
         where T : class
     {
         var principal = await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
@@ -383,6 +416,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<T>();
+        }
+        if (pipeline is not null && ValidateOptions(pipeline) is { } optionsFailure)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
         }
         try
         {
@@ -399,6 +436,11 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (KeyNotFoundException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The graph revision was not found.");
+        }
+        catch (ValidationException exception) when (EnvironmentalPolicyFailure(exception) is not null)
+        {
+            logger.LogInformation(exception, "CameraAgent processing graph UI mutation rejected.");
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, EnvironmentalPolicyFailure(exception)!);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or InvalidDataException)
         {

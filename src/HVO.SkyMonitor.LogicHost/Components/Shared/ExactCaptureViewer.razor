@@ -1,0 +1,116 @@
+@if (Detail is { } detail)
+{
+    <header class="mb-4">
+        <p class="text-uppercase text-info small fw-bold mb-1">@detail.Capture.ObservatoryName</p>
+        @Heading(0, $"Capture {detail.Capture.CapturedAtUtc:u}", "h1")
+        <p class="text-muted">@(detail.Capture.LogicalCameraName ?? "Unassigned installation") - @(detail.Capture.RigId ?? "Unknown rig") - sequence @(detail.Capture.CaptureSequence?.ToString() ?? "unknown")</p>
+        <p class="small text-muted mb-0">Installation @(detail.Capture.InstallationPublicId?.ToString("D") ?? "unbound") - rig profile @(detail.Capture.RigProfileVersion?.ToString() ?? "legacy")</p>
+    </header>
+    @if ((StatusMessage ?? PresentationStatusMessage) is { } status)
+    {
+        <div class="alert alert-info" role="status">@status</div>
+    }
+    @if (Presentation is not null)
+    {
+        <section class="card mb-4 layered-presentation" @ref="presentationRoot" data-presentation-identity="@Presentation.PresentationIdentitySha256">
+            <div class="card-body">
+                <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+                    <div><p class="text-uppercase text-info small fw-bold mb-1">Central layered presentation</p>@Heading(1, "Archived scene layers", "h4 mb-0")</div>
+                    <span class="text-muted small">One base + one grouped SVG</span>
+                </div>
+                <div class="layered-canvas mb-3@(IsBaseImageUnavailable ? " layered-canvas-unavailable" : null)" style="--presentation-aspect: @Presentation.WidthPixels / @Presentation.HeightPixels" aria-describedby="layered-presentation-summary">
+                    @if (IsBaseImageUnavailable)
+                    {
+                        <div class="layered-unavailable text-center p-3" role="status">
+                            <p class="mb-2">The base image for this capture could not be displayed, so its archived layers are hidden. The capture metadata below is unchanged.</p>
+                            <button type="button" class="btn btn-sm btn-outline-info" @onclick="RetryBaseImage">Retry image</button>
+                        </div>
+                    }
+                    else
+                    {
+                        var baseImageKey = BaseImageKey;
+                        <img @key="baseImageKey" src="@Presentation.BaseContentPath" alt="Base image for capture @detail.Capture.CapturedAtUtc.ToString("u") with selectable archived layers" @onerror="() => OnBaseImageError(baseImageKey)" />
+                        <div class="layered-overlay" aria-hidden="true">@PresentationSvg</div>
+                    }
+                </div>
+                <fieldset class="layer-controls">
+                    <legend class="h6">Visible layers</legend>
+                    <div class="d-flex flex-wrap gap-3">
+                        @foreach (var layer in Presentation.Layers)
+                        {
+                            <label class="form-check">
+                                <input class="form-check-input" type="checkbox" checked="@layer.EnabledByDefault" disabled="@IsBaseImageUnavailable" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" />
+                                <span class="form-check-label">@layer.Kind <small class="text-muted">z @layer.ZOrder</small></span>
+                            </label>
+                        }
+                    </div>
+                    @if (!ReadOnly && detail.EffectiveRole is HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Manager
+                        or HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
+                    {
+                        <div class="mt-3 d-flex flex-wrap align-items-center gap-3">
+                            <button type="button" class="btn btn-info" disabled="@(IsSavingPresentation || IsBaseImageUnavailable)" @onclick="SaveSelectedStackAsync">
+                                @(IsSavingPresentation ? "Saving stack..." : "Save selected stack")
+                            </button>
+                            <span class="text-muted small">Creates one immutable packed derivative without rerunning analysis.</span>
+                        </div>
+                    }
+                    @if (MaterializationMessage is not null)
+                    {
+                        <p class="small mt-2 mb-0" role="status">@MaterializationMessage</p>
+                    }
+                </fieldset>
+                <p id="layered-presentation-summary" class="visually-hidden">@(IsBaseImageUnavailable
+                    ? $"The base image is unavailable. Its {Presentation.Layers.Count} layer controls are disabled until the image loads."
+                    : $"The base image has {Presentation.Layers.Count} selectable layers. Visibility controls are listed immediately below the image.")</p>
+                <dl class="row small mt-3 mb-0">
+                    <dt class="col-md-3">Manifest</dt><dd class="col-md-9 text-break font-monospace">@Presentation.ManifestIdentitySha256</dd>
+                    <dt class="col-md-3">Presentation</dt><dd class="col-md-9 text-break font-monospace">@Presentation.PresentationIdentitySha256</dd>
+                </dl>
+            </div>
+        </section>
+    }
+    @if ((CurrentSelection is not null || AllowExactPreviewFallback) && Presentation is null)
+    {
+        <section class="card mb-4" aria-label="@(CurrentSelection is null ? "Capture Preview" : "Selected Preview")">
+            <div class="card-body">
+                @if (SelectedPreviewPath is { } preview && !IsBaseImageUnavailable)
+                {
+                    var imageKey = BaseImageKey;
+                    <img class="selected-preview" @key="imageKey" src="@preview" alt="Preview for capture @detail.Capture.CapturedAtUtc.ToString("u")" @onerror="() => OnBaseImageError(imageKey)" />
+                }
+                else
+                {
+                    <p role="status">@(CurrentSelection is null
+                        ? "The Preview for this capture is unavailable. Capture metadata is retained; no other image is substituted."
+                        : "The selected Preview is unavailable. Capture metadata is retained; no other image is substituted.")</p>
+                    @if (SelectedPreviewPath is not null)
+                    {
+                        <button type="button" class="btn btn-outline-info" @onclick="RetryBaseImage">Retry image</button>
+                    }
+                }
+            </div>
+        </section>
+    }
+    <section class="card mb-4">
+        <div class="card-body">
+            @Heading(1, "Capture provenance", "h5")
+            <dl class="row small mb-0">
+                <dt class="col-md-3">Agent / frame</dt><dd class="col-md-9 text-break font-monospace">@detail.Provenance.AgentId / @detail.Provenance.FrameId</dd>
+                <dt class="col-md-3">Location evidence</dt><dd class="col-md-9">@detail.Provenance.LocationEvidenceState - @(detail.Provenance.LocationId ?? "No reported location") @(detail.Provenance.LocationVersion is null ? null : $"v{detail.Provenance.LocationVersion}")</dd>
+                <dt class="col-md-3">Exposure window</dt><dd class="col-md-9">@(detail.Provenance.ExposureStartedUtc?.ToString("u") ?? "Legacy timing") to @(detail.Provenance.ExposureEndedUtc?.ToString("u") ?? "unknown")</dd>
+                <dt class="col-md-3">Durable ingress</dt><dd class="col-md-9">@(detail.Provenance.DurableIngressUtc?.ToString("u") ?? "Legacy timing")</dd>
+                <dt class="col-md-3">Capture control</dt><dd class="col-md-9">Exposure @(detail.Provenance.EffectiveExposureTicks is null ? "unknown" : TimeSpan.FromTicks(detail.Provenance.EffectiveExposureTicks.Value).ToString()), gain @(detail.Provenance.EffectiveGain?.ToString() ?? "unknown"), offset @(detail.Provenance.EffectiveOffset?.ToString() ?? "unknown"), temperature @(detail.Provenance.EffectiveTemperatureC?.ToString() ?? "unknown") C</dd>
+            </dl>
+            @if (detail.Provenance.Profiles.Count > 0)
+            {
+                @Heading(2, "Capture-time profiles", "h6 mt-3")
+                <ul class="list-unstyled small mb-0">
+                    @foreach (var profile in detail.Provenance.Profiles)
+                    {
+                        <li><strong>@profile.Kind:</strong> @profile.Name @profile.Version <span class="font-monospace text-break">@profile.Sha256</span></li>
+                    }
+                </ul>
+            }
+        </div>
+    </section>
+}

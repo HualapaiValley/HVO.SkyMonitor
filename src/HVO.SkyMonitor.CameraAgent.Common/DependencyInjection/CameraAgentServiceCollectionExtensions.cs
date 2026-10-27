@@ -56,6 +56,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
+            .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -128,6 +129,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteNamedRigProfileStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton<SqliteCalibrationFamilyStore>();
+        services.AddSingleton<CalibrationFamilyActivationService>();
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
@@ -291,10 +294,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
         services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
         services.AddSingleton<ICameraAgentStructuredLayerAvailability, CameraAgentStructuredLayerAvailability>();
+        services.AddSingleton<ICameraAgentProcessingCompletion, CameraAgentProcessingCompletionReader>();
         services.AddSingleton<ICameraAgentCurrentImagePresentationService, CameraAgentCurrentImagePresentationService>();
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
+        services.AddSingleton<ICameraAgentRetainedAstrometryService, CameraAgentRetainedAstrometryService>();
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddSingleton<SqliteNightlyProductStore>();
         services.AddSingleton<INightlyProductCatalog>(static provider =>
@@ -340,8 +345,13 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
                 provider.GetService<IAcceptanceRetentionControl>(),
-                provider.GetRequiredService<SqliteTimeLapseStore>()));
+                provider.GetRequiredService<SqliteTimeLapseStore>(),
+                provider.GetRequiredService<SqliteCalibrationFamilyStore>(),
+                provider.GetRequiredService<CaptureSatelliteWorkStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
+        services.AddSingleton<ActiveCalibrationFamilySelector>();
+        services.AddSingleton<NormalizationPlanFreezer>();
+        services.AddSingleton<GainNormalizationPreparer>();
         var replayProfile = configuration.GetValue(
             "CameraAgent:ProcessingGraphs:ReplayProfile",
             ReplayExecutionProfile.InProcess);
@@ -360,7 +370,9 @@ public static class CameraAgentServiceCollectionExtensions
             return new CameraAgentRecipeExecutionAdapter(
                 provider.GetRequiredService<IProcessingRecipeExecutor>(),
                 replayProfile,
-                runner);
+                runner,
+                // Resolved on first use by a mixed-gain node: composing any graph must not require the durable stores.
+                provider.GetRequiredService<GainNormalizationPreparer>);
         });
         services.AddSingleton<ArtifactOutboxState>();
         services.AddSingleton<ArtifactOutboxTelemetry>();
@@ -400,6 +412,20 @@ public static class CameraAgentServiceCollectionExtensions
             "ProjectedScene", typeof(ProjectedSceneCaptureProcessingStep),
             typeof(ProjectedSceneCaptureProcessingStepOptions), 15, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            "MeasuredStellarAssociations", typeof(MeasuredStellarAssociationCaptureProcessingStep),
+            typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
+        services.AddSingleton<CaptureSatelliteWorkStore>();
+        services.AddSingleton<CaptureAstrometryExecutionGate>();
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            MeasuredAstrometryCaptureProcessingStep.Alias, typeof(MeasuredAstrometryCaptureProcessingStep),
+            typeof(MeasuredAstrometryCaptureOptions), 19, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            CaptureSatelliteTracksProcessingStep.Alias, typeof(CaptureSatelliteTracksProcessingStep),
+            typeof(CaptureSatelliteTracksOptions), 17, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            CaptureSatelliteLayerProcessingStep.Alias, typeof(CaptureSatelliteLayerProcessingStep),
+            typeof(CaptureSatelliteLayerOptions), 18, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "CloudAssessment", typeof(CloudAssessmentCaptureProcessingStep),
             typeof(CloudAssessmentProcessingStepOptions), 80, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
@@ -415,6 +441,9 @@ public static class CameraAgentServiceCollectionExtensions
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            SceneStylePresentation.StepAlias, typeof(SceneStylePresentationCaptureProcessingStep),
+            typeof(SceneStylePresentationStepOptions), 70, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "ScenePresentationLayer", typeof(ScenePresentationLayerCaptureProcessingStep),
             typeof(ScenePresentationLayerProcessingStepOptions), 70, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
@@ -424,11 +453,19 @@ public static class CameraAgentServiceCollectionExtensions
             "EnvironmentPresentationLayer", typeof(EnvironmentPresentationLayerCaptureProcessingStep),
             typeof(EnvironmentPresentationLayerProcessingStepOptions), 72, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            FrameFactsPresentation.StepAlias, typeof(FrameFactsPresentationCaptureProcessingStep),
+            typeof(FrameFactsPresentationProcessingStepOptions), 72, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "OverlayManifest", typeof(OverlayManifestCaptureProcessingStep),
             typeof(OverlayManifestProcessingStepOptions), 80, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
+        // Registers the orbital store initializer, so it runs before the automation runner's first sweep.
+        services.AddCameraAgentOrbitalElements();
+        services.AddCameraAgentSpaceWeather();
+        services.AddSingleton<LocalAutomationOffSweepWorker>();
+        services.AddHostedService(static provider => provider.GetRequiredService<LocalAutomationOffSweepWorker>());
         services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());

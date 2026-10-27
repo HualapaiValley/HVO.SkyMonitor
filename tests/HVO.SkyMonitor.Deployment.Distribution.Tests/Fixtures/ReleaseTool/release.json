@@ -11,8 +11,8 @@
     "cameraAgent": {
       "repository": "ghcr.io/hualapaivalley/skymonitor-cameraagent",
       "tag": "1.2.0-dev.3",
-      "digest": "sha256:159cf63f7ac2285c66c9d2f47c54bed59488b86d76c5627af650cca3e3492b18",
-      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@sha256:159cf63f7ac2285c66c9d2f47c54bed59488b86d76c5627af650cca3e3492b18",
+      "digest": "sha256:bf5b53308a72180fd3b97dd7f02e3981bb469ce1ad9a6d6111e3ee725510ace3",
+      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@sha256:bf5b53308a72180fd3b97dd7f02e3981bb469ce1ad9a6d6111e3ee725510ace3",
       "platforms": [
         "linux/amd64",
         "linux/arm64"
@@ -21,18 +21,18 @@
         {
           "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
           "platform": "linux/amd64",
-          "size": 9728,
-          "sha256": "9b44c3b80ddaff22c6d2eee6b4543c18dd3407fd540a9318f9d996995e469557",
-          "manifestDigest": "sha256:feab2247b147bf6019c71d0adafc41e5dbc266ee67318f7c8bfe6ce6183e5e39",
-          "configDigest": "sha256:305262408137135236ae08c272143c00de7a529d0abedfc9b37c79a7de68a096"
+          "size": 10240,
+          "sha256": "6d60a558a31793ff15dcd5c81b81cf73c639ef39d0c0f0c2dcce2aa25f0a08bf",
+          "manifestDigest": "sha256:6d355af990fa8c0483c03dc9ccb68d2f6aa48440288cf8584f3457cc32d639d0",
+          "configDigest": "sha256:917af1daaec2e3d4da4804b0615c8caa6b566f86324df762f94672717455f1f4"
         },
         {
           "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
           "platform": "linux/arm64",
-          "size": 9728,
-          "sha256": "75c107c9bc2976446df9c80dc5d365ee62d95e08cc4c40b21897f19aab4b08c8",
-          "manifestDigest": "sha256:1d13d4193a6a75faf76ce08e3ea53a543749db8e2890a7517a5d8d482da528a3",
-          "configDigest": "sha256:49ced7dc0f4af6b44cb14fa10b11659f7e8dcc519c82b15c8719a4057bfdad97"
+          "size": 10240,
+          "sha256": "242d467173c9d08016dd03c1941b595f3a20edd8445b25b49600ee331c3e2f4a",
+          "manifestDigest": "sha256:1465e19e381cca1d0dd5112a49824c4cf9fad96a0152728c0c92f762d7873be8",
+          "configDigest": "sha256:107be59056f76bbd0312989e63a44e1376ccf230bee41d354b406462ad80c756"
         }
       ]
     }
@@ -51,6 +51,69 @@
         "reads": {
           "min": 13,
           "max": 15
+        }
+      },
+      "artifactOutbox": {
+        "writes": 2,
+        "reads": {
+          "min": 2,
+          "max": 2
+        }
+      },
+      "fleetStatus": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "environmentalOutbox": {
+        "writes": 3,
+        "reads": {
+          "min": 3,
+          "max": 3
+        }
+      },
+      "executionEvidenceOutbox": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "timeLapses": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "nightlyProducts": {
+        "writes": 2,
+        "reads": {
+          "min": 2,
+          "max": 2
+        }
+      },
+      "localAutomations": {
+        "writes": 3,
+        "reads": {
+          "min": 3,
+          "max": 3
+        }
+      },
+      "orbitalElements": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "spaceWeather": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
         }
       }
     }
@@ -84,15 +147,15 @@
       "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
       "kind": "image-archive",
       "platform": "linux-x64",
-      "size": 9728,
-      "sha256": "9b44c3b80ddaff22c6d2eee6b4543c18dd3407fd540a9318f9d996995e469557"
+      "size": 10240,
+      "sha256": "6d60a558a31793ff15dcd5c81b81cf73c639ef39d0c0f0c2dcce2aa25f0a08bf"
     },
     {
       "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
       "kind": "image-archive",
       "platform": "linux-arm64",
-      "size": 9728,
-      "sha256": "75c107c9bc2976446df9c80dc5d365ee62d95e08cc4c40b21897f19aab4b08c8"
+      "size": 10240,
+      "sha256": "242d467173c9d08016dd03c1941b595f3a20edd8445b25b49600ee331c3e2f4a"
     }
   ]
 }

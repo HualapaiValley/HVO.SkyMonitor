@@ -133,7 +133,7 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -340,11 +340,23 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadRetentionHoldsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
 
+    /// <summary>
+    /// The library masters named by the normalization plans of pending and running executions, and of ended executions'
+    /// nodes whose outputs are still kept (#1475).
+    /// </summary>
+    internal ValueTask<IReadOnlyList<Guid>> GetNormalizationPlanMasterArtifactIdsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+        => PathsEqual(storageRoot, _storageRoot)
+            ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
+            : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
+
     public async ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
@@ -360,6 +372,7 @@ internal sealed partial class CaptureProcessingPersistence(
             var checkedOutput = cursorOutput;
             do
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 var page = unavailable
                     ? await _store.ReadUnavailableExpirationPageAsync(
                         _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
@@ -369,6 +382,7 @@ internal sealed partial class CaptureProcessingPersistence(
                         _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
                 foreach (var candidate in page.Items)
                 {
+                    interruptionToken.ThrowIfCancellationRequested();
                     var sourcePaths = candidate.AvailabilityState == "Quarantined" && candidate.QuarantineRelativePath is { } quarantine
                         ? Directory.Exists(ResolveSafePath(quarantine))
                             ? Directory.EnumerateFiles(ResolveSafePath(quarantine)).Order(StringComparer.Ordinal).ToArray()
@@ -376,6 +390,17 @@ internal sealed partial class CaptureProcessingPersistence(
                         : new[] { ResolveSafePath(candidate.PayloadRelativePath), ResolveSafePath(candidate.SidecarRelativePath) }
                             .Where(File.Exists).ToArray();
                     if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available")
+                    {
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        continue;
+                    }
+                    if (candidate.AvailabilityState == "Available" && candidate.Role == FrameArtifactRole.Metadata &&
+                        heldAbsolutePaths.Count > 0 &&
+                        await _store.ReadMixedGainCompanionAnchorAsync(candidate.OutputIdentitySha256, cancellationToken)
+                            .ConfigureAwait(false) is { } anchor &&
+                        (heldAbsolutePaths.Contains(ResolveSafePath(anchor.PayloadRelativePath)) ||
+                         heldAbsolutePaths.Contains(ResolveSafePath(anchor.SidecarRelativePath))))
                     {
                         checkedTimestamp = candidate.CommittedUnixMilliseconds;
                         checkedOutput = candidate.OutputIdentitySha256;
@@ -418,12 +443,14 @@ internal sealed partial class CaptureProcessingPersistence(
         long? diagnosticId = null;
         do
         {
+            interruptionToken.ThrowIfCancellationRequested();
             var diagnostics = await _store.ReadDiagnosticExpirationPageAsync(
                 _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
                 diagnosticTimestamp, diagnosticId, _lifecycleOptions.ReconciliationBatchSize,
                 cancellationToken).ConfigureAwait(false);
             foreach (var diagnostic in diagnostics.Items)
             {
+                interruptionToken.ThrowIfCancellationRequested();
                 if (diagnostic.QuarantineRelativePath is { } quarantine)
                 {
                     var path = ResolveSafePath(quarantine);
@@ -537,7 +564,8 @@ internal sealed partial class CaptureProcessingPersistence(
             {
                 ProductKind = restored.Product.Kind,
                 SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
+                RecipeDescriptor = restored.Product.Recipe.Descriptor
             });
         }
         return artifacts;
@@ -647,7 +675,16 @@ internal sealed partial class CaptureProcessingPersistence(
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
                     entry.Descriptor.Timing.ExposureStartedUtc,
                     entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    entry.Descriptor.Controls.EffectiveExposure),
+                Conditions: new ProcessingCaptureConditions(
+                    entry.Descriptor.Controls.EffectiveGain,
+                    entry.Descriptor.Controls.EffectiveOffset,
+                    entry.Descriptor.Controls.EffectiveTemperatureC))
+            {
+                // The capture evidence a frozen normalization plan binds each light to.
+                CaptureId = entry.Descriptor.Capture.CaptureId,
+                DescriptorIdentitySha256 = entry.DescriptorSha256
+            });
         }
         return artifacts;
     }
@@ -693,7 +730,7 @@ internal sealed partial class CaptureProcessingPersistence(
             ValidateProductForPublication(product);
         }
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             if (execution is not null)
@@ -1210,7 +1247,7 @@ internal sealed partial class CaptureProcessingPersistence(
         return bytes;
     }
 
-    private static async Task WriteAtomicallyAsync(
+    internal static async Task WriteAtomicallyAsync(
         string storageRoot,
         string destinationPath,
         ReadOnlyMemory<byte> content,
@@ -1315,7 +1352,8 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = restored.Product.SchemaVersion,
             ContentIdentitySha256 = restored.Product.ContentIdentitySha256 ?? restored.Product.OutputIdentitySha256,
             CaptureId = output.Capture.CaptureId,
-            DescriptorIdentitySha256 = null
+            DescriptorIdentitySha256 = null,
+            RecipeDescriptor = restored.Product.Recipe.Descriptor
         };
     }
 

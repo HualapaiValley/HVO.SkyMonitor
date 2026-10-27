@@ -7,7 +7,8 @@ name: Release
 #                 final release's notes present, not yet released, and the production-release environment requires a
 #                 reviewer (scripts/release:gate)
 #   ci            the CI qualification of the tagged commit: the whole CI workflow, called (ci.yml, workflow_call)
-#   build         build every release file from the qualified commit, read-only (scripts/release:assets)
+#   image jobs    build amd64 and arm64 natively on GitHub-hosted runners, after the gate/qualification
+#   build         verify and combine their OCI archives, then build every release file from the qualified commit, read-only (scripts/release:assets)
 #   draft         push the image by its version tag, attest the image and every file, and create a draft release
 #   install-test  install and upgrade a throwaway instance from the draft's files, on linux-x64 and linux-arm64
 #   publish       held until a required reviewer approves it in production-release; check the draft still holds the
@@ -78,11 +79,32 @@ jobs:
     permissions:
       contents: read
 
+  build-amd64:
+    name: Release / Image (amd64)
+    needs: [gate, ci]
+    uses: ./.github/workflows/release-image.yml
+    with:
+      architecture: amd64
+      version: ${{ needs.gate.outputs.version }}
+      commit: ${{ needs.gate.outputs.commit }}
+      created: ${{ needs.gate.outputs.created }}
+
+  build-arm64:
+    name: Release / Image (arm64)
+    needs: [gate, ci]
+    uses: ./.github/workflows/release-image.yml
+    with:
+      architecture: arm64
+      version: ${{ needs.gate.outputs.version }}
+      commit: ${{ needs.gate.outputs.commit }}
+      created: ${{ needs.gate.outputs.created }}
+
   build:
     name: Release / Build
-    needs: [gate, ci]
+    needs: [gate, build-amd64, build-arm64]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Native image builds run in parallel above; this job verifies, combines and packages their output.
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -91,15 +113,24 @@ jobs:
         with:
           ref: ${{ needs.gate.outputs.commit }}
           persist-credentials: false
-      - name: Set up QEMU for the arm64 image
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      # Pinned as prerelease.yml pins them, so an image build does not change with the runner's toolchain.
-      - name: Set up Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - name: Download the amd64 image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          version: v0.36.1
-          driver-opts: image=moby/buildkit:v0.26.1@sha256:8290a3b1183f45fb0c7ccd2faa7aa88eeb9af0ea85ff54458cbd8cbdb576e721
+          name: release-platform-amd64-${{ github.run_id }}
+          path: ${{ runner.temp }}/platform-images
+      - name: Download the arm64 image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-platform-arm64-${{ github.run_id }}
+          path: ${{ runner.temp }}/platform-images
+      - name: Verify and combine the platform images
+        env:
+          AMD64_SHA256: ${{ needs.build-amd64.outputs.sha256 }}
+          ARM64_SHA256: ${{ needs.build-arm64.outputs.sha256 }}
+        run: |
+          ./scripts/release:combine-images --output "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" \
+            --amd64 "$RUNNER_TEMP/platform-images/amd64.oci.tar" --amd64-sha256 "$AMD64_SHA256" \
+            --arm64 "$RUNNER_TEMP/platform-images/arm64.oci.tar" --arm64-sha256 "$ARM64_SHA256"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -109,10 +140,10 @@ jobs:
           VERSION: ${{ needs.gate.outputs.version }}
           COMMIT: ${{ needs.gate.outputs.commit }}
           CREATED: ${{ needs.gate.outputs.created }}
-          BUILDER: ${{ steps.buildx.outputs.name }}
         run: |
           ./scripts/release:assets \
-            --version "$VERSION" --commit "$COMMIT" --created "$CREATED" --builder "$BUILDER" \
+            --version "$VERSION" --commit "$COMMIT" --created "$CREATED" \
+            --prebuilt-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" \
             --image-repository "$IMAGE_REPOSITORY" --install-script src/HVO.SkyMonitor.Deployment.Cli/install.sh \
             --output "$RUNNER_TEMP/release" --image-oci "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar"
       # Artifacts are named by run, not attempt, so re-running a failed install test or publish finds them; a full

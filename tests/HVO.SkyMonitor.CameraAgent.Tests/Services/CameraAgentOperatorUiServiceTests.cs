@@ -2,6 +2,7 @@ using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -13,6 +14,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Settings;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 using HVO.SkyMonitor.Common.Security;
@@ -20,6 +23,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -31,6 +36,29 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestCategory("Unit")]
 public sealed class CameraAgentOperatorUiServiceTests
 {
+    [TestMethod]
+    [DataRow("denied", "Unauthorized")]
+    [DataRow("mismatch", "Unavailable")]
+    [DataRow("failure", "Unavailable")]
+    [DataRow("missing", "Success")]
+    public async Task RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures(string scenario, string expected)
+    {
+        var id = Guid.NewGuid();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(scenario == "denied" ? AuthorizationResult.Failed() : AuthorizationResult.Success());
+        var retained = new Mock<ICameraAgentRetainedAstrometryService>(MockBehavior.Strict);
+        if (scenario == "failure") retained.Setup(value => value.GetAsync(id, CancellationToken.None)).ThrowsAsync(new IOException("private-path"));
+        else if (scenario != "denied") retained.Setup(value => value.GetAsync(id, CancellationToken.None))
+            .ReturnsAsync(new CameraAgentRetainedAstrometry(scenario == "mismatch" ? Guid.NewGuid() : id, "NotRetained", "assessment-not-retained"));
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, retainedAstrometry: retained.Object);
+        var result = await service.GetRetainedAstrometryAsync(id, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(expected, result.Kind.ToString());
+        Assert.IsFalse(result.Message?.Contains("private-path", StringComparison.Ordinal) ?? false);
+        retained.Verify(value => value.GetAsync(id, CancellationToken.None), scenario == "denied" ? Times.Never() : Times.Once());
+    }
+
     [TestMethod]
     [DataRow("denied", "Unauthorized")]
     [DataRow("invalid", "Invalid")]
@@ -604,6 +632,209 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(after.Value.RawIngress, failed.Value.RawIngress);
     }
 
+    [TestMethod]
+    public async Task CurrentSkyShowsTheNewestFinishedCaptureWhileTheNewestIsStillProcessingAsync()
+    {
+        var newest = OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = false };
+        var finished = OperatorUiTestData.Capture(Guid.NewGuid()) with { RawState = "committed", CaptureSequence = 41 };
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .ProjectWithRetainedDisplay(finished);
+        var (service, presentations, gallery, layers, completion) = CreateCurrentSkyService(newest);
+        completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentProcessingCompletion(true, [finished.CaptureId]));
+        gallery.Setup(value => value.GetCaptureAsync(finished.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync(finished);
+        presentations.Setup(value => value.ProjectCaptureAsync(finished, It.IsAny<CancellationToken>())).ReturnsAsync(projection);
+        layers.Setup(value => value.GetAsync(finished.CaptureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentLayeredPresentationResult(CameraAgentLayeredPresentationStatus.Found));
+
+        var view = (await service.GetCurrentSkyViewAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.IsFalse(view.ProcessingPending);
+        Assert.AreEqual(finished.CaptureId, view.Presentation.DisplayCapture!.CaptureId);
+        Assert.AreEqual(41, view.Presentation.DisplayCapture.CaptureSequence);
+        Assert.AreEqual(finished.ExposureStartedUtc, view.Presentation.DisplayCapture.ExposureStartedUtc);
+        Assert.AreEqual(projection.SelectedStage, view.Presentation.SelectedStage);
+        CollectionAssert.AreEqual(projection.Stages.ToArray(), view.Presentation.Stages.ToArray());
+        Assert.IsTrue(view.Presentation.StructuredLayersAvailable);
+        // The camera's own state still describes the newest capture.
+        Assert.AreEqual(newest.LatestCapture, view.Presentation.LatestCapture);
+        Assert.AreEqual(newest.System, view.Presentation.System);
+        Assert.AreEqual(finished.CaptureId, view.Facts!.CaptureId);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow(1)]
+    [DataRow(4)]
+    [DataRow(9)]
+    public async Task CurrentSkyPassesOverEndedCapturesItCannotDisplayAsync(int undisplayable)
+    {
+        var root = EdgeUpgradeLaneTests.CreateRoot("current-sky-undisplayable");
+        try
+        {
+            // The current-image read reaches the deployment location, whose protector the host registers.
+            using var provider = EdgeUpgradeLaneTests.CreateProvider(
+                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow),
+                configure: services => services.AddSingleton<IDeploymentLocationProtector>(new PassThroughLocationProtector()));
+            var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
+            // A running host has its camera configuration before any page reads a capture's delivery state.
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(fixture.Configuration);
+            // Every capture is accepted first: quarantined required work refuses further ingress.
+            var completed = await fixture.AcceptAsync(0).ConfigureAwait(false);
+            var quarantined = new List<Guid>(undisplayable);
+            for (var index = 1; index <= undisplayable; index++)
+            {
+                quarantined.Add(await fixture.AcceptAsync(index).ConfigureAwait(false));
+            }
+            var pending = await fixture.AcceptAsync(undisplayable + 1).ConfigureAwait(false);
+            await EdgeUpgradeLaneTests.ExecuteAsync(root, """
+                UPDATE capture_lane_work SET state = 'completed'
+                WHERE lane_name = 'standard'
+                  AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $completed);
+                """, ("$completed", completed.ToString("N"))).ConfigureAwait(false);
+            // Each quarantined capture's raw evidence is gone, so it has no stage to display. Nine span three pages.
+            foreach (var captureId in quarantined)
+            {
+                await EdgeUpgradeLaneTests.ExecuteAsync(root, """
+                    UPDATE capture_lane_work SET state = 'quarantined', failure_reason = 'evidence-invalid'
+                    WHERE lane_name = 'standard'
+                      AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $quarantined);
+                    UPDATE raw_captures SET state = 'missing_evidence' WHERE capture_id = $quarantined;
+                    """, ("$quarantined", captureId.ToString("N"))).ConfigureAwait(false);
+            }
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+            var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+            authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+                layers: provider.GetRequiredService<ICameraAgentLayeredPresentationService>(),
+                gallery: provider.GetRequiredService<ICameraAgentGallery>(),
+                presentations: provider.GetRequiredService<ICameraAgentCurrentImagePresentationService>(),
+                processingCompletion: provider.GetRequiredService<ICameraAgentProcessingCompletion>());
+
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var view = (await service.GetCurrentSkyViewAsync(deadline.Token).ConfigureAwait(false)).Value!;
+
+            Assert.AreEqual(pending, view.Presentation.LatestCapture!.CaptureId);
+            Assert.AreEqual(completed, view.Presentation.DisplayCapture!.CaptureId);
+            Assert.IsNotNull(view.Presentation.SelectedStage);
+            Assert.IsFalse(view.ProcessingPending);
+        }
+        finally
+        {
+            EdgeUpgradeLaneTests.Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task CurrentSkyStopsPagingEndedCapturesAtTheDeadlineAsync()
+    {
+        var newest = OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = false };
+        var (service, _, _, _, completion) = CreateCurrentSkyService(newest);
+        using var deadline = new CancellationTokenSource();
+        static IReadOnlyList<Guid> FullPage() => [.. Enumerable.Range(0, CameraAgentOperatorUiService.FinishedCandidatePageSize)
+            .Select(static _ => Guid.NewGuid())];
+        completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentProcessingCompletion(true, FullPage()));
+        var pages = 0;
+        // Every candidate is gone from the gallery and history never runs out; the deadline expires on the second page.
+        completion.Setup(value => value.ReadFinishedBeforeAsync(It.IsAny<Guid>(),
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                if (++pages == 2) deadline.Cancel();
+                return FullPage();
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await service.GetCurrentSkyViewAsync(deadline.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(2, pages);
+    }
+
+    [TestMethod]
+    [DataRow("pending-alone", true)]
+    [DataRow("finished", false)]
+    [DataRow("layers-retained", false)]
+    [DataRow("unreadable", false)]
+    [DataRow("finished-not-displayable", true)]
+    public async Task CurrentSkyHoldsOnlyForOverlaysThatCanStillArriveAsync(string scenario, bool pending)
+    {
+        var newest = OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = scenario == "layers-retained" };
+        var finishedId = Guid.NewGuid();
+        var (service, presentations, gallery, _, completion) = CreateCurrentSkyService(newest);
+        var read = completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+            CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()));
+        switch (scenario)
+        {
+            case "pending-alone": read.ReturnsAsync(new CameraAgentProcessingCompletion(true, [])); break;
+            case "finished": read.ReturnsAsync(new CameraAgentProcessingCompletion(false, [])); break;
+            case "unreadable": read.ThrowsAsync(new InvalidOperationException("private-storage-location")); break;
+            case "finished-not-displayable":
+                read.ReturnsAsync(new CameraAgentProcessingCompletion(true, [finishedId]));
+                var hidden = OperatorUiTestData.Capture(finishedId);
+                gallery.Setup(value => value.GetCaptureAsync(finishedId, It.IsAny<CancellationToken>())).ReturnsAsync(hidden);
+                presentations.Setup(value => value.ProjectCaptureAsync(hidden, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new CameraAgentCapturePresentation(null, newest.Stages));
+                break;
+        }
+
+        var view = (await service.GetCurrentSkyViewAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(pending, view.ProcessingPending);
+        Assert.AreEqual(newest.DisplayCapture, view.Presentation.DisplayCapture);
+        if (scenario == "layers-retained")
+        {
+            completion.VerifyNoOtherCalls();
+        }
+    }
+
+    [TestMethod]
+    [DataRow("120", 120)]
+    [DataRow("15", 15)]
+    [DataRow("3600", 3600)]
+    [DataRow("14", CurrentSkyRefreshSetting.DefaultSeconds)]
+    [DataRow("3601", CurrentSkyRefreshSetting.DefaultSeconds)]
+    [DataRow("fast", CurrentSkyRefreshSetting.DefaultSeconds)]
+    [DataRow("missing", CurrentSkyRefreshSetting.DefaultSeconds)]
+    public async Task CurrentSkyCarriesTheOperatorsMinimumRefreshIntervalAsync(string configured, int seconds)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(configured == "missing"
+                ? []
+                : new Dictionary<string, string?> { [CurrentSkyRefreshSetting.ConfigurationKey] = configured })
+            .Build();
+        var (service, _, _, _, _) = CreateCurrentSkyService(
+            OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = true }, new CurrentSkyRefreshSetting(configuration));
+
+        var view = (await service.GetCurrentSkyViewAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(TimeSpan.FromSeconds(seconds), view.MinimumRefreshInterval);
+    }
+
+    private static (CameraAgentOperatorUiService Service, Mock<ICameraAgentCurrentImagePresentationService> Presentations,
+        Mock<ICameraAgentGallery> Gallery, Mock<ICameraAgentLayeredPresentationService> Layers,
+        Mock<ICameraAgentProcessingCompletion> Completion) CreateCurrentSkyService(
+        CameraAgentCurrentImagePresentation newest,
+        CurrentSkyRefreshSetting? currentSkyRefresh = null)
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var presentations = new Mock<ICameraAgentCurrentImagePresentationService>(MockBehavior.Strict);
+        presentations.Setup(value => value.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(newest);
+        var gallery = new Mock<ICameraAgentGallery>();
+        var layers = new Mock<ICameraAgentLayeredPresentationService>(MockBehavior.Strict);
+        var completion = new Mock<ICameraAgentProcessingCompletion>(MockBehavior.Strict);
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            layers: layers.Object, gallery: gallery.Object, presentations: presentations.Object,
+            processingCompletion: completion.Object, currentSkyRefresh: currentSkyRefresh);
+        return (service, presentations, gallery, layers, completion);
+    }
+
     private static CameraAgentOperatorUiService CreateReadService(
         ICameraAgentStorageResolver? storageResolver = null,
         IArtifactOutbox? artifactOutbox = null,
@@ -652,7 +883,10 @@ public sealed class CameraAgentOperatorUiServiceTests
         CameraAgentHostOptions? hostOptions = null,
         RawIngressState? rawIngressState = null,
         CaptureProcessingState? captureProcessingState = null,
-        ITransientRuntimeManagement? transientRuntime = null) => new(
+        ITransientRuntimeManagement? transientRuntime = null,
+        ICameraAgentProcessingCompletion? processingCompletion = null,
+        CurrentSkyRefreshSetting? currentSkyRefresh = null,
+        ICameraAgentRetainedAstrometryService? retainedAstrometry = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -677,11 +911,20 @@ public sealed class CameraAgentOperatorUiServiceTests
             TimeProvider.System,
             NullLogger<CameraAgentOperatorUiService>.Instance,
             rawIngressState: rawIngressState,
-            captureProcessingState: captureProcessingState);
+            captureProcessingState: captureProcessingState,
+            processingCompletion: processingCompletion,
+            currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry);
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class PassThroughLocationProtector : IDeploymentLocationProtector
+    {
+        public byte[] Protect(byte[] plaintext) => plaintext;
+
+        public byte[] Unprotect(byte[] protectedPayload) => protectedPayload;
     }
 
     private sealed class CountingAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider

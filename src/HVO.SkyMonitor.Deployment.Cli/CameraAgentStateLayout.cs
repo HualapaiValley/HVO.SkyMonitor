@@ -105,14 +105,31 @@ internal static class CameraAgentStateLayout
     public static string RawIngressDatabasePath(string stateRoot)
         => Path.Combine(stateRoot, RawDirectoryName, "journal", "raw-ingress.db");
 
-    /// <summary>
-    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators. These are the small
-    /// databases a migrating upgrade snapshots. None lies inside a bulk frame, archive or derived tree, so the snapshot
-    /// never reads bulk data. The artifact outbox lives in each storage root the generated pipeline writes to.
-    /// </summary>
     /// <summary>The local automation store's location under the state root.</summary>
     public const string AutomationStore = RawDirectoryName + "/.automation/local-automations.db";
 
+    /// <summary>The orbital elements store's location under the state root.</summary>
+    public const string OrbitalElementsStore = RawDirectoryName + "/.orbital-elements/orbital-elements.db";
+
+    /// <summary>The space-weather store's location under the state root.</summary>
+    public const string SpaceWeatherStore = RawDirectoryName + "/.space-weather/space-weather.db";
+
+    /// <summary>The calibration-family store's location under the state root.</summary>
+    public const string CalibrationFamiliesStore = RawDirectoryName + "/.calibration-families/calibration-families.db";
+
+    /// <summary>
+    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators, except the orbital
+    /// elements, space-weather and calibration-family stores. These are the small databases a migrating upgrade snapshots. None lies inside a bulk frame,
+    /// archive or derived tree, so the snapshot never reads bulk data. The artifact outbox lives in each storage root
+    /// the generated pipeline writes to. <see cref="OrbitalElementsStore"/> is deliberately not listed: it holds the
+    /// provider's attempt floor and any halt, and a restore must never rewind them, or the release rolled back to could
+    /// request inside the floor or after the provider refused. <see cref="SpaceWeatherStore"/> is also excluded:
+    /// restoring an older copy would rewind per-product Retry-After floors, backoff and provider/product halts.
+    /// <see cref="CalibrationFamiliesStore"/> is also excluded. A snapshot or backup that an earlier installer took names
+    /// only the stores listed here then, and verification requires every listed store, so listing a new store would make
+    /// this installer refuse those snapshots and backups. No earlier release opens the store, so a rollback needs no copy
+    /// of it, and a full backup still archives it with the instance's other files.
+    /// </summary>
     public static IReadOnlyList<string> SqliteStores { get; } =
     [
         $"{IdentityDirectoryName}/{IdentityDatabaseFileName}",

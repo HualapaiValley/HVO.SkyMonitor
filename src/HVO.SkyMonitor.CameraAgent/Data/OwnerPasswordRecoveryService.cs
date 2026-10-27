@@ -205,6 +205,7 @@ internal sealed class OwnerPasswordRecoveryService(
     {
         var owners = await userManager.Users
             .Where(static candidate => candidate.IsSiteOwner)
+            .OrderBy(static candidate => candidate.Id)
             .Take(2)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

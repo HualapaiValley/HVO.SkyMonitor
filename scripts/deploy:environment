@@ -8,6 +8,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
+# Typed preflight authority (#1593). Resolve relative inventory arguments before selecting the source checkout.
+if [[ "${1:-}" == preflight ]]; then
+    preflight_forward=("$@")
+    for ((preflight_index=1; preflight_index<${#preflight_forward[@]}; preflight_index++)); do
+        if [[ "${preflight_forward[$preflight_index]}" == --inventory && $((preflight_index + 1)) -lt ${#preflight_forward[@]} ]]; then
+            preflight_forward[preflight_index + 1]="$(realpath -m -- "${preflight_forward[preflight_index + 1]}")"
+            break
+        fi
+    done
+    cd "$REPO_ROOT"
+    exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
+      --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
+      --configuration Release --no-launch-profile -- "${preflight_forward[@]}"
+fi
+
+# Compatibility entry point; the typed CLI is the sole recovery implementation (#1588).
+if [[ "${1:-}" == partial-prepare-cleanup ]]; then
+    exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
+      --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
+      --configuration Release --no-launch-profile -- "$@"
+fi
+
+# Existing-service teardown has one typed authority (#1589); deploy-owned deletion
+# stays with its later phase port. This selector never performs lifecycle work.
+if [[ "${1:-}" == down ]]; then
+    down_forward=("$@"); down_inventory_argument=''
+    for ((down_argument_index=1; down_argument_index<${#down_forward[@]}; down_argument_index++)); do
+        if [[ "${down_forward[$down_argument_index]}" == --inventory && $((down_argument_index + 1)) -lt ${#down_forward[@]} ]]; then
+            down_inventory_argument="$(realpath -m -- "${down_forward[$((down_argument_index + 1))]}")"
+            down_forward[$((down_argument_index + 1))]="$down_inventory_argument"
+            break
+        fi
+    done
+    if [[ -n "$down_inventory_argument" ]] && jq -e '.deployment.services.mode == "existing"' "$down_inventory_argument" >/dev/null 2>&1; then
+        cd "$REPO_ROOT"
+        exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
+          --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
+          --configuration Release --no-launch-profile -- existing-down "${down_forward[@]:1}"
+    fi
+    unset down_forward down_inventory_argument down_argument_index
+fi
+
 # shellcheck source=scripts/deploy/common.sh
 . "$SCRIPT_DIR/deploy/common.sh"
 # shellcheck source=scripts/deploy/product-layout.sh
@@ -22,8 +64,6 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/preflight.sh"
 # shellcheck source=scripts/deploy/prepare.sh
 . "$SCRIPT_DIR/deploy/prepare.sh"
-# shellcheck source=scripts/deploy/partial-prepare.sh
-. "$SCRIPT_DIR/deploy/partial-prepare.sh"
 # shellcheck source=scripts/deploy/images.sh
 . "$SCRIPT_DIR/deploy/images.sh"
 # shellcheck source=scripts/deploy/catalog.sh
@@ -50,13 +90,14 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/transient-confirm.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|partial-prepare-cleanup|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--dry-run | --confirm <run-id>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--dry-run | --confirm <run-id>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf '       partial-prepare-cleanup is provided by hvo-sky-install; this script forwards that command to the typed CLI. Preflight forwards to the typed preflight command; existing-services down forwards to existing-down.\n' >&2
     printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario; acceptance-component requires the fixed --component.\n' >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == partial-prepare-cleanup || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == transient-confirm || "$phase" == down ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == transient-confirm || "$phase" == down ]] || usage
 shift
 inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact="" component="" allowlist="" dry_run=false
 while (( $# > 0 )); do
@@ -81,8 +122,6 @@ done
 [[ -n "$inventory" && ( "$mode" == isolated || "$mode" == persistent ) ]] || usage
 if [[ "$phase" == down ]]; then
     [[ -n "$down_policy" && "$dry_run" == false ]] || usage
-elif [[ "$phase" == partial-prepare-cleanup ]]; then
-    [[ -z "$down_policy" && ( ( "$dry_run" == true && -z "$confirm" ) || ( "$dry_run" == false && -n "$confirm" ) ) ]] || usage
 else
     [[ -z "$down_policy" && -z "$confirm" && "$dry_run" == false ]] || usage
 fi
@@ -113,20 +152,16 @@ deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
 [[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run && "$phase" != transient-confirm ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
-if [[ "$phase" == partial-prepare-cleanup ]]; then
-    deploy_validate_partial_prepare_inventory "$inventory" "$mode"
-else
-    deploy_validate_inventory "$inventory" "$mode"
-    deploy_validate_product_layout "$inventory" "$mode"
-fi
-[[ "$phase" == partial-prepare-cleanup ]] || deploy_validate_secret_references "$inventory"
+deploy_validate_inventory "$inventory" "$mode"
+deploy_validate_product_layout "$inventory" "$mode"
+deploy_validate_secret_references "$inventory"
 expected_revision="$(jq -r '.source.revision' "$inventory")"
 actual_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-[[ "$phase" == partial-prepare-cleanup || "$actual_revision" == "$expected_revision" ]] || deploy_fail validate source "source-revision-mismatch"
+[[ "$actual_revision" == "$expected_revision" ]] || deploy_fail validate source "source-revision-mismatch"
 dirty_disposition="$(jq -r '.source.dirtyDisposition' "$inventory")"
 worktree_state=clean
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] || worktree_state=dirty
-[[ "$phase" == partial-prepare-cleanup || "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
+[[ "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
 source_tree="$(git -C "$REPO_ROOT" rev-parse "${actual_revision}^{tree}")"
 [[ "$source_tree" =~ ^[0-9a-f]{40,64}$ ]] || deploy_fail validate source "source-tree-invalid"
 [[ "$phase" != images || "$worktree_state" == clean ]] || deploy_fail validate source "images-require-clean-source"
@@ -141,17 +176,6 @@ evidence_root="${evidence_root:-$REPO_ROOT/TestResults/deploy/$run_id/evidence}"
 deploy_prepare_run_state "$state_root" "$evidence_root"
 deploy_transport_initialize_private_upload_registry "$state_root/private-upload-registry.json" "$inventory" "$phase" ||
   deploy_fail state private-upload-registry invalid
-
-if [[ "$phase" == partial-prepare-cleanup ]]; then
-    trap 'deploy_partial_prepare_mark_failed $?' ERR
-    if ! deploy_run_partial_prepare_cleanup "$inventory" "$run_id" "$mode" "$inventory_hash" "$expected_revision" "$dry_run" "$confirm"; then
-        deploy_partial_prepare_mark_failed 1
-        exit 1
-    fi
-    trap - ERR
-    deploy_status partial-prepare-cleanup complete passed "$([[ "$dry_run" == true ]] && printf inspected || printf cleaned)"
-    exit 0
-fi
 
 if [[ "$phase" == prepare ]]; then
     # shellcheck disable=SC2317 # Invoked indirectly by the ERR trap.
@@ -342,32 +366,4 @@ if [[ "$phase" == transient-confirm ]]; then
     exit 0
 fi
 
-started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-old_manifest=""
-if [[ -e "$DEPLOY_MANIFEST" || -L "$DEPLOY_MANIFEST" ]]; then
-    [[ -f "$DEPLOY_MANIFEST" && ! -L "$DEPLOY_MANIFEST" && "$(stat -c '%u' "$DEPLOY_MANIFEST" 2>/dev/null)" == "$(id -u)" && "$(stat -c '%h' "$DEPLOY_MANIFEST" 2>/dev/null)" == 1 &&
-       "$(stat -c '%a' "$DEPLOY_MANIFEST" 2>/dev/null)" == 600 ]] ||
-        deploy_fail state manifest "unsafe-existing-manifest"
-    previous_manifest="$(jq -c . "$DEPLOY_MANIFEST" 2>/dev/null)" || deploy_fail state manifest "invalid-existing-manifest"
-    deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"
-    deploy_require_completed_evidence_match "$previous_manifest" "$DEPLOY_EVIDENCE"
-    if [[ "$(jq -r '.phaseStatus' <<< "$previous_manifest")" == passed ]]; then old_manifest="$previous_manifest"; fi
-    DEPLOY_MANIFEST_JSON="$(jq -c '.phaseStatus="running" | .checks=[] | .targets=[] | del(.completedAt)' <<< "$previous_manifest")"
-else
-    DEPLOY_MANIFEST_JSON="$(deploy_initial_manifest "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$dirty_disposition" "$started")"
-    DEPLOY_MANIFEST_JSON="$(jq -c --arg state "$worktree_state" '.source.worktreeState=$state' <<< "$DEPLOY_MANIFEST_JSON")"
-fi
-deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" || deploy_fail state manifest "atomic-publication-failed"
-deploy_clear_evidence
-deploy_mark_failed() {
-    local status=$?
-    trap - ERR
-    DEPLOY_MANIFEST_JSON="$(jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.phaseStatus="failed" | .updatedAt=$now' <<< "$DEPLOY_MANIFEST_JSON")"
-    deploy_publish_json "$DEPLOY_EVIDENCE" "$(deploy_evidence_json "$DEPLOY_MANIFEST_JSON")" >/dev/null 2>&1 || true
-    deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" >/dev/null 2>&1 || true
-    exit "$status"
-}
-trap deploy_mark_failed ERR
-deploy_run_preflight "$inventory" "$mode" "$old_manifest"
-trap - ERR
-deploy_status preflight complete passed read-only
+deploy_fail preflight authority use-typed-preflight

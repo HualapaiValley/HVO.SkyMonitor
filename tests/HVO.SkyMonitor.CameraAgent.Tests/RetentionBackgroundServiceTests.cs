@@ -8,9 +8,11 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 
@@ -81,17 +83,15 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
-    public async Task ApplyRetentionAsync_PassBlockedOnItsLockHoldsThePauseUntilItHasFinished()
+    public async Task ApplyRetentionAsync_PendingPauseInterruptsLockWaitWithoutDeleting()
     {
-        // The sweep entered while capture was running and is waiting for the storage lifecycle lock when the installer
-        // pauses. The pause must not be acknowledged until the sweep is done, and no sweep may delete after it is.
         using var hold = new Capture.MaintenanceHoldRoot();
         var root = hold.Path;
         var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
         Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
         await File.WriteAllTextAsync(expired, "expired").ConfigureAwait(false);
         using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
-        var service = new RetentionBackgroundService(
+        using var service = new RetentionBackgroundService(
             new StubConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
             new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)), new SqliteArtifactOutbox(),
@@ -99,29 +99,95 @@ public sealed class RetentionBackgroundServiceTests
             NullLogger<RetentionBackgroundService>.Instance, admission: admission);
         var gate = StorageLifecycleLock.ForRoot(root);
         await gate.WaitAsync().ConfigureAwait(false);
-        Task sweep;
-        Task<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlCommandResult> pause;
+        Task? sweep = null;
         try
         {
             sweep = service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None);
-            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
             Assert.IsFalse(sweep.IsCompleted);
-            pause = admission.PauseAsync("retention-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
-            await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
-            Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted retention sweep waited to delete.");
+            var pause = admission.PauseAsync("retention-lock", null, "test", null, CancellationToken.None);
+            await sweep.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsTrue(File.Exists(expired), "A pending pause must abandon the lock wait without deleting.");
         }
         finally
         {
             gate.Release();
+            if (sweep is not null) await sweep.ConfigureAwait(false);
         }
-        await sweep.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        // The admitted sweep deleted before the acknowledgement; nothing written after it is deleted.
-        Assert.IsFalse(File.Exists(expired));
-        Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
-        await File.WriteAllTextAsync(expired, "after the pause").ConfigureAwait(false);
+        await admission.ResumeAsync("retention-lock-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
         await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual("after the pause", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+        Assert.IsFalse(File.Exists(expired));
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_ManyExpiredDaysPauseAfterOneDeletionAndResumeWithoutSkipsOrDuplicates()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        var root = hold.Path;
+        var indexRoot = Path.Combine(root, "index");
+        Directory.CreateDirectory(indexRoot);
+        var paths = Enumerable.Range(0, 64).Select(day => Path.Combine(indexRoot,
+            $"frames_{new DateOnly(2020, 1, 1).AddDays(day):yyyy-MM-dd}.jsonl")).ToArray();
+        foreach (var path in paths) await File.WriteAllTextAsync(path, "expired").ConfigureAwait(false);
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        using var logger = new BlockingIndexDeletionLogger();
+        using var outbox = new SqliteArtifactOutbox();
+        using var service = new RetentionBackgroundService(
+            new StubConfigurationAccessor(), Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)), outbox,
+            new FixedCapacityProvider(50), new StoragePressureState(), logger, admission: admission);
+        var sweep = Task.Run(() => service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None));
+        Task<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlCommandResult>? pause = null;
+        try
+        {
+            await logger.FirstDeletion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            pause = admission.PauseAsync("many-days-pause", null, "test", null, CancellationToken.None);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (admission.Snapshot.State != HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionState.PauseRequested)
+                await Task.Delay(1, deadline.Token).ConfigureAwait(false);
+            Assert.IsFalse(pause.IsCompleted, "Acknowledgement must wait for the active deletion to finish.");
+            Assert.AreEqual(1, paths.Count(path => !File.Exists(path)));
+        }
+        finally
+        {
+            logger.Release.Set();
+            await sweep.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        }
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.AreEqual(1, paths.Count(path => !File.Exists(path)), "The pause wait must be bounded by one deletion, not 64 days.");
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, logger.DeletedPaths.Count, "Nothing may start after acknowledgement.");
+
+        await admission.ResumeAsync("many-days-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(paths.Any(File.Exists), "The resumed sweep must not skip a day.");
+        CollectionAssert.AreEquivalent(paths, logger.DeletedPaths.ToArray(), "Each day must be deleted exactly once.");
+    }
+
+    private sealed class BlockingIndexDeletionLogger : ILogger<RetentionBackgroundService>, IDisposable
+    {
+        internal TaskCompletionSource FirstDeletion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ManualResetEventSlim Release { get; } = new(false);
+        internal List<string> DeletedPaths { get; } = [];
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name != "IndexFileDeleted") return;
+            var fields = (IEnumerable<KeyValuePair<string, object?>>)state!;
+            DeletedPaths.Add((string)fields.Single(field => field.Key == "File").Value!);
+            if (DeletedPaths.Count != 1) return;
+            FirstDeletion.TrySetResult();
+            if (!Release.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException("The test did not release its deletion.");
+        }
+        public void Dispose()
+        {
+            Release.Set();
+            Release.Dispose();
+        }
     }
 
     [TestMethod]
@@ -249,6 +315,59 @@ public sealed class RetentionBackgroundServiceTests
         {
             DeleteRoot(root);
         }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ApplyRetentionAsync_PendingPauseCompletesRawInitializationQuarantineBeforeAcknowledgement()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = hold.Path,
+            RawIngressReserveBytes = 0,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var ingress = new RawCaptureIngress(options, new FixedCapacityProvider(50), state,
+            TimeProvider.System, telemetry, NullLogger<RawCaptureIngress>.Instance,
+            new NullRawIngressFaultInjector(), maintenanceGate: hold.Gate);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var raw = Path.Combine(hold.Path, "frames", "2026", "01", "01", "Raw");
+        Directory.CreateDirectory(raw);
+        for (var index = 0; index < 3; index++)
+            await File.WriteAllBytesAsync(Path.Combine(raw, $"{index}.bin"), new byte[] { (byte)index }).ConfigureAwait(false);
+        ingress.InvalidateEvidence();
+        Task? pause = null;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, owner) =>
+        {
+            if (instrument.Meter.Name == RawIngressTelemetry.MeterName &&
+                instrument.Name == "camera_agent.ingress.sqlite.transactions") owner.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, listenerState) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == "operation" && Equals(tag.Value, "reconciliation-plan"))
+                    pause ??= admission.PauseAsync("retention-initialization-pause", null, "test", null, CancellationToken.None);
+        });
+        listener.Start();
+        using var service = new RetentionBackgroundService(new StubConfigurationAccessor(), options,
+            TimeProvider.System, new SqliteArtifactOutbox(), new FixedCapacityProvider(50),
+            new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance, ingress, admission: admission);
+        await service.ApplyRetentionAsync(CreateConfig(hold.Path), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(hold.Path, "journal", "raw-ingress.db"), 1);
+        Assert.IsEmpty(await journal.ReadPlannedQuarantinesAsync(CancellationToken.None).ConfigureAwait(false),
+            "The pause token was used as operation cancellation, leaving an active quarantine half-done.");
+        Assert.HasCount(2, Directory.GetFiles(raw));
+        await admission.ResumeAsync("retention-initialization-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(Directory.GetFiles(raw));
+        Assert.HasCount(3, Directory.GetFiles(Path.Combine(hold.Path, "quarantine"), "*.bin", SearchOption.AllDirectories));
     }
 
     [TestMethod]

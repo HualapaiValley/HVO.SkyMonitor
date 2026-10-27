@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
@@ -52,6 +53,20 @@ internal sealed class SkyCliHost
 
     /// <summary>hvo-sky's own version: <c>&lt;version&gt;+&lt;commit&gt;</c>.</summary>
     public string ClientVersion { get; init; } = Version;
+
+    /// <summary>
+    /// The addresses bound to this machine's interfaces. Plain HTTP to one of them stays on this machine, so it is not
+    /// warned about (#1384). Tests give their own.
+    /// </summary>
+    public Func<IReadOnlyCollection<IPAddress>> LocalAddresses { get; init; } = SkyAddress.InterfaceAddresses;
+
+    /// <summary>
+    /// The proxy a connection to CameraAgent goes through: <see cref="HttpClient.DefaultProxy"/>, from <c>http_proxy</c>,
+    /// <c>no_proxy</c> and the like, which the connection's handler uses when it is given none. A request through a proxy
+    /// leaves this machine, so plain HTTP to one of its own addresses is warned about unless the proxy bypasses it
+    /// (#1384). A loopback address is reached directly, never through it (#1404). Tests give their own.
+    /// </summary>
+    public Func<IWebProxy?> Proxy { get; init; } = static () => HttpClient.DefaultProxy;
 
     /// <summary>For tests: the HTTP handler of every connection to CameraAgent.</summary>
     public Func<HttpMessageHandler>? CreateHandler { get; init; }

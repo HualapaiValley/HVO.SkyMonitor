@@ -2,6 +2,9 @@ using AngleSharp.Dom;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -13,6 +16,153 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class AutomationsPageTests
 {
+    [TestMethod]
+    public void GuidedOrbitalSetup_PrefillsTheExistingEditorAndSavesThroughItsNormalCommand()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=orbital");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-name");
+        Assert.AreEqual("Orbital elements refresh", cut.Find("#automation-name").GetAttribute("value"));
+        Assert.AreEqual("21600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.IsEmpty(service.SaveRequests);
+        cut.Find("#automation-interval").Change("7199");
+        service.Kind = OperatorUiResultKind.Invalid;
+        service.Message = OrbitalOperatorText.Describe(OrbitalElementsAutomationAdapter.IntervalBelowFloorReasonCode);
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        Assert.AreEqual(7199, service.SaveRequests.Single().TriggerInterval);
+        Assert.Contains(service.Message, cut.Markup, StringComparison.Ordinal);
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-interval").Change("21600");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        var request = service.SaveRequests.Last();
+        Assert.AreEqual(OrbitalElementsAutomationAdapter.DefinitionId, request.DefinitionId);
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, request.TaskTarget);
+        Assert.AreEqual(21600, request.TriggerInterval);
+        Assert.AreEqual(0, request.ExpectedVersion);
+        Assert.AreEqual(LocalAutomationTriggerKind.Periodic, request.TriggerKind);
+        Assert.IsTrue(request.Enabled);
+        Assert.IsNotEmpty(request.IdempotencyKey);
+        Assert.Contains("first Refresh now", cut.Find("#orbital-setup-guide").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void GuidedOrbitalSetup_ExistingDefinitionIsPreservedWithoutOpeningACreateDialog()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=orbital");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#orbital-setup-guide");
+        Assert.IsEmpty(cut.FindAll("#automation-name"));
+        Assert.IsEmpty(service.SaveRequests);
+        Assert.IsNotNull(cut.Find("#automation-definition-orbital-elements-refresh"));
+    }
+
+    [TestMethod]
+    public void GuidedSpaceWeatherSetup_PrefillsTheReservedDefinitionAndSavesThroughItsNormalCommand()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: []))));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=space-weather");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-name");
+        Assert.AreEqual("Space weather refresh", cut.Find("#automation-name").GetAttribute("value"));
+        Assert.AreEqual(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh), cut.Find("#automation-task").GetAttribute("value"));
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.DefinitionId, cut.Find("#automation-id").GetAttribute("value"));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.IsEmpty(cut.FindAll("#orbital-setup-guide"));
+        var banner = cut.Find("#space-weather-setup-guide");
+        Assert.AreEqual("/operations/space-weather", banner.QuerySelector("a")!.GetAttribute("href"));
+        Assert.Contains("a shorter interval does not fetch more often", banner.TextContent, StringComparison.Ordinal);
+        Assert.IsEmpty(service.SaveRequests);
+
+        // Above 120 seconds is still within the general periodic range; the adapter, not the page, rejects it and
+        // the page shows the server's reason.
+        cut.Find("#automation-interval").Change("300");
+        service.Kind = OperatorUiResultKind.Invalid;
+        service.Message = SpaceWeatherOperatorText.Describe("space-weather.interval-out-of-range");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        Assert.AreEqual(300, service.SaveRequests.Single().TriggerInterval);
+        Assert.Contains(service.Message, cut.Markup, StringComparison.Ordinal);
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-interval").Change("120");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        var request = service.SaveRequests.Last();
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.DefinitionId, request.DefinitionId);
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.Target, request.TaskTarget);
+        Assert.AreEqual(LocalAutomationTaskKind.SpaceWeatherRefresh, request.TaskKind);
+        Assert.AreEqual(120, request.TriggerInterval);
+        Assert.AreEqual(0, request.ExpectedVersion);
+        Assert.AreEqual(LocalAutomationTriggerKind.Periodic, request.TriggerKind);
+        Assert.IsTrue(request.Enabled);
+        Assert.IsNotEmpty(request.IdempotencyKey);
+    }
+
+    [TestMethod]
+    public void GuidedSpaceWeatherSetup_ExistingDefinitionIsPreservedWithoutOpeningACreateDialog()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithSpaceWeather(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=space-weather");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#space-weather-setup-guide");
+        Assert.IsEmpty(cut.FindAll("#automation-name"));
+        Assert.IsEmpty(service.SaveRequests);
+        var card = cut.Find($"#{AutomationsPage.CardId(SpaceWeatherAutomationAdapter.DefinitionId)}");
+        Assert.IsTrue(card.QuerySelector(".automation-icon")!.ClassList.Contains("space-weather"));
+        Assert.AreEqual("Every 2 min", Fact(card, "Trigger"));
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.Target, Fact(card, "Target"));
+    }
+
+    [TestMethod]
+    public void GuidedSetup_AnUnknownTokenOpensNothing()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithSpaceWeather(Automation(definitions: [], calendar: [], runs: [])));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=Space-Weather");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-create");
+        Assert.IsEmpty(cut.FindAll("#space-weather-setup-guide"));
+        Assert.IsEmpty(cut.FindAll("#orbital-setup-guide"));
+        Assert.IsEmpty(cut.FindAll("#automation-name"));
+        Assert.IsEmpty(service.SaveRequests);
+    }
+
+    [TestMethod]
+    public void ReservedTasks_TheSpaceWeatherRowPinsTheAdaptersReservedDefinition()
+    {
+        var row = ReservedAutomationTasks.SpaceWeather;
+
+        Assert.AreEqual(LocalAutomationTaskKind.SpaceWeatherRefresh, row.Kind);
+        Assert.AreEqual("space-weather-refresh", row.DefinitionId);
+        Assert.AreEqual("swpc", row.Target);
+        Assert.AreEqual(LocalAutomationTriggerKind.Periodic, row.TriggerKind);
+        Assert.AreEqual(60, row.MinimumIntervalSeconds);
+        Assert.AreEqual(120, row.MaximumIntervalSeconds);
+        Assert.AreEqual(120, row.DefaultIntervalSeconds);
+        Assert.AreEqual("120", row.DefaultInterval);
+        Assert.AreEqual("space-weather", row.IconClass);
+        Assert.AreEqual("space-weather", row.SetupToken);
+        Assert.AreEqual("Space weather refresh", row.SetupName);
+        Assert.AreEqual("space-weather-setup-guide", row.BannerId);
+        Assert.Contains("Each run checks every enabled product; the provider's own cadence decides what is fetched",
+            row.IntervalHint, StringComparison.Ordinal);
+        TestSpaceWeatherUiService.AssertCompliantWording(row.Banner.Value);
+        Assert.AreSame(row, ReservedAutomationTasks.ForKind(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreSame(row, ReservedAutomationTasks.ForSetup("space-weather"));
+        Assert.IsNull(ReservedAutomationTasks.ForSetup("Space-Weather"));
+        Assert.IsNull(ReservedAutomationTasks.ForSetup(null));
+        Assert.IsNull(ReservedAutomationTasks.ForKind(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition));
+        Assert.IsTrue(ReservedAutomationTasks.IsReservedIdentifier("space-weather-refresh"));
+        Assert.IsTrue(ReservedAutomationTasks.IsDefaultInterval("120"));
+    }
+
     [TestMethod]
     public void SourceWindowDefinition_IsTruthfullyReadOnlyHereAndTogglePreservesItsPolicy()
     {
@@ -759,6 +909,242 @@ public sealed class AutomationsPageTests
     public void DescribeTrigger_UsesTheLargestWholeUnit(LocalAutomationTriggerKind trigger, int interval, string expected)
         => Assert.AreEqual(expected, AutomationsPage.DescribeTrigger(trigger, interval));
 
+    [TestMethod]
+    public void Create_TheOrbitalTaskFixesItsIdentifierTargetAndTrigger()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(OrbitalElementsAutomationAdapter.DefinitionId, id.GetAttribute("value"));
+        Assert.IsTrue(id.HasAttribute("readonly"));
+        Assert.AreEqual(AutomationsPage.OrbitalIdentifierHint, cut.Find("#automation-id-help").TextContent);
+        var target = cut.Find("#automation-target");
+        Assert.IsTrue(target.HasAttribute("disabled"));
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, target.GetAttribute("value"));
+        Assert.HasCount(1, target.QuerySelectorAll("option"), "The only registered target, with no placeholder.");
+        var trigger = cut.Find("#automation-trigger");
+        Assert.IsTrue(trigger.HasAttribute("disabled"));
+        Assert.AreEqual(nameof(LocalAutomationTriggerKind.Periodic), trigger.GetAttribute("value"));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual($"Every 6 h. {AutomationsPage.OrbitalIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+
+        // The provider floor is the adapter's rule; the page states it and leaves the decision to the server.
+        cut.Find("#automation-interval").Change("3600");
+        Assert.AreEqual($"{AutomationsPage.OrbitalIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+    }
+
+    [TestMethod]
+    public void Create_LeavingTheOrbitalTaskReleasesTheReservedIdentifierAndInterval()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition));
+
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(string.Empty, id.GetAttribute("value") ?? string.Empty);
+        Assert.IsFalse(id.HasAttribute("readonly"));
+        Assert.IsFalse(cut.Find("#automation-target").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#automation-trigger").HasAttribute("disabled"));
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual("virtual-sky-temperature", cut.Find("#automation-target").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void Create_TheSpaceWeatherTaskFixesItsIdentifierTargetAndPeriodicTrigger()
+    {
+        using var context = CreateContext();
+        Register(context, WithSpaceWeather(Automation(definitions: [], calendar: [], runs: [])));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.DefinitionId, id.GetAttribute("value"));
+        Assert.IsTrue(id.HasAttribute("readonly"));
+        Assert.AreEqual(ReservedAutomationTasks.SpaceWeatherIdentifierHint, cut.Find("#automation-id-help").TextContent);
+        var target = cut.Find("#automation-target");
+        Assert.IsTrue(target.HasAttribute("disabled"));
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.Target, target.GetAttribute("value"));
+        Assert.HasCount(1, target.QuerySelectorAll("option"), "The only registered target, with no placeholder.");
+        var trigger = cut.Find("#automation-trigger");
+        Assert.IsTrue(trigger.HasAttribute("disabled"));
+        Assert.AreEqual(nameof(LocalAutomationTriggerKind.Periodic), trigger.GetAttribute("value"));
+        Assert.HasCount(1, trigger.QuerySelectorAll("option"), "Periodic is the only trigger.");
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual($"Every 2 min. {ReservedAutomationTasks.SpaceWeatherIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+
+        cut.Find("#automation-interval").Change("60");
+        Assert.AreEqual($"Every 1 min. {ReservedAutomationTasks.SpaceWeatherIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+
+        // Outside 60 to 120 seconds the page states the bounds and leaves the decision to the server.
+        cut.Find("#automation-interval").Change("59");
+        Assert.AreEqual($"{ReservedAutomationTasks.SpaceWeatherIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+        cut.Find("#automation-interval").Change("121");
+        Assert.AreEqual($"{ReservedAutomationTasks.SpaceWeatherIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+    }
+
+    [TestMethod]
+    public void Create_SwitchingBetweenReservedTasksMovesTheirIdentifiersAndUntouchedDefaults()
+    {
+        using var context = CreateContext();
+        Register(context, WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: []))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual(OrbitalElementsAutomationAdapter.DefinitionId, cut.Find("#automation-id").GetAttribute("value"));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.DefinitionId, cut.Find("#automation-id").GetAttribute("value"));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual(SpaceWeatherAutomationAdapter.Target, cut.Find("#automation-target").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition));
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(string.Empty, id.GetAttribute("value") ?? string.Empty);
+        Assert.IsFalse(id.HasAttribute("readonly"));
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual("virtual-sky-temperature", cut.Find("#automation-target").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void Create_ATypedIntervalEqualToAReservedDefaultIsKeptWhenThatTaskWasNotSelected()
+    {
+        using var context = CreateContext();
+        Register(context, WithStillImages(WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: [])))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-interval").Change("120");
+        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.CaptureRelative));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.Periodic));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.StillImageGeneration));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        // As before the space-weather task existed, the orbital task keeps any interval but an untouched generic one.
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void Create_LeavingTheSpaceWeatherTaskResetsItsUntouchedDefault()
+    {
+        using var context = CreateContext();
+        Register(context, WithStillImages(WithSpaceWeather(Automation(definitions: [], calendar: [], runs: []))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.StillImageGeneration));
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual(string.Empty, cut.Find("#automation-id").GetAttribute("value") ?? string.Empty);
+    }
+
+    [TestMethod]
+    public void Create_AnUntouchedOrbitalDefaultBecomesTheSpaceWeatherDefaultAndBack()
+    {
+        using var context = CreateContext();
+        Register(context, WithSpaceWeather(WithOrbital(Automation(definitions: [], calendar: [], runs: []))));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.SpaceWeatherRefresh));
+        Assert.AreEqual("120", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void DefinitionQuery_FocusesTheOrbitalCardAndScrollsToItOnce()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?view=runs&definition=orbital-elements-refresh");
+
+        var cut = context.Render<AutomationsPage>();
+
+        var card = cut.WaitForElement($"#{AutomationsPage.CardId(OrbitalElementsAutomationAdapter.DefinitionId)}");
+        Assert.AreEqual("Definitions", cut.Find(".automation-tabs button.active").TextContent.Trim());
+        StringAssert.Contains(card.ClassName, "focused", StringComparison.Ordinal);
+        Assert.AreEqual("true", card.GetAttribute("aria-current"));
+        Assert.IsNotNull(card.QuerySelector(".automation-icon.orbital svg ellipse"));
+        Assert.Contains("within the provider's two-hour floor", card.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Every 6 h", Fact(card, "Trigger"));
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, Fact(card, "Target"));
+        var other = cut.Find($"#{AutomationsPage.CardId("sky-temperature")}");
+        Assert.IsFalse(other.ClassList.Contains("focused"));
+        Assert.IsNull(other.GetAttribute("aria-current"));
+        Assert.IsNotNull(other.QuerySelector(".automation-icon.environment"));
+        Assert.IsEmpty(cut.FindAll("#automation-focus-missing"));
+        cut.WaitForAssertion(() => Assert.AreEqual(1, context.JSInterop.Invocations.Count(static invocation =>
+            invocation.Identifier == "scrollIntoViewById" &&
+            Equals(invocation.Arguments[0], "automation-definition-orbital-elements-refresh"))));
+
+        cut.Find("#automation-refresh").Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.Reads));
+        Assert.IsTrue(cut.Find($"#{AutomationsPage.CardId(OrbitalElementsAutomationAdapter.DefinitionId)}").ClassList.Contains("focused"));
+        Assert.AreEqual(1, context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "scrollIntoViewById"),
+            "A reload keeps the focus mark but does not scroll again.");
+    }
+
+    [TestMethod]
+    public void DefinitionQuery_ForAMissingDefinitionSaysSoWithoutScrolling()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation()));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?definition=orbital-elements-refresh");
+
+        var cut = context.Render<AutomationsPage>();
+
+        var note = cut.WaitForElement("#automation-focus-missing");
+        Assert.AreEqual("No automation named orbital-elements-refresh is defined on this CameraAgent. Use Create automation to define it.",
+            note.TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll(".automation-card.focused"));
+        Assert.IsEmpty(context.JSInterop.Invocations.Where(static invocation => invocation.Identifier == "scrollIntoViewById"));
+    }
+
+    [TestMethod]
+    [DataRow("../etc/passwd")]
+    [DataRow("Orbital Elements")]
+    [DataRow("")]
+    public void DefinitionQuery_IgnoresAMalformedIdentifier(string definition)
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?view=runs&definition=" + Uri.EscapeDataString(definition));
+
+        var cut = context.Render<AutomationsPage>();
+
+        cut.WaitForElement("#automation-runs");
+        Assert.AreEqual("Run history", cut.Find(".automation-tabs button.active").TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll("#automation-focus-missing"));
+        Assert.IsEmpty(cut.FindAll(".automation-card.focused"));
+    }
+
     private static void OpenCreate(IRenderedComponent<AutomationsPage> cut)
     {
         cut.WaitForElement("#automation-create:not([disabled])").Click();
@@ -778,6 +1164,94 @@ public sealed class AutomationsPageTests
 
     private static string FactText(IRenderedComponent<AutomationsPage> cut, string term)
         => Fact(cut.Find(".ops-facts"), term);
+
+    /// <summary>The orbital refresh descriptor as the adapter registers it.</summary>
+    private static readonly LocalAutomationTaskDescriptor OrbitalDescriptor = new(
+        LocalAutomationTaskKind.OrbitalElementsRefresh,
+        "Refreshes CelesTrak GP active-group orbital elements within the provider's two-hour floor.",
+        [LocalAutomationTriggerKind.Periodic],
+        [CelesTrakGpSource.DatasetKey],
+        true,
+        null);
+
+    /// <summary>Adds the orbital refresh task to the registry and, when <paramref name="defined"/>, its reserved definition.</summary>
+    private static LocalAutomationOperatorState WithOrbital(LocalAutomationOperatorState state, bool defined = false)
+    {
+        var registered = state with { Registry = [.. state.Registry, OrbitalDescriptor] };
+        if (!defined)
+        {
+            return registered;
+        }
+        var definition = new LocalAutomationDefinition(
+            OrbitalElementsAutomationAdapter.DefinitionId,
+            "Orbital elements refresh",
+            true,
+            LocalAutomationTaskKind.OrbitalElementsRefresh,
+            CelesTrakGpSource.DatasetKey,
+            LocalAutomationTriggerKind.Periodic,
+            21_600,
+            Instant.AddDays(-1));
+        var orbital = new LocalAutomationDefinitionState(
+            definition,
+            1,
+            new string('b', 64),
+            Instant.AddDays(-1),
+            "owner",
+            "orbital schedule",
+            Instant.AddHours(3),
+            null,
+            null,
+            [new LocalAutomationRevision(1, new string('b', 64), definition, false, Instant.AddDays(-1), "owner", "orbital schedule")]);
+        return registered with { Definitions = [.. registered.Definitions, orbital] };
+    }
+
+    /// <summary>The space-weather refresh descriptor as the adapter registers it.</summary>
+    private static readonly LocalAutomationTaskDescriptor SpaceWeatherDescriptor = new(
+        LocalAutomationTaskKind.SpaceWeatherRefresh,
+        "Refreshes SWPC on a 60–120 second runner tick; provider cadence is enforced separately for each product.",
+        [LocalAutomationTriggerKind.Periodic],
+        [SpaceWeatherAutomationAdapter.Target],
+        true,
+        null);
+
+    /// <summary>Adds a second generic periodic task, so the task kind can change without selecting a reserved task.</summary>
+    private static LocalAutomationOperatorState WithStillImages(LocalAutomationOperatorState state)
+        => state with
+        {
+            Registry = [.. state.Registry, new LocalAutomationTaskDescriptor(LocalAutomationTaskKind.StillImageGeneration,
+                "Installed producer", [LocalAutomationTriggerKind.Periodic], ["still-images"], true, null)]
+        };
+
+    /// <summary>Adds the space-weather refresh task to the registry and, when <paramref name="defined"/>, its reserved definition.</summary>
+    private static LocalAutomationOperatorState WithSpaceWeather(LocalAutomationOperatorState state, bool defined = false)
+    {
+        var registered = state with { Registry = [.. state.Registry, SpaceWeatherDescriptor] };
+        if (!defined)
+        {
+            return registered;
+        }
+        var definition = new LocalAutomationDefinition(
+            SpaceWeatherAutomationAdapter.DefinitionId,
+            "Space weather refresh",
+            true,
+            LocalAutomationTaskKind.SpaceWeatherRefresh,
+            SpaceWeatherAutomationAdapter.Target,
+            LocalAutomationTriggerKind.Periodic,
+            SpaceWeatherAutomationAdapter.DefaultIntervalSeconds,
+            Instant.AddDays(-1));
+        var spaceWeather = new LocalAutomationDefinitionState(
+            definition,
+            1,
+            new string('c', 64),
+            Instant.AddDays(-1),
+            "owner",
+            "space-weather schedule",
+            Instant.AddMinutes(2),
+            null,
+            null,
+            [new LocalAutomationRevision(1, new string('c', 64), definition, false, Instant.AddDays(-1), "owner", "space-weather schedule")]);
+        return registered with { Definitions = [.. registered.Definitions, spaceWeather] };
+    }
 
     private static BunitContext CreateContext()
     {

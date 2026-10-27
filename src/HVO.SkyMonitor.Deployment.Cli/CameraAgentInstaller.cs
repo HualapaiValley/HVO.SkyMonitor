@@ -41,6 +41,20 @@ internal sealed partial class CameraAgentInstaller
         Action<string, int>? portAvailabilityProbe = null,
         IHostEnvironment? hostEnvironment = null)
     {
+        var result = await InstallCoreAsync(request, processRunner, ownerClientFactory, uid, gid,
+            portAvailabilityProbe, hostEnvironment, cancellationToken).ConfigureAwait(false);
+        var paths = InstallationPaths.Create(request.ProductRoot, result.InstanceId, ProductionCatalog.DefaultCatalogId);
+        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, result.Image.ImageId,
+            operation: null, cancellationToken).ConfigureAwait(false);
+        return programs.Count == 0 ? result : result with { Plan = DeploymentPlan.Of([.. result.Plan?.Items ?? [], .. programs]) };
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operational failures must retain their durable phase journal.")]
+    private static async Task<InstallationResult> InstallCoreAsync(
+        InstallRequest request, IProcessRunner processRunner, Func<Uri, IOwnerBootstrapClient> ownerClientFactory,
+        uint uid, uint gid, Action<string, int>? portAvailabilityProbe,
+        IHostEnvironment? hostEnvironment, CancellationToken cancellationToken)
+    {
         request.Validate();
         // The public entry point never supplies a host environment, so a production install always measures the real
         // filesystems and PATH; unit flows substitute one so shared-host disk and tool state cannot decide them.
@@ -76,6 +90,9 @@ internal sealed partial class CameraAgentInstaller
         // the Docker daemon is contacted, so an unsupported architecture or tampered file fails with nothing yet mutated.
         var acquiredImage = await ReleaseAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
         request = ApplyReleaseImage(request, acquiredImage);
+        if (request.Release is not null)
+            _ = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, string.Empty,
+                operation: null, cancellationToken).ConfigureAwait(false);
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
@@ -435,6 +452,8 @@ internal sealed partial class CameraAgentInstaller
             }
             // The install record follows the instance's own records, so it is settled once they are complete and before
             // the installation is recorded as completed: an interruption between the two is finished by a re-run.
+            await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, result.Image.ImageId,
+                cancellationToken).ConfigureAwait(false);
             var recordLocation = InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot);
             var recordAction = await InstallRecordStore.SettleInstanceAsync(
                     recordLocation,
@@ -603,7 +622,7 @@ internal sealed partial class CameraAgentInstaller
     /// temporary file (#1315): the catalog is inspected where it lies, the image is inspected, and the Compose files are
     /// rendered in memory. Docker renders a Compose model only from files, so a plan reports no model hash. A release
     /// image Docker does not hold yet, which the run would import, is described as it was read and checked from the
-    /// release's archive or registry.
+    /// release's archive or registry, under the ID Docker will give it (<see cref="DockerClient.PlannedReleaseImageAsync"/>).
     /// </summary>
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
@@ -617,7 +636,8 @@ internal sealed partial class CameraAgentInstaller
         var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
         var (daemon, image) = release?.CheckedImage is { } checkedImage &&
                               !await docker.HoldsReleaseImageAsync(release.Image, cancellationToken).ConfigureAwait(false)
-            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false), checkedImage)
+            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false),
+                await docker.PlannedReleaseImageAsync(release.Image, checkedImage, cancellationToken).ConfigureAwait(false))
             : await docker.PrepareImageAsync(request, allowMutation: false, release?.Image, cancellationToken)
                 .ConfigureAwait(false);
         if (!IsValid(image, request.ReplayProfile))
@@ -885,7 +905,7 @@ internal sealed partial class CameraAgentInstaller
         }
         catch (System.Text.DecoderFallbackException exception)
         {
-            throw new InstallerException("The owner temporary password file is not valid UTF-8.", exception);
+            throw new InstallerException("The owner temporary password-file is not valid UTF-8.", exception);
         }
         finally
         {

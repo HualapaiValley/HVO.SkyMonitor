@@ -130,6 +130,21 @@ public static class LocalAutomationContract
 
     /// <summary>The reason code returned when a command carries an unusable identity or interval.</summary>
     public const string InvalidCommandReasonCode = "automation.invalidCommand";
+
+    /// <summary>
+    /// The reason code returned when a registered task resolves a new definition's phase origin to a
+    /// value that is not a millisecond-truncated UTC instant at or after now and within one interval.
+    /// </summary>
+    public const string InvalidTriggerEpochReasonCode = "automation.invalidTriggerEpoch";
+
+    /// <summary>The reason code returned when a run-now is requested while one is already queued or running.</summary>
+    public const string RunNowPendingReasonCode = "automation.run-now-pending";
+
+    /// <summary>
+    /// The reason code returned when a run-now names a definition that is disabled, not periodic, or
+    /// whose registered task does not accept an explicit run-now.
+    /// </summary>
+    public const string RunNowUnavailableReasonCode = "automation.run-now-unavailable";
 }
 
 /// <summary>
@@ -147,7 +162,25 @@ public enum LocalAutomationTaskKind
     StillImageGeneration,
 
     /// <summary>Queues local-only hourly or daily video through the bounded background producer.</summary>
-    TimeLapseGeneration
+    TimeLapseGeneration,
+
+    /// <summary>
+    /// Refreshes the local orbital-element snapshot through an explicitly registered periodic task
+    /// adapter. Appended only: the stored text spelling of every earlier value is unchanged.
+    /// </summary>
+    OrbitalElementsRefresh,
+
+    /// <summary>
+    /// Refreshes local SWPC facts through an explicitly registered periodic task adapter.
+    /// Appended only: the stored text spelling of every earlier value is unchanged.
+    /// </summary>
+    SpaceWeatherRefresh,
+
+    /// <summary>
+    /// Refreshes the managed Earth-orientation and leap-second pair at most daily through an explicitly
+    /// registered periodic task adapter. Appended only: the stored text spelling of every earlier value is unchanged.
+    /// </summary>
+    TimeDataRefresh
 }
 
 /// <summary>

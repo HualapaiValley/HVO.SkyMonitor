@@ -14,6 +14,7 @@ readonly DOCS=(
     docs/identity/overview.md
     docs/identity/operations-runbook.md
     docs/security/secrets.md
+    docs/runbooks/space-weather-refresh.md
     docs/runbooks/cameraagent-retention.md
     docs/runbooks/cameraagent-arm64-ci.md
     docs/runbooks/infra-operations.md

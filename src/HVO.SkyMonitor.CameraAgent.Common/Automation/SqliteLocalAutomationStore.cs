@@ -762,6 +762,23 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                     LocalAutomationContract.DefinitionLimitReasonCode, "definition.definitionId",
                     observedCaptureSequence, cancellationToken).ConfigureAwait(false);
             }
+            // Only a definition's first save asks its registered task for a phase origin. The command
+            // hash excludes the epoch and a replay returned above, so a retried save stays identical.
+            var initialEpoch = _registry.ResolveInitialTriggerEpoch(definition, epoch);
+            if (!IsInitialTriggerEpoch(initialEpoch, epoch, definition))
+            {
+                return await RejectAsync(
+                    connection, transaction, LocalAutomationCommandStatus.Invalid,
+                    LocalAutomationContract.InvalidTriggerEpochReasonCode, "definition.triggerEpochUtc",
+                    observedCaptureSequence, cancellationToken).ConfigureAwait(false);
+            }
+            definition = definition with { TriggerEpochUtc = initialEpoch };
+            if ((LocalAutomationDefinitionValidator.Validate(definition) ?? _registry.Validate(definition)) is { } resolved)
+            {
+                return await RejectAsync(
+                    connection, transaction, LocalAutomationCommandStatus.Invalid, resolved.ReasonCode,
+                    resolved.FieldPath, observedCaptureSequence, cancellationToken).ConfigureAwait(false);
+            }
         }
         var revisionSha256 = ComputeRevisionSha256(definition);
         if (existing is not null &&
@@ -1630,6 +1647,18 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
 
     private static DateTimeOffset Truncate(DateTimeOffset value)
         => new(value.UtcDateTime.AddTicks(-(value.UtcDateTime.Ticks % TimeSpan.TicksPerMillisecond)), TimeSpan.Zero);
+
+    /// <summary>
+    /// A resolved phase origin is a millisecond-truncated UTC instant at or after now. A periodic
+    /// origin also lies within one interval of now, which expresses every phase while keeping the
+    /// first occurrence bounded; any other trigger keeps the save instant.
+    /// </summary>
+    private static bool IsInitialTriggerEpoch(
+        DateTimeOffset epochUtc, DateTimeOffset nowUtc, LocalAutomationDefinition definition)
+        => epochUtc.Offset == TimeSpan.Zero && epochUtc == Truncate(epochUtc) && epochUtc >= nowUtc &&
+           (definition.TriggerKind == LocalAutomationTriggerKind.Periodic
+               ? epochUtc - nowUtc < TimeSpan.FromSeconds(definition.TriggerInterval)
+               : epochUtc == nowUtc);
 
     /// <summary>Trims to the stored bound without splitting a surrogate pair.</summary>
     private static string Bound(string value)

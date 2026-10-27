@@ -1,0 +1,16 @@
+{
+  "Revision": "e20f945d8f7108cb7a15e272dc42a6289107b2ed",
+  "Disposition": "Incomplete original harness run; retained for transparency, excluded from the equivalent comparison. Seven completed arms (210 attempts); next arm aborted on SQL51006. Individual outcomes of the aborted arm were not retained by the original harness. No victim was retried or replaced.",
+  "Result": {
+    "RawTrxSha256": "a4b56bcac751f5513db25d1c8835fc8b91458cbc01eaad9e772d957bc8e8de43",
+    "Tests": [
+      {
+        "Test": "Issue1557_MaximumLineage_RecordsProductionBaseline",
+        "Outcome": "Failed",
+        "Duration": "00:00:41.8507231",
+        "Error": "Test method HVO.SkyMonitor.IntegrationTests.EnvironmentalObservationPerformanceTests.Issue1557_MaximumLineage_RecordsProductionBaseline threw exception:\r\nMicrosoft.Data.SqlClient.SqlException: Could not acquire the environmental source lock.",
+        "TestContext": "issue1557 refs=1 c=1 p95_ms=11.465 commands=10 deadlocks=0\nissue1557 refs=1 c=4 p95_ms=21.630 commands=10 deadlocks=0\nissue1557 refs=1 c=8 p95_ms=26.463 commands=10 deadlocks=0\nissue1557 refs=32 c=1 p95_ms=109.127 commands=72 deadlocks=0\nissue1557 refs=32 c=4 p95_ms=7462.448 commands=72 deadlocks=13\nissue1557 refs=32 c=8 p95_ms=2478.817 commands=72 deadlocks=24\nissue1557 refs=128 c=1 p95_ms=91.219 commands=267 deadlocks=0"
+      }
+    ]
+  }
+}

@@ -92,6 +92,28 @@ internal static class StorageLifecycleLock
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
         => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
+
+    internal static async ValueTask WaitAsync(
+        SemaphoreSlim gate, string caller, Microsoft.Extensions.Logging.ILogger? logger,
+        CancellationToken cancellationToken, TimeProvider? timeProvider = null)
+    {
+        var clock = timeProvider ?? TimeProvider.System;
+        var started = clock.GetTimestamp();
+        try { await gate.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            StorageLifecycleTelemetry.Record(caller, clock.GetElapsedTime(started), logger, acquired: false);
+            throw;
+        }
+        // Only an acquired gate owns a release, including when an observer throws.
+        try { StorageLifecycleTelemetry.Record(caller, clock.GetElapsedTime(started), logger); }
+        catch
+        {
+            gate.Release();
+            throw;
+        }
+    }
+
 }
 
 /// <summary>

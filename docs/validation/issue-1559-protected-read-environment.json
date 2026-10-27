@@ -1,0 +1,18 @@
+{
+  "cpuModel": "Intel(R) Core(TM) Ultra 9 285H",
+  "architecture": "x86_64",
+  "hostMemTotal": "32866076 kB",
+  "hostMemAvailableBefore": "30258424 kB",
+  "scratchFilesystem": "ext4",
+  "resourceBounds": {
+    "cpuAffinity": [
+      0
+    ],
+    "logicalProcessorCount": 1,
+    "managedHeapBytes": 402653184,
+    "rssHardLimit": null,
+    "externalServices": false,
+    "maximumConcurrentRequests": 4,
+    "commandTimeoutSeconds": 900
+  }
+}

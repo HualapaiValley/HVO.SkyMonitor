@@ -55,7 +55,18 @@ internal static class CanonicalCentralGraphSeedChain
             DefinitionJsonSha256: "C1365A0FF6614B1AED2FED96D2CB5B858764676FEAAE3CFD19403F63B24B7785",
             DefinitionIdentitySha256: "C1365A0FF6614B1AED2FED96D2CB5B858764676FEAAE3CFD19403F63B24B7785",
             PortablePlanIdentitySha256: "26D02C61ECD97F4DFC54CCC651267D670AD76781ED07E58CB3FDCF8EC9FDA64E",
-            CentralPlanIdentitySha256: "26D02C61ECD97F4DFC54CCC651267D670AD76781ED07E58CB3FDCF8EC9FDA64E")
+            CentralPlanIdentitySha256: "26D02C61ECD97F4DFC54CCC651267D670AD76781ED07E58CB3FDCF8EC9FDA64E"),
+        // Revision 2 (#526): Annotation Definition projected-annotation-v4 adds the measured stellar association
+        // requirement and the stellar label policy, so its implementation version and the graph identity change.
+        new(
+            "2",
+            Guid.Parse("80f3fea0-859d-4ad5-9585-f422977c67c2"),
+            Guid.Parse("5d26fce5-a0af-4cd9-b566-0bf91839c87f"),
+            DateTimeOffset.UnixEpoch.AddTicks(1),
+            DefinitionJsonSha256: "325B6E5A604642C8F08E30B0008F4687BA679A0DF20FADF544F5B51838988523",
+            DefinitionIdentitySha256: "325B6E5A604642C8F08E30B0008F4687BA679A0DF20FADF544F5B51838988523",
+            PortablePlanIdentitySha256: "16692249A028631B94E13A0B025C8CC02D1B3CB4B805CD47079C3F4D9B1CDEC9",
+            CentralPlanIdentitySha256: "16692249A028631B94E13A0B025C8CC02D1B3CB4B805CD47079C3F4D9B1CDEC9")
     ];
 
     internal static CanonicalCentralGraphSeedRevision Current => Revisions[^1];

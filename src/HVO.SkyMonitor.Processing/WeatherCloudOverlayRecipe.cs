@@ -102,7 +102,12 @@ internal sealed class WeatherCloudOverlayRecipe : IProcessingRecipe
         }
         var tileCount = checked(assessment.Grid.Columns * assessment.Grid.Rows);
         var mask = assessment.Mask?.Bits.ToArray() ?? new byte[(tileCount + 7) / 8];
-        var labels = CreateLabels(assessment, environment);
+        // The renderer accepts already-bounded labels. The declared character budget also applies when the
+        // recipe generates status text, including zero and hidden labels; it must not reject a valid setting.
+        var labels = options.DrawLabels && options.MaximumLabelCharacters > 0
+            ? CreateLabels(assessment, environment)
+                .Select(label => label[..Math.Min(label.Length, options.MaximumLabelCharacters)]).ToArray()
+            : [];
         var overlay = WeatherCloudOverlayRenderer.Render(
             display.Layout,
             display.Pixels,

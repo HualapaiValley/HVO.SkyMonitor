@@ -10,13 +10,15 @@ internal sealed class RawIngressReconciler(
     SqliteRawCaptureJournal journal,
     Action? fileFlushRecorder = null,
     Action? directorySyncRecorder = null,
-    IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null)
+    IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null,
+    Func<string, Stream>? openPayload = null)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
     private readonly IReadOnlyList<CaptureLaneDefinition> _laneDefinitions = laneDefinitions ?? [];
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
+    private readonly Func<string, Stream> _openPayload = openPayload ?? OpenPayload;
 
     /// <summary>A quarantine move found by inspection and made only under the maintenance barrier.</summary>
     private sealed record PendingQuarantine(string? PayloadPath, string? SidecarPath, string Reason, Guid? CaptureId);
@@ -28,11 +30,22 @@ internal sealed class RawIngressReconciler(
     /// rows that name those files, so while capture admission is not running no evidence is moved: the moves are
     /// counted as deferred and nothing is marked for them, and the next reconciliation makes them.
     /// </summary>
+    /// <remarks>
+    /// A committed entry's payload was flushed before its row committed, so this checks its structure only: the sidecar
+    /// is the committed manifest and the payload has the committed length. Its bytes are not read, so the pass does not
+    /// grow with retained payload bytes; the consumers that read a payload verify its checksum first. Evidence without a
+    /// committed row, which a crash can leave, is still hashed in full, as is every committed payload whose lane work
+    /// ended because processing found its evidence unusable. That outcome is durable, so every pass, a restart's
+    /// included, verifies the payload again until it is quarantined or an operator releases it.
+    /// </remarks>
     internal async Task<RawIngressReconciliationSummary> RunAsync(
-        Func<CancellationToken, ValueTask<IDisposable?>> enterMaintenance,
-        CancellationToken cancellationToken)
+        Func<CancellationToken, ValueTask<Capture.CaptureMaintenanceEntry>> enterMaintenance,
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         ArgumentNullException.ThrowIfNull(enterMaintenance);
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var inspectionToken = interruption.Token;
         var planned = new List<RawIngressPlannedQuarantine>();
         var pending = new List<PendingQuarantine>();
         var pendingSidecars = new HashSet<string>(StringComparer.Ordinal);
@@ -50,10 +63,11 @@ internal sealed class RawIngressReconciler(
         long quarantineBytes = 0;
         var framesRoot = Path.Combine(_root, "frames");
         Directory.CreateDirectory(framesRoot);
-        EnsureTreeHasNoLinks(framesRoot);
+        EnsureTreeHasNoLinks(framesRoot, inspectionToken);
 
-        foreach (var cleanup in await _journal.ReadPlannedCleanupsAsync(cancellationToken).ConfigureAwait(false))
+        foreach (var cleanup in await _journal.ReadPlannedCleanupsAsync(inspectionToken).ConfigureAwait(false))
         {
+            inspectionToken.ThrowIfCancellationRequested();
             var temporaryPath = Resolve(cleanup.Value);
             if (File.Exists(temporaryPath))
             {
@@ -64,11 +78,15 @@ internal sealed class RawIngressReconciler(
             cleaned++;
         }
 
-        planned.AddRange(await _journal.ReadPlannedQuarantinesAsync(cancellationToken).ConfigureAwait(false));
+        planned.AddRange(await _journal.ReadPlannedQuarantinesAsync(inspectionToken).ConfigureAwait(false));
+        var plannedCaptures = planned.Where(static operation => operation.CaptureId is not null)
+            .Select(static operation => operation.CaptureId!.Value).ToHashSet();
+        var plannedPaths = planned.SelectMany(static operation =>
+            new[] { operation.SourceRelativePath, operation.CompanionRelativePath }).OfType<string>().ToHashSet(StringComparer.Ordinal);
 
         foreach (var temporaryPath in EnumerateFiles(framesRoot, "*.tmp", recurse: true))
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            inspectionToken.ThrowIfCancellationRequested();
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, temporaryPath);
             var bytes = new FileInfo(temporaryPath).Length;
             var relative = Relative(temporaryPath);
@@ -84,21 +102,23 @@ internal sealed class RawIngressReconciler(
         Dictionary<Guid, List<string>> indexedArtifacts;
         try
         {
-            indexedArtifacts = ReadIndexedArtifactIds();
+            indexedArtifacts = ReadIndexedArtifactIds(inspectionToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             indexedArtifacts = [];
             indexProjectionFailures++;
         }
-        var claimedPayloads = new HashSet<string>(StringComparer.Ordinal);
-        var claimedSidecars = new HashSet<string>(StringComparer.Ordinal);
-        await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
+        // A durable plan still owns its paths, even if a newer companion could otherwise be recovered.
+        var claimedPayloads = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
+        var claimedSidecars = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
+        var reportedCaptures = await _journal.ReadReportedEvidenceFailuresAsync(inspectionToken).ConfigureAwait(false);
+        await foreach (var entry in _journal.EnumerateAsync(inspectionToken).ConfigureAwait(false))
         {
             claimedPayloads.Add(entry.PayloadRelativePath);
             claimedSidecars.Add(entry.SidecarRelativePath);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (entry.EvidenceWrittenOff)
+            inspectionToken.ThrowIfCancellationRequested();
+            if (entry.EvidenceWrittenOff || entry.State == "quarantined" || plannedCaptures.Contains(entry.CaptureId))
             {
                 continue;
             }
@@ -123,7 +143,9 @@ internal sealed class RawIngressReconciler(
                 missingEvidence++;
                 continue;
             }
-            if (!await MatchesCommittedEntryAsync(entry, payloadPath, sidecarPath, cancellationToken).ConfigureAwait(false))
+            if (!await MatchesCommittedEntryAsync(
+                    entry, payloadPath, sidecarPath, reportedCaptures.Contains(entry.CaptureId) ? _openPayload : null,
+                    inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "committed-evidence-mismatch", entry.CaptureId);
                 continue;
@@ -142,14 +164,14 @@ internal sealed class RawIngressReconciler(
 
         foreach (var sidecarPath in EnumerateRawFiles("*.json"))
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            inspectionToken.ThrowIfCancellationRequested();
             var sidecarRelative = Relative(sidecarPath);
             if (claimedSidecars.Contains(sidecarRelative))
             {
                 continue;
             }
             inspected++;
-            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            var sidecar = await File.ReadAllBytesAsync(sidecarPath, inspectionToken).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
@@ -164,7 +186,7 @@ internal sealed class RawIngressReconciler(
             }
             var payloadPath = Resolve(manifest.RelativeArtifactPath);
             if (!File.Exists(payloadPath) || !PathsEqual(Path.ChangeExtension(sidecarPath, ".bin"), payloadPath) ||
-                !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, cancellationToken).ConfigureAwait(false))
+                !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, _openPayload, inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "orphan-evidence-mismatch");
                 continue;
@@ -220,10 +242,11 @@ internal sealed class RawIngressReconciler(
 
         foreach (var payloadPath in EnumerateRawFiles("*.bin"))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            // A sidecar already due for quarantine no longer pairs with the payload beside it, as when it had been moved.
+            inspectionToken.ThrowIfCancellationRequested();
+            // A sidecar due for quarantine does not protect a newer sibling: defer that sibling as its own unit.
             var sibling = Path.ChangeExtension(payloadPath, ".json");
-            if (claimedPayloads.Contains(Relative(payloadPath)) || File.Exists(sibling) && !pendingSidecars.Contains(sibling))
+            if (claimedPayloads.Contains(Relative(payloadPath)) ||
+                File.Exists(sibling) && !pendingSidecars.Contains(sibling) && !plannedPaths.Contains(Relative(sibling)))
             {
                 continue;
             }
@@ -236,29 +259,31 @@ internal sealed class RawIngressReconciler(
         var deferred = 0;
         if (planned.Count + pending.Count > 0)
         {
-            using var maintenance = await enterMaintenance(cancellationToken).ConfigureAwait(false);
-            if (maintenance is null)
+            using var maintenance = await enterMaintenance(inspectionToken).ConfigureAwait(false);
+            if (maintenance.Held)
             {
                 deferred = planned.Count + pending.Count;
             }
             else
             {
+                deferred = planned.Count + pending.Count;
                 foreach (var operation in planned)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (maintenance.InterruptionToken.IsCancellationRequested || interruptionToken.IsCancellationRequested) break;
                     await ResumeQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
                     quarantined++;
                     quarantineBytes += operation.ObservedBytes;
+                    deferred--;
                 }
                 foreach (var move in pending)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (maintenance.InterruptionToken.IsCancellationRequested || interruptionToken.IsCancellationRequested) break;
                     quarantineBytes += await QuarantinePairAsync(
-                        move.PayloadPath, move.SidecarPath, move.Reason, cancellationToken).ConfigureAwait(false);
-                    if (move.CaptureId is { } captureId)
-                    {
-                        await _journal.MarkEvidenceFailureAsync(
-                            captureId, "quarantined", move.Reason, cancellationToken).ConfigureAwait(false);
-                    }
+                        move.PayloadPath, move.SidecarPath, move.Reason, move.CaptureId, cancellationToken).ConfigureAwait(false);
                     quarantined++;
+                    deferred--;
                 }
                 await _journal.CheckpointAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -273,7 +298,7 @@ internal sealed class RawIngressReconciler(
             .Where(static path => string.Equals(
                 Path.GetFileName(Path.GetDirectoryName(path)), "Raw", StringComparison.Ordinal));
 
-    private Dictionary<Guid, List<string>> ReadIndexedArtifactIds()
+    private Dictionary<Guid, List<string>> ReadIndexedArtifactIds(CancellationToken cancellationToken)
     {
         var artifactIds = new Dictionary<Guid, List<string>>();
         var indexRoot = Path.Combine(_root, "index");
@@ -283,9 +308,11 @@ internal sealed class RawIngressReconciler(
         }
         foreach (var indexPath in EnumerateFiles(indexRoot, "frames_*.jsonl", recurse: false))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, indexPath);
             foreach (var line in File.ReadLines(indexPath))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     using var document = JsonDocument.Parse(line);
@@ -360,12 +387,26 @@ internal sealed class RawIngressReconciler(
         }
     }
 
-    internal static async Task<bool> MatchesCommittedEntryAsync(
+    internal static Task<bool> MatchesCommittedEntryAsync(
         RawIngressJournalEntry entry,
         string payloadPath,
         string sidecarPath,
         CancellationToken cancellationToken)
+        => MatchesCommittedEntryAsync(entry, payloadPath, sidecarPath, OpenPayload, cancellationToken);
+
+    /// <summary>Checks a committed entry's files; with no <paramref name="openPayload"/>, the payload's length only.</summary>
+    private static async Task<bool> MatchesCommittedEntryAsync(
+        RawIngressJournalEntry entry,
+        string payloadPath,
+        string sidecarPath,
+        Func<string, Stream>? openPayload,
+        CancellationToken cancellationToken)
     {
+        // The sidecar must equal the committed manifest, so one of another length is not read.
+        if (new FileInfo(sidecarPath).Length != entry.ManifestJson.Length)
+        {
+            return false;
+        }
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
         if (!sidecar.AsSpan().SequenceEqual(entry.ManifestJson))
         {
@@ -388,29 +429,36 @@ internal sealed class RawIngressReconciler(
                manifest.RelativeArtifactPath == entry.PayloadRelativePath &&
                descriptor.Timing.ExposureStartedUtc == entry.ExposureStartedUtc &&
                descriptor.Timing.DurableIngressUtc == entry.DurableIngressUtc &&
-               await PayloadMatchesAsync(payloadPath, descriptor, cancellationToken).ConfigureAwait(false);
+               (openPayload is null
+                   ? new FileInfo(payloadPath).Length == descriptor.Layout.ByteLength
+                   : await PayloadMatchesAsync(payloadPath, descriptor, openPayload, cancellationToken).ConfigureAwait(false));
     }
 
     private static async Task<bool> PayloadMatchesAsync(
         string payloadPath,
         ReconstructionDescriptor descriptor,
+        Func<string, Stream> openPayload,
         CancellationToken cancellationToken)
     {
         if (new FileInfo(payloadPath).Length != descriptor.Layout.ByteLength)
         {
             return false;
         }
-        using var stream = new FileStream(
-            payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var stream = openPayload(payloadPath);
         var checksum = await PayloadChecksum.ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
         return string.Equals(checksum, descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase);
     }
+
+    internal static Stream OpenPayload(string payloadPath)
+        => new FileStream(
+            payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
 
     private async Task<long> QuarantinePairAsync(
         string? payloadPath,
         string? sidecarPath,
         string reason,
+        Guid? captureId,
         CancellationToken cancellationToken)
     {
         var existing = new[] { payloadPath, sidecarPath }
@@ -419,6 +467,8 @@ internal sealed class RawIngressReconciler(
             .ToArray();
         if (existing.Length == 0)
         {
+            if (captureId is { } missingCapture)
+                await _journal.MarkEvidenceFailureAsync(missingCapture, "quarantined", reason, cancellationToken).ConfigureAwait(false);
             return 0;
         }
         long bytes = 0;
@@ -439,7 +489,8 @@ internal sealed class RawIngressReconciler(
             companion,
             quarantineRelativePath.Replace(Path.DirectorySeparatorChar, '/'),
             reason,
-            bytes);
+            bytes,
+            captureId);
         await _journal.PlanQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
         await ResumeQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
         return bytes;
@@ -481,6 +532,10 @@ internal sealed class RawIngressReconciler(
             SyncDirectory(directory!);
         }
         SyncDirectoryHierarchy(quarantineRoot);
+        // Moving the evidence and changing its capture disposition are one durable unit. Keep the plan
+        // replayable until the disposition is written; a pause may yield only after both are complete.
+        if (operation.CaptureId is { } captureId)
+            await _journal.MarkEvidenceFailureAsync(captureId, "quarantined", operation.Reason, cancellationToken).ConfigureAwait(false);
         await _journal.CompleteReconciliationAsync(operation.EvidenceKey, cancellationToken).ConfigureAwait(false);
     }
 
@@ -532,16 +587,18 @@ internal sealed class RawIngressReconciler(
             ReturnSpecialDirectories = false
         });
 
-    private void EnsureTreeHasNoLinks(string treeRoot)
+    private void EnsureTreeHasNoLinks(string treeRoot, CancellationToken cancellationToken)
     {
         var pending = new Stack<string>();
         pending.Push(treeRoot);
         while (pending.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var directory = pending.Pop();
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, directory);
             foreach (var child in Directory.EnumerateFileSystemEntries(directory))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var attributes = File.GetAttributes(child);
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
                 {

@@ -1,0 +1,283 @@
+// Disposable measurement extension of the retained #248 fixture. Not a product test.
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Data.Common;
+using System.Text.Json;
+using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+
+namespace HVO.SkyMonitor.IntegrationTests;
+
+public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
+{
+    private static readonly string[] Forbidden262 = ["[CentralFrames]", "[CentralCaptureLocations]", "[CentralArtifacts]", "[CentralDerivativeJobs]"];
+    [TestMethod]
+    [Timeout(10_800_000)]
+    public async Task Issue262_MeasureCurrentBoundedReconciliation()
+    {
+        var output = Environment.GetEnvironmentVariable("HVO_262_OUTPUT")
+            ?? throw new InvalidOperationException("HVO_262_OUTPUT is required.");
+        var runs = new List<object>();
+        // One full production-graph warmup. Every measured trial uses a fresh database.
+        await Measure262Async(10, 0);
+        var trials = int.Parse(Environment.GetEnvironmentVariable("HVO_262_TRIALS") ?? "5", System.Globalization.CultureInfo.InvariantCulture);
+        for (var trial = 1; trial <= trials; trial++)
+        {
+            foreach (var count in Scales)
+            {
+                var run = await Measure262Async(count, trial);
+                runs.Add(run);
+                await File.WriteAllTextAsync(output, JsonSerializer.Serialize(runs, JsonOptions));
+                TestContext.WriteLine("Completed trial {0}, scale {1}: {2}", trial, count,
+                    JsonSerializer.Serialize(run));
+            }
+        }
+    }
+
+    private static async Task<object> Measure262Async(int count, int trial)
+    {
+        var trialStartedUtc = DateTimeOffset.UtcNow;
+        var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorIssue262_{Guid.NewGuid():N}",
+            ApplicationName = "HVO.Issue262"
+        }.ConnectionString;
+        var probe = new Probe();
+        var counter = new Counter262();
+        var schedulerCounts = new Counts262();
+        string? failedOutcome = null;
+        using var meter = new MeterListener();
+        var batches = new Dictionary<string, long>();
+        meter.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == DeploymentLocationTelemetry.MeterName
+                && instrument.Name == "skymonitor.deployment_location.reconciliation.items")
+                listener.EnableMeasurementEvents(instrument);
+        };
+        meter.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            var phase = "";
+            var outcome = "";
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "phase") phase = tag.Value?.ToString() ?? "";
+                if (tag.Key == "outcome") outcome = tag.Value?.ToString() ?? "";
+            }
+            if (outcome is "failed" or "scheduling-rejected") failedOutcome = outcome;
+            batches[phase] = Math.Max(batches.GetValueOrDefault(phase), value);
+        });
+        meter.Start();
+        var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
+                services.RemoveAll<ApplicationDbContext>();
+                services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connection)
+                    .AddInterceptors(probe.Commands, probe.Transactions, counter));
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<ICentralDerivativeJobScheduler>();
+                services.AddScoped<CentralDerivativeJobScheduler>();
+                services.AddScoped<ICentralDerivativeJobScheduler>(provider => new Scheduler262(
+                    provider.GetRequiredService<CentralDerivativeJobScheduler>(), schedulerCounts));
+            }));
+        try
+        {
+            // Current startup acquires its initialization lock in the target database.
+            // Provision the disposable database before starting the child host.
+            await using (var provisionScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+            {
+                var provision = provisionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                provision.Database.SetConnectionString(connection);
+                await provision.Database.MigrateAsync();
+            }
+            var seed = await SeedAsync(factory, count);
+            var recipes = await ActiveRecipesAsync(factory, seed.ObservatoryId);
+            var applicable = recipes.Where(recipe => BuildExpectations(recipes).Single(item =>
+                item.RequestedRecipeIdentitySha256 == recipe.RequestedRecipeIdentitySha256).Applicable).ToArray();
+            Assert.IsNotEmpty(applicable, "The measurement must exercise real scheduler persistence.");
+            var before = await DatabaseSizeAsync(connection);
+            Stabilize262();
+            using var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var rssBefore = process.WorkingSet64;
+            var peakRss = rssBefore;
+            var cpu = process.TotalProcessorTime;
+            var allocated = GC.GetTotalAllocatedBytes(true);
+            var allocatedApproximate = GC.GetTotalAllocatedBytes(false);
+            var started = Stopwatch.GetTimestamp();
+            double authorityMs;
+            Transactions authorityTransactions;
+            long authorityCommands;
+            probe.Reset();
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                probe.Start(scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().ContextId);
+                var result = await ResolveAsync(scope, seed, CancellationToken.None);
+                authorityMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                Assert.AreEqual(DeploymentLocationMutationStatus.Applied, result.Status);
+                authorityCommands = probe.Commands.Count;
+                authorityTransactions = probe.Transactions.Snapshot();
+                Assert.AreEqual(1L, authorityTransactions.Starts);
+                Assert.AreEqual(1L, authorityTransactions.Commits);
+                Assert.AreEqual(0L, authorityTransactions.Failures);
+                Assert.AreEqual(0, schedulerCounts.Ensure);
+                Assert.AreEqual(0, schedulerCounts.Windows);
+                // Capture-table access is forbidden throughout the authority operation.
+                Assert.IsFalse(probe.Commands.Evidence().Shapes.Any(shape =>
+                    Forbidden262.Any(table => shape.ExactParameterizedText.Contains(table, StringComparison.Ordinal))));
+                probe.Stop();
+            }
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var queued = await db.DeploymentLocationReconciliationWork.AsNoTracking().SingleAsync();
+                Assert.AreEqual(DeploymentLocationReconciliationStatuses.Pending, queued.Status);
+                Assert.AreEqual(0L, queued.DiscoveredCaptureCount);
+                Assert.AreEqual(0, await db.CentralDerivativeJobs.CountAsync());
+            }
+            probe.Reset();
+            counter.Count = 0;
+            var drainStarted = Stopwatch.GetTimestamp();
+            var passes = 0;
+            var writerMs = new List<double>();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(
+                count == 10 ? 30 : count == 100 ? 60 : count == 1000 ? 180 : 1200));
+            using var stopWriter = new CancellationTokenSource();
+            var writer = Write262Async(connection, seed.RegistrationId, writerMs, stopWriter.Token, deadline.Token);
+            try
+            {
+            while (true)
+            {
+                await using var scope = factory.Services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                probe.Transactions.Start(db.ContextId);
+                var processed = await scope.ServiceProvider.GetRequiredService<IDeploymentLocationReconciliationProcessor>()
+                    .ProcessNextAsync(deadline.Token);
+                Assert.IsNull(failedOutcome, "Worker failure: inspect the original logged exception.");
+                probe.Stop();
+                if (!processed) break;
+                passes++;
+                process.Refresh();
+                peakRss = Math.Max(peakRss, process.WorkingSet64);
+            }
+            }
+            finally { await stopWriter.CancelAsync(); await writer; }
+            var drainMs = Stopwatch.GetElapsedTime(drainStarted).TotalMilliseconds;
+            process.Refresh();
+            var resources = new
+            {
+                CpuMs = (process.TotalProcessorTime - cpu).TotalMilliseconds,
+                AllocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated,
+                AllocatedCounterStart = allocated,
+                ApproximateAllocatedBytes = GC.GetTotalAllocatedBytes(false) - allocatedApproximate,
+                ServerGc = System.Runtime.GCSettings.IsServerGC,
+                RssBefore = rssBefore, RssAfter = process.WorkingSet64, SampledPeakRss = peakRss
+            };
+            var workerTransactions = probe.Transactions.Snapshot();
+            var workerCommands = counter.Count;
+            var after = await DatabaseSizeAsync(connection);
+            var state = await StateAsync(factory, seed);
+            // Window resolution runs during the bounded drain, so assert the converged identity set
+            // directly; the old baseline's transient before-retry window counts no longer apply.
+            Assert.AreEqual(count, state.ExactResolvedBindings);
+            Assert.AreEqual(count, state.EligibleArtifacts);
+            Assert.AreEqual(0, state.DuplicateRequestIdentities);
+            Assert.AreEqual(0, state.FinalBacklog.Count);
+            Assert.IsTrue(state.AuditExact && state.TokenChanged);
+            Assert.AreEqual(1, state.Audits);
+            Assert.AreEqual("Acknowledged", state.AuthorityStatus);
+            Assert.AreEqual("DeploymentAcknowledged", state.RegistrationState);
+            var expected = seed.ArtifactIds.SelectMany(id => applicable.Select(recipe =>
+                CentralDerivativeJobIdentity.CreateRequestIdentity(seed.DevicePublicId, id, recipe))).ToArray();
+            Assert.AreEqual(expected.Length, state.Jobs);
+            Assert.AreEqual(HashOrdered(expected), state.OrderedIdentitySetSha256);
+            await using var verificationScope = factory.Services.CreateAsyncScope();
+            var verification = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var work = await verification.DeploymentLocationReconciliationWork.AsNoTracking().SingleAsync();
+            Assert.AreEqual(DeploymentLocationReconciliationStatuses.Completed, work.Status);
+            Assert.AreEqual((long)count, work.CaptureCount);
+            Assert.AreEqual((long)count, work.CompletedCaptureCount);
+            Assert.AreEqual((long)count, work.ScheduledArtifactCount);
+            Assert.AreEqual(count, schedulerCounts.Ensure);
+            Assert.AreEqual(count, schedulerCounts.Windows);
+            Assert.IsNull(work.LeaseToken);
+            Assert.IsNull(work.LastErrorCode);
+            Assert.IsTrue(batches["discovery"] <= 250 && batches["state"] <= 250 && batches["scheduling"] <= 25);
+            return new
+            {
+                Trial = trial, TrialStartedUtc = trialStartedUtc, Captures = count, AuthorityMs = authorityMs, AuthorityCommands = authorityCommands,
+                AuthorityTransactions = authorityTransactions, DrainMs = drainMs,
+                CapturesPerSecond = count * 1000 / drainMs, Passes = passes, Batches = batches,
+                WorkerCommands = workerCommands, WorkerTransactions = new
+                {
+                    workerTransactions.Starts, workerTransactions.Commits, workerTransactions.Failures,
+                    workerTransactions.ExplicitRollbackCallbacks, MaximumMs = workerTransactions.Durations.Max(),
+                    TotalMs = workerTransactions.Durations.Sum()
+                },
+                Resources = resources, DatabaseBefore = before, DatabaseAfter = after,
+                ConcurrentWriterSamples = writerMs.Count, ConcurrentWriterMaximumMs = writerMs.Max(),
+                Work = new { work.Status, work.CaptureCount, work.DiscoveredCaptureCount, work.CompletedCaptureCount, work.ScheduledArtifactCount },
+                FinalState = state
+            };
+        }
+        finally
+        {
+            probe.Stop();
+            await factory.DisposeAsync();
+            await DeleteDatabaseAsync(connection);
+        }
+    }
+
+    private static void Stabilize262() { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }
+    private sealed class Counter262 : DbCommandInterceptor
+    {
+        public long Count;
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData data,
+            InterceptionResult<DbDataReader> result, CancellationToken token = default)
+        { Count++; return ValueTask.FromResult(result); }
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData data,
+            InterceptionResult<int> result, CancellationToken token = default)
+        { Count++; return ValueTask.FromResult(result); }
+        public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(DbCommand command, CommandEventData data,
+            InterceptionResult<object> result, CancellationToken token = default)
+        { Count++; return ValueTask.FromResult(result); }
+    }
+    private static async Task Write262Async(string connection, Guid registration, List<double> samples,
+        CancellationToken stop, CancellationToken deadline)
+    {
+        await using var sql = new SqlConnection(connection);
+        await sql.OpenAsync(deadline);
+        while (!stop.IsCancellationRequested)
+        {
+            await using var command = sql.CreateCommand();
+            command.CommandTimeout = 10;
+            command.CommandText = "UPDATE [DeviceRegistrations] SET [FriendlyName]=[FriendlyName] WHERE [Id]=@id";
+            command.Parameters.AddWithValue("@id", registration);
+            var started = Stopwatch.GetTimestamp();
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync(deadline));
+            samples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            try { await Task.Delay(1000, stop); }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
+        }
+    }
+    private sealed class Counts262 { public int Ensure; public int Windows; }
+    private sealed class Scheduler262(CentralDerivativeJobScheduler inner, Counts262 counts) : ICentralDerivativeJobScheduler
+    {
+        public Task EnsureRequiredJobsAsync(CentralArtifact artifact, DateTimeOffset now, CancellationToken token)
+            => throw new AssertFailedException("Expected bounded durable artifact overload.");
+        public Task EnsureRequiredJobsAsync(Guid device, Guid artifact, DateTimeOffset now, CancellationToken token)
+        { counts.Ensure++; return inner.EnsureRequiredJobsAsync(device, artifact, now, token); }
+        public Task EnsureRequiredJobsUnderPayloadLocksAsync(Guid device, Guid artifact, DateTimeOffset now,
+            IReadOnlyList<CentralTransientPayloadHoldTarget> targets, CancellationToken token)
+        { counts.Ensure++; return inner.EnsureRequiredJobsUnderPayloadLocksAsync(device, artifact, now, targets, token); }
+        public Task ResolveAffectedWindowsAsync(Guid device, Guid artifact, DateTimeOffset now, CancellationToken token)
+        { counts.Windows++; return inner.ResolveAffectedWindowsAsync(device, artifact, now, token); }
+    }
+}

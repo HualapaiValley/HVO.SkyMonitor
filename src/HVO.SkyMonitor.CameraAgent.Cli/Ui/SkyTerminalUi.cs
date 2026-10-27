@@ -66,6 +66,7 @@ internal sealed class SkyTerminalUi : IDisposable
     private int _pending;
     private int _noticeRows = 1;
     private bool _wide;
+    private SkyUiFreshness? _shownFreshness;
     private volatile bool _closed;
 
     public SkyTerminalUi(SkyCliContext context, IApplication app, HvoTheme theme)
@@ -188,6 +189,12 @@ internal sealed class SkyTerminalUi : IDisposable
         }
     }
 
+    /// <summary>Why a reviewed write cannot be sent now, including changes since the review opened.</summary>
+    public string? ChangeRefusal => Connection is null ? "Sign in first (F5 System)."
+        : Data.Info.Value?.Caller.Access == "Read" ? "This key is read-only: changes need a ReadWrite key."
+        : Freshness != SkyUiFreshness.Live ? "Changes need live status: what shows is not current. Ctrl+R reads again."
+        : null;
+
     public DateTimeOffset Now => Context.Host.Time.GetUtcNow();
 
     /// <summary>Connects and shows the first page: Status, or System when there is no address or key; then reads every poll interval.</summary>
@@ -215,7 +222,7 @@ internal sealed class SkyTerminalUi : IDisposable
         {
             // Not CreateClient(connection), which writes its warning on the command line, under the interface: it shows here.
             Connection = Context.ResolveConnection();
-            ClearText = SkyCliContext.ClearTextWarning(Connection.Url);
+            ClearText = Context.ClearTextWarning(Connection.Url);
             _client = Context.CreateClient(Connection.Url, Connection.ApiKey);
         }
         catch (Exception error) when (error is SkyCliNotConfiguredException or SkyCredentialFileException)
@@ -285,10 +292,23 @@ internal sealed class SkyTerminalUi : IDisposable
     {
         ArgumentNullException.ThrowIfNull(spec);
         ClosePrompt();
-        _prompt = new SkyUiPrompt(Theme, spec, Window.Frame.Width > 0 ? Window.Frame.Width : 80, prompt => ClosePrompt(prompt));
+        _prompt = new SkyUiPrompt(Theme, spec, Window.Frame.Width > 0 ? Window.Frame.Width : 80, Window.Frame.Height > 0 ? Window.Frame.Height : 24, prompt => ClosePrompt(prompt));
         Window.Add(_prompt.Panel);
         _prompt.FocusFirst();
         return _prompt;
+    }
+
+    /// <summary>Opens a write review whose eligibility is checked again when its action is chosen.</summary>
+    public SkyUiPrompt OpenChangePrompt(SkyUiPromptSpec spec, Func<bool> canSubmit)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentNullException.ThrowIfNull(canSubmit);
+        return OpenPrompt(spec with
+        {
+            Run = answers => ChangeRefusal ?? (canSubmit()
+                ? spec.Run(answers)
+                : "This action is no longer available. Refresh this page and review it again.")
+        });
     }
 
     public void ClosePrompt(SkyUiPrompt? which = null)
@@ -560,6 +580,15 @@ internal sealed class SkyTerminalUi : IDisposable
         // As the terminal prototype's header: the badge and who the key is on the first row, in the badge's tone; where
         // the data comes from, and when it was read, on the second.
         var freshness = Freshness;
+        if (_shownFreshness != freshness)
+        {
+            _shownFreshness = freshness;
+            if (_index >= 0)
+            {
+                Page.DataChanged();
+            }
+        }
+
         var (badge, tone) = freshness switch
         {
             SkyUiFreshness.Live => ("[LIVE]", HvoTone.Success),

@@ -166,10 +166,15 @@ public sealed class HvoThemeTests
     public void Prepare_WritesSixteenColoursOnlyForAnAnsi16Terminal()
     {
         using var ansi = Wizard.WizardDriver.CreateApplication(80, 24);
+        // Start each isolated driver in true colour, independent of the invoking terminal.
+        ansi.Driver!.GetOutput().IsLegacyConsole = false;
+        ansi.Driver!.Force16Colors = false;
         HvoTheme.For(new TerminalCapabilities(TerminalColours.Ansi16, TerminalBorders.Unicode)).Prepare(ansi);
         Assert.IsTrue(ansi.Driver!.Force16Colors);
 
         using var full = Wizard.WizardDriver.CreateApplication(80, 24);
+        full.Driver!.GetOutput().IsLegacyConsole = false;
+        full.Driver!.Force16Colors = false;
         HvoTheme.For(TerminalCapabilities.Full).Prepare(full);
         Assert.IsFalse(full.Driver!.Force16Colors);
     }

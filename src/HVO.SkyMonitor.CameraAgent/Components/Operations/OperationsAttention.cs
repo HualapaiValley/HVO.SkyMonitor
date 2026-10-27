@@ -38,7 +38,13 @@ internal sealed class OperationsAttention
     /// <summary>The number of open items owned by a section; zero renders no badge.</summary>
     public int CountFor(string slug) => Items.Count(item => string.Equals(item.Section, slug, StringComparison.Ordinal));
 
-    public static OperationsAttention From(CameraAgentOperationsView view, bool refreshFailed = false)
+    /// <param name="view">The operations read.</param>
+    /// <param name="refreshFailed">Whether the latest operations read failed.</param>
+    /// <param name="extra">Items from other read models, such as space weather, appended after the operations items.</param>
+    public static OperationsAttention From(
+        CameraAgentOperationsView view,
+        bool refreshFailed = false,
+        IReadOnlyList<OperationsAttentionItem>? extra = null)
     {
         ArgumentNullException.ThrowIfNull(view);
         var summary = view.Summary;
@@ -110,6 +116,11 @@ internal sealed class OperationsAttention
             items.Add(new("storage", "warning", "warning", Plural(environmentalHeld, "environmental item is", "environmental items are") + " quarantined",
                 "Held observations stop retrying until they are replayed or abandoned.",
                 "/operations/quarantine?kind=Environmental", "Review"));
+        }
+
+        if (extra is not null)
+        {
+            items.AddRange(extra);
         }
 
         return new OperationsAttention(items);

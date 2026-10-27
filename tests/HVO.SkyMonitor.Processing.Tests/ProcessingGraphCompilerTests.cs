@@ -278,6 +278,33 @@ public sealed class ProcessingGraphCompilerTests
     }
 
     [TestMethod]
+    public void Compile_AdmitsTheGainNormalizationWindowLabelOnlyForTheMixedGainRecipe()
+    {
+        var window = new ProcessingGraphWindowRequirement(
+            ProcessingGraphWindowKind.Trailing, 1, 5, [], ["rig", "sensor", GainNormalizationCompatibility.WindowLabel]);
+        var mixedGain = new ProcessingRecipeDefinition(
+            BuiltInProcessingRecipes.MixedGainNormalizedMean, GainNormalizationCompatibility.RecipeSemanticVersion,
+            "test-v1", ProcessingOperationKind.Window);
+        ProcessingGraphDefinition WithRecipe(ProcessingRecipeDefinition recipe) => Graph(
+            Node("stack", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
+                [Output(FrameArtifactRole.Combined, "stack", operationKind: ProcessingOperationKind.Window) with { Recipe = recipe }],
+                window: window, operationKind: ProcessingOperationKind.Window));
+
+        var admitted = ProcessingGraphCompiler.Compile(WithRecipe(mixedGain));
+        Assert.IsTrue(admitted.IsValid, Format(admitted));
+        foreach (var recipe in new[]
+                 {
+                     mixedGain with { Name = BuiltInProcessingRecipes.RollingMean },
+                     mixedGain with { SemanticVersion = "1.0.1" }
+                 })
+        {
+            var diagnostic = Assert.ContainsSingle(ProcessingGraphCompiler.Compile(WithRecipe(recipe)).Diagnostics);
+            Assert.AreEqual(ProcessingGraphReasonCodes.InvalidWindow, diagnostic.Code);
+            Assert.AreEqual("nodes[0].window", diagnostic.Path);
+        }
+    }
+
+    [TestMethod]
     public void Compile_RejectsOutputRecipeOperationKindThatDiffersFromOwningNode()
     {
         var graph = Graph(Node("analyzer", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
