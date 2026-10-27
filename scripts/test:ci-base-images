@@ -280,6 +280,9 @@ FROM build AS final
         self.check("devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag")
 
     def test_devcontainer_quoted_and_escaped_args_fail_closed(self):
+        self.dockerfile("Dockerfile", f'ARG DESCRIPTION="ordinary non-image text"\n'
+                        f'FROM mcr.microsoft.com/devcontainers/base:3.1.0-ubuntu24.04@sha256:{A}\n')
+        self.check()
         for default in ('"mcr.microsoft.com/devcontainers/base"', "'mcr.microsoft.com/devcontainers/base'",
                         r'mcr\.microsoft.com/devcontainers/base'):
             for tag in ("3.0.10-ubuntu22.04", "4.0.0-ubuntu24.04", "3.1.0-ubuntu24.04"):
@@ -295,6 +298,18 @@ FROM build AS final
                 with self.subTest(port=port, tag=tag):
                     self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com:{port}/devcontainers/base:{tag}@sha256:{A}\n")
                     self.check(error)
+
+    def test_private_registries_do_not_become_docker_hub_namespaces(self):
+        for host in ("registry", "registry.example", "localhost"):
+            with self.subTest(host=host):
+                self.dockerfile("Dockerfile", f"FROM {host}:0443/image:1@sha256:{A}\n"
+                                f"FROM docker.io/{host}/image:1@sha256:{B}\n")
+                self.check()
+
+    def test_equivalent_private_registry_ports_still_share_digest_identity(self):
+        self.dockerfile("Dockerfile", f"FROM registry:0443/image:1@sha256:{A}\n"
+                        f"FROM registry:443/image:1@sha256:{B}\n")
+        self.check("conflicting digests")
 
     def test_devcontainer_dependabot_ignores_major_but_keeps_minor_patch(self):
         config = (ROOT / ".github/dependabot.yml").read_text()
