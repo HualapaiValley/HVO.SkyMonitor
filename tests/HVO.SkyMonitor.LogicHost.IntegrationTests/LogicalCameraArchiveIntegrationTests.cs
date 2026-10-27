@@ -23,6 +23,77 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class LogicalCameraArchiveIntegrationTests
 {
     private static readonly int[] ExpiredIndexes = [10, 20];
+
+    [TestMethod]
+    public async Task SqlServer_RevalidationKeepsExactOlderPreviewAndRechecksMembership()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var data = await SeedAsync(services, 12).ConfigureAwait(false);
+        var service = services.GetRequiredService<ILogicalCameraArchiveReadService>();
+        var principal = Principal(data.Owner);
+        var page = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false);
+        var preview = await AddPreviewAsync(services, data.Frames[6], put: true).ConfigureAwait(false);
+        var selected = (await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, page!.NextCursor).ConfigureAwait(false))!;
+        selected.Capture!.CaptureId.Should().Be(data.Frames[6].Id);
+        _ = await AddPreviewAsync(services, data.Frames[0], put: true).ConfigureAwait(false);
+        _ = await AddPreviewAsync(services, data.Frames[6], put: true).ConfigureAwait(false);
+        (await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false))!
+            .Capture!.CaptureId.Should().Be(data.Frames[0].Id);
+        var rechecked = (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, selected).ConfigureAwait(false))!;
+        rechecked.Capture!.CaptureId.Should().Be(selected.Capture.CaptureId);
+        rechecked.ArtifactId.Should().Be(preview.ArtifactId);
+        rechecked.Status.Should().Be("found");
+        rechecked.ExaminedCaptures.Should().Be(1);
+        rechecked.ExaminedArtifacts.Should().Be(1);
+
+        await services.GetRequiredService<IObjectStore>().DeleteAsync("skymonitor-artifacts", Key(preview), CancellationToken.None).ConfigureAwait(false);
+        var unavailable = (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, rechecked).ConfigureAwait(false))!;
+        unavailable.Status.Should().Be("unavailable");
+        unavailable.Capture!.CaptureId.Should().Be(selected.Capture.CaptureId);
+        unavailable.ArtifactId.Should().Be(preview.ArtifactId);
+        unavailable.ContentPath.Should().BeNull();
+        unavailable.ExaminedArtifacts.Should().Be(1);
+        await PutAsync(services, preview).ConfigureAwait(false);
+        (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, unavailable).ConfigureAwait(false))!
+            .ArtifactId.Should().Be(preview.ArtifactId);
+
+        var revoking = new LogicalCameraArchiveReadService(db, services.GetRequiredService<IDataProtectionProvider>(),
+            services.GetRequiredService<INetworkOperationsReadService>(), services.GetRequiredService<ICentralArtifactRetrievalService>(),
+            new FaultReader(services.GetRequiredService<ICentralArtifactObjectReader>(), async () =>
+                { await db.ObservatoryMemberships.Where(item => item.ObservatoryId == data.Observatory && item.UserId == data.Owner).ExecuteDeleteAsync().ConfigureAwait(false); }));
+        (await revoking.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, selected).ConfigureAwait(false)).Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task SqlServer_RevalidationPreservesContinuationWithoutSearchingAndBindsActor()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var data = await SeedAsync(services, 12).ConfigureAwait(false);
+        var service = services.GetRequiredService<ILogicalCameraArchiveReadService>();
+        var principal = Principal(data.Owner);
+        var page = (await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false))!;
+        _ = await AddPreviewAsync(services, data.Frames[0], put: true).ConfigureAwait(false);
+        var rechecked = (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, page).ConfigureAwait(false))!;
+        rechecked.Status.Should().Be("continue");
+        rechecked.NextCursor.Should().Be(page.NextCursor);
+        rechecked.Capture.Should().BeNull();
+        rechecked.ExaminedCaptures.Should().Be(0);
+        rechecked.ExaminedArtifacts.Should().Be(0);
+        var viewer = await db.Users.SingleAsync(user => user.Email == TestUsers.Viewer.Email).ConfigureAwait(false);
+        db.ObservatoryMemberships.Add(new() { ObservatoryId = data.Observatory, UserId = viewer.Id,
+            Role = ObservatoryMembershipRole.Viewer, AddedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Func<Task> anotherActor = () => service.RevalidateCurrentAsync(Principal(viewer.Id), data.Observatory, data.Camera, page);
+        await anotherActor.Should().ThrowAsync<ArgumentException>().ConfigureAwait(false);
+        await db.ObservatoryMemberships.Where(item => item.ObservatoryId == data.Observatory && item.UserId == data.Owner)
+            .ExecuteDeleteAsync().ConfigureAwait(false);
+        (await service.RevalidateCurrentAsync(principal, data.Observatory, data.Camera, page).ConfigureAwait(false)).Should().BeNull();
+    }
+
     [TestMethod]
     public async Task SqlServer_FiltersPrecedeTakeAndCursorsBindScopeActorAndFilters()
     {

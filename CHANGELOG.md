@@ -62,6 +62,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
+
 - Installer diagnostics suppress ambiguous values after credential indicators hidden in terminal decoration, and replace malformed Unicode with readable replacement characters without losing redaction or failing JSON output. (#1546)
 
 - Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
