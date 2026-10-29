@@ -15,9 +15,11 @@ PR state.
 ## Ownership and State
 
 The individual issue/PR owner owns the complete lifecycle by default unless the
-operator pauses it or reserves a decision. Coordinator enrollment is not a
-prerequisite for implementation, review acquisition, finalization, or merge.
-Fleet coordination is an opt-in execution route, not the default ownership model:
+operator pauses it or reserves a decision.
+
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
+git worktree off `development/v1`, so the main checkout is never modified.
 
 The PR target determines the protected-CI profile. For `development/v1`, use
 the two checks in [the v1 contract](../../../docs/development-v1.md):
@@ -73,13 +75,12 @@ reviewed head without explicit operator approval.
 
 Every review request must state the following information, adapted to the
 reviewer's route. Human and independent one-shot agent reviews are first-class
-convergence evidence, not exceptions requiring fleet enrollment:
+convergence evidence:
 
 ```text
 Review mode: initial | correction | base-sync
 Issue and PR:
 Review request ID and reviewer identity:
-Dispatch command ID and target participant ID: (enrolled resumed-session route only)
 Acceptance criteria:
 Target base SHA: (the tip of the base branch read from the repository by
   branch name; retained for staleness checks, not the initial range's left
@@ -99,7 +100,7 @@ Required capability lens:
 Requested capability profile: fast | standard | deep
 Primary reviewer/provider:
 Fallback reviewer/provider:
-Execution route: human | independent one-shot agent | enrolled resumed-session agent | equivalent exact-range runner | optional PR bot
+Execution route: human | independent one-shot agent | equivalent exact-range runner | optional PR bot
 Requested model and reasoning effort: (N/A for humans)
 Actual provider, model, and reasoning effort: (human identity; model/effort N/A for humans)
 Tests and failure modes to evaluate:
@@ -119,9 +120,8 @@ Start acknowledgement: use the agreed human window or 15 minutes for agents; ide
 ### Human and Independent One-Shot Routes
 
 The owner may record an equivalent request and the independent reviewer's report
-directly on the PR without fleet scripts, enrollment, participant leases, or a
-coordinator. Use a durable request ID/link and reviewer identity rather than
-inventing a fleet command or participant ID. An attributed report relayed by the
+directly on the PR. Use a durable request ID/link and reviewer identity.
+An attributed report relayed by the
 owner must retain the reviewer's actual result and evidence, not the owner's
 self-review. Bind all endpoints to immutable Git SHAs and verify them against
 repository history; branch names alone are not review ranges.
@@ -133,93 +133,9 @@ until checked. Do not infer the endpoint from reviewer prose or treat an empty
 summary as a clean prior report. The same range, risk-depth, sandbox, acquisition,
 finding-disposition, and finalization requirements apply to every route.
 
-### Enrolled Resumed-Session Script Route
-
-For this route, generate the request with `scripts/pr:review-request` and inspect
-it before launch. Its existing field names supply the equivalent contract above;
-the dispatch command/participant binding identifies the request and reviewer.
-Do not change generated fields to imply unsupported script modes.
-The existing `scripts/pr:dispatch-review` supports enrolled
-resumed Codex or Claude CLI sessions only; it has no human or unenrolled one-shot
-mode. Enrollment and the dispatch-specific fields and guards below are required
-only when using this route, not for all reviewers or PR owners.
-
-Dispatch with `scripts/pr:dispatch-review`, which must receive the durable
-request comment ID, hold the host-local participant/session dispatch lock, post
-a durable launch reservation, revalidate the current participant lease, and
-only then resume the same previously joined CLI session and append STARTED
-metadata. A concurrent dispatcher for that participant returns `DISPATCH_BUSY`;
-retry it only after the active dispatcher records terminal state and releases
-the lock. Bootstrap the session without review work, complete
-`JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local resume ID
-only to the launcher; the public participant identity retains the non-secret
-short ID. The dispatcher must stay alive and wait for the resumed reviewer;
-some harnesses reap detached descendants as soon as the parent command returns
-even when `nohup` was used. A retry resumes from an already-posted request,
-returns `ALREADY_CONSUMED` after STARTED, and requires explicit recovery if it
-finds only a reservation; it never launches a second reviewer automatically.
-The participant identity binds the session to one host; migrating it to another
-host requires a new identity and join rather than reuse across host-local locks.
-Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
-these scripts support the route.
-
-A correction or base-sync request also requires `--previous-command-id`, the
-dispatch command ID of the round whose reviewed head this round starts from.
-The tool recovers that head from the request it emitted for that round, found by
-its command ID or pinned with `--previous-request-comment`. It never reads a
-range out of a reviewer's report. For a round dispatched before the tool
-recorded a request, assert the head with `--previous-head`; the emitted request
-then records it as caller-asserted and unverified, and a reviewer must treat it
-as an input to check rather than as an attested range. If neither is available
-the tool fails and names what was missing, which is correct: a correction review
-whose left endpoint is a guess reviews the wrong commits and says nothing about
-it.
-
-Such a request also requires `--previous-report-comment`, the comment ID of the
-previous round's report. The dispatcher supplies it; the tool never searches for
-it. The head can be selected because the tool wrote the comment carrying it,
-while the report is the reviewer's own comment and carries no field the tool
-controls, so every rule for recognising one is a proxy that this repository's
-ledgers defeat. Replayed against merged pull requests, matching on verdict
-wording found no review at all on #806 and selected a base-sync note over the
-real report on #798, and matching on the command ID anywhere in the body selects
-dispatch ledgers, start acknowledgements, and later comments that merely cite
-the round. The tool checks that the named comment echoes the round it is being
-used for, as a whole command ID rather than as a substring, and refuses a
-comment that belongs to another one.
-
-It also refuses a named report that carries both `Exact review range:` and
-`Dispatch command ID and target participant ID:`. Those are the two fields the
-tool writes into every request it emits, so a comment carrying both is its own
-output rather than a reviewer's report, and the round's dispatch ledger entry
-quotes the request and therefore echoes the round by construction. The tool
-cannot recognise a report, but it can recognise what it wrote, which is the same
-premise the head half rests on used in the direction it actually holds.
-
-Every comment the caller names is fetched through
-`repos/{owner}/{repo}/issues/comments/{id}`, which is repository-wide rather
-than per-issue, so a comment on another pull request fetches cleanly through it.
-The tool reads `issue_url` alongside the body and refuses any comment that is
-not on the pull request under review. Without that check, the claim that the
-tool wrote the comment carrying the previous reviewed head was an assumption
-about authorship rather than something checked.
-
-`scripts/pr:dispatch-review` quotes the request into a fenced block opened with
-a fence longer than any fence in the request itself, and the reader closes only
-on one at least that long. Requests interpolate caller-supplied test and
-evidence files, which routinely carry pasted command output inside fenced
-blocks; a fixed three-backtick opener is closed by the first of those on
-read-back, and the request comes back truncated while still carrying enough
-fields to look complete.
-
-An empty `Prior findings and dispositions:` is not an attestation that the
-previous round was clean. When the tool could not extract a checklist it says
-so in that field and points at the full report in the evidence pack; verify
-findings against the report itself, not against the summary.
-
 ### Sandbox Requirements
 
-Agent reviews use a read-only sandbox regardless of enrollment or launch route.
+Agent reviews use a read-only sandbox regardless of launch route.
 If a CLI reports that its read-only sandbox cannot execute, mark the attempt
 `INCOMPLETE` and use another supported independent review route, including a
 human or one-shot reviewer. Do not bypass the sandbox merely to make the review
@@ -230,7 +146,7 @@ isolation and an explicit ledger record.
 ## Review Execution and Agent Selection
 
 The owner obtains review from an independent human, an independent one-shot
-agent, an enrolled resumed-session agent, or an equivalent runner that can
+agent, or an equivalent runner that can
 inspect the requested immutable Git range. The implementer cannot supply their
 own convergence review; an agent reviewer must be a separate review execution,
 not the implementing session asserting its own work is clean. For agents, the
@@ -268,22 +184,12 @@ stronger supported effort. Finalization does not create a review round when the
 fresh target SHA is unchanged as described below.
 
 For agent review, at dispatch map the profile to a model identifier that the
-current harness actually exposes. Current Codex documentation maps demanding work to `gpt-5.6`,
-balanced read-heavy work to `gpt-5.6-terra`, and narrow repeatable work to
-`gpt-5.6-luna`; use those identifiers or documented successors only where the
-launcher advertises them. A harness may expose a different provider-specific
-identifier such as `gpt-5.6-sol`; use it only when that exact identifier appears
-in the launcher's available-model list. Pin the reasoning effort separately. If
-a provider such as the current Copilot reviewer offers one provider-managed
-model and no effort control, record those fields as `provider-managed`; use it
-only when that fixed capability satisfies the selected profile, and never claim
-that a requested model was enforced. Prefer the other provider when the
-required profile cannot be selected or verified.
+current harness actually exposes. Pin the reasoning effort separately. If
+a provider offers one provider-managed model and no effort control, record
+those fields as `provider-managed`; use it only when that fixed capability
+satisfies the selected profile, and never claim that a requested model was
+enforced. Select reviewers for required capability first, availability second.
 
-Agent provider availability depends on the actual execution route; the enrolled
-dispatcher supports Codex and Claude, while other routes may expose other
-providers. Reviewer/provider is independent of capability profile: select for
-required capability first, availability second.
 Record requested profile, requested model/effort, execution route, and actual
 provider/model/effort in the append-only ledger. For humans record identity and
 `N/A` model/effort. For agents a missing actual value is `unknown`, not an inferred
@@ -291,8 +197,8 @@ alias or `N/A`; `provider-managed` is appropriate only when that is actually kno
 
 For a narrow test-only or docs-only Tier A/B correction with no carried
 material finding, the least-cost currently advertised standard-capable route
-may use `gpt-5.6-luna` at high effort. Ordinary code corrections use
-`gpt-5.6-terra` at high effort when that identifier is available. Security,
+may use a standard-capable model at high effort. Ordinary code corrections use
+a balanced coding model at high effort when available. Security,
 durability, data-loss, unresolved acceptance, or material-correctness findings
 remain `deep` on the strongest supported route. Never substitute an identifier
 the launcher does not advertise.
@@ -344,8 +250,7 @@ below apply to agent routes only; human review has no timed waiver.
    a `STARTED` acknowledgement identifying the reviewer and request before
    substantive review, recorded on the PR directly or by an attributed owner
    relay. The owner relays the start to the operator and starts a fifteen-minute
-   acquisition timer when dispatch is visible. An opted-in fleet may delegate
-   monitoring to its coordinator without transferring PR ownership.
+   acquisition timer when dispatch is visible.
 2. A written PR acknowledgement is preferred. If the reviewer cannot post one,
    accept a local harness start message or session state that identifies the
    exact head/range and actual model/effort. For an optional provider-side bot,
@@ -372,8 +277,7 @@ below apply to agent routes only; human review has no timed waiver.
 5. Once a review starts, the owner obtains reviewer status and records PR-ledger
    activity at every milestone and at least every thirty minutes. The owner
    relays milestones and blockers immediately and provides interim reports during
-   long reviews. The five-minute operator-visible heartbeat applies only to
-   explicitly opted-in managed fleets; their coordinator may provide it.
+   long reviews.
    After thirty minutes without reviewer activity,
    request status. If there is no response for another fifteen minutes, treat
    the provider as unavailable and use the same fallback or waiver path.

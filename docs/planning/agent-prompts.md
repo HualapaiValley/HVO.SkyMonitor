@@ -35,14 +35,11 @@ through a global two-issue slot limit.
 
 ## 2. Universal Implementation Prompt
 
-The default owner is an authorized human or an operator-directed agent, not a
-coordinator-assigned worker. No enrollment, `READY` signal, command receipt, or
-fleet heartbeat is required for the default workflow. `JOIN REQUEST`,
-participant-bound `JOIN ACK`, `JOINED ACK`, targeted commands, slot leases, and
-coordinator heartbeat/relay mechanics apply only to optional legacy managed
-sessions explicitly enrolled by the operator. Their guarded resumed-session
-tools retain the execution protocol's identity and command checks; do not use
-them as an unguarded substitute for a one-shot review.
+The default owner is an authorized human or an operator-directed agent.
+
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
+git worktree off `development/v1`, so the main checkout is never modified.
 
 ```text
 Implement GitHub issue <NUMBER> in HVO.SkyMonitor.
