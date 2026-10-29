@@ -212,6 +212,10 @@ git worktree off `development/v1`, so the main checkout is never modified.
   concurrently against shared Docker resources unless their isolation and
   capacity have been verified.
 
+Existing tooling retains the record literals `JOIN REQUEST`, `JOIN ACK <ack-id>`,
+and `JOINED ACK <ack-id>` and the command field `targetParticipantId`.
+`scripts/coordination:guard` validates command records.
+
 ### Progress reporting
 
 Owners report milestones, blockers, long-running gates, and completion

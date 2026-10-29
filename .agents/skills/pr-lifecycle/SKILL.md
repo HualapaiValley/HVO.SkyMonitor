@@ -73,6 +73,9 @@ reviewed head without explicit operator approval.
 
 ## Review Request Contract
 
+`scripts/pr:review-request` and `scripts/pr:dispatch-review` are existing
+review-request tooling.
+
 Every review request must state the following information, adapted to the
 reviewer's route. Human and independent one-shot agent reviews are first-class
 convergence evidence:

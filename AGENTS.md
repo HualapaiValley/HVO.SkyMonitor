@@ -176,6 +176,13 @@ must not redefine its policy inconsistently.
   epic as a progress index, not an authorization service. Epic #89 and the
   `Virtual-First Platform Completion` milestone retain
   the completed virtual-first delivery history.
+- Use `<harness>:<provider>:<host>:<session-short-id>` for a unique agent
+  identity without credentials or full session tokens.
+- Existing tooling retains the status literal `UNREGISTERED/WAIT`.
+- The review dispatch scripts (`scripts/pr:dispatch-review`,
+  `scripts/pr:review-request`) and the coordination guard
+  (`scripts/coordination:guard`) are still present. Revisit them later and
+  remove them if no longer needed.
 - Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
   `home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
   git worktree off `development/v1`, so the main checkout is never modified.
