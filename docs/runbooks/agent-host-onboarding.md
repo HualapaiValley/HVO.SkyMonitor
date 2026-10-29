@@ -9,15 +9,15 @@ concrete steps, in order, with the failures that actually happen when a step is
 skipped.
 
 The default **issue owner** is an authorized human or operator-directed agent
-responsible for the full assigned issue lifecycle. No coordinator, enrollment,
-`READY` signal, command receipt, or fleet heartbeat is required. Capacity is
-assessed per shared resource (host, Docker, storage, external service), not a
+responsible for the full assigned issue lifecycle.
+
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
+git worktree off `development/v1`, so the main checkout is never modified.
+
+Capacity is assessed per shared resource (host, Docker, storage, external service), not a
 global two-issue slot limit. The repository-wide finalization lock still
 serializes final synchronization, protected CI, and merge.
-
-**Coordinator** and **worker** below describe only optional legacy managed
-sessions explicitly enrolled by the operator. Their `JOIN`, targeted-command,
-slot, and heartbeat mechanics are not prerequisites for default issue ownership.
 
 ## 1. Pre-stage the machine
 
@@ -117,8 +117,8 @@ understood:
 
 - **A per-call approval is not a rule.** Approving a blocked call lets that call
   through and changes nothing for the next one.
-- **A classifier denial is usually fleet-wide.** It is a rule about a class of
-  command, not a property of one session. When a worker reports a denial, assume
+- **A classifier denial can affect other sessions.** It is a rule about a class of
+  command, not a property of one session. When a session reports a denial, assume
   every session will hit it and escalate once, rather than routing the action to
   a second session to find out.
 
@@ -162,75 +162,6 @@ to decide without seeing the original prompt, and act on his answer yourself.
   user authorized that scope.
 - **Report directly.** Send milestones and blockers to the operator and retain
   UTC evidence on the issue/PR, with interim notes during long gates and reviews.
-  Default ownership does not depend on a coordinator relay or fleet heartbeat.
-
-### Optional legacy managed-session enrollment
-
-Only explicitly enrolled legacy managed sessions follow this subsection and
-section 4's coordinator setup. Existing resumed fleet tools retain all identity,
-enrollment, and targeted-command checks; do not bypass them to obtain a review.
-
-- **Mint the participant identity** as `<harness>:<provider>:<host>:<session-short-id>`.
-  Propose a short id from your own session's scratchpad directory name, which
-  on some harnesses is a session identifier and on others is not. Do not copy
-  one from another session, and never derive it from a live process, socket
-  path, or connection handle. Never put a credential or a complete token in it.
-  **The proposal is not the identity.** The `JOIN ACK` the coordinator returns
-  is authoritative, and the identity you sign comments with and answer targeted
-  commands under is the one in that `ACK`.
-
-  More than one derivation is live on this fleet and no single rule explains all
-  of them, so say which input you used. Two are measured: one participant's
-  suffix is the first eight hex of the SHA-256 of its API session identifier,
-  and another's is the plain first segment of its scratchpad directory name.
-  Neither reproduces the other, hashing the first participant's directory name
-  reproduces nothing, and suffix lengths are not even uniform across the fleet.
-  A session that mints a suffix, states no input, and skips the acknowledgement
-  can end up enrolled under an identity that targeted commands never reach.
-- **Send `JOIN REQUEST`** to the coordinator on the owning roadmap epic, which
-  is issue #513 at the time of writing. `AGENTS.md` correctly tells you to use
-  the active initiative's epic and cites #89 only as retained virtual-first
-  history, but it does not name the active one, so a new session cannot get
-  there from the policy alone. If #513 is closed when you read this, ask the
-  operator which epic is live rather than guessing from the issue list. The
-  coordinator's participant identity is not published anywhere and is not
-  derivable: you learn it from the `JOIN ACK` and from the footnote it signs its
-  own comments with. The session stays `UNREGISTERED/WAIT` until the coordinator
-  returns a participant-bound `JOIN ACK` and the session returns `JOINED ACK`.
-  Reading
-  `AGENTS.md` is not enrolment.
-- **Take a slot lease** if the role needs one. Slots are mutable epic comments
-  with a sequence number; read the last sequence before writing and acknowledge
-  the other slot's latest.
-- **Adopt the attribution footnote.** Every issue comment, pull request comment,
-  issue body and pull request body ends with a footnote naming the writing
-  session, because GitHub attributes all of it to the operator's account.
-
-## 4. Optional legacy coordinator setup
-
-- **Arm the heartbeat, and confirm the cadence with the operator.** Two
-  different intervals live in the protocol and they are easy to collapse into
-  one. Section 4 of `docs/planning/agent-execution.md` specifies a five-minute
-  operator-visible heartbeat, and separately gives fifteen minutes to the
-  cross-provider slot writer for its state line. The fifteen-minute figure is
-  scoped to that writer and is not a licence to relay to the operator every
-  fifteen minutes; `AGENTS.md` has the five-minute heartbeat relay every wake to
-  the operator, carrying the literal `still running, no change` when that is
-  what applies. This fleet has also run a fifteen-minute fallback tick, on the
-  operator's judgement that push messaging carries the events and the tick only
-  catches what push misses. Which
-  applies is the operator's call, so ask rather than infer, and say in your first
-  relay which one you armed.
-- **Prove the job exists on every tick**, because it has silently disappeared
-  mid-session before and a heartbeat that stopped looks exactly like a fleet
-  with nothing to report. List the harness's scheduled jobs as the first action
-  of each tick, before anything else; in Claude Code that is the `CronList`
-  tool. If the job is gone, recreate it and say so in that tick's relay.
-- **Verify the slot write path once.** A malformed write can leave a two-byte
-  body and destroy the sequence counter with no error. Read the slot back after
-  the first write.
-- **Keep any per-participant queue within operator-authorized scope.** Completion
-  does not authorize automatically assigning or taking another issue.
 
 ## 5. Validation and finalization for every owner
 
@@ -266,7 +197,7 @@ enrollment, and targeted-command checks; do not bypass them to obtain a review.
   publish the blob hash of the file measured. A run against transcribed text is
   evidence about the transcription.
 
-## 6. The failure class this fleet keeps hitting
+## 6. A recurring validation failure class
 
 Nearly every defect found in a recent batch was one shape: **a channel
 structurally incapable of saying it does not know, so absence renders as a

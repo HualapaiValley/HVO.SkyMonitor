@@ -139,7 +139,7 @@ must not redefine its policy inconsistently.
 
 - The assigned person or agent owns one issue end to end: implementation,
   validation, independent review, corrections, green CI, authorized merge, and
-  cleanup. No coordinator or enrollment is required for ordinary assigned work.
+  cleanup.
 - Before editing, inspect the issue assignees, `workflow:in-progress` label,
   claim comments, and linked open PRs. An existing claim means do not take it,
   including while its owner waits for review or CI.
@@ -176,23 +176,20 @@ must not redefine its policy inconsistently.
   epic as a progress index, not an authorization service. Epic #89 and the
   `Virtual-First Platform Completion` milestone retain
   the completed virtual-first delivery history.
-- Only explicitly opted-in managed-fleet sessions use the legacy enrollment
-  protocol below; it is not required for independent developers or reviewers.
-  Identify every managed-fleet participant as
-  `<harness>:<provider>:<host>:<session-short-id>`; provider-only names such as
-  `Claude` are display labels, not identities. Do not include credentials or a
-  complete bearer/session token in the ID. A new session remains
-  `UNREGISTERED/WAIT` until it sends `JOIN REQUEST`, the coordinator returns a
-  participant-bound `JOIN ACK`, and it returns `JOINED ACK`. Loading this file
-  is not enrollment, and an unrelated operator-assigned repository task does
-  not join or mutate the roadmap epic unless explicitly enrolled. Follow the
-  registry, lease, and targeted-command mechanics in section 4 of
-  `docs/planning/agent-execution.md`.
+- Use `<harness>:<provider>:<host>:<session-short-id>` for a unique agent
+  identity without credentials or full session tokens.
+- Existing tooling retains the status literal `UNREGISTERED/WAIT`.
+- The review dispatch scripts (`scripts/pr:dispatch-review`,
+  `scripts/pr:review-request`) and the coordination guard
+  (`scripts/coordination:guard`) are still present. Revisit them later and
+  remove them if no longer needed.
+- Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+  `home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
+  git worktree off `development/v1`, so the main checkout is never modified.
 - A session coming online on a new machine, or a machine being pre-staged before
   any agent runs on it, follows `docs/runbooks/agent-host-onboarding.md`. It is
   the operational checklist under this policy and the execution protocol, and it
-  covers toolchain, environment, permissions, enrolment, and the role-specific
-  setup for a coordinator and for a worker.
+  covers toolchain, environment, permissions, and task setup.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Before opening, reviewing, updating, finalizing, or merging any PR, read and
   follow `.agents/skills/pr-lifecycle/SKILL.md`. This instruction is mandatory
@@ -237,9 +234,8 @@ must not redefine its policy inconsistently.
 - Tier A/B PRs receive one initial exact-range review plus only finding-driven
   correction rereviews. Use `standard` by default and promote Tier B to `deep`
   for concurrency, durability, security, CI-control, or cross-boundary risk.
-  Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human,
-  one-shot agent, or guarded resumed-session route; fleet scripts apply only to
-  the enrolled resumed-session route they support.
+  Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human
+  or one-shot agent route.
 - Finalize through GitHub auto-merge while the repository allows it. Once review
   has converged, mark the PR ready. Once the required checks pass on the
   reviewed head, publish the `hvo/reviewed-head` commit status on exactly that
@@ -287,28 +283,7 @@ must not redefine its policy inconsistently.
 
 Progress reporting is mandatory while delegated work, review acquisition, long
 gates, or CI is active. Section 4 of `docs/planning/agent-execution.md` is the
-single canonical source for the complete monitor, heartbeat, ledger, and
-cross-provider channel procedure. Independent owners report milestones, blockers,
-long-running work, and completion to the user and issue/PR ledger. The following
-coordinator and leased-slot rules apply only to explicitly opted-in managed fleets:
-
-- The coordinator arms exactly one five-minute monitor whose cadence actively
-  wakes or messages it, proves that path with an immediate baseline after every
-  start/restart, and polls directly after a signaling gap. Buffered output is
-  not a working monitor, and delivery to the main conversation cannot be
-  delegated.
-- Cross-provider fallback uses two participant-leased mutable epic slots,
-  compact sequenced/acknowledged state, append-only durable decisions, and
-  metadata/cursor reads instead of epic rescans. Keep `C1.1` until the execution
-  protocol's identity, CAS, and explicit `C1.2` cutover conditions are met.
-- On every wake, inspect each active issue/PR, current review and CI state, and
-  shared locks. Attach terminal-only CI watchers; do not repeatedly run or
-  report unchanged expensive work.
-- Relay every wake to the operator in fixed MST (UTC-7), including the literal
-  `still running, no change` when applicable, plus every `STARTED`, milestone,
-  blocker, and completion immediately. Each item retains finished/current/next/
-  blocker; repository comments alone are not operator-visible reporting.
-- Enrolled agents echo participant and command IDs in their reports and write
-  milestones in UTC to the issue or PR ledger at least every thirty minutes.
-  Long gates and reviews get an interim note, and a blocked agent still leaves
-  the resumable handoff.
+single canonical source for progress reporting. Owners report milestones,
+blockers, long-running work, and completion directly to the user and issue/PR
+ledger. Long gates and reviews get an interim note, and blocked work leaves a
+resumable handoff.
