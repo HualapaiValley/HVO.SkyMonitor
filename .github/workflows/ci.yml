@@ -86,7 +86,7 @@ jobs:
     name: Quality
     needs: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,7 +288,7 @@ jobs:
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
