@@ -19,10 +19,22 @@ report_failure() {
     mkdir -p "$evidence_root"
     cp -R "$WORK_ROOT" "$evidence_root/"
     printf 'Deployment CLI failure evidence: %s/%s\n' "$evidence_root" "${WORK_ROOT##*/}" >&2
+    return 0
+}
+failure_line='' failure_command=''
+trap 'failure_line="$LINENO"; failure_command="$BASH_COMMAND"' ERR
+finish() {
+    local status="$1" line="$2" command="$3"
+    trap - ERR EXIT
+    if (( status != 0 )); then
+        # Reporting is best effort; preserve the original assertion/command status.
+        set +e
+        report_failure "$status" "${failure_line:-$line}" "${failure_command:-$command}"
+    fi
+    rm -rf "$WORK_ROOT"
     exit "$status"
 }
-trap 'report_failure "$?" "$LINENO" "$BASH_COMMAND"' ERR
-trap 'rm -rf "$WORK_ROOT"' EXIT
+trap 'finish "$?" "$LINENO" "$BASH_COMMAND"' EXIT
 
 wait_for_process_exit() {
     local pid="$1" poll
@@ -32,6 +44,32 @@ wait_for_process_exit() {
     done
     return 1
 }
+
+# Exercise the actual finalizer for both bare failures and explicit fatal exits.
+# Each probe gets its own disposable WORK_ROOT; expected child failures stay quiet.
+for failure_case in bare explicit; do
+    sed '/^wait_for_process_exit()/,$d' "$0" > "$WORK_ROOT/failure-$failure_case.sh"
+    # shellcheck disable=SC2016 # The disposable child expands its own WORK_ROOT.
+    printf '%s\n' 'printf "retained fixture reason\n" > "$WORK_ROOT/probe.log"' >> "$WORK_ROOT/failure-$failure_case.sh"
+    if [[ "$failure_case" == bare ]]; then
+        printf '%s\n' 'false' >> "$WORK_ROOT/failure-$failure_case.sh"
+        expected_status=1
+    else
+        printf '%s\n' 'exit 43' >> "$WORK_ROOT/failure-$failure_case.sh"
+        expected_status=43
+    fi
+    if DEPLOY_TEST_LOG_DIR="$WORK_ROOT/failure-evidence-$failure_case" \
+      bash "$WORK_ROOT/failure-$failure_case.sh" > "$WORK_ROOT/failure-$failure_case.out" 2>&1; then
+        printf 'Failure reporter probe unexpectedly passed: %s\n' "$failure_case" >&2
+        exit 1
+    else
+        [[ "$?" -eq "$expected_status" ]]
+    fi
+    grep -Eq "Deployment CLI contract failed: status=$expected_status line=[0-9]+ command=" "$WORK_ROOT/failure-$failure_case.out"
+    grep -Fq 'retained fixture reason' "$WORK_ROOT/failure-$failure_case.out"
+    probe_logs=("$WORK_ROOT/failure-evidence-$failure_case"/*/probe.log)
+    [[ "${#probe_logs[@]}" -eq 1 && -f "${probe_logs[0]}" ]]
+done
 
 # The closed shard contract is pinned here as a literal, independently of the
 # manifest the harness reads, so a manifest edit cannot silently redefine the
@@ -47,6 +85,37 @@ manifest_shards="$(jq -r '.shards[].name' "$SCRIPT_DIR/deploy/shards.json")"
     printf 'Deployment shard manifest did not match the closed contract.\n' >&2
     exit 1
 }
+
+# Use the real typed dispatch paths with a fake SDK: only the shared preparation
+# may build, and nested compatibility commands must inherit --no-build too.
+mkdir -p "$WORK_ROOT/sdk-bin"
+cat > "$WORK_ROOT/sdk-bin/dotnet" <<'SDK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${SDK_CALLS:?}"
+if [[ "$1" == build ]]; then
+    mkdir "${SDK_BUILD_ONCE:?}"
+elif [[ "$1" == test || "$1" == run ]]; then
+    [[ " $* " == *' --no-build '* ]] || { printf 'Concurrent build-capable SDK call: %s\n' "$*" >&2; exit 88; }
+    if [[ "$1" == test ]]; then
+        "${SDK_DEPLOY:?}" preflight
+        "$SDK_DEPLOY" partial-prepare-cleanup
+        "$SDK_DEPLOY" down --inventory "${SDK_INVENTORY:?}"
+    fi
+else
+    exit 89
+fi
+SDK
+chmod +x "$WORK_ROOT/sdk-bin/dotnet"
+printf '%s\n' '{"deployment":{"services":{"mode":"existing"}}}' > "$WORK_ROOT/sdk-inventory.json"
+for typed_shard in preflight partial-prepare; do
+    SDK_CALLS="$WORK_ROOT/sdk-$typed_shard.calls" SDK_BUILD_ONCE="$WORK_ROOT/sdk-$typed_shard.built" \
+      SDK_DEPLOY="$SCRIPT_DIR/deploy:environment" SDK_INVENTORY="$WORK_ROOT/sdk-inventory.json" \
+      PATH="$WORK_ROOT/sdk-bin:$PATH" env -u HVO_DEPLOYMENT_TEST_NO_BUILD \
+      "$HARNESS" --shard "$typed_shard" > "$WORK_ROOT/sdk-$typed_shard.log" 2>&1
+    [[ "$(grep -c '^build ' "$WORK_ROOT/sdk-$typed_shard.calls")" -eq 1 ]]
+    [[ "$(grep -c '^run .* --no-build ' "$WORK_ROOT/sdk-$typed_shard.calls")" -eq 3 ]]
+done
 
 # The harness refuses a manifest that is missing, malformed, or that disagrees
 # with the shard bodies, before any shard is dispatched.

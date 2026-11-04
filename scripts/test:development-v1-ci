@@ -132,7 +132,8 @@ def violations(short, full):
     require(build.count("((remaining > 0)) || exit 124") == 3, "cumulative deadline guards")
     require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 3,
             "bounded commands")
-    require("started_at_epoch + 1080" in build and "timeout-minutes: 22" in build, "bounded workload and job")
+    require(re.search(r"started_at_epoch \+ 1080\)\)", build) is not None and
+            re.search(r"^    timeout-minutes: 22$", build, re.M) is not None, "bounded workload and job")
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320" in build, "summary matches enforced budgets")
     require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
@@ -174,6 +175,8 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
+    ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
+    ("inflated hard timeout", short.replace("timeout-minutes: 22", "timeout-minutes: 220"), full),
     ("workload budget reverted", short.replace("started_at_epoch + 1080", "started_at_epoch + 720"), full),
     ("hard timeout reverted", short.replace("timeout-minutes: 22", "timeout-minutes: 15"), full),
     ("summary workload drift", short.replace("workloadBudgetSeconds:1080", "workloadBudgetSeconds:720"), full),

@@ -60,7 +60,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 14837 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Unit Tests** | 14840 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
 | **Integration Tests** | 1002 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -538,7 +538,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14837`, `Integration=1002`, `Manual=295`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14840`, `Integration=1002`, `Manual=295`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -577,8 +577,14 @@ Its closed shard inventory is `preflight`, `prepare-images`, `partial-prepare`,
 `./scripts/test:deploy-environment --list-shards` (read from the closed inventory in `scripts/deploy/shards.json`, which the harness validates against its shard bodies under `scripts/deploy-contracts/` before dispatch), or run one isolated shard with
 `./scripts/test:deploy-environment --shard NAME`. Main/release/manual CI and
 affected pull requests use `./scripts/test:deploy-environment --parallel`; each
-child creates an independent temporary fixture. The coordinator defaults to the
-smaller of the shard count,
+child creates an independent temporary fixture. Before dispatch, the coordinator
+builds the shared Deployment.Cli test graph once (bounded to 900 seconds plus a
+30-second kill grace), retaining `build.log`. Typed shards use `--no-build
+--no-restore`; the harness-only `HVO_DEPLOYMENT_TEST_NO_BUILD=1` switch also makes
+nested compatibility CLI calls reuse that graph. Ordinary deployment calls keep
+their normal build behavior. Completed typed tests atomically advance the shard's
+semantic progress file; build output and console chatter do not count as test
+progress. The coordinator defaults to the smaller of the shard count,
 `nproc`, and eight local child processes. `DEPLOY_TEST_MAX_PARALLEL=1` through
 `8` can lower that bound. Every child runs in its own session. Fail-fast and
 signal cleanup send TERM to the complete process group, wait a bounded grace
@@ -591,10 +597,13 @@ identity; local directories use a local identity, UTC timestamp, coordinator
 PID, and random suffix. Concurrent invocations never clear or share these
 directories. Each contains per-shard `.log`, `.status`, and leader PID evidence,
 and the Deployment Contracts artifact retains every invocation directory even
-when the job fails.
+when the job fails. The lightweight CLI test prints the failing status, line and
+command, includes bounded fixture-log tails, and retains its fixtures for both
+command failures and explicit assertion exits. Evidence is bound and uploaded
+also when exhaustive shards were not selected.
 
 Run the lightweight closed-CLI and injected coordinator-failure contracts
-without executing the nine full shards:
+without executing the full shards:
 
 ```bash
 ./scripts/test:deploy-environment-cli
