@@ -24,17 +24,17 @@ report_failure() {
 failure_line='' failure_command=''
 trap 'failure_line="$LINENO"; failure_command="$BASH_COMMAND"' ERR
 finish() {
-    local status="$1" line="$2" command="$3"
+    local status="$1" command="$2"
     trap - ERR EXIT
     if (( status != 0 )); then
         # Reporting is best effort; preserve the original assertion/command status.
         set +e
-        report_failure "$status" "${failure_line:-$line}" "${failure_command:-$command}"
+        report_failure "$status" "${failure_line:-unavailable (explicit exit)}" "${failure_command:-$command}"
     fi
     rm -rf "$WORK_ROOT"
     exit "$status"
 }
-trap 'finish "$?" "$LINENO" "$BASH_COMMAND"' EXIT
+trap 'finish "$?" "$BASH_COMMAND"' EXIT
 
 wait_for_process_exit() {
     local pid="$1" poll
@@ -65,7 +65,12 @@ for failure_case in bare explicit; do
     else
         [[ "$?" -eq "$expected_status" ]]
     fi
-    grep -Eq "Deployment CLI contract failed: status=$expected_status line=[0-9]+ command=" "$WORK_ROOT/failure-$failure_case.out"
+    if [[ "$failure_case" == bare ]]; then
+        probe_line="$(wc -l < "$WORK_ROOT/failure-$failure_case.sh")"
+        grep -Fq "Deployment CLI contract failed: status=1 line=$probe_line command=false" "$WORK_ROOT/failure-$failure_case.out"
+    else
+        grep -Fq 'Deployment CLI contract failed: status=43 line=unavailable (explicit exit) command=exit 43' "$WORK_ROOT/failure-$failure_case.out"
+    fi
     grep -Fq 'retained fixture reason' "$WORK_ROOT/failure-$failure_case.out"
     probe_logs=("$WORK_ROOT/failure-evidence-$failure_case"/*/probe.log)
     [[ "${#probe_logs[@]}" -eq 1 && -f "${probe_logs[0]}" ]]

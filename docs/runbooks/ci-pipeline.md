@@ -597,8 +597,9 @@ identity; local directories use a local identity, UTC timestamp, coordinator
 PID, and random suffix. Concurrent invocations never clear or share these
 directories. Each contains per-shard `.log`, `.status`, and leader PID evidence,
 and the Deployment Contracts artifact retains every invocation directory even
-when the job fails. The lightweight CLI test prints the failing status, line and
-command, includes bounded fixture-log tails, and retains its fixtures for both
+when the job fails. The lightweight CLI test prints the failing status and
+command, plus the line captured by Bash's error trap (or `unavailable (explicit exit)` for an explicit
+exit), includes bounded fixture-log tails, and retains its fixtures for both
 command failures and explicit assertion exits. Evidence is bound and uploaded
 also when exhaustive shards were not selected.
 
