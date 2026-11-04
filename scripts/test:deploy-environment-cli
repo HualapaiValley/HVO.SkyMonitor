@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly HARNESS="$SCRIPT_DIR/test:deploy-environment"
 WORK_ROOT="$(mktemp -d -t hvo-deploy-cli-test.XXXXXX)"
 readonly WORK_ROOT
+report_failure() {
+    local status="$1" line="$2" command="$3" evidence_root log
+    trap - ERR
+    printf 'Deployment CLI contract failed: status=%s line=%s command=%s\n' "$status" "$line" "$command" >&2
+    # These fixtures use injected processes only; retain their output, never the environment.
+    while IFS= read -r -d '' log; do
+        printf '\n===== %s =====\n' "${log#"$WORK_ROOT/"}" >&2
+        tail -n 80 "$log" >&2
+    done < <(find "$WORK_ROOT" -type f \( -name '*.log' -o -name '*.status' -o -name '*.progress' \) -print0)
+    evidence_root="${DEPLOY_TEST_LOG_DIR:-$SCRIPT_DIR/../TestResults/deployment-contracts}"
+    mkdir -p "$evidence_root"
+    cp -R "$WORK_ROOT" "$evidence_root/"
+    printf 'Deployment CLI failure evidence: %s/%s\n' "$evidence_root" "${WORK_ROOT##*/}" >&2
+    exit "$status"
+}
+trap 'report_failure "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap 'rm -rf "$WORK_ROOT"' EXIT
 
 wait_for_process_exit() {
@@ -177,7 +193,10 @@ fi
 (( SECONDS - started_at <= 10 ))
 stall_dirs=("$WORK_ROOT/stall-logs"/*); [[ "${#stall_dirs[@]}" -eq 1 ]]
 grep -Eq '^stalled elapsed_seconds=[0-9]+ progress_idle_seconds=[0-9]+ checkpoint=' "${stall_dirs[0]}/preflight.status"
-[[ "$(grep -Fc 'Deployment contract status shard=preflight' "$WORK_ROOT/stall.log")" -ge 2 ]]
+# Reporting itself costs time (including two stat calls). The watchdog checks
+# deadlines before the next report, so a correct stall can have only one report.
+# Assert report contents here; do not require two cycles inside a three-second deadline.
+grep -Fq 'Deployment contract status shard=preflight' "$WORK_ROOT/stall.log"
 grep -Eq 'output_bytes=[1-9][0-9]*' "$WORK_ROOT/stall.log"
 stall_leader="$(<"${stall_dirs[0]}/preflight.leader.pid")"; stall_descendant="$(<"${stall_dirs[0]}/preflight.descendant.pid")"
 wait_for_process_exit "$stall_descendant" || { printf 'Deployment stall descendant was not reaped boundedly.\n' >&2; exit 1; }
