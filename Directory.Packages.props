@@ -65,7 +65,7 @@
     <PackageVersion Include="Scalar.AspNetCore" Version="2.18.2" />
     <PackageVersion Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageVersion Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
-    <!-- Keep managed SkiaSharp and every native asset on the same release; native ABI ranges are enforced at startup. -->
+    <!-- Keep managed SkiaSharp and every native asset on the same release; native ABI ranges are enforced on the first native call. -->
     <PackageVersion Include="SkiaSharp" Version="4.154.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.154.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
@@ -84,7 +84,7 @@
     <PackageVersion Include="TextMateSharp" Version="2.0.4" />
     <PackageVersion Include="TextMateSharp.Grammars" Version="2.0.4" />
     <PackageVersion Include="Onigwrap" Version="1.0.11" />
-    <!-- Terminal.Gui 2.5.0 asks for these at 10.0.11; pinned to the runtime's patch level, as the rest of .NET here is. -->
+    <!-- Terminal.Gui 2.5.0 asks for these at 10.0.11; pinned to the current .NET NuGet servicing patch. Runtime images and the SDK are upgraded separately. -->
     <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.FileExtensions" Version="10.0.14" />
