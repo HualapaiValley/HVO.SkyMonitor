@@ -20,10 +20,18 @@ The job selector is always
 explicit part of every self-hosted selector. `pi5` describes the current
 hardware but is not the workload contract.
 
-The workflow runs only from protected `main`, a daily schedule, or a
-`repository_dispatch` event that GitHub resolves from the default branch. It
-does not run for pull requests or branch-selectable `workflow_dispatch` events.
-A persistent self-hosted runner
+The workflow runs from protected `main`, a daily schedule, or a
+`repository_dispatch` event that GitHub resolves from the default branch.
+Maintainers may also use `workflow_dispatch` on an explicitly reviewed branch
+to verify an advisory fix before promotion:
+
+```bash
+gh workflow run cameraagent-arm64.yml --ref <reviewed-branch> --repo HualapaiValley/HVO.SkyMonitor
+```
+
+Record the immutable reviewed head and resulting run URL in the PR ledger.
+Manual dispatch is an explicit maintainer action; the workflow has no pull-request
+trigger. A persistent self-hosted runner
 must not execute unreviewed pull-request code or receive repository,
 environment, deployment, camera, or application secrets.
 

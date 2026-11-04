@@ -1,6 +1,7 @@
 name: CameraAgent ARM64 Advisory
 
 on:
+  workflow_dispatch:
   repository_dispatch:
     types: [cameraagent-arm64]
   schedule:
