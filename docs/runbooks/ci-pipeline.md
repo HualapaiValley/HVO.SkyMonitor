@@ -518,9 +518,14 @@ curl --fail --silent --show-error \
 `.github/workflows/cameraagent-arm64.yml` supplies native Linux ARM64 evidence
 on a dedicated runner selected by
 `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]`. It runs from protected
-`main`, by daily schedule, or by default-branch `repository_dispatch`; it does
-not execute pull-request or branch-selectable manual-dispatch code and is not
-aggregated by `Required CI`.
+`main`, by daily schedule, or by default-branch `repository_dispatch`. Users with
+repository write access may explicitly dispatch a reviewed branch before merging
+an advisory fix into `development/v1`, passing its full converged commit SHA as
+`reviewed_head`. The hosted catalog job rejects malformed or mismatched SHAs
+before the dependent Pi job can start. Record the reviewed SHA and run URL, and
+accept evidence only when the run's `head_sha` matches. See the command and review
+responsibility in [CameraAgent ARM64 CI Runner](cameraagent-arm64-ci.md#workload-boundary).
+There is no pull-request trigger; the advisory is not aggregated by `Required CI`.
 
 The workflow builds the canonical production catalog contract on hosted x64,
 then performs a native CameraAgent Release build, Docker-disabled Unit subset,
