@@ -20,6 +20,7 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
+          preflight
           partial-prepare-cleanup
           existing-down
           status

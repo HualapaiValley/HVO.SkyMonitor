@@ -16,6 +16,7 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     private bool loading = true;
     private string message = "Selecting the latest eligible retained presentation…";
     private CameraCurrentSelection? selection;
+    private readonly CurrentSkyPosition localPosition = new();
     private OperationsCaptureDetail? detail;
     private ElementReference root;
     private IJSObjectReference? module;
@@ -25,6 +26,8 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
 
     [Parameter] public Guid ObservatoryId { get; set; }
     [Parameter] public Guid CameraId { get; set; }
+    [CascadingParameter] internal CurrentSkyPosition? PagePosition { get; set; }
+    private CurrentSkyPosition Position => PagePosition ?? localPosition;
     [Inject] private IServiceScopeFactory ScopeFactory { get; set; } = default!;
     [Inject] private AuthenticationStateProvider Authentication { get; set; } = default!;
     [Inject] private TimeProvider Clock { get; set; } = default!;
@@ -32,24 +35,29 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
     [Inject] private ILogger<CurrentSkyView> Logger { get; set; } = default!;
 
     protected override void OnInitialized() => Authentication.AuthenticationStateChanged += AuthenticationChanged;
-    protected override Task OnParametersSetAsync() => LoadAsync(null);
+    protected override Task OnParametersSetAsync()
+    {
+        var revalidate = Position.Scope == (ObservatoryId, CameraId) && Position.Selection is not null;
+        Position.SetScope(ObservatoryId, CameraId);
+        return LoadAsync(null, revalidate);
+    }
 
     [JSInvokable]
-    public Task RefreshAsync() => InvokeAsync(() => LoadAndRenderAsync(null));
-    private Task ManualRefreshAsync() => loading ? Task.CompletedTask : RefreshAsync();
+    public Task RefreshAsync() => InvokeAsync(() => loading ? Task.CompletedTask : LoadAndRenderAsync(null, revalidate: true));
+    private Task ManualRefreshAsync() => loading ? Task.CompletedTask : LoadAndRenderAsync(null);
     private Task ContinueAsync() => loading || selection?.NextCursor is not { } cursor
         ? Task.CompletedTask : LoadAndRenderAsync(cursor);
 
-    private async Task LoadAndRenderAsync(string? cursor)
+    private async Task LoadAndRenderAsync(string? cursor, bool revalidate = false)
     {
-        var pending = LoadAsync(cursor);
+        var pending = LoadAsync(cursor, revalidate);
         StateHasChanged();
         await pending;
         if (!disposed) StateHasChanged();
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Clear protected content on any read failure without exposing infrastructure diagnostics.")]
-    private async Task LoadAsync(string? cursor)
+    private async Task LoadAsync(string? cursor, bool revalidate = false)
     {
         if (disposed) return;
         var version = ++generation;
@@ -59,11 +67,19 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
         var token = cancellation.Token;
         var observatory = ObservatoryId;
         var camera = CameraId;
+        var navigation = Position;
+        var scopeGeneration = navigation.ScopeGeneration;
+        bool IsCurrent() => version == generation && !disposed && ReferenceEquals(navigation, Position) &&
+            navigation.ScopeGeneration == scopeGeneration;
+        // Commit a new navigation only after its authorized response succeeds. A superseding authority/parameter
+        // recheck must still be able to revalidate the previous search position while navigation is pending.
+        var retained = navigation.Selection;
+        var retainedCaptureId = navigation.CaptureId;
         // Remove the old image before awaiting authority or storage, even on a same-capture refresh.
         detail = null;
         selection = null;
         loading = true;
-        message = "Selecting the latest eligible retained presentation…";
+        message = revalidate ? "Rechecking the current item and access…" : "Selecting the latest eligible retained presentation…";
         try
         {
             if (previous is not null) await previous.CancelAsync();
@@ -72,55 +88,64 @@ public sealed partial class CurrentSkyView : ComponentBase, IAsyncDisposable
             if (!CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
                 !CentralArtifactCredentialAccess.IsObservatoryAllowed(principal, observatory))
             {
-                if (version == generation) message = "Camera not found or access was removed.";
+                if (IsCurrent()) message = "Camera not found or access was removed.";
                 return;
             }
             await using var scope = ScopeFactory.CreateAsyncScope();
             var archive = scope.ServiceProvider.GetRequiredService<ILogicalCameraArchiveReadService>();
-            var result = await archive.SelectCurrentAsync(principal, observatory, camera, cursor, token);
+            var result = revalidate
+                ? await archive.RevalidateCurrentAsync(principal, observatory, camera,
+                    retained ?? new("no-result", null, null, null, null, 0, 0, null), token)
+                : await archive.SelectCurrentAsync(principal, observatory, camera, cursor, token);
             OperationsCaptureDetail? capture = null;
-            Guid? requestedCapture = result?.Capture?.CaptureId;
-            if (result is { Status: "no-result" or "dependency-unavailable" })
+            Guid? requestedCapture = revalidate ? retainedCaptureId : result?.Capture?.CaptureId;
+            if (!revalidate && result is { Status: "no-result" or "dependency-unavailable" })
             {
                 var latest = await archive.ListCapturesAsync(principal, observatory, camera, new(), 1, null, token);
                 requestedCapture = latest.Items.Count > 0 ? latest.Items[0].CaptureId : null;
             }
-            if (requestedCapture is { } exactId)
+            if (result is not null && requestedCapture is { } exactId)
                 capture = await archive.GetCaptureAsync(principal, observatory, camera, exactId, token);
             token.ThrowIfCancellationRequested();
-            if (version != generation || disposed) return;
+            if (!IsCurrent()) return;
             selection = result;
+            if (result is not null)
+            {
+                navigation.Selection = result;
+                navigation.CaptureId = requestedCapture;
+            }
             if (capture is not null && capture.Capture.CaptureId == requestedCapture &&
                 capture.Capture.ObservatoryId == observatory && capture.Capture.LogicalCameraId == camera)
                 detail = capture;
             message = result switch
             {
                 null => "Camera not found or access was removed.",
-                { Status: "found" } when detail is not null => "Latest eligible retained presentation. Refresh to recheck content and access.",
+                { Status: "found" } when detail is not null => "Selected retained presentation. Automatic refresh rechecks this item and access.",
                 { Status: "found" } => "Selected capture not found or access was removed.",
                 { Status: "continue" } => "No eligible presentation in this bounded search. Search older retained captures to continue.",
                 { Status: "no-result" } => "No eligible retained presentation is available for this camera.",
+                { Status: "unavailable" } => "The selected item is unavailable. No other capture was selected.",
                 _ => "Presentation storage is temporarily unavailable. Refresh to try again."
             };
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (ArgumentException)
         {
-            if (version == generation) message = "This selection continuation is no longer available. Refresh to start again.";
+            if (IsCurrent()) message = "This selection continuation is no longer available. Refresh to start again.";
         }
         catch (Exception exception)
         {
             LogReadFailed(Logger, exception);
-            if (version == generation) message = "Current Sky is temporarily unavailable. Refresh to try again.";
+            if (IsCurrent()) message = "Current Sky is temporarily unavailable. Refresh to try again.";
         }
         finally
         {
             if (ReferenceEquals(activeLoad, cancellation)) activeLoad = null;
-            if (version == generation) loading = false;
+            if (IsCurrent()) loading = false;
         }
     }
 
-    private void AuthenticationChanged(Task<AuthenticationState> state) => _ = RefreshAsync();
+    private void AuthenticationChanged(Task<AuthenticationState> state) => _ = InvokeAsync(() => LoadAndRenderAsync(null, revalidate: true));
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

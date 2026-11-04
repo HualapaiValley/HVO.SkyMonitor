@@ -1,6 +1,12 @@
 name: CameraAgent ARM64 Advisory
 
 on:
+  workflow_dispatch:
+    inputs:
+      reviewed_head:
+        description: Full commit SHA covered by the converged review
+        required: true
+        type: string
   repository_dispatch:
     types: [cameraagent-arm64]
   schedule:
@@ -25,6 +31,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Verify manually dispatched reviewed head
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+        run: |
+          if [[ ! "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ || "$REVIEWED_HEAD" != "$GITHUB_SHA" ]]; then
+            echo '::error::Dispatch head does not match the full reviewed commit SHA.'
+            exit 1
+          fi
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -12,6 +12,7 @@ import sys
 VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))")
 PIN = re.compile(r"([^@\s]+)@sha256:([0-9a-f]{64})")
 SDK = "mcr.microsoft.com/dotnet/sdk"
+DEVCONTAINER = "mcr.microsoft.com/devcontainers/base"
 INSTRUCTIONS = set("ADD ARG CMD COPY ENTRYPOINT ENV EXPOSE FROM HEALTHCHECK LABEL MAINTAINER ONBUILD RUN SHELL STOPSIGNAL USER VOLUME WORKDIR".split())
 
 
@@ -161,11 +162,13 @@ def logical_lines(path):
         raise DockerfileSyntaxError(start, "unfinished continuation")
 
 
-def expand(value, arguments):
+def expand(value, arguments, image=False):
     def replace(match):
         name = match[1] or match[2]
         if name not in arguments or arguments[name] is None:
             raise ValueError(f"unresolved FROM argument: {name}")
+        if image and any(character in arguments[name] for character in "\"'\\"):
+            raise ValueError("unsupported quoted or escaped ARG default in FROM; use an unquoted default or literal FROM")
         return arguments[name]
     value = VARIABLE.sub(replace, value)
     if "$" in value:
@@ -177,8 +180,15 @@ def normalized_name(name):
     # Compare Docker Hub's short forms and the default HTTPS registry port equally.
     host, slash, rest = name.partition("/")
     if slash and ("." in host or ":" in host or host.lower() == "localhost"):
-        host = host.lower().removesuffix(":443")
-        if host in ("docker.io", "index.docker.io"):
+        host = host.lower()
+        registry, colon, port = host.rpartition(":")
+        if colon and port.isascii() and port.isdecimal():
+            # Retain an explicit port on private registries so a bare hostname
+            # cannot collapse into a Docker Hub namespace after normalization.
+            host = registry + ":" + (port.lstrip("0") or "0")
+        else:
+            host += ":443"
+        if host in ("docker.io:443", "index.docker.io:443"):
             return rest.removeprefix("library/")
         return host + "/" + rest
     return name.removeprefix("library/")
@@ -188,6 +198,7 @@ def check(root):
     sdk = json.loads((root / "global.json").read_text())["sdk"]["version"]
     if not isinstance(sdk, str) or not re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", sdk):
         raise ValueError("invalid stable SDK version in global.json")
+    sdk_name, devcontainer_name = normalized_name(SDK), normalized_name(DEVCONTAINER)
     dockerfiles = discover_dockerfiles(root)
     if not dockerfiles:
         raise ValueError("no Dockerfiles found")
@@ -218,7 +229,7 @@ def check(root):
                     tokens.pop(0)
                 if not (len(tokens) == 1 or (len(tokens) == 3 and tokens[1].upper() == "AS")):
                     raise ValueError("unsupported FROM syntax")
-                image = expand(tokens[0], arguments)
+                image = expand(tokens[0], arguments, image=True)
                 # Stage references inherit the checked, pinned base. Only earlier
                 # aliases are allowed; a forward reference remains an external image.
                 if image.lower() not in stages and image != "scratch":
@@ -227,9 +238,14 @@ def check(root):
                         raise ValueError(f"FROM must be pinned by sha256 digest: {image}")
                     tag, digest = match.groups()
                     tag = normalized_name(tag)
-                    if tag == SDK or tag.startswith(SDK + ":"):
-                        if tag != f"{SDK}:{sdk}":
+                    if tag == sdk_name or tag.startswith(sdk_name + ":"):
+                        if tag != f"{sdk_name}:{sdk}":
                             raise ValueError(f"SDK tag must equal global.json ({sdk}): {tag}")
+                    if tag == devcontainer_name or tag.startswith(devcontainer_name + ":"):
+                        # The Ubuntu suffix can change without a semver-major bump.
+                        if not re.fullmatch(re.escape(devcontainer_name) + r":3\.[0-9]+\.[0-9]+-ubuntu24\.04", tag):
+                            raise ValueError(f"devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag; "
+                                             f"major or OS upgrades require a reviewed policy change: {tag}")
                     # Digest-only references pin different content without asserting a shared tag.
                     tagged = ":" in tag.rsplit("/", 1)[-1]
                     if tagged and tag in digests and digests[tag][0] != digest:
