@@ -154,3 +154,17 @@ port. Catalog/up assertions formerly at the end of the down shard remain with
 wall/RSS evidence and assertion trace are in
 [existing-down evidence](../validation/existing-down-1589.md). No current whole-lane
 improvement or completion of #893 is claimed.
+
+## 7. Inventory/preflight cutover (#1593)
+
+`Deployment.Contracts` and `Deployment.Cli` now own the inventory/preflight probe
+decisions, retaining the inventory primitives from #1588/#1589 and the schema-1
+manifest/evidence contract. The original three preflight parts, including their
+private-transport, continuity, transient-confirm and workload assertions, map to
+`Preflight*Tests`. The production `bash -n` boundary remains in `preflight-2.sh`.
+The manifest order is unchanged, and the preflight shard runs without constructing
+the old shared shell target fixture. Other phases retain their shared inventory
+predicate and existing shell ownership. The [complete 69-case comparison,
+assertion trace and current paired wall/RSS receipts](../validation/preflight-1593.md)
+precede this authority change. No target-phase or whole-lane speedup, production
+qualification or completion of #893 is claimed.

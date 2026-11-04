@@ -34,7 +34,7 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
 local builds, the devcontainer, CI, and SDK container images use that version.
-Runtime images and Microsoft runtime packages use 10.0.13.
+Runtime images and SDK-bundled runtimes use 10.0.13; Microsoft NuGet package pins use 10.0.14.
 
 The branch currently requires:
 

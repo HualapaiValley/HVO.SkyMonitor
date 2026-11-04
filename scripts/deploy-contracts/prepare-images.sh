@@ -84,8 +84,9 @@ docker_count_before_prepare="$(grep -c '^docker' "$LOG")"
 run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare.out"
 docker_count_after_prepare="$(grep -c '^docker' "$LOG")"
 [[ "$docker_count_before_prepare" == "$docker_count_after_prepare" ]] || fail 'Prepare invoked Docker.'
-grep -Fq $'logic@example\tbash\t-s\t--' "$LOG"
-grep -Fq $'east@example\tbash\t-s\t--' "$LOG"
+# Match prepare's quoted remote command, independently of preflight's transport.
+grep -Fq $'logic@example\tbash -s -- ' "$LOG"
+grep -Fq $'east@example\tbash -s -- ' "$LOG"
 while IFS= read -r prepared_target; do
     test -d "$prepared_target/.hvo-deploy"
     test "$(stat -c %a "$prepared_target")" = 700

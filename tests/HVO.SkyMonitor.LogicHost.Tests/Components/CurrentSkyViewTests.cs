@@ -70,7 +70,7 @@ public sealed partial class CurrentSkyViewTests
         using var context = CreateContext(out var archive, out _);
         var cut = Render(context);
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        archive.Select = _ => pending.Task;
+        archive.Revalidate = _ => pending.Task;
         var refresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
         cut.WaitForAssertion(() => cut.FindAll("img").Should().BeEmpty());
         cut.Find("section.current-sky").GetAttribute("aria-busy").Should().Be("true");
@@ -101,7 +101,7 @@ public sealed partial class CurrentSkyViewTests
         using var context = CreateContext(out var archive, out var auth);
         var cut = Render(context);
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        archive.Select = _ => pending.Task;
+        archive.Revalidate = _ => pending.Task;
         var refresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
         await cut.InvokeAsync(() => auth.Change(new ClaimsPrincipal(new ClaimsIdentity())));
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("access was removed"));
@@ -122,7 +122,7 @@ public sealed partial class CurrentSkyViewTests
         cut.FindAll("img").Should().BeEmpty();
         await cut.FindAll("button").Single(b => b.TextContent == "Search older retained captures").ClickAsync(new());
         cut.Find("img").Should().NotBeNull();
-        await cut.InvokeAsync(cut.Instance.RefreshAsync);
+        await cut.FindAll("button").Single(b => b.TextContent == "Refresh Current Sky").ClickAsync(new());
         archive.Cursors.Should().Equal([null, "protected-cursor", null]);
         cut.FindAll("img").Should().BeEmpty();
     }
@@ -138,7 +138,7 @@ public sealed partial class CurrentSkyViewTests
             cut.Markup.Should().Contain("Capture provenance");
             cut.FindAll("img").Should().BeEmpty();
             archive.ListCalls.Should().Be(1);
-            archive.Select = _ => throw new InvalidOperationException("private service details");
+            archive.Revalidate = _ => throw new InvalidOperationException("private service details");
             await cut.InvokeAsync(cut.Instance.RefreshAsync);
             cut.Markup.Should().Contain("temporarily unavailable").And.NotContain("private service details").And.NotContain("Capture provenance");
         }
@@ -227,12 +227,16 @@ public sealed partial class CurrentSkyViewTests
     private sealed class Archive : ILogicalCameraArchiveReadService
     {
         internal Func<string?, Task<CameraCurrentSelection?>> Select { get; set; } = _ => Task.FromResult<CameraCurrentSelection?>(Selected());
+        internal Func<CameraCurrentSelection, Task<CameraCurrentSelection?>> Revalidate { get; set; } = selection => Task.FromResult<CameraCurrentSelection?>(selection);
+        internal List<CameraCurrentSelection> Revalidations { get; } = [];
         internal OperationsCaptureDetail? Detail { get; set; } = CurrentSkyViewTests.Detail();
         internal List<string?> Cursors { get; } = [];
         internal int ListCalls { get; private set; }
         internal int DetailCalls { get; private set; }
         public Task<CameraCurrentSelection?> SelectCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, string? cursor, CancellationToken cancellationToken = default)
         { Cursors.Add(cursor); return Select(cursor); }
+        public Task<CameraCurrentSelection?> RevalidateCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, CameraCurrentSelection selection, CancellationToken cancellationToken = default)
+        { Revalidations.Add(selection); return Revalidate(selection); }
         public Task<CameraArchivePage> ListCapturesAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, CameraArchiveFilter filter, int take, string? cursor, CancellationToken cancellationToken = default)
         { take.Should().Be(1); ListCalls++; return Task.FromResult(new CameraArchivePage([Selected().Capture!], null)); }
         public Task<OperationsCaptureDetail?> GetCaptureAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, Guid captureId, CancellationToken cancellationToken = default)

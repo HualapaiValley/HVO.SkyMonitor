@@ -37,7 +37,7 @@ public sealed partial class CurrentSkyViewTests
 
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var next = reuseSelection ? selected : selected with { };
-        archive.Select = _ => delayed ? pending.Task : Task.FromResult<CameraCurrentSelection?>(next);
+        archive.Revalidate = _ => delayed ? pending.Task : Task.FromResult<CameraCurrentSelection?>(next);
         var clearedRenders = new List<bool>();
         cut.OnMarkupUpdated += (_, _) => clearedRenders.Add(cut.FindAll(".current-freshness").Count == 0);
         var refresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
@@ -79,7 +79,7 @@ public sealed partial class CurrentSkyViewTests
         var next = Selected() with { ArtifactId = nextArtifact, ContentPath = "/new-exact-preview" };
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
         archive.Select = _ => delayed ? pending.Task : Task.FromResult<CameraCurrentSelection?>(next);
-        var refresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
+        var refresh = cut.FindAll("button").Single(button => button.TextContent == "Refresh Current Sky").ClickAsync(new());
         if (delayed)
         {
             cut.WaitForAssertion(() => cut.FindAll("img, svg").Should().BeEmpty());
@@ -107,7 +107,7 @@ public sealed partial class CurrentSkyViewTests
         using var context = CreateLifetimeContext(out var archive, out var auth, out var presentations, out var js);
         var cut = Render(context);
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        archive.Select = _ => pending.Task;
+        archive.Revalidate = _ => pending.Task;
         Task refresh;
         if (credentialRevoked)
         {
@@ -125,7 +125,7 @@ public sealed partial class CurrentSkyViewTests
         if (!credentialRevoked) pending.SetResult(null);
         await refresh;
         cut.Markup.Should().Contain("access was removed");
-        archive.Cursors.Should().HaveCount(credentialRevoked ? 1 : 2);
+        (archive.Cursors.Count + archive.Revalidations.Count).Should().Be(credentialRevoked ? 1 : 2);
         archive.DetailCalls.Should().Be(1);
         presentations.Principals.Should().ContainSingle();
         js.Imports.Should().Be(1);
@@ -138,10 +138,10 @@ public sealed partial class CurrentSkyViewTests
         var cut = Render(context);
         var original = cut.FindComponent<ExactCaptureViewer>().Instance;
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        archive.Select = _ => pending.Task;
+        archive.Revalidate = _ => pending.Task;
         var oldRefresh = cut.InvokeAsync(cut.Instance.RefreshAsync);
         cut.WaitForAssertion(() => cut.FindComponents<ExactCaptureViewer>().Should().BeEmpty());
-        archive.Select = _ => Task.FromResult<CameraCurrentSelection?>(Selected());
+        archive.Revalidate = _ => Task.FromResult<CameraCurrentSelection?>(Selected());
         var nextActor = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, "next-actor"), new Claim("account_type", "User")], "Identity.Application"));
         await cut.InvokeAsync(() => auth.Change(nextActor));
@@ -154,7 +154,7 @@ public sealed partial class CurrentSkyViewTests
         cut.FindComponent<ExactCaptureViewer>().Instance.Should().BeSameAs(current);
         cut.Markup.Should().NotContain("/superseded-selection");
         cut.FindAll("img").Should().ContainSingle();
-        archive.Cursors.Should().HaveCount(3);
+        (archive.Cursors.Count + archive.Revalidations.Count).Should().Be(3);
         archive.DetailCalls.Should().Be(3, "the cancellation-ignoring fixture also answers the superseded detail read");
         presentations.Principals.Should().HaveCount(2);
         js.Imports.Should().Be(2);
@@ -170,7 +170,7 @@ public sealed partial class CurrentSkyViewTests
         var cut = Render(context);
         var original = cut.FindComponent<ExactCaptureViewer>().Instance;
         var pending = new TaskCompletionSource<CameraCurrentSelection?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        archive.Select = _ => pending.Task;
+        archive.Revalidate = _ => pending.Task;
         var actor = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, actorId), new Claim("account_type", "User")], "Identity.Application"));
 
@@ -187,7 +187,7 @@ public sealed partial class CurrentSkyViewTests
 
         cut.FindComponent<ExactCaptureViewer>().Instance.Should().NotBeSameAs(original);
         cut.Find("img").GetAttribute("src").Should().Be(presentations.Result.Presentation!.BaseContentPath);
-        archive.Cursors.Should().HaveCount(2);
+        (archive.Cursors.Count + archive.Revalidations.Count).Should().Be(2);
         archive.DetailCalls.Should().Be(2);
         archive.ListCalls.Should().Be(0);
         presentations.Principals.Should().HaveCount(3, "the service-level authentication cascade reads the retiring viewer before the host replaces it");
@@ -248,7 +248,8 @@ public sealed partial class CurrentSkyViewTests
 
     private static void AssertReads(Archive archive, Presentations presentations, int expected)
     {
-        archive.Cursors.Should().Equal(Enumerable.Repeat<string?>(null, expected));
+        archive.Cursors.Should().OnlyContain(cursor => cursor == null);
+        (archive.Cursors.Count + archive.Revalidations.Count).Should().Be(expected);
         archive.DetailCalls.Should().Be(expected);
         archive.ListCalls.Should().Be(0);
         presentations.Principals.Should().HaveCount(expected);

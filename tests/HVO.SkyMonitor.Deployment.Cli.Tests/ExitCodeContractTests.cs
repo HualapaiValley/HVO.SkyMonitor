@@ -28,6 +28,7 @@ public sealed class ExitCodeContractTests
     /// <summary>Every command the parser accepts, with arguments it accepts.</summary>
     private static readonly (string Name, string[] Arguments)[] Commands =
     [
+        ("preflight", ["preflight", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "preflight-run"]),
         ("partial-prepare-cleanup", ["partial-prepare-cleanup", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "failed-run", "--dry-run"]),
         ("existing-down", ["existing-down", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "deployed-run", "--preserve-state"]),
         ("status", ["status", "--instance-id", Id]),
@@ -67,6 +68,10 @@ public sealed class ExitCodeContractTests
     [DataRow("existing-down", "failed", 1)]
     [DataRow("existing-down", "refused", 3)]
     [DataRow("existing-down", "interrupted", 130)]
+    [DataRow("preflight", "done", 0)]
+    [DataRow("preflight", "failed", 1)]
+    [DataRow("preflight", "refused", 3)]
+    [DataRow("preflight", "interrupted", 130)]
     [DataRow("partial-prepare-cleanup", "done", 0)]
     [DataRow("partial-prepare-cleanup", "failed", 1)]
     [DataRow("partial-prepare-cleanup", "refused", 3)]
@@ -151,6 +156,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("preflight")]
     [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
@@ -183,6 +189,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("preflight")]
     [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
@@ -216,6 +223,7 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("preflight")]
     [DataRow("existing-down")]
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
@@ -406,6 +414,7 @@ public sealed class ExitCodeContractTests
                 1, request.Operation, "completed", Guid.NewGuid(), request.InstanceId, null, request.ProductRoot, null, null, null,
                 null, null, null, null, null, [], null, DateTimeOffset.UtcNow)))
         {
+            SplitHostPreflight = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
             ExistingDown = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
             PartialPrepare = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" })
         };

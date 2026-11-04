@@ -60,8 +60,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 14604 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
-| **Integration Tests** | 1000 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 14837 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Integration Tests** | 1002 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -367,6 +367,13 @@ advisory build passes resolved native references through the same arguments.
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- `devcontainers/base` receives reviewed stable patch/minor tag updates within
+  major `3` and digest refreshes, staying on Ubuntu `24.04`. Dependabot ignores
+  major updates; `ci:base-images` also checks the complete `3.x.y-ubuntu24.04`
+  tag, since a distribution suffix can change without a semver-major bump.
+  Major-version or Ubuntu-release upgrades require a deliberate, reviewed
+  change to this policy and its regression tests. This policy does not upgrade
+  the currently pinned image or authorize deployment.
 
 Every Development v1 Preflight, including drafts, runs
 `./scripts/ci:base-images`. This offline check enumerates tracked and non-ignored
@@ -379,6 +386,9 @@ aliases inherit their checked base; global ARG defaults are resolved before
 checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
 instructions. Unknown instructions, unresolved arguments and unsupported FROM
 forms fail closed.
+Quoted or escaped global ARG defaults used by FROM are explicitly unsupported; use an
+unquoted default or a literal pinned FROM instead. Equivalent numeric HTTPS
+default-port spellings are normalized before image identity/policy checks.
 There are no pinning exceptions. Build-time argument overrides are outside this
 source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
@@ -508,9 +518,14 @@ curl --fail --silent --show-error \
 `.github/workflows/cameraagent-arm64.yml` supplies native Linux ARM64 evidence
 on a dedicated runner selected by
 `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]`. It runs from protected
-`main`, by daily schedule, or by default-branch `repository_dispatch`; it does
-not execute pull-request or branch-selectable manual-dispatch code and is not
-aggregated by `Required CI`.
+`main`, by daily schedule, or by default-branch `repository_dispatch`. Users with
+repository write access may explicitly dispatch a reviewed branch before merging
+an advisory fix into `development/v1`, passing its full converged commit SHA as
+`reviewed_head`. The hosted catalog job rejects malformed or mismatched SHAs
+before the dependent Pi job can start. Record the reviewed SHA and run URL, and
+accept evidence only when the run's `head_sha` matches. See the command and review
+responsibility in [CameraAgent ARM64 CI Runner](cameraagent-arm64-ci.md#workload-boundary).
+There is no pull-request trigger; the advisory is not aggregated by `Required CI`.
 
 The workflow builds the canonical production catalog contract on hosted x64,
 then performs a native CameraAgent Release build, Docker-disabled Unit subset,
@@ -523,7 +538,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14604`, `Integration=1000`, `Manual=294`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14837`, `Integration=1002`, `Manual=295`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 

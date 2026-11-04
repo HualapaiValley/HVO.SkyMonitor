@@ -8,6 +8,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
+# Typed preflight authority (#1593). Resolve relative inventory arguments before selecting the source checkout.
+if [[ "${1:-}" == preflight ]]; then
+    preflight_forward=("$@")
+    for ((preflight_index=1; preflight_index<${#preflight_forward[@]}; preflight_index++)); do
+        if [[ "${preflight_forward[$preflight_index]}" == --inventory && $((preflight_index + 1)) -lt ${#preflight_forward[@]} ]]; then
+            preflight_forward[preflight_index + 1]="$(realpath -m -- "${preflight_forward[preflight_index + 1]}")"
+            break
+        fi
+    done
+    cd "$REPO_ROOT"
+    exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
+      --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
+      --configuration Release --no-launch-profile -- "${preflight_forward[@]}"
+fi
+
 # Compatibility entry point; the typed CLI is the sole recovery implementation (#1588).
 if [[ "${1:-}" == partial-prepare-cleanup ]]; then
     exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
@@ -76,7 +91,7 @@ fi
 
 usage() {
     printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--dry-run | --confirm <run-id>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
-    printf '       partial-prepare-cleanup is provided by hvo-sky-install; this script forwards that command to the typed CLI. Existing-services down forwards to existing-down.\n' >&2
+    printf '       partial-prepare-cleanup is provided by hvo-sky-install; this script forwards that command to the typed CLI. Preflight forwards to the typed preflight command; existing-services down forwards to existing-down.\n' >&2
     printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario; acceptance-component requires the fixed --component.\n' >&2
     exit 2
 }
@@ -351,32 +366,4 @@ if [[ "$phase" == transient-confirm ]]; then
     exit 0
 fi
 
-started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-old_manifest=""
-if [[ -e "$DEPLOY_MANIFEST" || -L "$DEPLOY_MANIFEST" ]]; then
-    [[ -f "$DEPLOY_MANIFEST" && ! -L "$DEPLOY_MANIFEST" && "$(stat -c '%u' "$DEPLOY_MANIFEST" 2>/dev/null)" == "$(id -u)" && "$(stat -c '%h' "$DEPLOY_MANIFEST" 2>/dev/null)" == 1 &&
-       "$(stat -c '%a' "$DEPLOY_MANIFEST" 2>/dev/null)" == 600 ]] ||
-        deploy_fail state manifest "unsafe-existing-manifest"
-    previous_manifest="$(jq -c . "$DEPLOY_MANIFEST" 2>/dev/null)" || deploy_fail state manifest "invalid-existing-manifest"
-    deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"
-    deploy_require_completed_evidence_match "$previous_manifest" "$DEPLOY_EVIDENCE"
-    if [[ "$(jq -r '.phaseStatus' <<< "$previous_manifest")" == passed ]]; then old_manifest="$previous_manifest"; fi
-    DEPLOY_MANIFEST_JSON="$(jq -c '.phaseStatus="running" | .checks=[] | .targets=[] | del(.completedAt)' <<< "$previous_manifest")"
-else
-    DEPLOY_MANIFEST_JSON="$(deploy_initial_manifest "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$dirty_disposition" "$started")"
-    DEPLOY_MANIFEST_JSON="$(jq -c --arg state "$worktree_state" '.source.worktreeState=$state' <<< "$DEPLOY_MANIFEST_JSON")"
-fi
-deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" || deploy_fail state manifest "atomic-publication-failed"
-deploy_clear_evidence
-deploy_mark_failed() {
-    local status=$?
-    trap - ERR
-    DEPLOY_MANIFEST_JSON="$(jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.phaseStatus="failed" | .updatedAt=$now' <<< "$DEPLOY_MANIFEST_JSON")"
-    deploy_publish_json "$DEPLOY_EVIDENCE" "$(deploy_evidence_json "$DEPLOY_MANIFEST_JSON")" >/dev/null 2>&1 || true
-    deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" >/dev/null 2>&1 || true
-    exit "$status"
-}
-trap deploy_mark_failed ERR
-deploy_run_preflight "$inventory" "$mode" "$old_manifest"
-trap - ERR
-deploy_status preflight complete passed read-only
+deploy_fail preflight authority use-typed-preflight

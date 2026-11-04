@@ -36,6 +36,8 @@ internal interface ILogicalCameraArchiveReadService
         CameraArchiveFilter filter, int take, string? cursor, CancellationToken cancellationToken = default);
     Task<CameraCurrentSelection?> SelectCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId,
         string? cursor, CancellationToken cancellationToken = default);
+    Task<CameraCurrentSelection?> RevalidateCurrentAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId,
+        CameraCurrentSelection selection, CancellationToken cancellationToken = default);
     Task<OperationsCaptureDetail?> GetCaptureAsync(ClaimsPrincipal principal, Guid observatoryId, Guid cameraId,
         Guid captureId, CancellationToken cancellationToken = default);
 }
@@ -165,6 +167,62 @@ internal sealed class LogicalCameraArchiveReadService(
         }
         return await FinishAsync(more ? "continue" : "no-result",
             more ? Encode(rows[^1], owner, observatoryId, cameraId, "current", filter) : null).ConfigureAwait(false);
+    }
+
+    /// <summary>Rechecks one selected Preview or a continuation's authority without searching another page or capture.</summary>
+    public async Task<CameraCurrentSelection?> RevalidateCurrentAsync(
+        ClaimsPrincipal principal, Guid observatoryId, Guid cameraId, CameraCurrentSelection selection,
+        CancellationToken cancellationToken = default)
+    {
+        var owner = Owner(principal, observatoryId);
+        if (owner is null || !await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
+            return null;
+        _ = Decode(selection.NextCursor, owner, observatoryId, cameraId, "current", new());
+        if (selection.Capture is not { } selected)
+            return await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false)
+                ? selection with { ExaminedCaptures = 0, ExaminedArtifacts = 0 } : null;
+
+        var capture = await Project(Captures(owner, observatoryId, cameraId).Where(frame => frame.Id == selected.CaptureId))
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var unavailable = selection with { Status = "unavailable", ContentPath = null, ExaminedCaptures = 1, ExaminedArtifacts = 0 };
+        async Task<CameraCurrentSelection?> FinishAsync(CameraCurrentSelection result)
+            => await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false) ? result : null;
+        if (capture is null || selection.ArtifactId is not { } artifactId)
+            return await FinishAsync(unavailable).ConfigureAwait(false);
+        var candidate = await db.CentralArtifacts.AsNoTracking().Where(artifact => artifact.CentralFrameId == capture.CaptureId &&
+                artifact.ArtifactId == artifactId && artifact.Role == FrameArtifactRole.Preview &&
+                artifact.ObjectState == CentralArtifactObjectState.Available && artifact.ReconstructionState == CentralReconstructionState.Complete &&
+                (artifact.MediaType == "image/jpeg" || artifact.MediaType == "image/png") &&
+                artifact.ByteLength > 0 && artifact.ByteLength <= MaximumPreviewBytes)
+            .Select(artifact => new { artifact.DevicePublicId }).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (candidate is null) return await FinishAsync(unavailable).ConfigureAwait(false);
+        unavailable = unavailable with { ExaminedArtifacts = 1 };
+        var lookup = await retrieval.FindAsync(candidate.DevicePublicId, artifactId, principal, null, cancellationToken).ConfigureAwait(false);
+        if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact is not { } artifact ||
+            artifact.ChecksumSha256 != selection.ChecksumSha256)
+            return await FinishAsync(unavailable).ConfigureAwait(false);
+        try
+        {
+            var snapshot = await objects.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+            if (!await objects.IsCurrentGenerationAsync(artifact, snapshot.StorageETag, cancellationToken).ConfigureAwait(false))
+                return await FinishAsync(unavailable).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is CentralArtifactMissingException or CentralArtifactIntegrityException)
+        {
+            return await FinishAsync(unavailable).ConfigureAwait(false);
+        }
+        catch (CentralArtifactStorageException)
+        {
+            return await FinishAsync(unavailable with { Status = "dependency-unavailable" }).ConfigureAwait(false);
+        }
+        if (!await db.CentralArtifacts.AsNoTracking().AnyAsync(item => item.Id == artifact.Id &&
+                item.ObjectState == CentralArtifactObjectState.Available && item.ReconstructionState == CentralReconstructionState.Complete,
+                cancellationToken).ConfigureAwait(false)) return await FinishAsync(unavailable).ConfigureAwait(false);
+        return await FinishAsync(selection with
+        {
+            Status = "found", Capture = capture, ExaminedCaptures = 1, ExaminedArtifacts = 1,
+            ContentPath = FormattableString.Invariant($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifactId:D}/content")
+        }).ConfigureAwait(false);
     }
 
     public async Task<OperationsCaptureDetail?> GetCaptureAsync(

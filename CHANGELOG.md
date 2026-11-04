@@ -33,6 +33,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
+
+- Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
+
 - Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
 
 - Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
@@ -59,6 +63,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
+
+- Installer diagnostics suppress ambiguous values after credential indicators hidden in terminal decoration, and replace malformed Unicode with readable replacement characters without losing redaction or failing JSON output. (#1546)
 
 - Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
 

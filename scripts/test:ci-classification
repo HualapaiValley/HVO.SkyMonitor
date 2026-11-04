@@ -382,6 +382,19 @@ verify_deployment_installer_path() {
   expect_suites false false true pull_request "$deployment_base" "$deployment_head"
 }
 
+# Typed preflight ownership must retain both shard and installer selection (#1593).
+verify_preflight_owner_path() {
+  local path="$1" deployment_base deployment_head
+  deployment_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$path"
+  deployment_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_plan full true pull_request "$deployment_base" "$deployment_head"
+  expect_suites false true true pull_request "$deployment_base" "$deployment_head"
+}
+verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs"
+verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Contracts/PreflightContracts.cs"
+verify_preflight_owner_path "tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightTests.cs"
+
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
 verify_deployment_installer_path "scripts/release:cameraagent-publish"
 verify_deployment_installer_path "scripts/release:check-cameraagent-publish"

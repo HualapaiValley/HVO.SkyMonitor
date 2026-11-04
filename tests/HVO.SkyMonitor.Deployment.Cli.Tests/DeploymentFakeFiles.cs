@@ -8,11 +8,18 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 internal sealed class DeploymentFakeFiles : IDeploymentFiles
 {
     private readonly Dictionary<string, SafeFileHandle> handles = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> offsets = new(StringComparer.Ordinal);
     public string Call(string operation, params string[] args)
     {
         var path = args.ElementAtOrDefault(0) ?? "";
         switch (operation)
         {
+            case "replace": File.Move(path, args[1], overwrite: true); return "moved";
+            case "create":
+                var created = File.OpenHandle(path, FileMode.CreateNew, FileAccess.Write); File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                var id = handles.Count.ToString(CultureInfo.InvariantCulture); handles.Add(id, created); offsets.Add(id, 0); return id;
+            case "append-bytes":
+                var bytes = Convert.FromBase64String(args[1]); RandomAccess.Write(handles[path], bytes, offsets[path]); offsets[path] += bytes.Length; return "written";
             case "stat": return Metadata(NativeLinux.TryGetNodeIdentity(path));
             case "fstat": return Metadata(NativeLinux.GetOpenNodeIdentity(handles[path], path));
             case "open":
@@ -34,6 +41,7 @@ internal sealed class DeploymentFakeFiles : IDeploymentFiles
             case "rmdir":
                 using (var parent = NativeLinux.OpenDirectoryNoFollow(Path.GetDirectoryName(path)! + "/.")) NativeLinux.UnlinkNodeAt(parent, Path.GetFileName(path), operation == "rmdir"); return "removed";
             case "mkdir": Directory.CreateDirectory(path, SafeFileSystem.OwnerDirectoryMode); return "created";
+            case "chmod700": File.SetUnixFileMode(path, SafeFileSystem.OwnerDirectoryMode); return "secured";
             case "write": DeploymentFakeHost.Write(path, args[1]); return "written";
             case "sync":
                 if (Directory.Exists(path)) NativeLinux.FlushDirectory(path + "/.");

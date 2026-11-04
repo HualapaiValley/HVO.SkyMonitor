@@ -213,6 +213,11 @@ select_deployment_suites() {
       deployment_catalog="true"
       deployment_installer="true"
       ;;
+    src/HVO.SkyMonitor.Deployment.Cli/SplitHost/Preflight*.cs | src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs | src/HVO.SkyMonitor.Deployment.Contracts/Preflight*.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/Preflight*Tests.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixture.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixtures.json)
+      # The preflight shard now executes these typed validators and fake-target contracts (#1593).
+      deployment_shards="true"
+      deployment_installer="true"
+      ;;
     scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;

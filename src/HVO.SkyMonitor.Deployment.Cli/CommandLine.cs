@@ -72,6 +72,9 @@ internal static class CommandLine
     /// </summary>
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
+        new(["preflight"], null, "Validate split-host inventory and probe targets without remote mutation.",
+            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root"], ["--json"],
+            "Writes the existing schema-1 preflight manifest and evidence. Rejected inputs preserve prior evidence; accepted failed reruns record failure."),
         new(["partial-prepare-cleanup"], null, "Inspect or recover an interrupted split-host prepare without creating containers.",
             ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--dry-run", "--json"],
             "Requires the retained passed preflight and failed prepare. Specify --dry-run or --confirm RUN-ID; interrupted cleanup resumes with the same inputs."),
@@ -397,6 +400,7 @@ internal static class CommandLine
             // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
             throw InstallerException.Refused(exception.Message, exception);
         }
+        if (args.Length > 0 && args[0] == "preflight") return PreflightRequest.Parse(args);
         if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
         if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;

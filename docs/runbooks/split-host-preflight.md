@@ -14,12 +14,13 @@ provisioning gate with upload disabled. `bootstrap` provisions through
 application APIs, `smoke` runs bounded W0 convergence checks, and `down`
 implements explicit preserve or run-owned deletion.
 
+Preflight runs from a source checkout with `hvo-sky-install preflight --inventory <file> --mode <isolated|persistent>`. The compatibility `scripts/deploy:environment preflight` spelling forwards to that typed command and resolves a relative inventory before entering the checkout. It requires no live deployment or remote mutation. The preflight shard selects the typed `Preflight*Tests` owners; production-script `bash -n` remains a shell boundary. Exact comparison and resource evidence is in [the #1593 ledger](../validation/preflight-1593.md).
+
 ## Inventory And Secrets
 
 Copy `deploy/split-host/inventory.example.yml` to an ignored operator location
 and fill in every target explicitly. The file is JSON-compatible YAML and is
-parsed strictly with `jq`; it is never sourced. The executable contract in
-`scripts/deploy/inventory.sh` is authoritative. The matching published shape
+validated by `Deployment.Cli`'s `SplitHostInventory`; it is never sourced. The typed validator reuses the versioned executable jq shape predicate delivered with the earlier phase ports. The remaining shell phases retain the identical `scripts/deploy/inventory.sh` predicate until their own cutovers. The matching published shape
 reference is `deploy/split-host/inventory.schema.json`; CI exercises its required
 keys, shared-target shape, explicit-port rule, example, and runtime validator
 together because the repository does not carry a pinned JSON Schema engine.
@@ -134,7 +135,7 @@ identity.
 Use an explicit inventory and mode:
 
 ```bash
-./scripts/deploy:environment preflight \
+./hvo-sky-install preflight \
   --inventory /absolute/path/inventory.yml \
   --mode persistent \
   --run-id observatory-preflight-01

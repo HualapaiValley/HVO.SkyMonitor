@@ -65,7 +65,8 @@ internal static class CameraAgentStateDiagnostics
     public static string Identity(string value)
     {
         var redacted = Redaction.Redact(value);
-        return JsonEncodedText.Encode(redacted == Redaction.WithoutControlSequences(value) ? value : redacted).ToString();
+        return JsonEncodedText.Encode(Redaction.ValidUnicode(
+            redacted == Redaction.WithoutControlSequences(value) ? value : redacted)).ToString();
     }
 
     /// <summary>Counter identities are already redacted and escaped by <see cref="CameraAgentStateCounters.Describe"/>.</summary>
