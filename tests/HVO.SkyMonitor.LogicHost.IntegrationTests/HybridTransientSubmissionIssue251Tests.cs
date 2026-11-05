@@ -278,7 +278,10 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             HttpResponseMessage[]? responses = null;
             try
             {
-                await probe.AllEntered.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                await Infrastructure.SqlWaitEvidence.WhileAsync(() => Infrastructure.ConcurrentRequestProbe.WaitForEntryAsync(
+                    probe.AllEntered, responseTasks, TimeSpan.FromSeconds(30),
+                    () => $"concurrency={concurrency} entered={probe.EnteredCount}/{concurrency} verified={probe.VerifiedCount}"),
+                    AssemblyHooks.Fixture.SqlServerConnectionString, Console.WriteLine).ConfigureAwait(false);
                 var snapshot = await ReadIssue251HybridSnapshotAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(concurrency, snapshot.Sessions);
@@ -294,11 +297,15 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             {
                 probe.Release();
                 await operationCancellation.CancelAsync().ConfigureAwait(false);
-                await Task.WhenAll(responseTasks).ContinueWith(
-                    static task => _ = task.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default).ConfigureAwait(false);
+                // Observe faults and dispose successful responses even if cancellation does not drain promptly.
+                var cleanup = Task.WhenAll(responseTasks.Select(task => task.ContinueWith(
+                    static completed =>
+                    {
+                        if (completed.IsCompletedSuccessfully) { completed.Result.Dispose(); }
+                        else { _ = completed.Exception; }
+                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default)));
+                try { await cleanup.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false); }
+                catch (TimeoutException) { /* Continuations retain cleanup ownership; preserve the original failure. */ }
                 throw;
             }
 
@@ -582,7 +589,11 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int entered;
 
+        private int verified;
         internal Task AllEntered => allEntered.Task;
+        internal int EnteredCount => Volatile.Read(ref entered);
+        internal int VerifiedCount => Volatile.Read(ref verified);
+        internal void Verified() => Interlocked.Increment(ref verified);
 
         internal async Task EnterAsync(CancellationToken cancellationToken)
         {
@@ -602,10 +613,14 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
     {
         private int generationCalls;
 
-        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+        public async Task<CentralArtifactObjectSnapshot> VerifyAsync(
             CentralArtifact artifact,
             CancellationToken cancellationToken)
-            => inner.VerifyAsync(artifact, cancellationToken);
+        {
+            var snapshot = await inner.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+            probe.Verified();
+            return snapshot;
+        }
 
         public async Task<bool> IsCurrentGenerationAsync(
             CentralArtifact artifact,

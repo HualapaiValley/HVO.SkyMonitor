@@ -30,6 +30,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class ProcessingRunnerProtocolIntegrationTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly byte[] SourcePayload = [1, 0, 2, 0, 3, 0, 4, 0];
 
     /// <summary>
@@ -361,9 +363,9 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
                 second.JobId, new ProcessingRunnerFailureRequest(second.LeaseToken, "runner.test", true), CancellationToken.None))
             .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
         stale.Which.IsLeaseStale.Should().BeTrue();
-        await expiryClient.FailAsync(
+        await Infrastructure.SqlWaitEvidence.WhileAsync(() => expiryClient.FailAsync(
             reclaimed.JobId, new ProcessingRunnerFailureRequest(reclaimed.LeaseToken, "object.missing", true, null, reclaimed.Inputs[0].ArtifactId),
-            CancellationToken.None).ConfigureAwait(false);
+            CancellationToken.None), AssemblyHooks.Fixture.SqlServerConnectionString, TestContext.WriteLine).ConfigureAwait(false);
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();

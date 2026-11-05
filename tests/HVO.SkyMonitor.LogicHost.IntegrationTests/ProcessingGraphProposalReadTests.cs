@@ -656,10 +656,13 @@ public sealed class ProcessingGraphProposalReadTests
         await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
         var rows = 0;
         while (await reader.ReadAsync().ConfigureAwait(false)) rows++;
-        rows.Should().Be(expectedRows);
+        TestContext.WriteLine($"fact index replay returned={rows}, expected={expectedRows}; SQL={captured.Sql}");
         (await reader.NextResultAsync().ConfigureAwait(false)).Should().BeTrue();
         (await reader.ReadAsync().ConfigureAwait(false)).Should().BeTrue();
         var planText = reader.GetString(0);
+        // Retain the failed-context plan before any physical-work assertion can throw.
+        TestContext.WriteLine(planText);
+        rows.Should().Be(expectedRows);
         var plan = XDocument.Parse(planText);
         XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
         var seek = plan.Descendants(ns + "RelOp").Single(item =>
@@ -667,9 +670,9 @@ public sealed class ProcessingGraphProposalReadTests
                 ((string?)obj.Attribute("Index"))?.Contains("ProposalId_RecordedAtUtc_Id", StringComparison.Ordinal) == true));
         var rowsRead = seek.Element(ns + "RunTimeInformation")!.Elements(ns + "RunTimeCountersPerThread").Sum(item =>
             double.Parse(item.Attribute("ActualRowsRead")!.Value, CultureInfo.InvariantCulture));
+        TestContext.WriteLine($"actual fact index seek rows examined={rowsRead} rows returned/materialized={rows} expected={expectedRows}");
         rowsRead.Should().Be(expectedRows);
         TestContext.WriteLine($"actual fact index seek rows examined={rowsRead} rows returned/materialized={rows} existingIndex=IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id");
-        TestContext.WriteLine(planText);
     }
 
     private sealed record Seed(Guid ObservatoryId, string OwnerId, DateTimeOffset Now, LogicalCamera Camera,
