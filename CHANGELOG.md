@@ -64,6 +64,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Artifact uploads interrupted with HTTP 499 remain queued for retry and recover central acknowledgements instead of quarantining retained payloads. (#1448)
+
 - Select bounded proposal-history keys before loading their payloads so indexed pagination does not read ahead through retained history. (#1448)
 
 - Timed-out transient submissions remain queued for retry when the HTTP handler returns a cancellation response, instead of quarantining retained evidence. (#1448)

@@ -150,3 +150,45 @@ It retained primary-key equality seeks and returned 51 rows. The redundant SQL
 proposal predicate is removed; hydration still checks proposal identity in memory.
 Captured replay parameters preserve provider types, sizes, precision and scale.
 The focused run passed exact 51-key/51-payload work, append and both authorization gaps.
+
+## Qualification 42078567936: artifact cancellation settlement defect
+
+The run on `71c22a07` failed the combined CameraAgent/LogicHost suite: 23/24
+passed, with `CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob (0)`
+exhausting its unchanged five-minute total budget. All 593 LogicHost Integration
+cases passed, including the proposal read (4.747 s) and runner recovery (1.118 s).
+The proposal retained its exact 51-key/51-payload checks and small-first cached
+primary-key plan. The runner observer opened in 38 ms; the operation completed
+before a sample was due. This is not a recurrence or explanation of the older
+30-second runner SQL timeout.
+
+The failed test's stdout records a detected candidate at 18:01:44 UTC. Artifact
+POSTs continued, but no candidate-submission POST appears. At 18:03:41 UTC an
+artifact POST returned HTTP 499 after 100050.6895 ms; the next warning is
+`Artifact outbox quarantined durable work at attempt 1 because http-499`.
+`ArtifactUploadClient.IsRetryable` included 408, 425, 429 and 5xx, but excluded
+499, causing an interrupted request to become terminal durable work.
+`TransientCandidateDeliveryService` requires every context artifact to be
+acknowledged before sending a fresh submission. Quarantine cannot satisfy that
+gate. This is a confirmed classification defect and a plausible cause of this
+test's absent submission. The retained log has no artifact identity for the
+quarantine and no candidate/outbox snapshot, so it does not prove that this
+particular quarantined row was a candidate source. Nor does it establish why the
+artifact HTTP handler took 100 seconds; no SQL timeout from that request was
+retained. The repeated scene-pending messages are normal raw/processing lane
+coordination and do not establish the cause.
+
+The correction classifies HTTP 499 as retryable for both upload and status
+preflight, preserving the existing status-first recovery of an upload that may
+already have committed centrally. Regression coverage verifies both routes and
+recovery of the exact acknowledgement without a second payload transmission.
+Timeouts, liveness assertions and durable quarantine for other permanent 4xx
+responses remain unchanged. Failure-state rendering now includes artifact
+outbox and transient-delivery snapshots, so a future timeout records the
+acknowledgement gate and its backlog rather than only capture progress.
+
+Evidence: run/job 42078567936/127425334123, `integration-test-evidence` artifact
+13442355528; local logs and parsed TRX retained under
+`/tmp/t3-1448-42078567936-integration`. Coverage was skipped because Integration
+failed; Required CI correctly rejected the run. Other qualification jobs passed.
+Runner cause acceptance remains open; a green rerun alone will not establish it.

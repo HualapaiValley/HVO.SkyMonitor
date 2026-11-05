@@ -105,7 +105,9 @@ public sealed class ArtifactUploadClientTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public async Task UploadAsync_RetryableCentralStatus_DoesNotReadOrTransmitPayloadAgain()
+    [DataRow(425)]
+    [DataRow(499)]
+    public async Task UploadAsync_RetryableCentralStatus_DoesNotReadOrTransmitPayloadAgain(int statusCode)
     {
         using var root = new TemporaryRoot();
         var payload = new byte[] { 1, 2, 3, 4 };
@@ -116,7 +118,7 @@ public sealed class ArtifactUploadClientTests
             requestCount++;
             Assert.AreEqual("/api/v1.0/artifacts/status", request.RequestUri!.AbsolutePath);
             Assert.AreEqual("application/json", request.Content!.Headers.ContentType!.MediaType);
-            return new HttpResponseMessage((HttpStatusCode)425);
+            return new HttpResponseMessage((HttpStatusCode)statusCode);
         }))
         {
             BaseAddress = new Uri("http://localhost/")
@@ -127,8 +129,49 @@ public sealed class ArtifactUploadClientTests
             root.Path, retryRecord, CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(ArtifactUploadDisposition.Retry, result.Disposition);
-        Assert.AreEqual("http-425", result.Reason);
+        Assert.AreEqual($"http-{statusCode}", result.Reason);
         Assert.AreEqual(1, requestCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task UploadAsync_ClientClosedRequest_RetriesAndRecoversCommittedAcknowledgement()
+    {
+        using var root = new TemporaryRoot();
+        var payload = new byte[] { 1, 2, 3, 4 };
+        await File.WriteAllBytesAsync(Path.Combine(root.Path, "payload.bin"), payload).ConfigureAwait(false);
+        var manifest = CreateManifest(payload);
+        var acknowledgement = new ArtifactUploadAcknowledgement(
+            ArtifactUploadAcknowledgement.CurrentSchemaVersion, manifest.IdempotencyKey,
+            manifest.Descriptor.Artifact.ArtifactId, manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength, DateTimeOffset.UnixEpoch, manifest.SchemaVersion);
+        var paths = new List<string>();
+        using var client = new HttpClient(new ResponseHandler(request =>
+        {
+            paths.Add(request.RequestUri!.AbsolutePath);
+            return paths.Count == 1
+                ? new HttpResponseMessage((HttpStatusCode)499)
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(acknowledgement), Encoding.UTF8, "application/json")
+                };
+        })) { BaseAddress = new Uri("http://localhost/") };
+        var uploader = CreateUploadClient(client);
+        var record = CreateRecord(manifest);
+
+        var interrupted = await uploader.UploadAsync(root.Path, record, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(ArtifactUploadDisposition.Retry, interrupted.Disposition);
+        Assert.AreEqual("http-499", interrupted.Reason);
+        // A committed central upload can outlive its cancelled response. The next attempt
+        // must recover its exact acknowledgement without retransmitting the payload.
+        File.Delete(Path.Combine(root.Path, "payload.bin"));
+        var recovered = await uploader.UploadAsync(root.Path, record with { AttemptCount = 2 }, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(ArtifactUploadDisposition.Acknowledged, recovered.Disposition);
+        Assert.AreEqual(acknowledgement, recovered.Acknowledgement);
+        Assert.HasCount(2, paths);
+        Assert.AreEqual("/api/v1.0/artifacts", paths[0]);
+        Assert.AreEqual("/api/v1.0/artifacts/status", paths[1]);
     }
 
     [TestMethod]
