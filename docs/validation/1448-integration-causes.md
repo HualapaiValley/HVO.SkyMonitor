@@ -107,8 +107,8 @@ cleanup observes sampler/cancellation/reporting failures without changing either
 a successful subject outcome or its original fault/cancellation. Reports expose
 only exception types, not exception messages. Five Docker-free regressions cover
 closed-connection observation followed by subject fault/cancellation, unexpected
-sampler faults, subject success and a broken diagnostic writer. The current Unit
-inventory is 14,857; the affected mixed project has 36 passing Unit cases.
+sampler faults, subject success and a broken diagnostic writer. At correction `85917130`, the Unit
+inventory was 14,857; the affected mixed project had 36 passing Unit cases.
 A live private-SQL probe against the pre-retry build at `63d56026` terminated only
 the owned observer session, with SqlClient automatic reconnect disabled for that
 experiment. That build stopped sampling, and subsequent subject fault and
@@ -192,3 +192,6 @@ Evidence: run/job 42078567936/127425334123, `integration-test-evidence` artifact
 `/tmp/t3-1448-42078567936-integration`. Coverage was skipped because Integration
 failed; Required CI correctly rejected the run. Other qualification jobs passed.
 Runner cause acceptance remains open; a green rerun alone will not establish it.
+
+The artifact correction adds two Unit cases: CameraAgent inventory 7,515,
+repository Unit inventory 14,859; Integration counts remain unchanged.
