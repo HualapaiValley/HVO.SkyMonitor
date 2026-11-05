@@ -1,5 +1,4 @@
 using HVO.SkyMonitor.LogicHost.Data;
-using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.IntegrationTests.Infrastructure;
 
@@ -18,6 +17,5 @@ internal static class DerivativeFixtureJobs
             job.Status == CentralDerivativeJobStatus.Pending ||
             job.Status == CentralDerivativeJobStatus.RetryableFailure ||
             job.Status == CentralDerivativeJobStatus.Leased ||
-            job.Status == CentralDerivativeJobStatus.CancelRequested)
-            .TagWith("fixture-active-derivative-reset");
+            job.Status == CentralDerivativeJobStatus.CancelRequested);
 }

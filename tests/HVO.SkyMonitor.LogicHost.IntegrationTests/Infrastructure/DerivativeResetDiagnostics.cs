@@ -13,6 +13,8 @@ internal static class DerivativeResetDiagnostics
 {
     private static readonly ConcurrentDictionary<string, int> Occurrences = new(StringComparer.Ordinal);
     private static int _claimed;
+    internal const string ResetStatusPredicate = "[Status] IN (N'Waiting', N'Pending', N'RetryableFailure', N'Leased', N'CancelRequested')";
+    internal const string ResetLeasePredicate = "[LeaseExpiresAtUtc] = NULL";
     internal const string ContainerCounters = "cat /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/memory.events /sys/fs/cgroup/io.stat; "
         + "printf 'memory.current '; cat /sys/fs/cgroup/memory.current; printf 'memory.swap.current '; cat /sys/fs/cgroup/memory.swap.current";
 
@@ -179,6 +181,8 @@ internal static class DerivativeResetDiagnostics
             ORDER BY CASE WHEN s.session_id = @reset THEN 0 WHEN s.open_transaction_count > 0 THEN 1 ELSE 2 END, s.session_id
             """;
         command.Parameters.AddWithValue("@reset", resetSession);
+        command.Parameters.AddWithValue("@resetStatusPredicate", ResetStatusPredicate);
+        command.Parameters.AddWithValue("@resetLeasePredicate", ResetLeasePredicate);
         var result = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         while (await reader.ReadAsync(token).ConfigureAwait(false))
@@ -222,8 +226,8 @@ internal static class DerivativeResetDiagnostics
                         THEN 1 ELSE 0 END ORDER BY q.last_execution_time DESC) AS candidate_rank
                 FROM sys.dm_exec_query_stats q
                 CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
-                WHERE ((CHARINDEX('fixture-active-derivative-reset', t.text) > 0
-                        AND CHARINDEX('[c].[LeaseExpiresAtUtc] = NULL', t.text) > 0
+                WHERE ((CHARINDEX(@resetStatusPredicate, t.text) > 0
+                        AND CHARINDEX(@resetLeasePredicate, t.text) > 0
                         AND t.text LIKE '%UPDATE%' AND t.text NOT LIKE '%sys.dm_exec_query_stats%')
                     OR t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable'))
             )

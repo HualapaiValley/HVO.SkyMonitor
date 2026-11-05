@@ -203,9 +203,11 @@ its seal/identity guards, and the 30-second SQL command timeout are unchanged.
 Other callers of `ExcludingUnsealedGraphs` keep their own cleanup contracts.
 
 The optional observer's dirty-read target count now applies that same active-state
-and seal predicate. Cached reset-plan selection uses the stable EF query tag
-`fixture-active-derivative-reset`, avoiding dependence on the generated WHERE
-clause's ordering or aliases. Plans remain cached estimated projections and are
+and seal predicate. Cached reset-plan selection matches the actual generated UPDATE's five-state
+status predicate and lease-clearing assignment, independent of the generated
+WHERE clause's position and table alias. Docker-free Unit tests capture commands
+from both real reset methods and verify those exact matcher fragments; SELECT
+query tags are not used because EF drops them from ExecuteUpdate SQL. Plans remain cached estimated projections and are
 not proof of the cause of an earlier timeout. This correction does not activate
 the observer or renew the exhausted #1274 diagnostic allowance above.
 
