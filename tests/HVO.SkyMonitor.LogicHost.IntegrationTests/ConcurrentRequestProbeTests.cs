@@ -52,4 +52,48 @@ public sealed class ConcurrentRequestProbeTests
             [new TaskCompletionSource<HttpResponseMessage>().Task], TimeSpan.Zero, () => "entered=0/1 verified=3");
         await action.Should().ThrowAsync<TimeoutException>().WithMessage("*entered=0/1 verified=3*WaitingForActivation*").ConfigureAwait(false);
     }
+
+    [TestMethod]
+    public async Task BoundedFailureCleanupPreservesFirstFailureAndDisposesLateResponse()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var pending = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var original = new InvalidOperationException("first-entry-failure");
+        async Task SubjectAsync()
+        {
+            try { throw original; }
+            catch
+            {
+                await ConcurrentRequestProbe.DrainAfterFailureAsync([pending.Task], cancellation, TimeSpan.Zero).ConfigureAwait(false);
+                throw;
+            }
+        }
+        Func<Task> action = SubjectAsync;
+        (await action.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false)).Which.Should().BeSameAs(original);
+        using var content = new DisposalContent();
+        pending.SetResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        await content.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        cancellation.IsCancellationRequested.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task FailureCleanupObservesThrowingCancellationCallbackAndRequestFault()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var registration = cancellation.Token.Register(() => throw new InvalidOperationException("callback-failure"));
+        await ConcurrentRequestProbe.DrainAfterFailureAsync(
+            [Task.FromException<HttpResponseMessage>(new HttpRequestException("request-failure"))],
+            cancellation, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        cancellation.IsCancellationRequested.Should().BeTrue();
+    }
+
+    private sealed class DisposalContent() : ByteArrayContent([])
+    {
+        internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing) Disposed.TrySetResult();
+        }
+    }
 }

@@ -52,7 +52,12 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             HttpResponseMessage? response = null;
             try
             {
-                await reader.Entered.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+                // Start the original entry deadline before observer setup.
+                var entry = Infrastructure.ConcurrentRequestProbe.WaitForEntryAsync(
+                    reader.Entered, [responseTask], TimeSpan.FromSeconds(15),
+                    () => $"generationCalls={reader.GenerationCalls} verifyCalls={reader.VerifyCalls}");
+                await Infrastructure.SqlWaitEvidence.WhileAsync(() => entry,
+                    AssemblyHooks.Fixture.SqlServerConnectionString, Console.WriteLine).ConfigureAwait(false);
                 snapshot = await ReadIssue251HybridSnapshotAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(1, snapshot.Sessions);
@@ -62,12 +67,15 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 blocker = await ObserveIssue251HybridBlockedUpdateAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, scenario.CentralArtifactIds[0]).ConfigureAwait(false);
                 Assert.IsFalse(blocker.TimedOut);
+                reader.Release();
+                response = await responseTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             }
-            finally
+            catch
             {
                 reader.Release();
-                response = await EvidenceTaskCleanup.AwaitAsync(
-                    responseTask, operationCancellation, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                await Infrastructure.ConcurrentRequestProbe.DrainAfterFailureAsync(
+                    [responseTask], operationCancellation, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                throw;
             }
             using (response)
             {
@@ -298,16 +306,8 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             catch
             {
                 probe.Release();
-                await operationCancellation.CancelAsync().ConfigureAwait(false);
-                // Observe faults and dispose successful responses even if cancellation does not drain promptly.
-                var cleanup = Task.WhenAll(responseTasks.Select(task => task.ContinueWith(
-                    static completed =>
-                    {
-                        if (completed.IsCompletedSuccessfully) { completed.Result.Dispose(); }
-                        else { _ = completed.Exception; }
-                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default)));
-                try { await cleanup.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false); }
-                catch (TimeoutException) { /* Continuations retain cleanup ownership; preserve the original failure. */ }
+                await Infrastructure.ConcurrentRequestProbe.DrainAfterFailureAsync(
+                    responseTasks, operationCancellation, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
                 throw;
             }
 

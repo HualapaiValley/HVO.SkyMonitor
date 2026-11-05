@@ -224,6 +224,8 @@ public sealed class ProcessingGraphProposalReadTests
         var probe = new ReadProbe { PayloadPlanToken = cacheToken };
         using var factory = CreateFactory(probe);
         using var client = await KeyClientAsync(factory, seed).ConfigureAwait(false);
+        await using var planCapture = await Infrastructure.ProposalPayloadPlanCapture.StartAsync(
+            AssemblyHooks.Fixture.SqlServerConnectionString, cacheToken).ConfigureAwait(false);
         // Compile the real payload statement for two facts before reusing it for 10,000.
         // The fixture-only comment gives this statement its own cache entry without recompiling the replay.
         var cacheProbe = await SeedCacheProbeAsync(seed, history.Accepted).ConfigureAwait(false);
@@ -252,7 +254,7 @@ public sealed class ProcessingGraphProposalReadTests
         factsCommand.Sql.Should().Contain("TOP(").And.Contain("ORDER BY").And.NotContain("OFFSET").And.NotContain("COUNT(");
         var payloadCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-payload", StringComparison.Ordinal));
         payloadCommand.Sql.Should().NotContain("@proposalId");
-        await AssertCachedPayloadPlanAsync(cacheToken, cacheProbe.Key,
+        await AssertExecutedPayloadPlansAsync(planCapture, cacheProbe.Key,
             payloadCommand.Parameters.Single(item => item.Type == SqlDbType.NVarChar).Name).ConfigureAwait(false);
         await AssertIndexedBoundAsync(factsCommand, 51).ConfigureAwait(false);
         await AssertPayloadBoundAsync(payloadCommand, 51).ConfigureAwait(false);
@@ -764,44 +766,41 @@ public sealed class ProcessingGraphProposalReadTests
         }
     }
 
-    private async Task AssertCachedPayloadPlanAsync(Guid token, Guid smallKey, string parameterName)
+    private async Task AssertExecutedPayloadPlansAsync(
+        Infrastructure.ProposalPayloadPlanCapture capture, Guid smallKey, string parameterName)
     {
-        await using var connection = new SqlConnection(AssemblyHooks.Fixture.SqlServerConnectionString);
-        await connection.OpenAsync().ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT TOP (1) CONVERT(nvarchar(max), p.query_plan), q.last_rows, q.execution_count
-            FROM sys.dm_exec_query_stats q
-            CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
-            CROSS APPLY sys.dm_exec_query_plan(q.plan_handle) p
-            WHERE p.dbid = DB_ID() AND CHARINDEX(@marker, t.text) > 0
-                AND t.text NOT LIKE '%SET STATISTICS XML ON%'
-                AND t.text NOT LIKE '%sys.dm_exec_query_stats%'
-            ORDER BY q.last_execution_time DESC
-            """;
-        command.Parameters.AddWithValue("@marker", $"proposal-payload-cache:{token:N}");
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
-        (await reader.ReadAsync().ConfigureAwait(false)).Should().BeTrue("the actual application statement must have a cached plan");
-        var xml = reader.GetString(0);
-        TestContext.WriteLine(xml);
-        reader.GetInt64(1).Should().Be(51);
-        var executions = reader.GetInt64(2);
-        var plan = XDocument.Parse(xml);
+        var plans = await capture.ReadAsync(3, parameterName).ConfigureAwait(false);
+        TestContext.WriteLine($"actual application payload plans captured={plans.Length}");
+        foreach (var plan in plans) TestContext.WriteLine(plan.ToString());
+        plans.Should().HaveCount(3, "every marked small/warm/measured application payload execution must be captured");
         XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
-        var compiled = plan.Descendants(ns + "ParameterList").Elements(ns + "ColumnReference")
-            .Single(item => (string?)item.Attribute("Column") == parameterName);
-        var compiledForSmall = ((string?)compiled.Attribute("ParameterCompiledValue"))?.Contains(smallKey.ToString("D"), StringComparison.OrdinalIgnoreCase) == true;
-        TestContext.WriteLine($"actual application payload cache: executions={executions} compiledForSmall={compiledForSmall} lastRows=51");
-        var reads = FactTableReads(plan);
-        reads.Should().NotBeEmpty();
-        reads.Should().OnlyContain(item => (string?)item.Attribute("PhysicalOp") == "Clustered Index Seek");
-        foreach (var read in reads)
+        for (var index = 0; index < plans.Length; index++)
         {
-            read.Descendants(ns + "Prefix").Should().Contain(prefix => (string?)prefix.Attribute("ScanType") == "EQ"
-                && prefix.Elements(ns + "RangeColumns").Elements(ns + "ColumnReference")
-                    .Any(column => (string?)column.Attribute("Column") == "Id"));
+            var plan = plans[index];
+            var compiled = plan.Descendants(ns + "ParameterList").Elements(ns + "ColumnReference")
+                .Single(item => (string?)item.Attribute("Column") == parameterName);
+            var compiledForSmall = ((string?)compiled.Attribute("ParameterCompiledValue"))?
+                .Contains(smallKey.ToString("D"), StringComparison.OrdinalIgnoreCase) == true;
+            var reads = FactTableReads(plan);
+            reads.Should().NotBeEmpty();
+            reads.Should().OnlyContain(item => (string?)item.Attribute("PhysicalOp") == "Clustered Index Seek");
+            foreach (var read in reads)
+            {
+                read.Descendants(ns + "Prefix").Should().Contain(prefix => (string?)prefix.Attribute("ScanType") == "EQ"
+                    && prefix.Elements(ns + "RangeColumns").Elements(ns + "ColumnReference")
+                        .Any(column => (string?)column.Attribute("Column") == "Id"));
+            }
+            var examined = reads.SelectMany(item => item.Elements(ns + "RunTimeInformation")
+                .Elements(ns + "RunTimeCountersPerThread"))
+                .Sum(item => double.Parse(item.Attribute("ActualRowsRead")!.Value, CultureInfo.InvariantCulture));
+            var expected = index == 0 ? 2 : 51;
+            var root = plan.Descendants(ns + "StmtSimple").Elements(ns + "QueryPlan").Elements(ns + "RelOp").Single();
+            var returned = root.Elements(ns + "RunTimeInformation").Elements(ns + "RunTimeCountersPerThread")
+                .Sum(item => double.Parse(item.Attribute("ActualRows")!.Value, CultureInfo.InvariantCulture));
+            TestContext.WriteLine($"actual application payload execution={index + 1} compiledForSmall={compiledForSmall} primary-key rows examined={examined} returned={returned}");
+            examined.Should().Be(expected);
+            returned.Should().Be(expected);
         }
-        TestContext.WriteLine("actual application payload cache after small-first workload: primary-key equality seeks");
     }
 
     private static async Task<(CentralProcessingGraphDeliveryProposal Proposal, Guid Key)> SeedCacheProbeAsync(

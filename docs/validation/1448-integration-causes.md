@@ -195,3 +195,77 @@ Runner cause acceptance remains open; a green rerun alone will not establish it.
 
 The artifact correction adds two Unit cases: CameraAgent inventory 7,515,
 repository Unit inventory 14,859; Integration counts remain unchanged.
+
+## Qualification 42089316458: execution evidence and first-failure preservation
+
+On `b4b4bd56`, the LogicHost selection failed two of 593 cases. The proposal
+failure is specifically an empty post-request `sys.dm_exec_query_stats` lookup,
+not an observed bad payload plan or `compiledForSmall=False`. Its three HTTP
+reads succeeded and the four-command/response checks passed before the lookup.
+The cache is a mutable observation surface; query completion does not guarantee
+that a plan remains available for a subsequent DMV query. The retained CI
+artifact does not distinguish eviction, invalidation or lookup filtering as the
+reason this particular lookup was empty.
+
+The test now captures the actual marked application executions with a uniquely
+named, fixture-only Extended Events session. Its bounded ring buffer retains
+plans independently of later cache residency; the session is dropped afterward.
+No `SET STATISTICS` is added to application commands. Auto-statistics STATMAN
+plans can inherit the marker, so selection additionally requires the application's
+JSON parameter. The test requires exactly three application payload plans and
+exact 2/51/51 physical primary-key reads for tiny/warm/measured operations,
+including equality seeks. The existing exact 51-key assertion, payload replay,
+ordering, truncation, append and authorization assertions remain in place.
+The cache-presence assertion is replaced explicitly: it was a diagnostic
+assumption, not the physical-work acceptance requirement. Actual execution work
+is checked more directly. Capture overhead is test-only and its HTTP duration
+is not a production performance estimate.
+
+The fence case reports a 30-second timeout from `EvidenceTaskCleanup.AwaitAsync`
+in a `finally` block. That cleanup can replace a preceding 15-second entry timeout
+or assertion. Run-level stdout records authentication and all three submitted
+artifact lookups at 19:17:16 UTC, but no entry counter, successful session snapshot
+or competing-writer evidence. It cannot establish whether the first generation
+callback was reached, or the original exception before cleanup. The underlying
+stall is not classified as a harmless flake or a confirmed product fence bug.
+
+The single-request test now uses the existing request-versus-entry probe and
+phase-specific SQL observer, starting its original 15-second entry deadline
+before observer setup. Generation/verification counters and request states are
+reported on failure. Cleanup occurs in a catch path that rethrows the original
+failure; cancellation callback faults and late response cleanup are observed
+without replacing it. Two Docker-free regressions cover bounded cleanup with
+late response disposal, and failing cancellation callbacks plus request faults.
+The successful path still requires all five fences, zero SQL transactions,
+competing-writer success, changed-source rejection and no accepted job.
+No timeout or fence assertion is relaxed.
+
+The target merge was attempted after fetching `development/v1`: already up to
+date at `d5bf7873`; no rebase or force push. Historical runner SQL timeout and
+artifact HTTP stall acceptance remain open unless new diagnostics establish a
+cause. Evidence for this run is retained under
+`/tmp/t3-1448-42089316458-integration`.
+
+Correction verification: a local owned SQL run captured all three real payload
+plans with `compiledForSmall=True`, exact 2/51/51 primary-key reads and exact
+2/51/51 root returned rows. Pagination, append and both authorization gaps passed.
+A separate controlled probe evicted only its marked statement's plan: the DMV
+entry disappeared while all three executed plans remained available in the
+capture target. This demonstrates the old retention assumption's failure mode;
+it does not establish that CI's missing row was specifically evicted.
+Auto-statistics produced one additional internal STATMAN plan during the first
+local attempt; filtering on the actual application parameter correctly separated
+it from the three payload statements. The initial four-event count failure is
+retained and is not presented as a pass.
+
+The real single-request fence test also passed locally through its complete
+provenance/evidence path after the driver and dependencies were placed under the
+ignored repository TestResults directory. Earlier standalone-driver path and
+missing-dependency failures are excluded. The source tree was dirty and this is
+focused diagnostic evidence, not green qualification or a reproduced CI stall.
+All owned containers/private connection files were cleaned. Evidence is retained
+in `/tmp/t3-1448-proposal-benchmark/xe-passing.log`, `xe-lifecycle.log`,
+`fence-passing.log` and `fence-repo-lifecycle.log`.
+
+The two new cleanup Unit cases bring the affected project to 38 Unit cases and
+the repository to 14,861 Unit cases; Integration inventory remains 1,005.

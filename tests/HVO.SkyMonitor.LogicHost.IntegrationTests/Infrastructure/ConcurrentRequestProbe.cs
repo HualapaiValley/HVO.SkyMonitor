@@ -24,4 +24,22 @@ internal static class ConcurrentRequestProbe
         throw new InvalidOperationException(
             $"Submission completed before generation probe entry: HTTP {(int)response.StatusCode}; {progress()}");
     }
+
+    internal static async Task DrainAfterFailureAsync(
+        IReadOnlyList<Task<HttpResponseMessage>> requests, CancellationTokenSource cancellation, TimeSpan timeout)
+    {
+        var cancellationTask = cancellation.CancelAsync();
+        var responses = Task.WhenAll(requests.Select(task => task.ContinueWith(static completed =>
+        {
+            if (completed.IsCompletedSuccessfully) { completed.Result.Dispose(); }
+            else { _ = completed.Exception; }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default)));
+        // Observe cancellation callbacks and response cleanup even after the bounded wait ends.
+        // Neither may replace the subject failure that brought the caller here.
+        var observed = Task.WhenAll(cancellationTask, responses).ContinueWith(
+            static completed => { _ = completed.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        try { await observed.WaitAsync(timeout).ConfigureAwait(false); }
+        catch (TimeoutException) { /* Continuations retain cleanup ownership. */ }
+    }
 }
