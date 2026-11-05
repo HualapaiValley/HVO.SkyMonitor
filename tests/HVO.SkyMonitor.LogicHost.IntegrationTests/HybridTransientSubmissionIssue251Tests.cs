@@ -278,9 +278,11 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             HttpResponseMessage[]? responses = null;
             try
             {
-                await Infrastructure.SqlWaitEvidence.WhileAsync(() => Infrastructure.ConcurrentRequestProbe.WaitForEntryAsync(
+                // The entry deadline starts with the requests, before observer connection setup.
+                var entry = Infrastructure.ConcurrentRequestProbe.WaitForEntryAsync(
                     probe.AllEntered, responseTasks, TimeSpan.FromSeconds(30),
-                    () => $"concurrency={concurrency} entered={probe.EnteredCount}/{concurrency} verified={probe.VerifiedCount}"),
+                    () => $"concurrency={concurrency} entered={probe.EnteredCount}/{concurrency} verified={probe.VerifiedCount}");
+                await Infrastructure.SqlWaitEvidence.WhileAsync(() => entry,
                     AssemblyHooks.Fixture.SqlServerConnectionString, Console.WriteLine).ConfigureAwait(false);
                 var snapshot = await ReadIssue251HybridSnapshotAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);

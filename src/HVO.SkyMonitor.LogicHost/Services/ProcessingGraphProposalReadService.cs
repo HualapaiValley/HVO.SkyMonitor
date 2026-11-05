@@ -95,28 +95,30 @@ internal sealed class ProcessingGraphProposalReadService(ApplicationDbContext db
             return null;
         }
 
-        // Read the latest bounded slice directly through (ProposalId, RecordedAtUtc, Id).
-        // There is deliberately no history drain or continuation contract in this exact read.
-        var facts = await dbContext.CentralProcessingGraphDeliveryFacts.AsNoTracking()
-            .TagWith("proposal-read:facts")
+        // Materialize the covered pagination keys before reading payload columns. Keeping TOP above
+        // noncovering key lookups lets SQL Server's ordered prefetch read beyond the sentinel.
+        var selectedIds = await dbContext.CentralProcessingGraphDeliveryFacts.AsNoTracking()
+            .TagWith("proposal-read:fact-keys")
             .Where(fact => fact.ProposalId == proposalId)
             .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id)
-            .Take(take + 1)
+            .Take(take + 1).Select(fact => fact.Id)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var payload = await dbContext.CentralProcessingGraphDeliveryFacts.AsNoTracking()
+            .TagWith("proposal-read:fact-payload")
+            .Where(fact => fact.ProposalId == proposalId && EF.Parameter(selectedIds).Contains(fact.Id))
             .Select(fact => new ProcessingGraphDeliveryFactView(
                 fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
                 fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
                 fact.SharedPlanIdentitySha256, fact.LocalPlanIdentitySha256))
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
+            .ToDictionaryAsync(fact => fact.Id, cancellationToken).ConfigureAwait(false);
         // A membership removal during the multi-command read must conceal the proposal as well as facts.
         if (!await authorized.TagWith("proposal-read:reauthorize").AnyAsync(cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
-        var truncated = facts.Count > take;
-        if (truncated)
-        {
-            facts.RemoveAt(take);
-        }
-        return new(view, facts, truncated);
+        // Facts are immutable. Preserve the database's key order (including SQL GUID ordering),
+        // and never refill from later history if a selected payload is unexpectedly absent.
+        var facts = selectedIds.Take(take).Where(payload.ContainsKey).Select(id => payload[id]).ToList();
+        return new(view, facts, selectedIds.Count > take);
     }
 }

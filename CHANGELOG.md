@@ -64,6 +64,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Select bounded proposal-history keys before loading their payloads so indexed pagination does not read ahead through retained history. #1448
+
 - Timed-out transient submissions remain queued for retry when the HTTP handler returns a cancellation response, instead of quarantining retained evidence. (#1448)
 
 - LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
