@@ -52,8 +52,11 @@ before/after/after/before order, 100 operations each.
 | SQL worker CPU | 373.475 microseconds | 538.885 microseconds |
 | Process-wide allocated bytes | 473,891 | 619,632 |
 
-The additional EF command and dictionary cost allocation and a round trip; this
-is a bounded-work tradeoff, not a speedup claim. Client CPU was also recorded,
+The benchmark disables connection pooling, so each EF command also performs a
+physical encrypted connection/login. The measured time and allocation delta
+includes that extra connection and cannot isolate the dictionary/EF cost or
+predict the production pooled-connection delta. This is a bounded-work tradeoff,
+not a speedup claim. Client CPU was also recorded,
 but the first block includes tiering/JIT activity and is not a stable production
 CPU estimate. This is a local comparative smoke measurement, not an SLA,
 percentile claim or production qualification. The local SQL image was pinned,
@@ -106,10 +109,12 @@ only exception types, not exception messages. Five Docker-free regressions cover
 closed-connection observation followed by subject fault/cancellation, unexpected
 sampler faults, subject success and a broken diagnostic writer. The current Unit
 inventory is 14,857; the affected mixed project has 36 passing Unit cases.
-A live private-SQL probe also terminated only the owned observer session, with
-SqlClient automatic reconnect disabled for that experiment. Sampling stopped,
-and subsequent subject fault and cancellation were preserved. The normal
-connection retry configuration was not changed.
+A live private-SQL probe against the pre-retry build at `63d56026` terminated only
+the owned observer session, with SqlClient automatic reconnect disabled for that
+experiment. That build stopped sampling, and subsequent subject fault and
+cancellation were preserved. Its cleanup is unchanged in the retry-capable head;
+this probe does not verify the new successful reconnect-and-sample path. The
+normal connection retry configuration was not changed.
 
 The next reviewed qualification must capture an occurrence with this evidence
 before attributing it to blocking, memory grants, compilation, application
