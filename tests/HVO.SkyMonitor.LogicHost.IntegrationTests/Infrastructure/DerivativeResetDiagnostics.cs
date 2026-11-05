@@ -61,8 +61,14 @@ internal static class DerivativeResetDiagnostics
                 await observer.OpenAsync(deadline.Token).ConfigureAwait(false);
                 using var count = observer.CreateCommand();
                 count.CommandTimeout = 2;
-                count.CommandText = "SET LOCK_TIMEOUT 1000; SELECT COUNT_BIG(*) FROM dbo.CentralDerivativeJobs WITH (READUNCOMMITTED) WHERE Status <> @completed";
-                count.Parameters.AddWithValue("@completed", "Completed");
+                count.CommandText = """
+                    SET LOCK_TIMEOUT 1000;
+                    SELECT COUNT_BIG(*) FROM dbo.CentralDerivativeJobs AS jobs WITH (READUNCOMMITTED)
+                    LEFT JOIN dbo.CentralProcessingGraphExecutions AS executions WITH (READUNCOMMITTED)
+                        ON executions.Id = jobs.GraphExecutionId
+                    WHERE (jobs.GraphExecutionId IS NULL OR executions.ExpandedAtUtc IS NOT NULL)
+                        AND jobs.Status IN (N'Waiting', N'Pending', N'RetryableFailure', N'Leased', N'CancelRequested')
+                    """;
                 targetRows = Convert.ToInt64(await count.ExecuteScalarAsync(deadline.Token).ConfigureAwait(false), CultureInfo.InvariantCulture);
                 sampling = DerivativeResetEvidence.SampleAsync(async token =>
                 {
@@ -216,7 +222,7 @@ internal static class DerivativeResetDiagnostics
                         THEN 1 ELSE 0 END ORDER BY q.last_execution_time DESC) AS candidate_rank
                 FROM sys.dm_exec_query_stats q
                 CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
-                WHERE ((CHARINDEX('WHERE [c].[Status] <> N''Completed''', t.text) > 0
+                WHERE ((CHARINDEX('fixture-active-derivative-reset', t.text) > 0
                         AND CHARINDEX('[c].[LeaseExpiresAtUtc] = NULL', t.text) > 0
                         AND t.text LIKE '%UPDATE%' AND t.text NOT LIKE '%sys.dm_exec_query_stats%')
                     OR t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable'))
