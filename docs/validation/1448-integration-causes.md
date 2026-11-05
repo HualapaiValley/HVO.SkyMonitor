@@ -95,6 +95,20 @@ delay from server waits. SQL, parameters, credentials and host/login names are
 not logged. Existing SQL deadlines remain 30 seconds; the fence-entry deadline
 starts before observer setup so it is not extended.
 
+Review correction Sol-P2: a broken observer connection must not fault its next
+sample and replace the subject's exception during cleanup. Sampling now stops
+when disconnected (including a disconnect racing command execution). Passive
+cleanup observes sampler/cancellation/reporting failures without changing either
+a successful subject outcome or its original fault/cancellation. Reports expose
+only exception types, not exception messages. Five Docker-free regressions cover
+closed-connection observation followed by subject fault/cancellation, unexpected
+sampler faults, subject success and a broken diagnostic writer. The current Unit
+inventory is 14,855; the affected mixed project has 34 passing Unit cases.
+A live private-SQL probe also terminated only the owned observer session, with
+SqlClient automatic reconnect disabled for that experiment. Sampling stopped,
+and subsequent subject fault and cancellation were preserved. The normal
+connection retry configuration was not changed.
+
 The next reviewed qualification must capture an occurrence with this evidence
 before attributing it to blocking, memory grants, compilation, application
 scheduling or host pressure. The runner cause is not declared fixed or a harmless
@@ -103,7 +117,7 @@ flake. No runner administration is justified by the current evidence.
 ## Local validation boundaries
 
 The complete Docker-disabled Unit gate passed 14,726 cases with 124 skipped and
-zero failed (14,850 inventory). Debug/Release solution builds, formatting, package
+zero failed (14,850 inventory at the initial candidate). Debug/Release solution builds, formatting, package
 and control guards passed; affected corrections receive focused checks.
 
 A native MSTest Integration replay used a temporary, uncommitted fixture overlay

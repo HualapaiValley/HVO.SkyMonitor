@@ -1,3 +1,4 @@
+using System.Data;
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
@@ -37,26 +38,56 @@ internal static class SqlWaitEvidence
             await operation().ConfigureAwait(false);
             return;
         }
+        await WhileObservedAsync(operation, token => SampleAsync(connection, write, token), write).ConfigureAwait(false);
+    }
+
+    internal static async Task WhileObservedAsync(
+        Func<Task> operation, Func<CancellationToken, Task> sample, Action<string> write)
+    {
         using var stop = new CancellationTokenSource();
-        var sampling = SampleAsync(connection, write, stop.Token);
+        var sampling = sample(stop.Token);
         try { await operation().ConfigureAwait(false); }
         finally
         {
-            await stop.CancelAsync().ConfigureAwait(false);
-            await sampling.ConfigureAwait(false);
+            await DrainDiagnosticAsync(stop.CancelAsync(), write).ConfigureAwait(false);
+            await DrainDiagnosticAsync(sampling, write).ConfigureAwait(false);
         }
     }
 
-    private static async Task SampleAsync(SqlConnection connection, Action<string> write, CancellationToken stop)
+    // Passive evidence must never replace the subject outcome, including if reporting itself fails.
+    private static async Task DrainDiagnosticAsync(Task diagnostic, Action<string> write)
+    {
+        var report = diagnostic.ContinueWith(completed =>
+        {
+            if (completed.Exception is { } error)
+            {
+                write($"SQL observer stopped unexpectedly: type={error.GetBaseException().GetType().Name}");
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        await report.ContinueWith(static completed => { _ = completed.Exception; },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default).ConfigureAwait(false);
+    }
+
+    internal static async Task SampleAsync(SqlConnection connection, Action<string> write, CancellationToken stop)
     {
         var clock = Stopwatch.StartNew();
         try
         {
             for (var sample = 0; sample < 3; sample++)
             {
+                if (connection.State != ConnectionState.Open)
+                {
+                    write("SQL observer disconnected; sampling stopped");
+                    return;
+                }
                 var delay = TimeSpan.FromSeconds(sample == 0 ? 5 : 8);
                 var due = clock.Elapsed + delay;
                 await Task.Delay(delay, stop).ConfigureAwait(false);
+                if (connection.State != ConnectionState.Open)
+                {
+                    write("SQL observer disconnected; sampling stopped");
+                    return;
+                }
                 using var process = Process.GetCurrentProcess();
                 write($"SQL sample runtime: sample={sample + 1} elapsedMs={clock.ElapsedMilliseconds} schedulingLagMs={(clock.Elapsed - due).TotalMilliseconds:F0} threads={ThreadPool.ThreadCount} pendingWork={ThreadPool.PendingWorkItemCount} managedBytes={GC.GetTotalMemory(false)} workingSetBytes={process.WorkingSet64}");
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -95,7 +126,16 @@ internal static class SqlWaitEvidence
                     }
                     write($"SQL wait sample {sample + 1}: {JsonSerializer.Serialize(rows)}");
                 }
-                catch (SqlException exception) { write($"SQL observer command unavailable: number={exception.Number}"); }
+                catch (SqlException exception)
+                {
+                    write($"SQL observer command unavailable: number={exception.Number}");
+                    if (connection.State != ConnectionState.Open) { return; }
+                }
+                catch (InvalidOperationException) when (connection.State != ConnectionState.Open)
+                {
+                    write("SQL observer disconnected; sampling stopped");
+                    return;
+                }
                 catch (OperationCanceledException) when (!stop.IsCancellationRequested) { write("SQL observer command timed out"); }
             }
         }
