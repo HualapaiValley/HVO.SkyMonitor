@@ -16,29 +16,43 @@ internal static class SqlWaitEvidence
             ConnectTimeout = 2,
             ApplicationName = "HVO.SkyMonitor.QualificationObserver"
         };
-        await using var connection = new SqlConnection(builder.ConnectionString);
-        // Establish the observer before invoking the delegate. Already-running requests retain
-        // their own deadlines. The old combined connection/read deadline hid which phase failed.
-        var openingClock = Stopwatch.StartNew();
+        await using var connection = await ConnectAsync(builder.ConnectionString, write, CancellationToken.None).ConfigureAwait(false);
+        await WhileObservedAsync(operation, token => SampleAsync(connection, write, token,
+            retry => ConnectAsync(builder.ConnectionString, write, retry)), write).ConfigureAwait(false);
+    }
+
+    private static async Task<SqlConnection?> ConnectAsync(string connectionString, Action<string> write, CancellationToken stop)
+    {
+        var connection = new SqlConnection(connectionString);
+        var clock = Stopwatch.StartNew();
         try
         {
-            using var opening = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var opening = CancellationTokenSource.CreateLinkedTokenSource(stop);
+            opening.CancelAfter(TimeSpan.FromSeconds(2));
             await connection.OpenAsync(opening.Token).ConfigureAwait(false);
-            write($"SQL observer connected: elapsedMs={openingClock.ElapsedMilliseconds} session={connection.ServerProcessId}");
+            write($"SQL observer connected: elapsedMs={clock.ElapsedMilliseconds} session={connection.ServerProcessId}");
+            return connection;
         }
         catch (SqlException exception)
         {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            stop.ThrowIfCancellationRequested();
             write($"SQL observer connection unavailable: number={exception.Number}");
-            await operation().ConfigureAwait(false);
-            return;
+            return null;
         }
         catch (OperationCanceledException)
         {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            stop.ThrowIfCancellationRequested();
             write("SQL observer connection timed out");
-            await operation().ConfigureAwait(false);
-            return;
+            return null;
         }
-        await WhileObservedAsync(operation, token => SampleAsync(connection, write, token), write).ConfigureAwait(false);
+        catch (InvalidOperationException) when (connection.State != ConnectionState.Open)
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            write("SQL observer connection closed during setup");
+            return null;
+        }
     }
 
     internal static async Task WhileObservedAsync(
@@ -68,28 +82,33 @@ internal static class SqlWaitEvidence
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default).ConfigureAwait(false);
     }
 
-    internal static async Task SampleAsync(SqlConnection connection, Action<string> write, CancellationToken stop)
+    internal static async Task SampleAsync(SqlConnection? connection, Action<string> write, CancellationToken stop,
+        Func<CancellationToken, Task<SqlConnection?>>? reconnect = null, TimeSpan? samplingDelay = null)
     {
+        SqlConnection? ownedConnection = null;
         var clock = Stopwatch.StartNew();
         try
         {
             for (var sample = 0; sample < 3; sample++)
             {
-                if (connection.State != ConnectionState.Open)
+                if (connection?.State != ConnectionState.Open && reconnect is null)
                 {
                     write("SQL observer disconnected; sampling stopped");
                     return;
                 }
-                var delay = TimeSpan.FromSeconds(sample == 0 ? 5 : 8);
+                var delay = samplingDelay ?? TimeSpan.FromSeconds(sample == 0 ? 5 : 8);
                 var due = clock.Elapsed + delay;
                 await Task.Delay(delay, stop).ConfigureAwait(false);
-                if (connection.State != ConnectionState.Open)
-                {
-                    write("SQL observer disconnected; sampling stopped");
-                    return;
-                }
                 using var process = Process.GetCurrentProcess();
                 write($"SQL sample runtime: sample={sample + 1} elapsedMs={clock.ElapsedMilliseconds} schedulingLagMs={(clock.Elapsed - due).TotalMilliseconds:F0} threads={ThreadPool.ThreadCount} pendingWork={ThreadPool.PendingWorkItemCount} managedBytes={GC.GetTotalMemory(false)} workingSetBytes={process.WorkingSet64}");
+                if (connection?.State != ConnectionState.Open)
+                {
+                    if (reconnect is null) { write("SQL observer disconnected; sampling stopped"); return; }
+                    if (ownedConnection is not null) { await ownedConnection.DisposeAsync().ConfigureAwait(false); }
+                    connection = await reconnect(stop).ConfigureAwait(false);
+                    ownedConnection = connection;
+                    if (connection is null) { write($"SQL sample {sample + 1}: connection unavailable"); continue; }
+                }
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
                 timeout.CancelAfter(TimeSpan.FromSeconds(2));
                 try
@@ -129,16 +148,20 @@ internal static class SqlWaitEvidence
                 catch (SqlException exception)
                 {
                     write($"SQL observer command unavailable: number={exception.Number}");
-                    if (connection.State != ConnectionState.Open) { return; }
+                    if (connection.State != ConnectionState.Open && reconnect is null) { return; }
                 }
                 catch (InvalidOperationException) when (connection.State != ConnectionState.Open)
                 {
-                    write("SQL observer disconnected; sampling stopped");
-                    return;
+                    write(reconnect is null ? "SQL observer disconnected; sampling stopped" : "SQL observer disconnected; retry at next sample");
+                    if (reconnect is null) { return; }
                 }
                 catch (OperationCanceledException) when (!stop.IsCancellationRequested) { write("SQL observer command timed out"); }
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        finally
+        {
+            if (ownedConnection is not null) { await ownedConnection.DisposeAsync().ConfigureAwait(false); }
+        }
     }
 }

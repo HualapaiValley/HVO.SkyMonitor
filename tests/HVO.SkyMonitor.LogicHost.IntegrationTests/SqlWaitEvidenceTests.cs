@@ -80,4 +80,28 @@ public sealed class SqlWaitEvidenceTests
         var failure = await action.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false);
         failure.Which.Should().BeSameAs(original);
     }
+    [TestMethod]
+    public async Task FailedConnectionAttemptsAreRetriedAtMostOncePerSample()
+    {
+        var attempts = 0;
+        await SqlWaitEvidence.SampleAsync(null, _ => { }, CancellationToken.None,
+            _ => { attempts++; return Task.FromResult<SqlConnection?>(null); }, TimeSpan.Zero).ConfigureAwait(false);
+        attempts.Should().Be(3);
+    }
+
+    [TestMethod]
+    public async Task CancellationStopsConnectionRetries()
+    {
+        using var stop = new CancellationTokenSource();
+        var attempts = 0;
+        await SqlWaitEvidence.SampleAsync(null, _ => { }, stop.Token,
+            async _ =>
+            {
+                attempts++;
+                await stop.CancelAsync().ConfigureAwait(false);
+                return null;
+            }, TimeSpan.Zero).ConfigureAwait(false);
+        attempts.Should().Be(1);
+    }
+
 }

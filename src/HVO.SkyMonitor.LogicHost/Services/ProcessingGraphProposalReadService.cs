@@ -105,7 +105,7 @@ internal sealed class ProcessingGraphProposalReadService(ApplicationDbContext db
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var payload = await dbContext.CentralProcessingGraphDeliveryFacts.AsNoTracking()
             .TagWith("proposal-read:fact-payload")
-            .Where(fact => fact.ProposalId == proposalId && EF.Parameter(selectedIds).Contains(fact.Id))
+            .Where(fact => EF.Parameter(selectedIds).Contains(fact.Id))
             .Select(fact => new ProcessingGraphDeliveryFactView(
                 fact.Id, fact.ProposalId, fact.Kind, fact.Source, fact.OccurredAtUtc, fact.RecordedAtUtc,
                 fact.ReasonCode, fact.LocalRevisionId, fact.DefinitionIdentitySha256,
@@ -118,7 +118,9 @@ internal sealed class ProcessingGraphProposalReadService(ApplicationDbContext db
         }
         // Facts are immutable. Preserve the database's key order (including SQL GUID ordering),
         // and never refill from later history if a selected payload is unexpectedly absent.
-        var facts = selectedIds.Take(take).Where(payload.ContainsKey).Select(id => payload[id]).ToList();
+        var facts = selectedIds.Take(take)
+            .Where(id => payload.TryGetValue(id, out var fact) && fact.ProposalId == proposalId)
+            .Select(id => payload[id]).ToList();
         return new(view, facts, selectedIds.Count > take);
     }
 }

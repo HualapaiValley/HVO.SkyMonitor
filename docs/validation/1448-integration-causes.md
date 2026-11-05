@@ -47,10 +47,10 @@ before/after/after/before order, 100 operations each.
 | Per operation, observed mean | Base | Candidate |
 | --- | ---: | ---: |
 | Product SELECTs | 3 | 4 |
-| Sequential elapsed time | 22.356 ms | 26.257 ms |
+| Sequential elapsed time | 18.465 ms | 27.655 ms |
 | SQL logical reads | 186.57 | 177 |
-| SQL worker CPU | 431.66 microseconds | 503.565 microseconds |
-| Process-wide allocated bytes | 474,477 | 622,075 |
+| SQL worker CPU | 373.475 microseconds | 538.885 microseconds |
+| Process-wide allocated bytes | 473,891 | 619,632 |
 
 The additional EF command and dictionary cost allocation and a round trip; this
 is a bounded-work tradeoff, not a speedup claim. Client CPU was also recorded,
@@ -96,14 +96,16 @@ not logged. Existing SQL deadlines remain 30 seconds; the fence-entry deadline
 starts before observer setup so it is not extended.
 
 Review correction Sol-P2: a broken observer connection must not fault its next
-sample and replace the subject's exception during cleanup. Sampling now stops
-when disconnected (including a disconnect racing command execution). Passive
+sample and replace the subject's exception during cleanup. Sampling never reuses a disconnected connection (including a disconnect racing command execution).
+Production sampling retries a fresh connection at the next bounded sample point;
+there are at most three sample points, each with separate two-second opening and command bounds.
+Two additional Unit cases verify retry count and cancellation. Passive
 cleanup observes sampler/cancellation/reporting failures without changing either
 a successful subject outcome or its original fault/cancellation. Reports expose
 only exception types, not exception messages. Five Docker-free regressions cover
 closed-connection observation followed by subject fault/cancellation, unexpected
 sampler faults, subject success and a broken diagnostic writer. The current Unit
-inventory is 14,855; the affected mixed project has 34 passing Unit cases.
+inventory is 14,857; the affected mixed project has 36 passing Unit cases.
 A live private-SQL probe also terminated only the owned observer session, with
 SqlClient automatic reconnect disabled for that experiment. Sampling stopped,
 and subsequent subject fault and cancellation were preserved. The normal
@@ -136,3 +138,10 @@ files were removed. Task-owned image cache is retained only until investigation
 ends, then removed if unshared. No application image was built, no production
 host or runner was administered, and no promotion, deployment, merge or release
 was performed.
+
+Correction evidence: the actual application payload plan, isolated with a per-test SQL comment,
+was compiled for a two-fact proposal and reused for the faithful 10,000-fact workload.
+It retained primary-key equality seeks and returned 51 rows. The redundant SQL
+proposal predicate is removed; hydration still checks proposal identity in memory.
+Captured replay parameters preserve provider types, sizes, precision and scale.
+The focused run passed exact 51-key/51-payload work, append and both authorization gaps.

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data;
 using System.Data.Common;
 using System.Data.SqlTypes;
 using System.Diagnostics;
@@ -219,10 +220,21 @@ public sealed class ProcessingGraphProposalReadTests
         var seed = await SeedAsync(pending: true).ConfigureAwait(false);
         var history = await SeedFaithfulHistoryAsync(seed, 10000).ConfigureAwait(false);
         seed = history.Seed;
-        var probe = new ReadProbe();
+        var cacheToken = Guid.NewGuid();
+        var probe = new ReadProbe { PayloadPlanToken = cacheToken };
         using var factory = CreateFactory(probe);
         using var client = await KeyClientAsync(factory, seed).ConfigureAwait(false);
-        // One unmeasured warm-up; one observed HTTP operation, no percentile or speedup claim.
+        // Compile the real payload statement for two facts before reusing it for 10,000.
+        // The fixture-only comment gives this statement its own cache entry without recompiling the replay.
+        var cacheProbe = await SeedCacheProbeAsync(seed, history.Accepted).ConfigureAwait(false);
+        using (var first = await client.GetAsync(Path(seed, proposal: cacheProbe.Proposal.Id)).ConfigureAwait(false))
+        {
+            first.StatusCode.Should().Be(HttpStatusCode.OK);
+            var tiny = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await first.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+            tiny.Facts.Should().HaveCount(2);
+            tiny.FactsAreTruncated.Should().BeFalse();
+        }
+        // One large warm-up; one observed HTTP operation, no percentile or speedup claim.
         using (var warmup = await client.GetAsync(Path(seed)).ConfigureAwait(false)) warmup.StatusCode.Should().Be(HttpStatusCode.OK);
         probe.Commands.Clear();
         probe.NonQueries.Clear();
@@ -238,8 +250,11 @@ public sealed class ProcessingGraphProposalReadTests
         probe.NonQueries.Should().BeEmpty();
         var factsCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-keys", StringComparison.Ordinal));
         factsCommand.Sql.Should().Contain("TOP(").And.Contain("ORDER BY").And.NotContain("OFFSET").And.NotContain("COUNT(");
-        await AssertIndexedBoundAsync(factsCommand, 51).ConfigureAwait(false);
         var payloadCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-payload", StringComparison.Ordinal));
+        payloadCommand.Sql.Should().NotContain("@proposalId");
+        await AssertCachedPayloadPlanAsync(cacheToken, cacheProbe.Key,
+            payloadCommand.Parameters.Single(item => item.Type == SqlDbType.NVarChar).Name).ConfigureAwait(false);
+        await AssertIndexedBoundAsync(factsCommand, 51).ConfigureAwait(false);
         await AssertPayloadBoundAsync(payloadCommand, 51).ConfigureAwait(false);
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -255,7 +270,7 @@ public sealed class ProcessingGraphProposalReadTests
             fact.SharedPlanIdentitySha256.Should().Be(history.Accepted.SharedPlanIdentitySha256);
             fact.LocalPlanIdentitySha256.Should().Be(history.Accepted.LocalPlanIdentitySha256);
         }
-        TestContext.WriteLine($"source workload=1270-v2-faithful retainedLifecycleFacts=10000 unrelatedLifecycleFacts=10000 unrelatedProposals=200 initialRetrievedAndAcceptedFacts=402 transitionRulesValidated=20201 concurrency=1 warmup=1 observedOperations=1 productSQL=4 paginationKeyRowsReturned=51 payloadRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+        TestContext.WriteLine($"source workload=1270-v2-faithful retainedLifecycleFacts=10000 unrelatedLifecycleFacts=10000 unrelatedProposals=200 initialRetrievedAndAcceptedFacts=402 transitionRulesValidated=20201 concurrency=1 warmup=1 observedOperations=1 cacheProbeProposals=1 cacheProbeFacts=2 productSQL=4 paginationKeyRowsReturned=51 payloadRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
         TestContext.WriteLine(factsCommand.Sql);
         // Insert while the next request is between the proposal and fact commands. The new read
         // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
@@ -672,7 +687,7 @@ public sealed class ProcessingGraphProposalReadTests
         await connection.OpenAsync().ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = $"SET STATISTICS XML ON; {captured.Sql}; SET STATISTICS XML OFF;";
-        foreach (var parameter in captured.Parameters) command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        BindCapturedParameters(command, captured.Parameters);
         await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
         var rows = 0;
         while (await reader.ReadAsync().ConfigureAwait(false)) rows++;
@@ -705,7 +720,7 @@ public sealed class ProcessingGraphProposalReadTests
         await connection.OpenAsync().ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = $"SET STATISTICS XML ON; {captured.Sql}; SET STATISTICS XML OFF;";
-        foreach (var parameter in captured.Parameters) command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        BindCapturedParameters(command, captured.Parameters);
         await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
         var rows = 0;
         while (await reader.ReadAsync().ConfigureAwait(false)) rows++;
@@ -717,9 +732,7 @@ public sealed class ProcessingGraphProposalReadTests
         rows.Should().Be(expectedRows);
         var plan = XDocument.Parse(planText);
         XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
-        var factReads = plan.Descendants(ns + "RelOp").Where(item => item.Elements(ns + "IndexScan")
-            .Elements(ns + "Object").Any(obj => (string?)obj.Attribute("Table") == "[CentralProcessingGraphDeliveryFacts]"))
-            .ToArray();
+        var factReads = FactTableReads(plan);
         factReads.Should().NotBeEmpty();
         factReads.Should().OnlyContain(item => (string?)item.Attribute("PhysicalOp") == "Clustered Index Seek");
         var examined = factReads.SelectMany(item => item.Elements(ns + "RunTimeInformation")
@@ -729,6 +742,113 @@ public sealed class ProcessingGraphProposalReadTests
         examined.Should().Be(expectedRows);
     }
 
+    private static XElement[] FactTableReads(XDocument plan)
+    {
+        XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
+        return plan.Descendants(ns + "RelOp").Where(item => item.Elements()
+            .SelectMany(child => child.Elements(ns + "Object"))
+            .Any(obj => (string?)obj.Attribute("Table") == "[CentralProcessingGraphDeliveryFacts]")).ToArray();
+    }
+
+    private static void BindCapturedParameters(SqlCommand command, IEnumerable<CapturedParameter> parameters)
+    {
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.Add(new SqlParameter(parameter.Name, parameter.Type, parameter.Size)
+            {
+                Value = parameter.Value,
+                Precision = parameter.Precision,
+                Scale = parameter.Scale,
+                IsNullable = parameter.Nullable
+            });
+        }
+    }
+
+    private async Task AssertCachedPayloadPlanAsync(Guid token, Guid smallKey, string parameterName)
+    {
+        await using var connection = new SqlConnection(AssemblyHooks.Fixture.SqlServerConnectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT TOP (1) CONVERT(nvarchar(max), p.query_plan), q.last_rows, q.execution_count
+            FROM sys.dm_exec_query_stats q
+            CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
+            CROSS APPLY sys.dm_exec_query_plan(q.plan_handle) p
+            WHERE p.dbid = DB_ID() AND CHARINDEX(@marker, t.text) > 0
+                AND t.text NOT LIKE '%SET STATISTICS XML ON%'
+                AND t.text NOT LIKE '%sys.dm_exec_query_stats%'
+            ORDER BY q.last_execution_time DESC
+            """;
+        command.Parameters.AddWithValue("@marker", $"proposal-payload-cache:{token:N}");
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        (await reader.ReadAsync().ConfigureAwait(false)).Should().BeTrue("the actual application statement must have a cached plan");
+        var xml = reader.GetString(0);
+        TestContext.WriteLine(xml);
+        reader.GetInt64(1).Should().Be(51);
+        var executions = reader.GetInt64(2);
+        var plan = XDocument.Parse(xml);
+        XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
+        var compiled = plan.Descendants(ns + "ParameterList").Elements(ns + "ColumnReference")
+            .Single(item => (string?)item.Attribute("Column") == parameterName);
+        var compiledForSmall = ((string?)compiled.Attribute("ParameterCompiledValue"))?.Contains(smallKey.ToString("D"), StringComparison.OrdinalIgnoreCase) == true;
+        TestContext.WriteLine($"actual application payload cache: executions={executions} compiledForSmall={compiledForSmall} lastRows=51");
+        var reads = FactTableReads(plan);
+        reads.Should().NotBeEmpty();
+        reads.Should().OnlyContain(item => (string?)item.Attribute("PhysicalOp") == "Clustered Index Seek");
+        foreach (var read in reads)
+        {
+            read.Descendants(ns + "Prefix").Should().Contain(prefix => (string?)prefix.Attribute("ScanType") == "EQ"
+                && prefix.Elements(ns + "RangeColumns").Elements(ns + "ColumnReference")
+                    .Any(column => (string?)column.Attribute("Column") == "Id"));
+        }
+        TestContext.WriteLine("actual application payload cache after small-first workload: primary-key equality seeks");
+    }
+
+    private static async Task<(CentralProcessingGraphDeliveryProposal Proposal, Guid Key)> SeedCacheProbeAsync(
+        Seed seed, CentralProcessingGraphDeliveryFact template)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var proposal = new CentralProcessingGraphDeliveryProposal
+        {
+            AssignmentId = seed.Proposal.AssignmentId,
+            RevisionId = seed.Proposal.RevisionId,
+            Revision = await db.CentralProcessingGraphRevisions.SingleAsync(item => item.Id == seed.Proposal.RevisionId).ConfigureAwait(false),
+            RegistrationId = seed.Proposal.RegistrationId,
+            LogicalCameraInstallationId = seed.Installation.Id,
+            InstallationPublicId = seed.Installation.InstallationPublicId,
+            CapabilitySnapshotSha256 = seed.Proposal.CapabilitySnapshotSha256,
+            IssuedAtUtc = seed.Proposal.IssuedAtUtc,
+            ExpiresAtUtc = seed.Proposal.ExpiresAtUtc
+        };
+        var retrieved = new CentralProcessingGraphDeliveryFact
+        {
+            ProposalId = proposal.Id,
+            Kind = "Retrieved",
+            Source = "LogicHost",
+            OccurredAtUtc = proposal.IssuedAtUtc,
+            RecordedAtUtc = proposal.IssuedAtUtc,
+            ReasonCode = "proposal-retrieved"
+        };
+        var accepted = new CentralProcessingGraphDeliveryFact
+        {
+            ProposalId = proposal.Id,
+            Kind = "Accepted",
+            Source = "CameraAgent",
+            OccurredAtUtc = proposal.IssuedAtUtc.AddMilliseconds(1),
+            RecordedAtUtc = proposal.IssuedAtUtc.AddMilliseconds(2),
+            LocalRevisionId = Hash($"small-local-{proposal.Id:D}"),
+            DefinitionIdentitySha256 = template.DefinitionIdentitySha256,
+            SharedPlanIdentitySha256 = template.SharedPlanIdentitySha256,
+            LocalPlanIdentitySha256 = Hash($"small-plan-{proposal.Id:D}"),
+            ReasonCode = "proposal-accepted"
+        };
+        ProcessingGraphDeliveryService.ValidateTransition(proposal, ToContract(accepted), new(true, null, null));
+        db.Add(proposal); db.AddRange(retrieved, accepted);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        return (proposal, retrieved.Id);
+    }
+
     private sealed record Seed(Guid ObservatoryId, string OwnerId, DateTimeOffset Now, LogicalCamera Camera,
         LogicalCameraInstallation Installation, LogicalCameraInstallation Replacement, CentralProcessingGraphDeliveryProposal Proposal,
         CentralProcessingGraphDeliveryProposal[] Proposals, CentralProcessingGraphDeliveryFact[] Facts, CentralProcessingGraphDeliveryFact[] AllFacts)
@@ -736,26 +856,35 @@ public sealed class ProcessingGraphProposalReadTests
         public Guid[] ProposalIds => Proposals.Select(item => item.Id).ToArray();
     }
 
-    private sealed record CapturedParameter(string Name, object Value);
+    private sealed record CapturedParameter(string Name, object Value, SqlDbType Type, int Size,
+        byte Precision, byte Scale, bool Nullable);
     private sealed record CapturedCommand(string Sql, CapturedParameter[] Parameters);
 
     private sealed class ReadProbe : DbCommandInterceptor
     {
         public ConcurrentQueue<CapturedCommand> Commands { get; } = new();
         public ConcurrentQueue<string> NonQueries { get; } = new();
+        public Guid? PayloadPlanToken { get; init; }
         public bool WaitForCancellation { get; set; }
         public Func<Task>? BeforeKeys { get; set; }
         public Func<Task>? BeforePayload { get; set; }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+            Justification = "Appends only a fixture-generated GUID comment to trusted EF SELECT text; no external SQL or strings.")]
         public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
             DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
             if (command.CommandText.Contains("proposal-read:", StringComparison.Ordinal))
             {
-                Commands.Enqueue(new(command.CommandText, command.Parameters.Cast<DbParameter>()
-                    .Select(item => new CapturedParameter(item.ParameterName, item.Value!)).ToArray()));
+                if (command.CommandText.Contains("proposal-read:fact-payload", StringComparison.Ordinal) && PayloadPlanToken is { } token)
+                {
+                    command.CommandText += $"\n-- proposal-payload-cache:{token:N}";
+                }
+                Commands.Enqueue(new(command.CommandText, command.Parameters.Cast<SqlParameter>()
+                    .Select(item => new CapturedParameter(item.ParameterName, item.Value!, item.SqlDbType, item.Size,
+                        item.Precision, item.Scale, item.IsNullable)).ToArray()));
                 if (WaitForCancellation)
                 {
                     Started.TrySetResult();
