@@ -181,8 +181,6 @@ internal static class DerivativeResetDiagnostics
             ORDER BY CASE WHEN s.session_id = @reset THEN 0 WHEN s.open_transaction_count > 0 THEN 1 ELSE 2 END, s.session_id
             """;
         command.Parameters.AddWithValue("@reset", resetSession);
-        command.Parameters.AddWithValue("@resetStatusPredicate", ResetStatusPredicate);
-        command.Parameters.AddWithValue("@resetLeasePredicate", ResetLeasePredicate);
         var result = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         while (await reader.ReadAsync(token).ConfigureAwait(false))
@@ -213,9 +211,9 @@ internal static class DerivativeResetDiagnostics
             ? value : "sha256:" + DerivativeResetEvidence.Hash(value);
     }
 
-    private static async Task<List<object>> ReadPlansAsync(SqlConnection connection, CancellationToken token)
+    internal static SqlCommand CreatePlanCommand(SqlConnection connection)
     {
-        using var command = connection.CreateCommand();
+        var command = connection.CreateCommand();
         command.CommandTimeout = 2;
         command.CommandText = """
             WITH candidates AS (
@@ -238,6 +236,14 @@ internal static class DerivativeResetDiagnostics
                 AND DATALENGTH(CONVERT(nvarchar(max), p.query_plan)) <= 1048576
             ORDER BY q.is_trigger, q.last_execution_time DESC
             """;
+        command.Parameters.AddWithValue("@resetStatusPredicate", ResetStatusPredicate);
+        command.Parameters.AddWithValue("@resetLeasePredicate", ResetLeasePredicate);
+        return command;
+    }
+
+    private static async Task<List<object>> ReadPlansAsync(SqlConnection connection, CancellationToken token)
+    {
+        using var command = CreatePlanCommand(connection);
         var result = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         while (await reader.ReadAsync(token).ConfigureAwait(false))

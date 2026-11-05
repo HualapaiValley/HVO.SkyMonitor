@@ -2,6 +2,7 @@ using System.Data.Common;
 using FluentAssertions;
 using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -46,6 +47,20 @@ public sealed class DerivativeResetSqlShapeTests
         reset.Should().Contain(DerivativeResetDiagnostics.ResetLeasePredicate);
         reset.Should().Contain("UPDATE").And.Contain("[ExpandedAtUtc] IS NOT NULL");
         capture.Commands.Should().HaveCount(route == "runner" ? 2 : 1, "runner retirement must remain part of its reset");
+    }
+
+    [TestMethod]
+    public void PlanLookupCommandBindsTheActualMatcherParameters()
+    {
+        using var connection = new SqlConnection();
+        using var command = DerivativeResetDiagnostics.CreatePlanCommand(connection);
+        command.Connection.Should().BeSameAs(connection);
+        command.CommandTimeout.Should().Be(2);
+        command.CommandText.Should().Contain("CHARINDEX(@resetStatusPredicate, t.text)")
+            .And.Contain("CHARINDEX(@resetLeasePredicate, t.text)");
+        command.Parameters.Count.Should().Be(2);
+        command.Parameters["@resetStatusPredicate"].Value.Should().Be(DerivativeResetDiagnostics.ResetStatusPredicate);
+        command.Parameters["@resetLeasePredicate"].Value.Should().Be(DerivativeResetDiagnostics.ResetLeasePredicate);
     }
 
     private sealed class SuppressConnectionOpen : DbConnectionInterceptor
