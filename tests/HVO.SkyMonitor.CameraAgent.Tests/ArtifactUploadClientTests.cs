@@ -155,7 +155,8 @@ public sealed class ArtifactUploadClientTests
                 {
                     Content = new StringContent(JsonSerializer.Serialize(acknowledgement), Encoding.UTF8, "application/json")
                 };
-        })) { BaseAddress = new Uri("http://localhost/") };
+        }))
+        { BaseAddress = new Uri("http://localhost/") };
         var uploader = CreateUploadClient(client);
         var record = CreateRecord(manifest);
 
