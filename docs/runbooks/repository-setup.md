@@ -169,7 +169,7 @@ Copy these from `HVO.SkyMonitor` and adjust the marked lines.
 
 | File | Purpose | Adjust |
 | --- | --- | --- |
-| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint, cheap CI-control checks) + self-hosted Build and Unit under a 720s workload budget (600s target, 900s hard timeout) with a timing manifest | build/test commands and `runs-on` labels; keep exhaustive lint/category checks in full qualification |
+| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint, cheap CI-control checks) + self-hosted Build and Unit under a 1080s workload budget (600s target, 1320s hard timeout) with a timing manifest | build/test commands and `runs-on` labels; keep exhaustive lint/category checks in full qualification |
 | `.github/workflows/agentcontrol.yml` | `verify-identity`, `post-review` as the App | nothing; it reads owner/repo from context |
 | `.github/workflows/promote-main.yml` | nightly draft promotion PR, 02:00 America/Phoenix; reviewed promotion becomes ready for planned full qualification | the aggregate check name if the green-run check is extended to `main`'s pipeline |
 | `.github/ISSUE_TEMPLATE/development-v1.yml`, `.github/PULL_REQUEST_TEMPLATE/development-v1.md` | issue form and PR template | project-specific fields |

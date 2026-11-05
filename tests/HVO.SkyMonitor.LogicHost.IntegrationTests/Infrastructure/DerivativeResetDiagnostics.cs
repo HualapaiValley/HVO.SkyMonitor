@@ -13,6 +13,8 @@ internal static class DerivativeResetDiagnostics
 {
     private static readonly ConcurrentDictionary<string, int> Occurrences = new(StringComparer.Ordinal);
     private static int _claimed;
+    internal const string ResetStatusPredicate = "[Status] IN (N'Waiting', N'Pending', N'RetryableFailure', N'Leased', N'CancelRequested')";
+    internal const string ResetLeasePredicate = "[LeaseExpiresAtUtc] = NULL";
     internal const string ContainerCounters = "cat /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/memory.events /sys/fs/cgroup/io.stat; "
         + "printf 'memory.current '; cat /sys/fs/cgroup/memory.current; printf 'memory.swap.current '; cat /sys/fs/cgroup/memory.swap.current";
 
@@ -61,8 +63,14 @@ internal static class DerivativeResetDiagnostics
                 await observer.OpenAsync(deadline.Token).ConfigureAwait(false);
                 using var count = observer.CreateCommand();
                 count.CommandTimeout = 2;
-                count.CommandText = "SET LOCK_TIMEOUT 1000; SELECT COUNT_BIG(*) FROM dbo.CentralDerivativeJobs WITH (READUNCOMMITTED) WHERE Status <> @completed";
-                count.Parameters.AddWithValue("@completed", "Completed");
+                count.CommandText = """
+                    SET LOCK_TIMEOUT 1000;
+                    SELECT COUNT_BIG(*) FROM dbo.CentralDerivativeJobs AS jobs WITH (READUNCOMMITTED)
+                    LEFT JOIN dbo.CentralProcessingGraphExecutions AS executions WITH (READUNCOMMITTED)
+                        ON executions.Id = jobs.GraphExecutionId
+                    WHERE (jobs.GraphExecutionId IS NULL OR executions.ExpandedAtUtc IS NOT NULL)
+                        AND jobs.Status IN (N'Waiting', N'Pending', N'RetryableFailure', N'Leased', N'CancelRequested')
+                    """;
                 targetRows = Convert.ToInt64(await count.ExecuteScalarAsync(deadline.Token).ConfigureAwait(false), CultureInfo.InvariantCulture);
                 sampling = DerivativeResetEvidence.SampleAsync(async token =>
                 {
@@ -203,9 +211,9 @@ internal static class DerivativeResetDiagnostics
             ? value : "sha256:" + DerivativeResetEvidence.Hash(value);
     }
 
-    private static async Task<List<object>> ReadPlansAsync(SqlConnection connection, CancellationToken token)
+    internal static SqlCommand CreatePlanCommand(SqlConnection connection)
     {
-        using var command = connection.CreateCommand();
+        var command = connection.CreateCommand();
         command.CommandTimeout = 2;
         command.CommandText = """
             WITH candidates AS (
@@ -216,8 +224,8 @@ internal static class DerivativeResetDiagnostics
                         THEN 1 ELSE 0 END ORDER BY q.last_execution_time DESC) AS candidate_rank
                 FROM sys.dm_exec_query_stats q
                 CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
-                WHERE ((CHARINDEX('WHERE [c].[Status] <> N''Completed''', t.text) > 0
-                        AND CHARINDEX('[c].[LeaseExpiresAtUtc] = NULL', t.text) > 0
+                WHERE ((CHARINDEX(@resetStatusPredicate, t.text) > 0
+                        AND CHARINDEX(@resetLeasePredicate, t.text) > 0
                         AND t.text LIKE '%UPDATE%' AND t.text NOT LIKE '%sys.dm_exec_query_stats%')
                     OR t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable'))
             )
@@ -228,6 +236,14 @@ internal static class DerivativeResetDiagnostics
                 AND DATALENGTH(CONVERT(nvarchar(max), p.query_plan)) <= 1048576
             ORDER BY q.is_trigger, q.last_execution_time DESC
             """;
+        command.Parameters.AddWithValue("@resetStatusPredicate", ResetStatusPredicate);
+        command.Parameters.AddWithValue("@resetLeasePredicate", ResetLeasePredicate);
+        return command;
+    }
+
+    private static async Task<List<object>> ReadPlansAsync(SqlConnection connection, CancellationToken token)
+    {
+        using var command = CreatePlanCommand(connection);
         var result = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         while (await reader.ReadAsync(token).ConfigureAwait(false))

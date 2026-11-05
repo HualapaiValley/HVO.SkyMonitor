@@ -84,8 +84,13 @@ public sealed class LogicalCameraArchiveIntegrationTests
         rechecked.ExaminedCaptures.Should().Be(0);
         rechecked.ExaminedArtifacts.Should().Be(0);
         var viewer = await db.Users.SingleAsync(user => user.Email == TestUsers.Viewer.Email).ConfigureAwait(false);
-        db.ObservatoryMemberships.Add(new() { ObservatoryId = data.Observatory, UserId = viewer.Id,
-            Role = ObservatoryMembershipRole.Viewer, AddedAtUtc = DateTimeOffset.UtcNow });
+        db.ObservatoryMemberships.Add(new()
+        {
+            ObservatoryId = data.Observatory,
+            UserId = viewer.Id,
+            Role = ObservatoryMembershipRole.Viewer,
+            AddedAtUtc = DateTimeOffset.UtcNow
+        });
         await db.SaveChangesAsync().ConfigureAwait(false);
         Func<Task> anotherActor = () => service.RevalidateCurrentAsync(Principal(viewer.Id), data.Observatory, data.Camera, page);
         await anotherActor.Should().ThrowAsync<ArgumentException>().ConfigureAwait(false);
