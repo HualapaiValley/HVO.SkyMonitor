@@ -400,28 +400,7 @@ public class Program
             await next(context).ConfigureAwait(false);
         });
 
-        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
-            {
-                appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
-                appBuilder.Use(async (context, next) =>
-                {
-                    await next(context).ConfigureAwait(false);
-                    if (context.Response.HasStarted)
-                    {
-                        return;
-                    }
-                    if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
-                    {
-                        var returnUrl = string.Concat(context.Request.PathBase, context.Request.Path, context.Request.QueryString);
-                        context.Response.Redirect($"/Account/Login?returnUrl={Uri.EscapeDataString(returnUrl)}");
-                    }
-                    else if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
-                    {
-                        context.Response.Redirect("/Account/AccessDenied");
-                    }
-                });
-            }
-        );
+        UseBrowserAuthenticationRedirects(app);
 
         app.UseStaticFiles();
         app.MapStaticAssets();
@@ -529,7 +508,7 @@ public class Program
                 });
             })
             .AllowAnonymous();
-        app.MapPrometheusScrapingEndpoint();
+        CameraAgentMetricsEndpoint.Map(app);
 
         app.MapSkyMonitorHealthEndpoints();
 
@@ -596,9 +575,15 @@ public class Program
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
         options.Events.OnRedirectToLogin = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            if (CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                if (CameraAgentMetricsEndpoint.IsScrapePath(context.Request.Path))
+                {
+                    context.Response.Headers.CacheControl = "no-store";
+                    context.Response.Headers.WWWAuthenticate = "Bearer";
+                }
+
                 return Task.CompletedTask;
             }
 
@@ -607,15 +592,54 @@ public class Program
         };
         options.Events.OnRedirectToAccessDenied = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            if (CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                if (CameraAgentMetricsEndpoint.IsScrapePath(context.Request.Path))
+                {
+                    context.Response.Headers.CacheControl = "no-store";
+                }
+
                 return Task.CompletedTask;
             }
 
             context.Response.Redirect(context.RedirectUri);
             return Task.CompletedTask;
         };
+    }
+
+    /// <summary>
+    /// Sends ordinary pages to login or access denied. API routes and <c>/metrics</c> keep the
+    /// status code so a scraper is not redirected and a query string is not copied into a login URL.
+    /// </summary>
+    internal static void UseBrowserAuthenticationRedirects(IApplicationBuilder app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        app.UseWhen(
+            static context => !CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path),
+            appBuilder =>
+            {
+                appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
+                appBuilder.Use(async (context, next) =>
+                {
+                    await next(context).ConfigureAwait(false);
+                    if (context.Response.HasStarted)
+                    {
+                        return;
+                    }
+
+                    if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
+                    {
+                        var returnUrl = string.Concat(
+                            context.Request.PathBase, context.Request.Path, context.Request.QueryString);
+                        context.Response.Redirect($"/Account/Login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+                    }
+                    else if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
+                    {
+                        context.Response.Redirect("/Account/AccessDenied");
+                    }
+                });
+            });
     }
 
     internal static void ApplyLocalIdentityPasswordFile(ConfigurationManager configuration)

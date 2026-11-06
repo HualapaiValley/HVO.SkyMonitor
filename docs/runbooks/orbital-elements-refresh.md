@@ -553,7 +553,9 @@ Degraded always means the last-known-good snapshot, if there is one, is still
 readable.
 
 The meter `HVO.SkyMonitor.CameraAgent.OrbitalElements` is registered with the
-CameraAgent MeterProvider and exported through the Prometheus scraping endpoint:
+CameraAgent MeterProvider and exported through the Prometheus scraping endpoint.
+The scrape requires the ready site owner's session or an operations-read API key
+in the `Authorization` header:
 
 | Instrument | Type | Unit | Tags |
 | --- | --- | --- | --- |
