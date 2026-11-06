@@ -67,11 +67,13 @@ The test-only observer is shared through TestInfrastructure so the combined test
 can observe its own SQL instance from capture through execution. The original
 joined/sorted DMV query is replaced by independent, bounded read-only sources:
 permissions, requests (including connection IDs and wait resources), sessions,
-memory grants, and application/waiting locks. No source joins another DMV.
+memory grants, semaphores, SQL process/system memory, min/max memory
+configuration, and application/waiting locks. No source joins another DMV.
 Each source/cycle owns a fresh unpooled session, with separate two-second opening
 and command/read bounds and automatic connection retry disabled. A failed source
 cannot suppress the others or poison a later cycle. Output contains only numeric
-IDs, timestamps, enum/reason values, lock resource identifiers and query hashes;
+IDs, timestamps, enum/reason values, lock resource identifiers, query hashes,
+memory values and the two fixed memory-configuration names;
 it excludes SQL text, parameter values, credentials and object payloads.
 
 Default observation preflights immediately, then samples after 5/8/8-second
@@ -83,7 +85,7 @@ object-lock budgets and assertions are unchanged. No production query, lock
 policy, worker or runner configuration is changed.
 
 A controlled live probe held a row lock on one disposable SQL instance and
-verified that the collector named the exact blocking session while all five
+verified that the collector named the exact blocking session while all nine
 independent sources succeeded. It also preserved the original subject exception.
 This validates the collector, not the CI root cause. The probe exited zero and
 removed its container/tmpfs state, private files and port lock. Evidence:
@@ -133,14 +135,19 @@ waiting about 4.98/13.04/21.06 seconds. It requested 49,920 KB of execution memo
 sessions also awaited grants, including 1,024 KB requests. The grants snapshots
 contained only waiting requests and no granted rows. Session observations mark
 these as non-observer sessions. The observer sources returned in milliseconds;
-.NET timer lag remained near zero with no queued ThreadPool work.
+.NET timer lag remained near zero with no queued ThreadPool work. The same
+runtime lines report approximately 7.30 GB managed memory and 3.1 GB resident
+working set (the prior failed run reported about 7.27 GB managed memory).
+Earlier fence samples report 6.0–6.15 GB managed memory. These figures make
+test-process memory a candidate for host pressure, not an established cause.
 
 A controlled execution of the exact retained 2,825-byte invalidation SQL in a
 private migrated database reproduced query hash `3E4E7159F917CC27`, matching
 session 51 in the failing CI observations. The XML and DMV hash agree. This
-pins the runner's SQL timeout to an execution-memory grant wait, rather than a
-row-lock blocker, an observer drain exception or unproven Cartesian execution
-cost. The empty controlled database needed no execution grant; it validates the
+establishes at least 21 of the 30 seconds spent waiting for an execution-memory
+grant, with no row-lock blocker in those samples. The final approximately nine
+seconds are unobserved; execution cost during that interval is not ruled out.
+The exception originated in the subject, not observer draining. The empty controlled database needed no execution grant; it validates the
 hash mapping, not the CI memory requirement or starvation cause. Evidence is in
 `/tmp/t3-1448-42158642535-integration/hash-lifecycle.log`,
 `invalidation-hash-proof.xml`, `requests-summary.json`, and `grants-summary.json`.
@@ -162,7 +169,13 @@ would overstate the evidence. Its original assertions and deadlines stay intact.
 
 The correction adds independent numeric semaphore, SQL-process memory, system
 memory, and min/max SQL-memory configuration observations to explain the grant
-queue on the next occurrence. These sources do not join other DMVs, change SQL
+queue on the next occurrence. SQL Server on Linux exposes memory figures through
+its platform abstraction; these views cannot establish actual runner-host free
+memory or swapping. The local probe reported 2,000 MB total system memory and
+4,096 MB process memory under a 1,024 MB SQL budget and 3 GB container limit.
+Semaphore/configuration observations describe SQL grant capacity; attributing
+pressure to the host still requires independent host-memory evidence.
+These sources do not join other DMVs, change SQL
 configuration or allocate grants for an application query. Row limits, fresh
 sessions, two-second opening/read limits, five-minute overall cap and passive
 subject-outcome handling remain unchanged. Tests verify every catalog source
