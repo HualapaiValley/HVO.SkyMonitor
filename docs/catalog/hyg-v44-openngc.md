@@ -4,9 +4,9 @@
 facts/package/query foundation of #525). It contains the HYG 4.4 star catalog,
 unchanged, plus OpenNGC v20260501 deep-sky objects: identities, extents, sourced
 outlines and search aliases. It changes neither original HYG package nor the
-default catalog ([HYG 4.4 catalog snapshot](hyg-v44.md)). The foundation enables
-explicit library lookup; supported image selection and scene emission remain
-separate deliveries.
+default catalog ([HYG 4.4 catalog snapshot](hyg-v44.md)). A current CameraAgent
+image can select this lineage beside the existing HYG catalogs. Curated
+expected-position annotations stay opt-in.
 
 Like the other lineages, the bundle is an explicitly built deployment artifact.
 Capture, application startup and installation never download or preprocess
@@ -20,8 +20,9 @@ catalog data. The builders read only previously acquired, pinned inputs:
 - `scripts/catalog/bundle-hyg-v44-openngc.sh DATABASE OUTPUT` validates the
   database again and emits the self-contained bundle.
 
-Library consumers resolve the explicitly selected pinned package. Supported
-deployment CLI/image adoption remains separately gated as described below.
+Library consumers resolve the explicitly selected pinned package. A current
+CameraAgent image can install and select this package, as described below.
+The default catalog for a fresh install remains HYG 4.2.
 
 ## Pinned evidence
 
@@ -201,29 +202,39 @@ The bundle manifest keeps every manifest-version-2 member and adds three:
 row count. The existing version-2 HYG manifests keep validating unchanged;
 unsupported version-1 manifests remain rejected.
 
-## Library scope and future image compatibility
+## Image selection
 
-The composed lineage has its own package root convention:
+The current CameraAgent image declares catalog contract `hvo-approved-catalogs-v2`
+and `io.hvo.skymonitor.catalog-manifest-version` `3`. That label is the highest
+manifest version the image reads. Upgrade preflight accepts a selected catalog
+whose manifest is version 2 or 3, so an instance that still has HYG 4.2 or
+HYG 4.4 keeps that selection. Manifest version 1, and any manifest newer than
+the label, is refused.
+
+`catalog select` accepts `hyg-v44-openngc-production` only from an image whose
+catalog contract is `hvo-approved-catalogs-v2`. An image that still declares
+`hvo-approved-catalogs-v1` resolves HYG 4.2 and HYG 4.4 and refuses this lineage.
+An image that declares only `hyg-v42-production-p3-s2` resolves HYG 4.2.
+An image that omits the manifest label is still held to manifest version 2.
+Installation and selection keep the registry's checksum, length, schema and
+count checks. Nothing skips them, and a bundle whose bytes differ from the
+pinned specification is refused.
+
+The default catalog for a fresh install remains HYG 4.2. Selecting this lineage
+is explicit. An upgrade from an image labeled manifest version 2 to one labeled
+3 changes that label, so the upgrade snapshots the small databases; the selected
+HYG catalog itself stays mounted. Roll a composed selection back to a manifest 2
+lineage before rolling the image back to a v1 contract: the older image refuses
+manifest 3.
+
+The package root is:
 
 ```text
 /var/lib/hvo-sky/catalogs/hyg-v44-openngc-production/versions/hyg-v4.4-openngc-v20260501-p5-s4-r1
 ```
 
-This foundation supplies the approved package, resolver and read-only catalog
-API. It does not change the default catalog or enable installation/selection
-by the current CameraAgent image. The existing image keeps
-`hvo-approved-catalogs-v1` and manifest version 2, so it refuses composed catalog
-selection. Its undeclared-manifest preflight fallback also remains version 2.
-
-Registry version 2 retains both original HYG lineages and adds the composed
-specification. Supporting image installation is a separate #525 increment C
-that must pair runtime support with `hvo-approved-catalogs-v2` and the matching
-manifest label. Neither label is shipped by this foundation.
-
-Shared projected-scene-v3 geometry is separately gated under #525 increment B;
-this delivery emits no v3 scenes. Before any future producer is enabled, deploy
-compatible readers first and complete that increment's independent clipping
-and compatibility acceptance.
+Import and curated-annotation steps are in
+[Curated expected-position annotation](../runbooks/curated-catalog-annotations.md#installed-cameraagent).
 
 ## Runtime identity and health
 

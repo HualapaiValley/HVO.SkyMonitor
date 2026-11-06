@@ -49,8 +49,13 @@ internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
     /// <summary>
-    /// The catalog contract a current image declares: the image embeds version 1 of the approved catalog registry
-    /// (issue #521), so it can resolve every catalog that registry version approves.
+    /// The catalog contract a current image declares. Registry version 2 approves the stars-only lineages and the
+    /// composed HYG 4.4 + OpenNGC lineage. The image's catalog-manifest-version label is the highest manifest it reads.
+    /// </summary>
+    public const string ComposedCatalogContract = "hvo-approved-catalogs-v2";
+
+    /// <summary>
+    /// The catalog contract of an image that embeds registry version 1 (issue #521): HYG 4.2 and HYG 4.4 only.
     /// </summary>
     public const string CatalogContract = "hvo-approved-catalogs-v1";
 
@@ -63,12 +68,13 @@ internal static class CameraAgentImageContract
     public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
 
     public static bool IsKnownCatalogContract(string? catalogContract)
-        => catalogContract is CatalogContract or LegacyCatalogContract;
+        => catalogContract is ComposedCatalogContract or CatalogContract or LegacyCatalogContract;
 
     /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
     public static bool SupportsCatalog(string? catalogContract, string? catalogId)
         => catalogContract switch
         {
+            ComposedCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _),
             CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
             LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
             _ => false
@@ -355,16 +361,42 @@ internal static class CameraAgentStatePreflight
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        // The catalog library also reads composed manifests, but an undeclared legacy image keeps its stars-only
-        // version-2 boundary. Composed image adoption requires a separately declared image contract.
-        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.MinimumSupportedManifestVersion;
-        if (manifest.Value.ManifestVersion != expectedManifestVersion)
+        // An omitted label keeps the stars-only version-2 boundary. A declared label is the highest manifest that
+        // image reads, so a current image declaring version 3 still accepts an installed manifest 2 HYG catalog.
+        // Anything older than the runtime minimum, or newer than the label, is refused. Checksums stay with install
+        // and selection; this boundary is only the manifest version and catalog identity.
+        var minimumManifestVersion = CatalogSnapshotResolver.MinimumSupportedManifestVersion;
+        var declaredManifestVersion = requirements.CatalogManifestVersion;
+        var observedManifestVersion = manifest.Value.ManifestVersion;
+        string expectedManifest;
+        bool manifestAccepted;
+        if (declaredManifestVersion is null || declaredManifestVersion < minimumManifestVersion)
         {
+            var exactBoundary = declaredManifestVersion ?? minimumManifestVersion;
+            expectedManifest = exactBoundary.ToString(CultureInfo.InvariantCulture);
+            manifestAccepted = observedManifestVersion == exactBoundary;
+        }
+        else
+        {
+            manifestAccepted = observedManifestVersion >= minimumManifestVersion &&
+                               observedManifestVersion <= declaredManifestVersion;
+            expectedManifest = declaredManifestVersion == minimumManifestVersion
+                ? minimumManifestVersion.ToString(CultureInfo.InvariantCulture)
+                : string.Create(CultureInfo.InvariantCulture, $"{minimumManifestVersion} through {declaredManifestVersion}");
+        }
+        if (!manifestAccepted)
+        {
+            var ranged = declaredManifestVersion is >= CatalogSnapshotResolver.MinimumSupportedManifestVersion &&
+                         declaredManifestVersion != CatalogSnapshotResolver.MinimumSupportedManifestVersion;
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-version", boundary, Blocking: true, manifestPath,
-                manifest.Value.ManifestVersion.ToString(CultureInfo.InvariantCulture),
-                expectedManifestVersion.ToString(CultureInfo.InvariantCulture),
-                "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
+                observedManifestVersion.ToString(CultureInfo.InvariantCulture),
+                expectedManifest,
+                ranged
+                    ? string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"Select an installed catalog whose manifest version is from {minimumManifestVersion} through {declaredManifestVersion}, then rerun the deployment.")
+                    : "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
         }
         // The paths are bound to the instance's selected catalog, whose side-by-side root is named by its ID.
         var selectedCatalogId = Path.GetFileName(paths.CatalogRoot);

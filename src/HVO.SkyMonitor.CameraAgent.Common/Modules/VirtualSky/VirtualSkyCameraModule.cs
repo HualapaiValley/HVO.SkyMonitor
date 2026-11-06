@@ -43,6 +43,7 @@ public sealed class VirtualSkyCameraModule(
     private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
+    private CuratedDeepSkyOptions? _curatedAnnotations;
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
     private ResolvedSensorReadout? _resolvedReadout;
@@ -89,11 +90,12 @@ public sealed class VirtualSkyCameraModule(
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
         ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
         _config = config;
-        _stageProjectedScene = config.Pipeline.Steps.Any(step =>
-            step.Enabled != false &&
-            (string.Equals(step.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase) ||
-             config.Pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
-             step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)));
+        _curatedAnnotations = ResolveCuratedAnnotations();
+        if (_curatedAnnotations is not null)
+        {
+            _ = _curatedAnnotations.ToSelection();
+        }
+        _stageProjectedScene = config.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
         var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
         var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
         if (_options.SyntheticCalibration is { } syntheticCalibration)
@@ -222,7 +224,7 @@ public sealed class VirtualSkyCameraModule(
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var start = timeProvider.GetTimestamp();
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
-        if (preview is null && _options.CuratedAnnotations is { Enabled: true } &&
+        if (preview is null && _curatedAnnotations is { Enabled: true } &&
             (!_stageProjectedScene || stagingStore is null))
             throw new InvalidOperationException("Curated captures require a retained ProjectedScene step and staging store.");
         if (request.Mode != CaptureMode.Still)
@@ -378,7 +380,7 @@ public sealed class VirtualSkyCameraModule(
             // Annotations outline the same topocentric disks the sensor receives.
             renderScene = renderScene.WithResolvedBodies(resolvedDisks.Disks);
         }
-        if (_options.CuratedAnnotations is { Enabled: true } curated)
+        if (_curatedAnnotations is { Enabled: true } curated)
         {
             var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
                 ?? throw new InvalidOperationException("Curated annotation requires an approved composed catalog.");
@@ -415,7 +417,7 @@ public sealed class VirtualSkyCameraModule(
         // The full identity binds both logical clocks. Controlled fixed-field realizations use
         // a separate celestial identity so advancing transient time does not redraw quiet noise.
         var stellarNoiseIdentity = sceneId;
-        if (_options.CuratedAnnotations is { Enabled: true } curatedIdentity)
+        if (_curatedAnnotations is { Enabled: true } curatedIdentity)
         {
             // Presentation changes its scene authority, never the seed of the raw star/noise renderer.
             sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
@@ -1346,6 +1348,44 @@ public sealed class VirtualSkyCameraModule(
             ConstellationTopology = constellationTopologyMetadata
         }, SceneIdentitySerializerOptions);
     }
+
+    /// <summary>
+    /// Module <c>curatedAnnotations</c> stays authoritative when present, including an explicit disable.
+    /// When the module omits it, the first enabled <c>ProjectedScene</c> step supplies the same object so an
+    /// installed profile can opt in without rewriting the named rig's module options.
+    /// </summary>
+    private CuratedDeepSkyOptions? ResolveCuratedAnnotations()
+    {
+        if (_options.CuratedAnnotations is { } module)
+        {
+            return module;
+        }
+        foreach (var step in _config?.Pipeline.Steps ?? [])
+        {
+            if (step.Enabled == false || !IsProjectedSceneStep(step) ||
+                step.Options is not { ValueKind: JsonValueKind.Object } options)
+            {
+                continue;
+            }
+            if (!options.TryGetProperty("curatedAnnotations", out var curated) &&
+                !options.TryGetProperty("CuratedAnnotations", out curated))
+            {
+                return null;
+            }
+            if (curated.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return null;
+            }
+            return JsonSerializer.Deserialize<CuratedDeepSkyOptions>(curated.GetRawText(), SerializerOptions)
+                ?? throw new InvalidOperationException("ProjectedScene curatedAnnotations are invalid.");
+        }
+        return null;
+    }
+
+    private bool IsProjectedSceneStep(CaptureProcessingStepConfig step)
+        => string.Equals(step.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase) ||
+           _config?.Pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
+           step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal);
 
     private static JsonSerializerOptions CreateSceneIdentitySerializerOptions()
     {

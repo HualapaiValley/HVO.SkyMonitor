@@ -1799,8 +1799,11 @@ this runbook does not restate them. Read the values an image actually carries wi
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
-raw-ingress schema 11. The current image requires the catalog manifest version, Identity migration, and
-raw-ingress schema its labels declare, and migrates an earlier canonical raw journal only through the transition
+raw-ingress schema 11. The current image requires the Identity migration and
+raw-ingress schema its labels declare. Its `catalog-manifest-version` label is the
+highest catalog manifest it reads: preflight accepts a selected catalog from manifest
+version 2 through that label, and refuses manifest version 1 or anything newer.
+It migrates an earlier canonical raw journal only through the transition
 its `io.hvo.skymonitor.raw-ingress-migration` label names, as described in
 [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade). There is no supported automatic
 migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, snapshot,
@@ -1863,7 +1866,8 @@ rolling back to one, are not state migrations and therefore also accept the supe
 boundary label a candidate omits, whichever contract it declares, is skipped rather than assumed met, and the
 report records an advisory `candidate-boundaries-undeclared` finding naming exactly which labels were
 omitted; an image predating the correction declares none of them. The catalog manifest version is still
-compared against the version the runtime resolver enforces even when the image declares none. Rolling a state
+compared against manifest version 2 when the image declares none. A declared label accepts every manifest from
+version 2 through that label. Rolling a state
 boundary backwards is not supported: if an instance has run a newer state contract, restore it through the
 reset procedure below rather than by rolling back to a pre-`70ecdd3` image.
 
@@ -2753,9 +2757,12 @@ package version, lineage or hash that the embedded approved-catalog registry
 does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
-mount and reauthenticates the Compose model. It requires an image whose catalog
-contract label is `hvo-approved-catalogs-v1`, retires the retained image
-rollback, and pins the previous identity as a historical reference. `rollback`
+mount and reauthenticates the Compose model. A current image declares
+`hvo-approved-catalogs-v2` and can select HYG 4.2, HYG 4.4 and
+`hyg-v44-openngc-production`. An image declaring `hvo-approved-catalogs-v1` can
+select the two HYG lineages and refuses the composed catalog. An unknown
+catalog-contract label is refused. Cross-lineage selection retires the retained image
+rollback and pins the previous identity as a historical reference. `rollback`
 returns to the previous selection across lineages. The exact identities and
 selection behavior are documented in
 [HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
