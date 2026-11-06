@@ -33,86 +33,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
 
-### Changed
-
-- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
-
-- Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
-
-- Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
-
-- Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
-
-- Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621
-
-- Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620
-
-- Edit physical projected-scene magnitude, result limit and constellation endpoint stars in the processing graph editor, then explicitly validate and activate a revision; VirtualSky module settings and retained scenes keep their existing authority. #1619
-
-- The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
-
-- An optional, off-by-default **Time-data refresh** (`timeDataRefresh.enabled` in the web UI and `hvo-sky config`) keeps satellite planning's Earth-orientation and leap-second pair current between releases. The reserved daily `time-data-refresh` automation downloads the files from IERS/USNO over HTTPS at most once a day, checks the providers' SHA-512 and `#h` checksums, parses the pair and adopts it atomically under `state/raw/.time-data/`; any failure keeps the current pair. Without an override, planning uses whichever verified pair (refreshed, its intact retained predecessor, or bundled) covers the planned time and covers later (the bundled pair on a tie), so a refresh never takes away coverage of the current day. The setup panel, the new read-only `GET /api/v1/operations/time-data` and `hvo-sky time-data` show the active source, coverage and expiry, whether any pair covers the current time, the last refresh attempt and the last adoption. (#1474)
-
-- Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. (#1474)
-
-- Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
-
-- Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
-
-- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
-
-- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
-
-
-### Fixed
-
-- Artifact uploads interrupted with HTTP 499 remain queued for retry and recover central acknowledgements instead of quarantining retained payloads. (#1448)
-
-- Select bounded proposal-history keys before loading their payloads so indexed pagination does not read ahead through retained history. (#1448)
-
-- Timed-out transient submissions remain queued for retry when the HTTP handler returns a cancellation response, instead of quarantining retained evidence. (#1448)
-
-- LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
-
-- Installer diagnostics suppress ambiguous values after credential indicators hidden in terminal decoration, and replace malformed Unicode with readable replacement characters without losing redaction or failing JSON output. (#1546)
-
-- Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
-
-- Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
-
-- Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
-- Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
-- Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
-
-- LogicHost reduces database round trips for derived environmental observations with up to 256 inputs, preserving ordered lineage and atomic rejection of invalid references. (#1558)
-
-- Capture headings in LogicHost Current Sky and camera archive detail now nest coherently for screen-reader navigation, while standalone capture detail retains its page heading. (#1548)
-
-
-- LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
-
-- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
-
-- Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
-
-- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
-
-- Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
-
-- CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
-
-- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
-
-- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
-- `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)
-
-- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
-
-- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
-
-
-### Added
-
 - Explicit post-admission processing can retain measured astrometric solutions with pinned capture/catalog/calibration lineage, fit quality, failure outcomes and uncertainty withhold reasons; applying an accepted mapping is a separate bounded operation. (#1642)
 
 - Explicitly constructed Processing recipes can produce retained satellite predictions for one capture's exact exposure, with pinned source/time/configured geometry, original versus retrospective identities, and truthful unavailable, partial and budget states. Host publication and viewer integration follow separately. (#1640)
@@ -159,9 +79,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   provider floors and halts survive a rollback. Operation, recovery and downgrade limits are in
   `docs/runbooks/space-weather-refresh.md`. (#1398)
 
-- Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
-
-- Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
+- Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; optional managed time-data refresh is available through the reserved daily automation. (#1474)
 
 - Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
   as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
@@ -169,7 +87,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
   installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
 
-- Space-weather fact model (#1398 S1).
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
   history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
@@ -196,6 +113,32 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed
+
+- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
+
+- Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
+
+- Set or clear existing scene and environment grayscale overrides (0–255) in the graph editor; clearing restores the current palette after explicit validation and activation. #1623
+
+- Set or clear the optional JPEG maximum dimension in the graph editor, preserving original dimensions and unchanged options until an explicitly validated revision is activated. #1622
+
+- Edit existing cloud layer labels/thickness and environment layer scale/inset/spacing in named graph panels, with Current Sky links and explicit validation, activation and rollback. Retained facts and products stay unchanged. #1621
+
+- Edit existing legacy Annotation visibility, marker/label styling, constellation color and Mono8 intensity, projection guides and metadata corners in the graph editor, then explicitly validate, activate or roll back a revision; retained output stays unchanged. #1620
+
+- Edit physical projected-scene magnitude, result limit and constellation endpoint stars in the processing graph editor, then explicitly validate and activate a revision; VirtualSky module settings and retained scenes keep their existing authority. #1619
+
+- The approved SkyMonitor recovery contract now limits rollback to a pending upgrade's complete checkpoint and matching image/config/catalog, with an operator-managed CameraAgent path when checkpoint protection is unavailable. Runtime adoption and qualification remain separate work. (#1606)
+
+- An optional, off-by-default **Time-data refresh** (`timeDataRefresh.enabled` in the web UI and `hvo-sky config`) keeps satellite planning's Earth-orientation and leap-second pair current between releases. The reserved daily `time-data-refresh` automation downloads the files from IERS/USNO over HTTPS at most once a day, checks the providers' SHA-512 and `#h` checksums, parses the pair and adopts it atomically under `state/raw/.time-data/`; any failure keeps the current pair. Without an override, planning uses whichever verified pair (refreshed, its intact retained predecessor, or bundled) covers the planned time and covers later (the bundled pair on a tie), so a refresh never takes away coverage of the current day. The setup panel, the new read-only `GET /api/v1/operations/time-data` and `hvo-sky time-data` show the active source, coverage and expiry, whether any pair covers the current time, the last refresh attempt and the last adoption. (#1474)
+
+- Satellite planning works without hand-placed time files: each CameraAgent release bundles one hash-verified IERS/USNO finals2000A Earth-orientation file and one IERS `leap-seconds.list` with their provenance, and the satellite setup panel shows the active source, final and predicted Earth-orientation coverage and the leap-second expiry. Hand-configured `EarthOrientationPath`/`LeapSecondsPath` overrides keep precedence; an incomplete or invalid override stops planning instead of falling back, and planning stops with a reason when the bundled coverage runs out. (#1474)
+
+- Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
+
+- Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
+
+- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
 
 - Existing-services split-host teardown runs through the typed installer CLI, retaining authenticated drain checks, resumable evidence and private-file cleanup while preserving runtime data and shared services. (#1589)
 
@@ -241,9 +184,50 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Stopping central graph recovery no longer reports an aborted SQL command as a database outage; faults while recovery is running still degrade health. (#1540)
+- Artifact uploads interrupted with HTTP 499 remain queued for retry and recover central acknowledgements instead of quarantining retained payloads. (#1448)
 
-- Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
+- Select bounded proposal-history keys before loading their payloads so indexed pagination does not read ahead through retained history. (#1448)
+
+- Timed-out transient submissions remain queued for retry when the HTTP handler returns a cancellation response, instead of quarantining retained evidence. (#1448)
+
+- LogicHost Current Sky automatic refresh revalidates the selected item and preserves older-search position, without jumping to latest or substituting another image when the current item is unavailable. (#1545)
+
+- Installer diagnostics suppress ambiguous values after credential indicators hidden in terminal decoration, and replace malformed Unicode with readable replacement characters without losing redaction or failing JSON output. (#1546)
+
+- Capture astrometry withholds measured layers and processed-image calculators for multi-exposure stacks, and retains newer compatible evidence when an older assessment read completes. (#1644)
+
+- Physical captures use one active processing graph revision for projected-scene query, staging and durable live execution, including activation races and interrupted publication recovery. #1639
+
+- Restore catalog star names, qualified as expected positions, in the Sky annotations layer when measured associations are unavailable; clarify queued orbital refresh responses and how to read the completed result (#1633).
+- Interrupted existing-services teardown can resume after a CameraAgent has stopped, verifying its pinned Docker state without requiring HTTP from the stopped application. (#1589)
+- Weather and cloud overlay labels honor short and zero character budgets, including when labels are hidden, without failing the preview layout. (#1564)
+
+- LogicHost reduces database round trips for derived environmental observations with up to 256 inputs, preserving ordered lineage and atomic rejection of invalid references. (#1558)
+
+- Capture headings in LogicHost Current Sky and camera archive detail now nest coherently for screen-reader navigation, while standalone capture detail retains its page heading. (#1548)
+
+- LogicHost Current Sky avoids a redundant presentation read during immediate revalidation while preserving image, layer, retry and access resets. (#1568)
+
+- Installer diagnostics hide nested quoted credential values after space-only outer keys, and owner recovery length errors retain the complete instruction through redaction. (#1569)
+
+- Installer cleanup verification recognizes Docker Hub images under both full and short repository names, so a retained import cannot be reported as removed. (#1560)
+
+- CameraAgent image builds use the commit time, fixed runtime packages and timestamp rewriting so clean native rebuilds can reproduce the config digest and OCI archive; a repeatability check retains both builds and diagnoses differences. Registry CameraAgent builds require the `docker-container` buildx driver. (#1299)
+
+- Orbital refresh rejects a CelesTrak gzip response that is not exactly one complete member (a truncated member, a second member or trailing bytes) as `orbital.gzip-invalid`, even when its last four bytes equal the decoded length, and checks the member's CRC-32 against the decoded bytes. (#1459)
+
+- CameraAgent starts without reading every stored raw frame: startup checks each committed frame's files and size, so start time and disk reads no longer grow with raw retention, and resuming capture after a paused start (as during an upgrade) no longer repeats the check. A frame whose content changed is still caught before it is used: processing reports it and the frame is quarantined as before, also when CameraAgent restarts before the quarantine runs, and an upload is refused with `payload-checksum-mismatch` before any byte is sent. (#1494)
+
+- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
+
+- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
+- `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)
+
+- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
+
+- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
+
+- Stopping central graph recovery no longer reports an aborted SQL command as a database outage; faults while recovery is running still degrade health. (#1540)
 
 - Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
 
@@ -496,5 +480,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   `/boot/firmware/cmdline.txt`, adds `cgroup_disable=memory`. There is nothing in that file to change: append
   `cgroup_enable=memory` to its single line and reboot. (#1309)
 
-[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v0.9.0...development/v1
+[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v0.9.1...development/v1
+[0.9.1]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v0.9.1
 [0.9.0]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v0.9.0
