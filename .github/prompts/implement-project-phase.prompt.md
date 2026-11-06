@@ -9,7 +9,7 @@ Implement GitHub issue `${input:scope:Required GitHub issue number}` in this
 repository. This command requests implementation, validation, review correction,
 and authorized merge and cleanup of one ready issue per branch and PR, not
 another plan and not an unbounded multi-issue change in one branch. The owner is
-an authorized human or operator-directed agent; no coordinator is required.
+an authorized human or operator-directed agent.
 Do not take another issue after merge unless the user authorized that scope.
 
 Before editing, read:
@@ -39,10 +39,11 @@ through stale-claim auto takeover. Post the plain-language synopsis before
 implementation. Inspect the current worktree, branch, recent commits, tests,
 durable formats, and related PRs. Preserve unrelated changes.
 
-`JOIN`, targeted command receipts, slot leases, and coordinator heartbeat/relay
-mechanics apply only to optional legacy managed sessions explicitly enrolled by
-the operator, not to this default workflow. Existing resumed fleet tools retain
-their identity and command guards. Assess capacity per shared resource, not a
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
+git worktree off `development/v1`, so the main checkout is never modified.
+
+Assess capacity per shared resource, not a
 global two-issue limit; isolate concurrent work in separate worktrees. Preserve
 sandbox and permission boundaries; never route a denied action to another session.
 
@@ -80,8 +81,7 @@ every thirty minutes: on the issue until the draft PR exists, then in the PR's
 append-only review ledger. Each comment states, with a UTC timestamp, what
 finished, what is running now, the next step, and any blocker. Long gate or
 review runs get an interim note rather than silence. This does not replace the
-final completion report. Relay milestones and blockers directly to the operator;
-no coordinator or fleet heartbeat is required for this default workflow.
+final completion report. Relay milestones and blockers directly to the operator.
 
 After merge, confirm issue closure, synchronize local `main`, preserve unrelated
 worktree changes, clean up merged branches/worktrees safely, and update the
