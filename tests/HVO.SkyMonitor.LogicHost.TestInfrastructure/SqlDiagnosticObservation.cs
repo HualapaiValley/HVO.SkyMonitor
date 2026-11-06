@@ -6,7 +6,7 @@ using Microsoft.Data.SqlClient;
 namespace HVO.SkyMonitor.IntegrationTests.Infrastructure;
 
 /// <summary>Passive, independently bounded SQL observations for disposable integration-test SQL instances.</summary>
-public static class SqlWaitEvidence
+public static class SqlDiagnosticObservation
 {
     internal static readonly IReadOnlyDictionary<string, string> Queries = new Dictionary<string, string>
     {

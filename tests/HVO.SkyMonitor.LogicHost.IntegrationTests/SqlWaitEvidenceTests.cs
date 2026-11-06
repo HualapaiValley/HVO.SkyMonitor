@@ -18,7 +18,7 @@ public sealed class SqlWaitEvidenceTests
         using var cancellation = new CancellationTokenSource();
         async Task Operation()
         {
-            await SqlWaitEvidence.ReadQueryAsync(string.Empty, "requests", 1, output.Enqueue, CancellationToken.None)
+            await SqlDiagnosticObservation.ReadQueryAsync(string.Empty, "requests", 1, output.Enqueue, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         async Task Subject()
@@ -31,7 +31,7 @@ public sealed class SqlWaitEvidenceTests
             }
             throw original;
         }
-        var action = () => SqlWaitEvidence.WhileObservedAsync(Subject, _ => Operation(), output.Enqueue);
+        var action = () => SqlDiagnosticObservation.WhileObservedAsync(Subject, _ => Operation(), output.Enqueue);
         if (canceled)
         {
             var failure = await action.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
@@ -50,7 +50,7 @@ public sealed class SqlWaitEvidenceTests
     {
         var original = new InvalidOperationException("subject-fault");
         var output = new ConcurrentQueue<string>();
-        var action = () => SqlWaitEvidence.WhileObservedAsync(() => Task.FromException(original),
+        var action = () => SqlDiagnosticObservation.WhileObservedAsync(() => Task.FromException(original),
             _ => Task.FromException(new IOException("private-observer-details")), output.Enqueue);
         var failure = await action.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false);
         failure.Which.Should().BeSameAs(original);
@@ -61,7 +61,7 @@ public sealed class SqlWaitEvidenceTests
     [TestMethod]
     public async Task SamplerFaultDoesNotTurnSubjectSuccessIntoFailure()
     {
-        await SqlWaitEvidence.WhileObservedAsync(() => Task.CompletedTask,
+        await SqlDiagnosticObservation.WhileObservedAsync(() => Task.CompletedTask,
             _ => Task.FromException(new IOException("observer-fault")), _ => { }).ConfigureAwait(false);
     }
 
@@ -69,7 +69,7 @@ public sealed class SqlWaitEvidenceTests
     public async Task DiagnosticWriterFaultCannotReplaceSubjectFault()
     {
         var original = new InvalidOperationException("subject-fault");
-        var action = () => SqlWaitEvidence.WhileObservedAsync(() => Task.FromException(original),
+        var action = () => SqlDiagnosticObservation.WhileObservedAsync(() => Task.FromException(original),
             _ => Task.FromException(new IOException("observer-fault")), _ => throw new ObjectDisposedException("writer"));
         var failure = await action.Should().ThrowAsync<InvalidOperationException>().ConfigureAwait(false);
         failure.Which.Should().BeSameAs(original);
@@ -79,13 +79,13 @@ public sealed class SqlWaitEvidenceTests
     {
         var calls = new ConcurrentBag<(string Name, int Sample)>();
         var output = new ConcurrentQueue<string>();
-        await SqlWaitEvidence.SampleAsync((name, sample, _) =>
+        await SqlDiagnosticObservation.SampleAsync((name, sample, _) =>
         {
             calls.Add((name, sample));
             return name == "requests" ? Task.FromException(new IOException("private-query-details")) : Task.CompletedTask;
         }, output.Enqueue, CancellationToken.None, maximumSamples: 3, interval: TimeSpan.Zero).ConfigureAwait(false);
         calls.Should().HaveCount(15);
-        foreach (var name in SqlWaitEvidence.Queries.Keys)
+        foreach (var name in SqlDiagnosticObservation.Queries.Keys)
             calls.Where(call => call.Name == name).Select(call => call.Sample).Order().Should().Equal(1, 2, 3);
         output.Should().Contain(line => line.Contains("source=requests sample=3 type=IOException", StringComparison.Ordinal));
         output.Should().OnlyContain(line => !line.Contains("private-query-details", StringComparison.Ordinal));
@@ -96,7 +96,7 @@ public sealed class SqlWaitEvidenceTests
     {
         using var stop = new CancellationTokenSource();
         var calls = 0;
-        await SqlWaitEvidence.SampleAsync(async (_, _, token) =>
+        await SqlDiagnosticObservation.SampleAsync(async (_, _, token) =>
         {
             Interlocked.Increment(ref calls);
             await stop.CancelAsync().ConfigureAwait(false);
