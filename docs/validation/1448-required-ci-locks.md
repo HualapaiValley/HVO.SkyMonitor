@@ -209,3 +209,65 @@ observed SQL pressure. No factory-lifetime rewrite, SQL resource configuration,
 GC budget, lane scheduling or runner capacity change is included on that basis.
 Its logs are retained as `factory-probe.log` and `started-factory-lifecycle.log`
 in the evidence directory; it is not presented as a proven CI cause or fix.
+
+
+## Retained-host correction after qualification 42166525862
+
+Run `42166525862` on `24d89a9d` passed Quality, Unit, Build, migrations,
+Architecture and Deployment; LogicHost Integration was 592/593. The runner
+`FailAsync` returned 500 with correlation `0e184e6a4c104afe3f6f3be72783d4a7`.
+Its SQL observations show `RESOURCE_SEMAPHORE`, no grant holders, regular-pool
+capacity only 6,000–6,120 KB, zero small-query capacity, and
+`process_physical_memory_low=true` in every sample. Several 1,024 KB requests
+and the runner's 49,016 KB request wait together. This establishes SQL's
+low-memory grant starvation, not a row-lock convoy or observer failure.
+The test process reports about 7.25 GB managed memory and 3.1 GB resident.
+Linux SQL memory abstractions do not establish actual host free RAM or swap.
+
+The allocation growth tracks repeated host creation: the retained run contains
+127 host starts by the earlier 6.00 GB sample and 151 by the 7.25 GB runner
+sample. A controlled 13-host probe, including twelve disposed hosts and full
+collections, retained all twelve service providers. Its heap contains about
+89 MB of OpenTelemetry MetricPoint arrays. GC roots name the process timer
+queue, `DefaultPartitionedRateLimiter.RunTimer`, captured execution context,
+`HostFactoryResolver.HostingListener`, factory, TestServer, pipeline and service
+provider. Both configured-global and framework-endpoint limiters have live
+timers. Disposing just the configured global limiter still retains all six
+independently created hosts. Factory layout alone and GC tuning do not release
+these rooted hosts. This supplies a concrete cumulative test-host retention
+mechanism consistent with the CI growth and SQL starvation; it does not prove
+the historical artifact/fence timeout had the same blocker.
+
+The correction is confined to the shared test fixture. A startup filter
+captures the built request pipeline without changing it. A DI-owned disposable
+finds partitioned HttpContext limiters through delegate targets and delegate
+fields, then stops both timers when the host is disposed. Inspection uses field
+types rather than private names, excludes static fields and arbitrary object
+or service-provider graphs, deduplicates targets/limiters, and bounds visited
+targets to 1,024. Shutdown attempts every limiter and propagates aggregate
+failures. No request behavior, rate-limit policy, SQL, resource budget,
+production startup, timeout or liveness assertion changes.
+
+A new Integration guard starts and disposes three real derived hosts in separate
+Task flows, verifies both framework limiters were captured, and requires all
+three service providers to become unreachable. Disabling limiter disposal in a
+baseline mutation makes that exact weak-reference assertion fail. Restoring
+cleanup passes. A repeated twelve-host probe now retains **0/6 shared-derived
+and 0/6 independently created** service providers, versus **6/6 and 6/6**
+before correction. Managed bytes after full collections were about 58/84 MB
+versus 108/184 MB in the corresponding baseline checkpoints. These are small
+controlled probes, not measurements of the full CI suite's final heap.
+A Unit regression also covers cyclic/shared delegate paths, live behavior before
+shutdown, disposal of both limiters and repeated cleanup.
+
+Evidence is host-local: `/tmp/t3-1448-42166525862/`,
+`/tmp/t3-1448-42166525862-runner.txt`, `/tmp/t3-1448-retention-roots.log`,
+`/tmp/t3-1448-retention-heap.log`, `/tmp/t3-1448-lifetime-baseline-error.txt`,
+`/tmp/t3-1448-lifetime-fixed-guard.log`, and
+`/tmp/t3-1448-lifetime-fixed-heap-lifecycle.log`. The private heap dump remains
+local and is not uploaded. Probe containers, private connection files and port
+locks were cleaned. The affected warning-clean build and Docker-disabled Unit
+selection pass (39/39). Inventory is now Unit 14,862 / Integration 1,006,
+including LogicHost mixed assembly 39/594. Full native replay and replacement
+qualification results follow in the PR ledger; root acceptance requires those
+results, and historical fence attribution remains explicitly separate.
