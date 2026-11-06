@@ -11,10 +11,10 @@ public static class SqlDiagnosticObservation
     internal static readonly IReadOnlyDictionary<string, string> Queries = new Dictionary<string, string>
     {
         ["permissions"] = "SELECT @@SPID AS observer_spid, HAS_PERMS_BY_NAME(NULL,NULL,'VIEW SERVER STATE') AS view_state, HAS_PERMS_BY_NAME(NULL,NULL,'VIEW SERVER PERFORMANCE STATE') AS view_performance;",
-        ["requests"] = "SELECT TOP (64) session_id,connection_id,blocking_session_id,status,wait_type,wait_time,wait_resource,cpu_time,logical_reads,reads,writes,total_elapsed_time,open_transaction_count,query_hash,query_plan_hash FROM sys.dm_exec_requests WHERE session_id>50 AND session_id<>@@SPID;",
-        ["sessions"] = "SELECT TOP (128) session_id,status,open_transaction_count,last_request_start_time,last_request_end_time,cpu_time,logical_reads,reads,writes FROM sys.dm_exec_sessions WHERE is_user_process=1 AND session_id<>@@SPID;",
+        ["requests"] = "SELECT TOP (64) session_id,connection_id,blocking_session_id,status,wait_type,wait_time,wait_resource,cpu_time,logical_reads,reads,writes,total_elapsed_time,open_transaction_count,query_hash,query_plan_hash FROM sys.dm_exec_requests WHERE session_id>50 AND session_id<>@@SPID AND status<>'background';",
+        ["sessions"] = "SELECT TOP (128) session_id,CASE WHEN program_name = N'HVO.SkyMonitor.QualificationObserver' THEN 1 ELSE 0 END AS is_observer,status,open_transaction_count,last_request_start_time,last_request_end_time,cpu_time,logical_reads,reads,writes FROM sys.dm_exec_sessions WHERE is_user_process=1 AND session_id<>@@SPID;",
         ["grants"] = "SELECT TOP (64) session_id,requested_memory_kb,granted_memory_kb,required_memory_kb,used_memory_kb,wait_time_ms FROM sys.dm_exec_query_memory_grants;",
-        ["locks"] = "SELECT TOP (256) request_session_id,resource_type,resource_database_id,resource_associated_entity_id,resource_description,request_mode,request_status,request_owner_type FROM sys.dm_tran_locks WHERE request_session_id>50 AND (resource_type='APPLICATION' OR request_status<>'GRANT');"
+        ["locks"] = "SELECT TOP (256) request_session_id,resource_type,resource_database_id,resource_associated_entity_id,RTRIM(resource_description) AS resource_description,request_mode,request_status,request_owner_type FROM sys.dm_tran_locks WHERE request_session_id>50 AND (resource_type='APPLICATION' OR request_status<>'GRANT');"
     };
 
     public static Task WhileAsync(Func<Task> operation, string connectionString, Action<string> write,
@@ -75,9 +75,12 @@ public static class SqlDiagnosticObservation
             for (var sample = 0; sample < maximumSamples; sample++)
             {
                 // First cycle preflights all sources immediately; later cycles observe the running subject.
-                if (sample > 0) await Task.Delay(interval ?? TimeSpan.FromSeconds(sample == 1 ? 5 : 8), stop).ConfigureAwait(false);
+                var delay = sample == 0 ? TimeSpan.Zero : interval ?? TimeSpan.FromSeconds(sample == 1 ? 5 : 8);
+                var due = clock.Elapsed + delay;
+                if (sample > 0) await Task.Delay(delay, stop).ConfigureAwait(false);
+                var schedulingLag = sample == 0 ? 0 : (clock.Elapsed - due).TotalMilliseconds;
                 using var process = Process.GetCurrentProcess();
-                write($"SQL sample runtime: sample={sample + 1} elapsedMs={clock.ElapsedMilliseconds} threads={ThreadPool.ThreadCount} pendingWork={ThreadPool.PendingWorkItemCount} managedBytes={GC.GetTotalMemory(false)} workingSetBytes={process.WorkingSet64}");
+                write($"SQL sample runtime: sample={sample + 1} elapsedMs={clock.ElapsedMilliseconds} schedulingLagMs={schedulingLag:F0} threads={ThreadPool.ThreadCount} pendingWork={ThreadPool.PendingWorkItemCount} managedBytes={GC.GetTotalMemory(false)} workingSetBytes={process.WorkingSet64}");
                 await Task.WhenAll(Queries.Keys.Select(name => ObserveQueryAsync(name, sample + 1))).ConfigureAwait(false);
             }
         }

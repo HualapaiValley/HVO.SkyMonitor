@@ -88,7 +88,8 @@ independent sources succeeded. It also preserved the original subject exception.
 This validates the collector, not the CI root cause. The probe exited zero and
 removed its container/tmpfs state, private files and port lock. Evidence:
 `/tmp/t3-1448-invalidation-probe/direct-observer-live.log` and
-`/tmp/t3-1448-locks-native/live-probe-lifecycle.log`.
+`/tmp/t3-1448-locks-native/live-final-lifecycle.log` and `live-final-build.log`.
+These `/tmp` evidence paths are host-local, not durable shared artifacts.
 
 Historical runner timeout and underlying artifact/fence stall acceptance remain
 **OPEN**. The next reviewed diagnostic qualification must identify a blocker or
