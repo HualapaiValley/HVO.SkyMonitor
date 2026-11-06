@@ -12,8 +12,8 @@ Run the preferred validation path from any Docker-capable host:
 ./scripts/validate:stellarium-container
 ```
 
-`docker/stellarium/Dockerfile` pins the Ubuntu 24.04 amd64 base manifest digest
-and a separate Alpine certificate-source manifest digest,
+`docker/stellarium/Dockerfile` pins the Ubuntu 24.04 base and the separate
+Alpine certificate source by multi-arch index digests, along with
 Stellarium/data, Xvfb, Xauth, Mesa llvmpipe, ImageMagick, `jq`, fontconfig, and
 DejaVu fonts. The checked-in startup script is the image entrypoint. The wrapper
 builds for `linux/amd64`, runs without network or capabilities, uses a read-only
@@ -29,8 +29,11 @@ recorded rather than treated as interchangeable.
 
 The Dockerfile resolves exact direct package versions and all transitive packages
 over verified HTTPS from Ubuntu snapshot `20260701T000000Z`; both source images
-are pinned by amd64 manifest digest. The sorted `packages.txt` retained by every run records the
-resolved closure. Updating the snapshot, base, or a direct package is an explicit
+are pinned by multi-arch index digests. The wrapper resolves the `linux/amd64` manifest
+from each pinned index with `--platform linux/amd64`, keeping the platform selection
+deterministic. The fixture field `ubuntuAmd64ImageDigest` holds the Ubuntu index
+digest despite its historical name. The sorted `packages.txt` retained by every
+run records the resolved closure. Updating the snapshot, base, or a direct package is an explicit
 reviewed fixture change, never a silent mirror update.
 
 The manual/scheduled `.github/workflows/stellarium.yml` workflow runs every

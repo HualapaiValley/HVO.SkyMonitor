@@ -61,12 +61,19 @@ public sealed class HvoTextLines : View
     public bool Overflows => _shown.Length > Math.Max(0, Viewport.Height);
 
     /// <summary>Shows <paramref name="lines"/> from the top.</summary>
-    public void Show(IReadOnlyList<HvoLine> lines)
+    public void Show(IReadOnlyList<HvoLine> lines) => Show(lines, preserveScroll: false);
+
+    /// <summary>Shows <paramref name="lines"/>, optionally keeping the scroll position, clamped to the new content.</summary>
+    public void Show(IReadOnlyList<HvoLine> lines, bool preserveScroll)
     {
         ArgumentNullException.ThrowIfNull(lines);
         _lines = lines;
         _revealed = null;
-        _top = 0;
+        if (!preserveScroll)
+        {
+            _top = 0;
+        }
+
         Rewrap(force: true);
     }
 

@@ -27,6 +27,7 @@ public sealed class ProcessingRunnerContractsTests
 
         Assert.AreEqual(ProcessingRunnerProtocol.Version, capabilities.ProtocolVersion);
         Assert.AreEqual(ProcessingRunnerWarmState.Warm, capabilities.WarmState);
+        Assert.IsTrue(capabilities.ResolveVersionMatchedRecipes().Contains(BuiltInProcessingRecipes.MeasuredStellarAssociations));
         CollectionAssert.AreEqual(ExpectedLabels, capabilities.Labels.ToArray());
         CollectionAssert.AreEquivalent(
             ProcessingRunnerCapabilities.BuiltInRecipeNames,
@@ -113,7 +114,8 @@ public sealed class ProcessingRunnerContractsTests
         {
             SchemaVersion = "v1",
             ContentIdentitySha256 = new string('b', 64),
-            CaptureId = Guid.NewGuid()
+            CaptureId = Guid.NewGuid(),
+            DescriptorIdentitySha256 = new string('d', 64)
         };
         var metadata = ProcessingRunnerProjection.ProjectArtifact(
             artifact, Guid.NewGuid(), "/api/v1.0/devices/x/artifacts/y/content", payload.Length,
@@ -137,6 +139,7 @@ public sealed class ProcessingRunnerContractsTests
         Assert.AreEqual(artifact.SchemaVersion, rebuilt.SchemaVersion);
         Assert.AreEqual(artifact.ContentIdentitySha256, rebuilt.ContentIdentitySha256);
         Assert.AreEqual(artifact.CaptureId, rebuilt.CaptureId);
+        Assert.AreEqual(artifact.DescriptorIdentitySha256, rebuilt.DescriptorIdentitySha256);
         CollectionAssert.AreEqual(payload, rebuilt.Payload.ToArray());
 
         Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition));
@@ -241,6 +244,15 @@ public sealed class ProcessingRunnerContractsTests
             ProcessingRunnerReasonCodes.PayloadChecksumMismatch,
             Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
                 ProcessingRunnerProjection.ReconstructAuxiliaryInput(forged)).ReasonCode);
+        var forgedIdentity = metadata with
+        {
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(canonical),
+            IdentitySha256 = new string('A', 64)
+        };
+        Assert.AreEqual(
+            ProcessingRunnerReasonCodes.PayloadChecksumMismatch,
+            Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructAuxiliaryInput(forgedIdentity)).ReasonCode);
     }
 
     [TestMethod]

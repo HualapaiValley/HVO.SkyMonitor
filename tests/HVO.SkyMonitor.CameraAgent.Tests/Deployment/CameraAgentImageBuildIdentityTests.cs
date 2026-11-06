@@ -13,11 +13,23 @@ public sealed class CameraAgentImageBuildIdentityTests
     // (#1310); one given none is the product's development build.
     private const string StampArguments =
         "${HVO_VERSION:+\"-p:Version=${HVO_VERSION}\"} \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
+    private const string CameraAgentPublishCommand = "/src/scripts/release:cameraagent-publish publish -c Release -o /app/publish ";
+    private const string ReplayRunnerPublishCommand =
+        "dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj ";
+    private static readonly string[] GlobalIdentityDeclarations = ["ARG HVO_VERSION=\"\"", "ARG HVO_SOURCE_REVISION=unknown"];
 
-    // Each stage inherits the one declared default instead of restating it. The release's created time has no default:
-    // only a release build is dated.
+    // Version/revision inherit the global defaults. ReadyToRun is a build-only opt-in, and the release's created time
+    // has no default in either stage: only a release build is dated.
     private static readonly string[] StageIdentityDeclarations =
-        ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_CREATED"];
+        [
+            "ARG HVO_READY_TO_RUN=false",
+            "ARG HVO_CREATED",
+            "ARG HVO_VERSION",
+            "ARG HVO_SOURCE_REVISION",
+            "ARG HVO_VERSION",
+            "ARG HVO_SOURCE_REVISION",
+            "ARG HVO_CREATED"
+        ];
 
     [TestMethod]
     public void Dockerfile_DeclaresNoVersionAndAnUnknownRevisionByDefault()
@@ -27,8 +39,9 @@ public sealed class CameraAgentImageBuildIdentityTests
         var global = instructions[..firstStage];
 
         // No version is the product version's development build (Directory.Build.props), not a version of its own.
-        CollectionAssert.Contains(global, "ARG HVO_VERSION=\"\"");
-        CollectionAssert.Contains(global, "ARG HVO_SOURCE_REVISION=unknown");
+        CollectionAssert.AreEqual(
+            GlobalIdentityDeclarations,
+            global.Where(static instruction => instruction.StartsWith("ARG HVO_", StringComparison.Ordinal)).ToArray());
         CollectionAssert.AreEqual(
             StageIdentityDeclarations,
             instructions[firstStage..].Where(static instruction => instruction.StartsWith("ARG HVO_", StringComparison.Ordinal)).ToArray());
@@ -38,27 +51,67 @@ public sealed class CameraAgentImageBuildIdentityTests
     public void Dockerfile_StampsEveryPublishedOutputAfterTheCachedRestoreLayers()
     {
         var instructions = ReadInstructions();
-        var runtimeStage = instructions.FindLastIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
-        var build = instructions[..runtimeStage];
+        var buildStage = instructions.FindIndex(static instruction => instruction.EndsWith(" AS build", StringComparison.Ordinal));
+        Assert.IsGreaterThan(-1, buildStage);
+        var nextStage = instructions.FindIndex(buildStage + 1, static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
+        var build = instructions[buildStage..nextStage];
         var publishes = build
             .Select(static (instruction, index) => (instruction, index))
-            .Where(static item => item.instruction.Contains("dotnet publish ", StringComparison.Ordinal))
+            .Where(static item => item.instruction.Contains("dotnet publish ", StringComparison.Ordinal) ||
+                                  item.instruction.Contains("/src/scripts/release:cameraagent-publish publish ", StringComparison.Ordinal))
             .ToArray();
-        var identity = build.IndexOf("ARG HVO_SOURCE_REVISION");
 
         Assert.HasCount(2, publishes);
+        Assert.HasCount(1, publishes.Where(static item => item.instruction.Contains(CameraAgentPublishCommand, StringComparison.Ordinal)));
+        Assert.HasCount(1, publishes.Where(static item => item.instruction.Contains(ReplayRunnerPublishCommand, StringComparison.Ordinal)));
         foreach (var (instruction, _) in publishes)
         {
             StringAssert.Contains(instruction, StampArguments, StringComparison.Ordinal);
             Assert.DoesNotContain("InformationalVersion", instruction, StringComparison.Ordinal);
         }
+        // The Dockerfile's helper invocation reaches exactly this phase-validated CameraAgent dotnet command;
+        // caller arguments (including the stamps above) remain separate argv entries after its own publish options.
+        var helper = ReadInstructions("scripts", "release:cameraagent-publish");
+        const string phaseAssignment = "phase=\"${1:-}\"";
+        const string phaseGuard = "case \"$phase\" in restore | publish) shift ;; *) echo 'Expected restore or publish.' >&2; exit 64 ;; esac";
+        CollectionAssert.Contains(helper, phaseAssignment);
+        CollectionAssert.Contains(helper, phaseGuard);
+        Assert.IsGreaterThan(helper.IndexOf(phaseAssignment), helper.IndexOf(phaseGuard));
+        Assert.HasCount(1, helper.Where(static instruction => instruction.StartsWith("exec ", StringComparison.Ordinal)));
+        Assert.AreEqual(
+            "exec dotnet \"$phase\" \"$root/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj\" \"${arguments[@]}\" \"$@\"",
+            helper[^1]);
+        Assert.DoesNotContain("InformationalVersion", string.Join('\n', helper), StringComparison.Ordinal);
         // The product version and its check are in the build context the publishes run in.
-        CollectionAssert.Contains(build, "COPY Directory.Build.props ./");
-        CollectionAssert.Contains(build, "COPY Directory.Build.targets ./");
-        // A change of revision alone must keep reusing restore and the source copy.
-        Assert.IsGreaterThan(build.IndexOf("COPY src/ src/"), identity);
-        Assert.IsGreaterThan(build.FindLastIndex(static instruction => instruction.StartsWith("RUN dotnet restore ", StringComparison.Ordinal)), identity);
-        Assert.IsLessThan(publishes[0].index, identity);
+        foreach (var file in new[] { "Directory.Build.props", "Directory.Build.targets" })
+        {
+            Assert.HasCount(1, build.Where(instruction => instruction.StartsWith($"COPY {file} ", StringComparison.Ordinal)));
+        }
+        // Both restore passes stay cached when only the revision or epoch changes, regardless of cd/WORKDIR spelling.
+        var restores = build
+            .Select(static (instruction, index) => (instruction, index))
+            .Where(static item => item.instruction.StartsWith("RUN ", StringComparison.Ordinal) &&
+                                  item.instruction.Contains(" restore", StringComparison.Ordinal))
+            .ToArray();
+        Assert.HasCount(4, restores);
+        var sourceCopy = build.FindIndex(static instruction => instruction.StartsWith("COPY src/ ", StringComparison.Ordinal));
+        Assert.IsGreaterThan(-1, sourceCopy);
+        Assert.HasCount(2, restores.Where(item => item.index < sourceCopy));
+        Assert.HasCount(2, restores.Where(item => item.index > sourceCopy));
+        foreach (var declaration in new[] { "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG SOURCE_DATE_EPOCH" })
+        {
+            var identity = build.FindIndex(instruction => instruction == declaration ||
+                                                         instruction.StartsWith(declaration + "=", StringComparison.Ordinal));
+            Assert.IsGreaterThan(sourceCopy, identity);
+            foreach (var (_, index) in restores)
+            {
+                Assert.IsGreaterThan(index, identity, $"{declaration} must follow every cached restore instruction.");
+            }
+            foreach (var (_, index) in publishes)
+            {
+                Assert.IsLessThan(index, identity);
+            }
+        }
     }
 
     [TestMethod]
@@ -79,12 +132,14 @@ public sealed class CameraAgentImageBuildIdentityTests
         Assert.IsGreaterThan(payload, runtime.IndexOf("ARG HVO_CREATED"));
     }
 
-    /// <summary>Reads the Dockerfile as logical instructions, joining continuation lines and dropping comments.</summary>
-    private static List<string> ReadInstructions()
+    /// <summary>Reads Dockerfile/helper lines, joining explicit continuations and dropping comments.</summary>
+    private static List<string> ReadInstructions() => ReadInstructions("src", "HVO.SkyMonitor.CameraAgent", "Dockerfile");
+
+    private static List<string> ReadInstructions(params string[] path)
     {
         var instructions = new List<string>();
         var current = string.Empty;
-        foreach (var raw in File.ReadLines(Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile")))
+        foreach (var raw in File.ReadLines(Path.Combine([RepositoryRoot(), .. path])))
         {
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#'))

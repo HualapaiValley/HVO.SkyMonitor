@@ -34,7 +34,7 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
 local builds, the devcontainer, CI, and SDK container images use that version.
-Runtime images and Microsoft runtime packages use 10.0.13.
+Runtime images and SDK-bundled runtimes use 10.0.13; Microsoft NuGet package pins use 10.0.14.
 
 The branch currently requires:
 
@@ -43,8 +43,8 @@ The branch currently requires:
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
-The target controlling path is under ten minutes, with a 720-second cumulative
-workload budget and a 15-minute hard job timeout. Each self-hosted run retains
+The target controlling path is under ten minutes, with a 1080-second cumulative
+workload budget and a 22-minute hard job timeout. Each self-hosted run retains
 restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the
 `hvo-development-v1-ci-v4` manifest. Failed runs retain their evidence too.
 

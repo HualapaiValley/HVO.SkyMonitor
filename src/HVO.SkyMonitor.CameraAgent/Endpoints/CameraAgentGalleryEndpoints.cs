@@ -70,6 +70,11 @@ internal static class CameraAgentGalleryEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status413PayloadTooLarge);
+        gallery.MapGet("/{captureId:guid}/astrometry", static async (Guid captureId,
+            ICameraAgentRetainedAstrometryService service, CancellationToken token) =>
+                Results.Ok(await service.GetAsync(captureId, token).ConfigureAwait(false)))
+            .WithName("GetCameraAgentCaptureAstrometry")
+            .Produces<CameraAgentRetainedAstrometry>();
         gallery.MapPost("/{captureId:guid}/materializations", SaveMaterializationAsync)
             .WithName("SaveCameraAgentGalleryMaterialization")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)

@@ -1,0 +1,253 @@
+{
+  "schema": "hvo-satellite-consumer-candidate-coverage-evidence-v1",
+  "sourceHead": "0c48a01974df2a8d2bb1e73f9af56e7c6e4e5485",
+  "targetProfile": "development/v1: Preflight and Build and Unit",
+  "purpose": "Initial Tier C candidate evidence; before four review corrections, not final-source qualification.",
+  "functionalUnit": {
+    "total": 9182,
+    "passed": 9063,
+    "notExecuted": 119,
+    "failed": 0
+  },
+  "functionalIntegration": {
+    "originalTotal": 843,
+    "originalPassed": 842,
+    "originalFailed": 1,
+    "replacementLogicHostTotal": 520,
+    "replacementLogicHostPassed": 520,
+    "replacementLogicHostFailed": 0,
+    "sameSourceAndFullTestIdsVerified": true,
+    "originalFailureRetainedIssue": 1426
+  },
+  "reportGenerator": "5.5.11",
+  "coverlet": "10.1.0",
+  "exactCanonicalReportCount": 23,
+  "reports": [
+    {
+      "slot": "unit/astronomy",
+      "rawCoverageSha256": "52E6748D778D180E5A39F4F263DE66156D23F0C9E2A8B6C73DEFAEB6C5200959",
+      "stagedCoverageSha256": "52E6748D778D180E5A39F4F263DE66156D23F0C9E2A8B6C73DEFAEB6C5200959",
+      "trxSha256": "E94DD085FF08011A3735DF4F4767D52090E31B18F5903A42E945EF2D3526489F",
+      "rawCoverageBytes": 7968334
+    },
+    {
+      "slot": "unit/imaging",
+      "rawCoverageSha256": "4566721824690F2752C705B70E7ECBC24D30733D27A641530D8710F699273F16",
+      "stagedCoverageSha256": "4566721824690F2752C705B70E7ECBC24D30733D27A641530D8710F699273F16",
+      "trxSha256": "956D17049B46F8A0315C91BBC72EB7AD4A0854EEE0A8759933ADF0468D3373D3",
+      "rawCoverageBytes": 5152649
+    },
+    {
+      "slot": "unit/processing",
+      "rawCoverageSha256": "C53E80128344F9C2862570EA2D22FC59ACA5D9852C4D5CF6EF89B91C8A8EB4C1",
+      "stagedCoverageSha256": "C53E80128344F9C2862570EA2D22FC59ACA5D9852C4D5CF6EF89B91C8A8EB4C1",
+      "trxSha256": "AF841711ECC8FF7D19539645BDB5A570CDF9C5A362452813B750ACA5E3D47763",
+      "rawCoverageBytes": 8132371
+    },
+    {
+      "slot": "unit/catalog-sqlite",
+      "rawCoverageSha256": "E67D36EB736FDE4339CB7D42F284F8C1E4556EE6F73A56A3C967C77D2240673C",
+      "stagedCoverageSha256": "E67D36EB736FDE4339CB7D42F284F8C1E4556EE6F73A56A3C967C77D2240673C",
+      "trxSha256": "9141FB7AF65E85F9063F46726E94447DE6B641E8D52DAAF424D7B29BF9E21969",
+      "rawCoverageBytes": 3428605
+    },
+    {
+      "slot": "unit/storage-filesystem",
+      "rawCoverageSha256": "DF8918DA424343C811B84CAF475BD0B284166DBA94F73EC630FEE4DD51EEEAA7",
+      "stagedCoverageSha256": "DF8918DA424343C811B84CAF475BD0B284166DBA94F73EC630FEE4DD51EEEAA7",
+      "trxSha256": "8EA9C7CB33235D9FFE863B3EE65D0C5D1761D851D57B86F95FEFD48856604B0E",
+      "rawCoverageBytes": 107186
+    },
+    {
+      "slot": "unit/deployment-cli",
+      "rawCoverageSha256": "A87CB13FAECE0FB7E118713E1743B025DA13419FCA1B7208A0B70D0408CDC97A",
+      "stagedCoverageSha256": "A87CB13FAECE0FB7E118713E1743B025DA13419FCA1B7208A0B70D0408CDC97A",
+      "trxSha256": "15CE38DEF174F1CF6299C6B4E02EA7E96F27C894384143DC48D9B3C07DB5BF28",
+      "rawCoverageBytes": 7128357
+    },
+    {
+      "slot": "unit/deployment-distribution",
+      "rawCoverageSha256": "7E99D0341639EC97BE3A30B89E70BC6D7A9C1461A138DB0C382B199269BA67E7",
+      "stagedCoverageSha256": "7E99D0341639EC97BE3A30B89E70BC6D7A9C1461A138DB0C382B199269BA67E7",
+      "trxSha256": "9696AE4E6595E759D337747C0D76E247C91D1760677DAA48C5B08D1E6B5E92E9",
+      "rawCoverageBytes": 3700960
+    },
+    {
+      "slot": "unit/agent-core",
+      "rawCoverageSha256": "74F8E3515157F21A4EDD5687E28C172A97C02A9DA0F9E91204248C1571B37CBF",
+      "stagedCoverageSha256": "74F8E3515157F21A4EDD5687E28C172A97C02A9DA0F9E91204248C1571B37CBF",
+      "trxSha256": "6AC3FD4E526090E79015B460882DCFFBBBBA52BD8031964825CEEE419CAC6CAF",
+      "rawCoverageBytes": 7910398
+    },
+    {
+      "slot": "unit/common",
+      "rawCoverageSha256": "40E2F96EB6CCA04FA8DB0C675178D408927CD9252179A55B3FEA11899E76BBCA",
+      "stagedCoverageSha256": "40E2F96EB6CCA04FA8DB0C675178D408927CD9252179A55B3FEA11899E76BBCA",
+      "trxSha256": "72E14B08E7B044D2F92BE6754794F13595B454D34E491200D15C57C2F3E456B7",
+      "rawCoverageBytes": 231155
+    },
+    {
+      "slot": "unit/fleet-contracts",
+      "rawCoverageSha256": "099E433D86BF026D413302CB9053579670232E45A846C30C33CBB64BCEF21C67",
+      "stagedCoverageSha256": "099E433D86BF026D413302CB9053579670232E45A846C30C33CBB64BCEF21C67",
+      "trxSha256": "E7D5AA20CC5D3E87AE0F5DDB588BB9AF47CAD5CE9D9A14ECF57298669CA63518",
+      "rawCoverageBytes": 7905720
+    },
+    {
+      "slot": "unit/test-support",
+      "rawCoverageSha256": "5456864D5E6995A25A7DE6DE0DE2D5F4DD970920A51705A509FDBFC599C8355D",
+      "stagedCoverageSha256": "5456864D5E6995A25A7DE6DE0DE2D5F4DD970920A51705A509FDBFC599C8355D",
+      "trxSha256": "31B104463F9D21183EBFBECE31FA6677FD58C7D0BFA4EBE99BD03B0FA46365AA",
+      "rawCoverageBytes": 7904910
+    },
+    {
+      "slot": "unit/architecture",
+      "rawCoverageSha256": "130CCF79BE3D7AC46BA481BA5C60AFFAFA800186D43FD1AAFC2DA5F8E7719139",
+      "stagedCoverageSha256": "130CCF79BE3D7AC46BA481BA5C60AFFAFA800186D43FD1AAFC2DA5F8E7719139",
+      "trxSha256": "D76779F67A9A43B5B1B13204B35977D4201803804994FA04D45DE6AA9ACBB080",
+      "rawCoverageBytes": 231
+    },
+    {
+      "slot": "unit/cameraagent",
+      "rawCoverageSha256": "8B68DE5D81969E394757EC9DD31271A99818450F5238545ADFF8B5D7FF11B1ED",
+      "stagedCoverageSha256": "8B68DE5D81969E394757EC9DD31271A99818450F5238545ADFF8B5D7FF11B1ED",
+      "trxSha256": "0F90C1F0908F3821CDDDD045AFAF967198FD1C9943DAA5B484DF74D330283305",
+      "rawCoverageBytes": 31452847
+    },
+    {
+      "slot": "unit/cameraagent-acceptance",
+      "rawCoverageSha256": "BFFF81BC3396C60627D78623F6028ECC25E539C6EDE9B61CD2D7E792C240FFC1",
+      "stagedCoverageSha256": "BFFF81BC3396C60627D78623F6028ECC25E539C6EDE9B61CD2D7E792C240FFC1",
+      "trxSha256": "21D6474580AF3ADF74FFCA7366CAAB80207733F9554856AEA6B59F2E9EDD657A",
+      "rawCoverageBytes": 29961673
+    },
+    {
+      "slot": "unit/logichost",
+      "rawCoverageSha256": "7941C7B33D2E84DCB253EF231705D575458DFEDFE94957B3064713CFBFC54132",
+      "stagedCoverageSha256": "7941C7B33D2E84DCB253EF231705D575458DFEDFE94957B3064713CFBFC54132",
+      "trxSha256": "548BD316B96E81915909DC848316EC63BC5EE13829B61FFC9825E809F2B4135F",
+      "rawCoverageBytes": 19796171
+    },
+    {
+      "slot": "unit/cameraagent-logichost",
+      "rawCoverageSha256": "9EDB9A960D24F400208F66AC9DA84EB209AB4FC80011BFAC7A500B15CCDC7669",
+      "stagedCoverageSha256": "9EDB9A960D24F400208F66AC9DA84EB209AB4FC80011BFAC7A500B15CCDC7669",
+      "trxSha256": "8002C89D7E17C1EC90CFC2E8FA007B6E577E5EAEB1B172A35CC06C2C2F243905",
+      "rawCoverageBytes": 33470915
+    },
+    {
+      "slot": "integration/cameraagent-storage",
+      "rawCoverageSha256": "94CA9D3D4AFFE5310DAFE46B86F7244BB038D01EE88BCBECD7C7B0123333B2C4",
+      "stagedCoverageSha256": "94CA9D3D4AFFE5310DAFE46B86F7244BB038D01EE88BCBECD7C7B0123333B2C4",
+      "trxSha256": "4A30726567AD7BEA2639EB1140601FF41F9743A5F972E425089BB043DC97A03F",
+      "rawCoverageBytes": 31116468
+    },
+    {
+      "slot": "integration/cameraagent-standalone",
+      "rawCoverageSha256": "9F2933626782BBB8B2B74D4C0DC383EA7C67B6F2B1F99BF1EB8F4C3CE148EC0C",
+      "stagedCoverageSha256": "9F2933626782BBB8B2B74D4C0DC383EA7C67B6F2B1F99BF1EB8F4C3CE148EC0C",
+      "trxSha256": "510A2645129D2F8A231FBF1532448ECCC98D9C498E41EEA9BFC12C5FA9014D48",
+      "rawCoverageBytes": 30119097
+    },
+    {
+      "slot": "integration/astronomy",
+      "rawCoverageSha256": "2F3738B8B57F8E1F44CE8DDD96DEDD894EE76C52E6B67DD70D6A402B96A9EE81",
+      "stagedCoverageSha256": "2F3738B8B57F8E1F44CE8DDD96DEDD894EE76C52E6B67DD70D6A402B96A9EE81",
+      "trxSha256": "62267F41FA990BD3037B4F09864CC2DE713B351C513E8097476B38D8D176DF4A",
+      "rawCoverageBytes": 7907698
+    },
+    {
+      "slot": "integration/logichost",
+      "rawCoverageSha256": "4C7525743C39719D4E8B01DAC08FD832B1032004EE1D25C507FFB8B08A359972",
+      "stagedCoverageSha256": "4C7525743C39719D4E8B01DAC08FD832B1032004EE1D25C507FFB8B08A359972",
+      "trxSha256": "12CECE494B6A2E16A52A59B9202E343DEE4594CEF97BABEC401C890F01F6AC51",
+      "rawCoverageBytes": 20030138
+    },
+    {
+      "slot": "integration/cameraagent",
+      "rawCoverageSha256": "A0EC703A883CE56CBB9696B9EC94F480F4859BC319D2E5F1507FF3BC2B4E92BB",
+      "stagedCoverageSha256": "A0EC703A883CE56CBB9696B9EC94F480F4859BC319D2E5F1507FF3BC2B4E92BB",
+      "trxSha256": "4D6EF401557F030EA885E3085217328C089894DF3AD96A87CA73305C2C9AE36C",
+      "rawCoverageBytes": 31131867
+    },
+    {
+      "slot": "integration/cameraagent-logichost",
+      "rawCoverageSha256": "9CD24C9F29E7B696FF2DF51DF33337D15967CE9FFBFFFC68E01AC6CD73684112",
+      "stagedCoverageSha256": "9CD24C9F29E7B696FF2DF51DF33337D15967CE9FFBFFFC68E01AC6CD73684112",
+      "trxSha256": "E26D41F5D50CDA1D704125CCA3B82590E278C6D5AF214AF11513F232FCE769D0",
+      "rawCoverageBytes": 41109862
+    },
+    {
+      "slot": "architecture",
+      "rawCoverageSha256": "0B2545C41FF057DB67CEF10BDBB2FB884FD8167737F0EBEF2AA316FCEA247BA0",
+      "stagedCoverageSha256": "0B2545C41FF057DB67CEF10BDBB2FB884FD8167737F0EBEF2AA316FCEA247BA0",
+      "trxSha256": "5FB761A8957F4292E94EFE08E75E5FFDE9E98699A2E457D772854414E89FD215",
+      "rawCoverageBytes": 231
+    }
+  ],
+  "nativeResults": [
+    {
+      "selection": "canonical",
+      "outcome": "fail",
+      "aggregateLine": "Aggregate coverage: line 87.7330 % (169788/193528), branch 73.3993 % (77550/105655)",
+      "failures": [
+        "- tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: line 40.65 % (min 50 %), branch 35.23 % (min 35 %)"
+      ],
+      "nativeLogSha256": "8B0F8C93D3B2A52D339E5E0B18E6924BE25F108AB7DC53238E18478C1A587DAA",
+      "mergedXmlSha256": "27B26314DDE8D76A72ED7959CED04934668EA40EF4EF9098E9F41A14C5CF5111"
+    },
+    {
+      "selection": "shared",
+      "outcome": "pass",
+      "aggregateLine": "Aggregate coverage: line 88.7623 % (29849/33628), branch 73.5165 % (19612/26677)",
+      "failures": [],
+      "nativeLogSha256": "3E976280B8D5936436CC2150A4C53A7EA8C35B312CB73CFAF0AE80FCFB47C165",
+      "mergedXmlSha256": "E22B676089E43FD89766BE25F705950658190C90B63B9D4C579712F85DDD6E68"
+    },
+    {
+      "selection": "cameraagent",
+      "outcome": "pass",
+      "aggregateLine": "Aggregate coverage: line 84.3349 % (107915/127960), branch 65.7596 % (50191/76325)",
+      "failures": [],
+      "nativeLogSha256": "73700A3A1799F189DCC5E30E687410C561A2AF76C3E5E2A90E7E911E2734F1C4",
+      "mergedXmlSha256": "096B08A741A040D71A45EA9E079613CF4E0B00BE092B74517DFAFCD441B31991"
+    },
+    {
+      "selection": "logichost",
+      "outcome": "fail",
+      "aggregateLine": "Aggregate coverage: line 68.9911 % (57849/83850), branch 46.4293 % (21715/46770)",
+      "failures": [
+        "- aggregate: line 68.9911 % (min 71.2600 %), branch 46.4293 % (min 47.7500 %)"
+      ],
+      "nativeLogSha256": "2F1E1437326B6FA630D714D11C635CF5349ACC8B0436D0860F8276C454D3898C",
+      "mergedXmlSha256": "944C15FA6FEA752CAEF85E450655D3A9D46E3B43EC42C25A82BF3149C5BC5389"
+    },
+    {
+      "selection": "combined",
+      "outcome": "pass",
+      "aggregateLine": "Aggregate coverage: line 34.7863 % (60159/172939), branch 20.2459 % (19033/94009)",
+      "failures": [],
+      "nativeLogSha256": "6701AD33AD75EA958A827216727F984AB6468FA372B009F403134F9FD69244CF",
+      "mergedXmlSha256": "CE7516F5C1E70CCEB39A9280FF143D2C0F82027C5E068508250852765A1D3B7F"
+    },
+    {
+      "selection": "delivery",
+      "outcome": "fail",
+      "aggregateLine": "Aggregate coverage: line 48.2049 % (13816/28661), branch 35.4189 % (7161/20218)",
+      "failures": [
+        "- tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: line 40.65 % (min 59 %), branch 35.23 % (min 37 %)"
+      ],
+      "nativeLogSha256": "3BB96E0D939590B574634DB9F27F4CCCE5854422BC5BBA0B6BD98A96129CC76B",
+      "mergedXmlSha256": "68F7BD36F56809CE34F0A1ED893207740F49B6B232B0C2D7C57BF522B6095CBD"
+    }
+  ],
+  "inputVerification": "Exact TRX collector href, raw/staged SHA identity, unique closed slot, positive per-input native parse completion and complete count; original immutable raw reports retained locally.",
+  "evidenceLimitations": [
+    "Portable manifest includes hashes, results and reproduction instructions; it does not contain the large raw coverage/TRX outputs. Those remain in the local artifact ledger and can be reproduced at the recorded source.",
+    "The119existing Unit qualification skips remain skips. All floor failures remain failures. No baseline or floor is waived.",
+    "The first incomplete merge omitted bracket-named input files despite exit0; it is invalid as an exact23-input result. Staging plain filenames corrected consumption without repeating tests.",
+    "A progress-message guard matched Invalid inside ExecutionEvidenceInvalidException; exact normal HTML progress grammar was independently verified before invoking only the three omitted native enforcements.",
+    "Prior529 baseline-only exact-slot appendix had3proven misbindings; its exact23-slot claim is withdrawn by append-only issue529 comment6283563767. Functional/numerical/image/v1CI results remain separate.",
+    "Main/release qualification, live source adoption, physical accuracy and five-second capture/publication cadence are not established."
+  ]
+}

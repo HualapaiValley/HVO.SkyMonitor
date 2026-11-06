@@ -102,6 +102,7 @@ internal static class ReleaseAcquirer
                 $"Release {manifest.Tag} publishes the CameraAgent image for {string.Join(", ", image.Platforms)} " +
                 $"and does not support {selectingAuthority} {platform} architecture.");
         }
+        await PathPrograms.VerifyReleaseAsync(folder, release, cancellationToken).ConfigureAwait(false);
         var archive = image.ArchiveFor(platform);
         var selection = new ReleaseImageSelection(
             manifest.Tag, manifest.Version, manifest.Commit, ReleaseManifest.FormatCreated(manifest.Created), platform,

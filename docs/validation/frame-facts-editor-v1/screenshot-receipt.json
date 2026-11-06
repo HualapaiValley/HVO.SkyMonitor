@@ -1,0 +1,21 @@
+{
+  "candidate": "5b904d5dd8cef6773367fb8f53d8e14da3ccf000",
+  "saved": {
+    "href": "/operations/pipeline/graphs/ACF54A7E919E9B756F59482993236797C971FFB6E602B8F241F54E0C8AD707C8",
+    "source": "Started from revision EEC922372FBB0CE8A176674FA8B46DCA452A4DA2C33D21F64D5EC93206E33E97. Only edited options change; unknown options and step aliases are preserved. Saving creates a new revision."
+  },
+  "frozenSnapshot": "Snapshot: 30D11ACA5B32E93DCFD6A1632783F66AB9AA75668DD453A44A14B86750AC904C",
+  "narrow390": {
+    "width": 390,
+    "documentWidth": 390,
+    "top": 90.109375,
+    "columns": "290.016px"
+  },
+  "narrow320": {
+    "width": 320,
+    "documentWidth": 320,
+    "top": 89.984375,
+    "columns": "220.016px"
+  },
+  "note": "Screenshots refreshed on a second complete isolated virtual-host pass with the same retained snapshot from the primary receipt; instant scrolling and settled layout capture the named controls and full overlay."
+}

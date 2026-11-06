@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s21-pending-short-window-and-cap",
+  "title": "A warning is pending before Valid From; an alert first seen just after its end alerts only within the grace window; the active cap ends a long validity",
+  "covers": [
+    "pending",
+    "expired",
+    "new-grace",
+    "capped",
+    "first-run-backlog"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "WARPX1 serial 200 is synthetic. Its 5-day validity exceeds the 96-hour active cap.",
+    "ALTK07 219 ended at 18:00 and was issued at 17:58, so at 18:00:30 it is inside the 300-second grace window. ALTK06 727 ended at the same time but was issued at 17:18, so it never alerts."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T14:46:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s21-a\"",
+        "lastModified": "Sat, 10 Oct 2026 14:45:50 GMT",
+        "body": "[{\"product_id\":\"SGIW\",\"issue_datetime\":\"2026-10-10 14:45:19.407\",\"message\":\"Space Weather Message Code: WARSUD\\r\\nSerial Number: 259\\r\\nIssue Time: 2026 Oct 10 1445 UTC\\r\\n\\r\\nWARNING: Geomagnetic Sudden Impulse expected \\nValid From: 2026 Oct 10 1510 UTC\\nValid To: 2026 Oct 10 1550 UTC\\nIp Shock: 2026-10-10 14:43\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WARSUD/259",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "notices": {
+          "WARSUD/259": {
+            "family": "warning",
+            "level": null,
+            "relevance": {
+              "hvo": "NoLocalObservingImpact"
+            },
+            "fromUtc": "2026-10-10T15:10:00Z",
+            "untilUtc": "2026-10-10T15:50:00Z",
+            "state": "pending",
+            "mayBeOutOfDate": false
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "evaluate",
+      "atUtc": "2026-10-10T15:10:00Z",
+      "expect": {
+        "notices": {
+          "WARSUD/259": {
+            "state": "active",
+            "mayBeOutOfDate": true
+          }
+        },
+        "products": {
+          "alerts": {
+            "freshness": "stale"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "evaluate",
+      "atUtc": "2026-10-10T15:50:00Z",
+      "expect": {
+        "notices": {
+          "WARSUD/259": {
+            "state": "recent",
+            "endReason": "expired",
+            "mayBeOutOfDate": false
+          }
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T18:00:30Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s21-b\"",
+        "lastModified": "Sat, 10 Oct 2026 18:00:20 GMT",
+        "body": "[{\"product_id\":\"K07A\",\"issue_datetime\":\"2026-10-10 17:58:50.070\",\"message\":\"Space Weather Message Code: ALTK07\\r\\nSerial Number: 219\\r\\nIssue Time: 2026 Oct 10 1758 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 7 \\nThreshold Reached: 2026 Oct 10 1758 UTC\\nSynoptic Period: 1500-1800\\nActive Warning: YES\\nNoaa Scale: G3 - Strong\\nComment: \\r\\n\\r\\nNOAA Scale: G3 - Strong\"},{\"product_id\":\"K06A\",\"issue_datetime\":\"2026-10-10 17:18:13.507\",\"message\":\"Space Weather Message Code: ALTK06\\r\\nSerial Number: 727\\r\\nIssue Time: 2026 Oct 10 1718 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 6 \\nThreshold Reached: 2026 Oct 10 1717 UTC\\nSynoptic Period: 1500-1800\\nActive Warning: YES\\nNoaa Scale: G2 - Moderate\\nComment: \\r\\n\\r\\nNOAA Scale: G2 - Moderate\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"},{\"product_id\":\"SGIW\",\"issue_datetime\":\"2026-10-10 14:45:19.407\",\"message\":\"Space Weather Message Code: WARSUD\\r\\nSerial Number: 259\\r\\nIssue Time: 2026 Oct 10 1445 UTC\\r\\n\\r\\nWARNING: Geomagnetic Sudden Impulse expected \\nValid From: 2026 Oct 10 1510 UTC\\nValid To: 2026 Oct 10 1550 UTC\\nIp Shock: 2026-10-10 14:43\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTK07/219",
+            "reason": "new",
+            "level": "G3"
+          }
+        ],
+        "notices": {
+          "ALTK06/727": {
+            "state": "recent",
+            "endReason": "expired",
+            "level": "G2",
+            "untilUtc": "2026-10-10T18:00:00Z",
+            "relevance": {
+              "hvo": "NotExpected"
+            }
+          },
+          "ALTK07/219": {
+            "state": "recent",
+            "endReason": "expired",
+            "level": "G3",
+            "fromUtc": "2026-10-10T17:58:00Z",
+            "untilUtc": "2026-10-10T18:00:00Z",
+            "relevance": {
+              "hvo": "Unlikely"
+            }
+          },
+          "WARSUD/259": {
+            "state": "recent"
+          }
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T18:56:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s21-c\"",
+        "lastModified": "Sat, 10 Oct 2026 18:55:50 GMT",
+        "body": "[{\"product_id\":\"PX1W\",\"issue_datetime\":\"2026-10-10 18:55:12.000\",\"message\":\"Space Weather Message Code: WARPX1\\r\\nSerial Number: 200\\r\\nIssue Time: 2026 Oct 10 1855 UTC\\r\\n\\r\\nWARNING: Proton 10MeV Integral Flux above 10pfu expected \\nValid From: 2026 Oct 10 1900 UTC\\nValid To: 2026 Oct 15 1900 UTC\\nWarning Condition: Onset\\nNOAA Scale: S1 - Minor\\nComment: Synthetic fixture with a validity longer than the active cap; not an SWPC product.\"},{\"product_id\":\"K07A\",\"issue_datetime\":\"2026-10-10 17:58:50.070\",\"message\":\"Space Weather Message Code: ALTK07\\r\\nSerial Number: 219\\r\\nIssue Time: 2026 Oct 10 1758 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 7 \\nThreshold Reached: 2026 Oct 10 1758 UTC\\nSynoptic Period: 1500-1800\\nActive Warning: YES\\nNoaa Scale: G3 - Strong\\nComment: \\r\\n\\r\\nNOAA Scale: G3 - Strong\"},{\"product_id\":\"K06A\",\"issue_datetime\":\"2026-10-10 17:18:13.507\",\"message\":\"Space Weather Message Code: ALTK06\\r\\nSerial Number: 727\\r\\nIssue Time: 2026 Oct 10 1718 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 6 \\nThreshold Reached: 2026 Oct 10 1717 UTC\\nSynoptic Period: 1500-1800\\nActive Warning: YES\\nNoaa Scale: G2 - Moderate\\nComment: \\r\\n\\r\\nNOAA Scale: G2 - Moderate\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"},{\"product_id\":\"SGIW\",\"issue_datetime\":\"2026-10-10 14:45:19.407\",\"message\":\"Space Weather Message Code: WARSUD\\r\\nSerial Number: 259\\r\\nIssue Time: 2026 Oct 10 1445 UTC\\r\\n\\r\\nWARNING: Geomagnetic Sudden Impulse expected \\nValid From: 2026 Oct 10 1510 UTC\\nValid To: 2026 Oct 10 1550 UTC\\nIp Shock: 2026-10-10 14:43\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WARPX1/200",
+            "reason": "new",
+            "level": "S1"
+          }
+        ],
+        "notices": {
+          "ALTK06/727": {
+            "state": "recent"
+          },
+          "ALTK07/219": {
+            "state": "recent"
+          },
+          "WARPX1/200": {
+            "family": "warning",
+            "level": "S1",
+            "state": "pending",
+            "fromUtc": "2026-10-10T19:00:00Z",
+            "untilUtc": "2026-10-14T18:55:00Z",
+            "relevance": {
+              "hvo": "NoLocalObservingImpact"
+            }
+          },
+          "WARSUD/259": {
+            "state": "recent"
+          }
+        }
+      }
+    },
+    {
+      "step": 6,
+      "kind": "evaluate",
+      "atUtc": "2026-10-14T18:54:59Z",
+      "expect": {
+        "notices": {
+          "ALTK06/727": {
+            "state": "history"
+          },
+          "ALTK07/219": {
+            "state": "history"
+          },
+          "WARPX1/200": {
+            "state": "active"
+          },
+          "WARSUD/259": {
+            "state": "history"
+          }
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "evaluate",
+      "atUtc": "2026-10-14T18:55:00Z",
+      "expect": {
+        "notices": {
+          "ALTK06/727": {
+            "state": "history"
+          },
+          "ALTK07/219": {
+            "state": "history"
+          },
+          "WARPX1/200": {
+            "state": "recent",
+            "endReason": "capped",
+            "untilUtc": "2026-10-14T18:55:00Z"
+          },
+          "WARSUD/259": {
+            "state": "history"
+          }
+        }
+      }
+    }
+  ]
+}

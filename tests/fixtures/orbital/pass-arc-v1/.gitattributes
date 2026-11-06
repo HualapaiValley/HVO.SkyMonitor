@@ -1,0 +1,4 @@
+# Preserve the exact checksum-pinned synthetic and independent fixture bytes on every host.
+* -text
+# The upstream raw TLE has an intentional trailing space on its error-case comment.
+independent/inputs/SGP4-VER-original.TLE whitespace=-trailing-space,space-before-tab,cr-at-eol

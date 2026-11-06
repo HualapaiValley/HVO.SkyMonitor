@@ -1,0 +1,10 @@
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}/archive"
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}/archive/{CaptureId:guid}"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Camera archive | HVO SkyMonitor</PageTitle>
+<OperationsScopeShell ObservatoryId="ObservatoryId" CameraId="CameraId" ActiveSection="archive" NavigationFocus="@ArchiveFocus">
+    <CameraArchiveView ObservatoryId="ObservatoryId" CameraId="CameraId" CaptureId="CaptureId"
+                       From="@From" Until="@Until" Product="@Product" ObjectState="@ObjectState"
+                       Reconstruction="@Reconstruction" Identity="@Identity" Cursor="@Cursor" Focus="@Focus" />
+</OperationsScopeShell>

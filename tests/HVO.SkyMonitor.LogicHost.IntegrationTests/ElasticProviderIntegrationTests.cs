@@ -1522,7 +1522,12 @@ public sealed class ElasticProviderIntegrationTests
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        await db.CentralDerivativeJobs.Where(job => job.Status != CentralDerivativeJobStatus.Completed)
+        await DisableClaimableJobsAsync(db).ConfigureAwait(false);
+    }
+
+    internal static async Task DisableClaimableJobsAsync(ApplicationDbContext db)
+    {
+        await Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(job => job.Status != CentralDerivativeJobStatus.Completed)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                 .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)

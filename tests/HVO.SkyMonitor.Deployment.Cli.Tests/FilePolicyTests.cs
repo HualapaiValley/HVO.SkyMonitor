@@ -182,6 +182,8 @@ public sealed class FilePolicyTests
                 () => CredentialFile.GetOrCreateAsync(supplied, generated, CancellationToken.None));
 
             StringAssert.Contains(exception.Message, expectedMessage, StringComparison.Ordinal);
+            // The top-level writer redacts the refusal as it would any diagnostic, and it keeps every word (#1523).
+            Assert.AreEqual(exception.Message, CameraAgentStateDiagnostics.Message(exception.Message));
             Assert.IsFalse(File.Exists(generated));
         }
         finally

@@ -19,13 +19,14 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
     private readonly HvoPanel _settingsPanel;
     private readonly HvoPanel _aboutPanel;
     private readonly Button _change;
+    private string? _aboutKey;
 
     public SkyUiSettingsPage(SkyTerminalUi ui)
         : base(ui, "Settings")
     {
         _groups = new SkyUiTable(Theme, [new SkyUiColumn("GROUP", 24)]) { Empty = "Reading the catalogue..." };
         _settings = new SkyUiTable(Theme, [new SkyUiColumn("SETTING", 24), new SkyUiColumn("VALUE", 18), new SkyUiColumn("NOTE", 40)]);
-        _about = new HvoTextLines(Theme) { CanFocus = false };
+        _about = new HvoTextLines(Theme);
         _groupsPanel = AddPanel("Groups", _groups);
         _settingsPanel = AddPanel("Settings", _settings);
         _aboutPanel = AddPanel("About", _about);
@@ -77,6 +78,7 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
             _groups.Show([]);
             _settings.Show([]);
             _about.Show([]);
+            _aboutKey = null;
             _change.Enabled = false;
             return;
         }
@@ -114,11 +116,12 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
         if (SelectedField is not { } field)
         {
             _about.Show([]);
+            _aboutKey = null;
             _change.Enabled = false;
             return;
         }
 
-        _aboutPanel.Caption = $"About {field.Key}";
+        _aboutPanel.Caption = Titled($"About {field.Key}", Ui.Data.Settings);
         var lines = new List<HvoLine>
         {
             new(field.Setting.Description),
@@ -141,14 +144,15 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
             lines.Add(new($"Pending   {SkySettingText.Describe(pending)}, saved and not in effect yet", HvoTone.Info));
         }
 
-        _about.Show(lines);
-        _change.Enabled = field.CanWrite && CanChange;
+        _about.Show(lines, preserveScroll: _aboutKey == field.Key);
+        _aboutKey = field.Key;
+        _change.Enabled = SkyUiSettingChange.CanChange(Ui, field.Key);
         Ui.Hint(Help);
     }
 
     private void Change()
     {
-        if (SelectedField is { } field && field.CanWrite && CanChange)
+        if (SelectedField is { } field && SkyUiSettingChange.CanChange(Ui, field.Key))
         {
             SkyUiSettingChange.Open(Ui, field);
         }
@@ -164,6 +168,9 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
 /// </summary>
 internal static class SkyUiSettingChange
 {
+    public static bool CanChange(SkyTerminalUi ui, string key)
+        => ui.ChangeRefusal is null && ui.Data.Settings.Value?.FindField(key, exactOnly: true) is { CanWrite: true };
+
     public static SkyUiPrompt Open(SkyTerminalUi ui, SkySettingField field)
     {
         ArgumentNullException.ThrowIfNull(ui);
@@ -187,7 +194,7 @@ internal static class SkyUiSettingChange
 
         SkySettingsGroupState group = field.Group.State
             ?? throw new InvalidOperationException($"CameraAgent did not return the {field.Group.Name} group's state.");
-        return ui.OpenPrompt(new SkyUiPromptSpec("Setting / Review", lines, "Save", answers =>
+        return ui.OpenChangePrompt(new SkyUiPromptSpec("Setting / Review", lines, "Save", answers =>
         {
             JsonElement value;
             try
@@ -219,8 +226,79 @@ internal static class SkyUiSettingChange
             Choices = choices,
             Choice = choice,
             Acknowledge = geometry ? "Change the location and time basis future captures are stamped with" : null
-        });
+        }, () => CanChange(ui, field.Key));
     }
+
+    private static SkySettingsWriteResponse ReadReceipt(JsonElement answer, SkySettingField field)
+    {
+        // Results.Ok serializes every DTO member, including nulls. Inspect the wire shape first: deserialization
+        // otherwise supplies false/null defaults for missing members (CameraAgentSettingsContracts.cs).
+        if (!Text(answer, "status") || answer.GetProperty("status").GetString() is not ("Applied" or "PendingRestart" or "Unchanged")
+            || !Kind(answer, "group", JsonValueKind.Object) || !Kind(answer, "recorded", JsonValueKind.Array)
+            || answer.GetProperty("recorded").EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString())))
+        {
+            throw IncompleteReceipt();
+        }
+
+        var group = answer.GetProperty("group");
+        if (!Text(group, "group") || group.GetProperty("group").GetString() != field.Group.Name
+            || !Text(group, "version") || !Boolean(group, "canWrite") || !NullableText(group, "readOnlyReason")
+            || !Kind(group, "settings", JsonValueKind.Array))
+        {
+            throw IncompleteReceipt();
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var state in group.GetProperty("settings").EnumerateArray())
+        {
+            if (!Text(state, "key") || !seen.Add(state.GetProperty("key").GetString()!)
+                || field.Group.Descriptor.Settings.FirstOrDefault(setting => setting.Key == state.GetProperty("key").GetString()) is not { } descriptor
+                || !Boolean(state, "isSet") || !Text(state, "source") || !Boolean(state, "canWrite")
+                || !NullableText(state, "sourceDetail") || !NullableText(state, "readOnlyReason") || !NullableText(state, "problem")
+                || !state.TryGetProperty("value", out var value)
+                || !ReceiptValue(descriptor, value, descriptor.Nullable || descriptor.Secret || state.GetProperty("source").GetString() == "Unavailable")
+                || !state.TryGetProperty("pendingValue", out var pending) || !ReceiptValue(descriptor, pending, allowNull: true)
+                || !state.TryGetProperty("allowedValues", out var choices) || !ReceiptChoices(choices))
+            {
+                throw IncompleteReceipt();
+            }
+        }
+
+        if (!seen.Contains(field.Key) || seen.Count != field.Group.Descriptor.Settings.Count)
+        {
+            throw IncompleteReceipt();
+        }
+
+        return SkyApiClient.Read<SkySettingsWriteResponse>(answer);
+    }
+
+    private static bool Kind(JsonElement value, string member, JsonValueKind kind)
+        => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(member, out var child) && child.ValueKind == kind;
+
+    private static bool Text(JsonElement value, string member)
+        => Kind(value, member, JsonValueKind.String) && !string.IsNullOrWhiteSpace(value.GetProperty(member).GetString());
+
+    private static bool Boolean(JsonElement value, string member)
+        => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(member, out var child) && child.ValueKind is JsonValueKind.True or JsonValueKind.False;
+
+    private static bool NullableText(JsonElement value, string member)
+        => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(member, out var child) && child.ValueKind is JsonValueKind.String or JsonValueKind.Null;
+
+    private static bool ReceiptChoices(JsonElement choices)
+        => choices.ValueKind == JsonValueKind.Null || choices.ValueKind == JsonValueKind.Array && choices.EnumerateArray().All(choice =>
+            Kind(choice, "value", JsonValueKind.String) && Kind(choice, "label", JsonValueKind.String) && Kind(choice, "description", JsonValueKind.String));
+
+    private static bool ReceiptValue(SkySettingDescriptor descriptor, JsonElement value, bool allowNull)
+        => value.ValueKind == JsonValueKind.Null ? allowNull : descriptor.Type switch
+        {
+            SkySettingsContract.IntegerType => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
+            SkySettingsContract.NumberType => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && double.IsFinite(number),
+            SkySettingsContract.StringType or SkySettingsContract.EnumType => value.ValueKind == JsonValueKind.String,
+            _ => false
+        };
+
+    private static SkyProtocolException IncompleteReceipt()
+        => new("CameraAgent returned an incomplete or unknown settings receipt. Read the settings again to check what took effect.");
 
     private static string Initial(SkySettingField field) => field.State?.Value switch
     {
@@ -239,9 +317,19 @@ internal static class SkyUiSettingChange
         var request = new SkySettingsUpdateRequest(group.Version, new Dictionary<string, JsonElement>(StringComparer.Ordinal) { [field.Key] = value }, reason);
         ui.Say(HvoNotice.Info, $"Saving {field.Key}...");
         ui.Run(
-            async (operation, token) => SkyApiClient.Read<SkySettingsWriteResponse>(await operation.SendChangeAsync(
-                client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request,
-                $"the {group.Group} settings", token, static answer => SkyJson.Text(answer, "status") != "Unchanged").ConfigureAwait(false)),
+            async (operation, token) =>
+            {
+                SkySettingsWriteResponse? receipt = null;
+                await operation.SendChangeAsync(
+                    client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request,
+                    $"the {group.Group} settings", token, answer =>
+                    {
+                        // Validate before accepting even an Unchanged claim: an incomplete 200 remains unverified.
+                        receipt = ReadReceipt(answer, field);
+                        return receipt.Status != "Unchanged";
+                    }).ConfigureAwait(false);
+                return receipt!;
+            },
             (response, error, operation) =>
             {
                 if (error is not null)

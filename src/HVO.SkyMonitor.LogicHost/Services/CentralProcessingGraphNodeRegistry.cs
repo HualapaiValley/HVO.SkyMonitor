@@ -46,6 +46,7 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         var recipes = recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Raw)
             .Concat(recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Calibrated))
             .Append(CentralDerivativeRecipeCatalog.WeatherCloudOverlayRecipe)
+            .Append(CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsRecipe)
             .DistinctBy(static recipe => recipe.RecipeName, StringComparer.Ordinal)
             .ToArray();
         var handlers = new Dictionary<string, CentralProcessingGraphNodeHandler>(StringComparer.Ordinal);
@@ -103,7 +104,7 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         foreach (var node in plan.Nodes)
         {
             if (!_handlers.TryGetValue(node.Definition.StepAlias, out var handler) ||
-                !ValidateNode(node, handler))
+                !ValidateNode(plan, node, handler))
             {
                 return node.Definition.StepAlias;
             }
@@ -116,17 +117,19 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         => role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated;
 
     private static bool ValidateNode(
+        ProcessingGraphExecutionPlan plan,
         ProcessingGraphPlanNode planNode,
         CentralProcessingGraphNodeHandler handler)
     {
         var node = planNode.Definition;
         // LogicHost freezes each node's expected recipe identity at expansion from primary and auxiliary artifact
-        // bindings plus the anchor frame's own scene provenance. Annotation and canonical-JSON graph bindings would
-        // execute against a stale identity, so centrally executed graphs reject them at publication/assignment
-        // validation instead of accepting them. The built-in annotation recipe ignores artifact auxiliaries, and
-        // CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance relies on an annotation node's expected identity
-        // being derived from its primary binding alone, so auxiliary artifact bindings on that node are
-        // host-incompatible as well.
+        // bindings plus host-attached inputs: the anchor frame's scene provenance, its environmental inputs and, for
+        // measured stellar associations, its resolved projected scene. Annotation and canonical-JSON graph bindings
+        // would execute against a stale identity, so centrally executed graphs reject them at publication/assignment
+        // validation instead of accepting them; the association node's scene is attached by the host, never declared.
+        // An optional auxiliary artifact changes the expected identity when its producer yields nothing, and the
+        // scheduler re-derives that identity only for the one pair it is defined for (#526 ruling Z), so every other
+        // optional auxiliary artifact binding is host-incompatible.
         if (!string.Equals(node.StepVersion, handler.StepVersion, StringComparison.Ordinal) ||
             node.OperationKind != handler.OperationKind ||
             planNode.InputBindings.Count(static binding =>
@@ -134,9 +137,9 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
             planNode.InputBindings.Any(static binding =>
                 binding.BindingKind is ProcessingGraphInputBindingKind.Annotation or
                     ProcessingGraphInputBindingKind.CanonicalJson) ||
-            string.Equals(node.StepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal) &&
-                planNode.InputBindings.Any(static binding =>
-                    binding.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact) ||
+            planNode.InputBindings.Any(binding =>
+                binding.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact &&
+                !IsAllowedAuxiliaryBinding(plan, planNode, binding)) ||
             node.Dependencies.Any(static dependency =>
                 dependency.Kind is ProcessingGraphDependencyKind.Annotation or
                     ProcessingGraphDependencyKind.CanonicalJson))
@@ -176,26 +179,74 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         }
     }
 
+    /// <summary>
+    /// Auxiliary artifact bindings LogicHost can freeze. A required binding is admitted on any node except
+    /// Annotation, whose expected identity <c>CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance</c> recomputes
+    /// from its primary binding and measured associations only. An optional binding is admitted only as Annotation's
+    /// measured stellar associations, consumed by no other node, because the scheduler re-derives the expected
+    /// identity of exactly that leaf when the association product is omitted.
+    /// </summary>
+    internal static bool IsAllowedAuxiliaryBinding(
+        ProcessingGraphExecutionPlan plan,
+        ProcessingGraphPlanNode planNode,
+        ProcessingGraphInputBinding binding)
+    {
+        var isAnnotation = string.Equals(
+            planNode.Definition.StepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal);
+        if (binding.Required)
+        {
+            return !isAnnotation;
+        }
+        if (!isAnnotation ||
+            !string.Equals(binding.BindingName, BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName, StringComparison.Ordinal) ||
+            planNode.InputBindings.Count(static item =>
+                item.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact) != 1 ||
+            planNode.Definition.Dependencies.Count(dependency => string.Equals(
+                dependency.ProducerId, binding.ProducerId, StringComparison.Ordinal) && !dependency.Required) != 1 ||
+            plan.Nodes.Any(other => other.Definition.Dependencies.Any(dependency => string.Equals(
+                dependency.ProducerId, planNode.Definition.Id, StringComparison.Ordinal))))
+        {
+            return false;
+        }
+        var producer = plan.Nodes.SingleOrDefault(item =>
+            string.Equals(item.Definition.Id, binding.ProducerId, StringComparison.Ordinal));
+        return producer is not null &&
+            string.Equals(producer.Definition.StepAlias, BuiltInProcessingRecipes.MeasuredStellarAssociations,
+                StringComparison.Ordinal) &&
+            binding.OutputIndex == 0 && producer.Definition.Outputs.Length == 1 &&
+            producer.Definition.Outputs[0] is { } output &&
+            output.Role == FrameArtifactRole.Metadata &&
+            output.ProductKind == ProcessingProductKind.Metadata &&
+            string.Equals(output.Variant, CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant,
+                StringComparison.Ordinal) &&
+            string.Equals(output.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal);
+    }
+
     private static FrameArtifactRole ExpectedRole(string alias) => alias switch
     {
         BuiltInProcessingRecipes.EncodedPreview => FrameArtifactRole.Preview,
         BuiltInProcessingRecipes.Annotation or BuiltInProcessingRecipes.WeatherCloudOverlay =>
             FrameArtifactRole.AnnotatedPreview,
-        BuiltInProcessingRecipes.ImageQuality or BuiltInProcessingRecipes.CloudAssessment => FrameArtifactRole.Metadata,
+        BuiltInProcessingRecipes.ImageQuality or BuiltInProcessingRecipes.CloudAssessment or
+            BuiltInProcessingRecipes.MeasuredStellarAssociations => FrameArtifactRole.Metadata,
         BuiltInProcessingRecipes.RollingMean => FrameArtifactRole.Combined,
         _ => throw new InvalidOperationException("The central graph built-in output role is unavailable.")
     };
 
-    private static string? ExpectedSchema(string alias)
-        => string.Equals(alias, BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal)
-            ? CloudAssessmentV1.CurrentSchemaVersion
-            : null;
+    private static string? ExpectedSchema(string alias) => alias switch
+    {
+        BuiltInProcessingRecipes.CloudAssessment => CloudAssessmentV1.CurrentSchemaVersion,
+        BuiltInProcessingRecipes.MeasuredStellarAssociations => MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+        _ => null
+    };
 
     private static string ExpectedMediaType(string alias, JsonElement options) => alias switch
     {
         BuiltInProcessingRecipes.RollingMean => "application/x-hvo-linear-frame",
         BuiltInProcessingRecipes.ImageQuality => "application/json",
         BuiltInProcessingRecipes.CloudAssessment => StructuredProcessingProductContracts.CloudAssessmentMediaType,
+        BuiltInProcessingRecipes.MeasuredStellarAssociations =>
+            StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType,
         BuiltInProcessingRecipes.EncodedPreview =>
             options.Deserialize<EncodedPreviewOptions>()?.OutputEncoding == "Packed"
                 ? "application/x-hvo-packed-image"

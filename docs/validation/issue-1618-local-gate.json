@@ -1,0 +1,3004 @@
+{
+  "profile": "development-v1",
+  "tier": "C",
+  "originalGate": {
+    "profile": "development-v1",
+    "tier": "C",
+    "head": "26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+    "selectorCommand": "scripts/ci:classify pull_request dffab19529c55769e25fbd162fe06b248386eed0 26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+    "selectorOutput": "mode=full\ndeployment=false\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=false\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=true\ndelivery=false\nsecret_scan_contract=false\nrelease_scripts=false\n",
+    "steps": [
+      {
+        "name": "tools",
+        "command": "dotnet tool restore",
+        "seconds": 0.164,
+        "exitCode": 0,
+        "logSha256": "9ff85e3f6ea2f598fe8285f28e58315de91751723b74becc9ecd413785f19ba0"
+      },
+      {
+        "name": "restore",
+        "command": "dotnet restore HVO.SkyMonitor.v9.slnx -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 2.172,
+        "exitCode": 0,
+        "logSha256": "06846d441034160cb652dfac3b175d13dfe9d3e478145c1199838b4552a3fccc"
+      },
+      {
+        "name": "debug",
+        "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 263.517,
+        "exitCode": 0,
+        "logSha256": "c31c6d036c2d2dfb041c35f336742c246b7eb71903158ca06e021b314ad8bdc7"
+      },
+      {
+        "name": "release",
+        "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 170.535,
+        "exitCode": 0,
+        "logSha256": "dd2fce60b16e6d4712962b0ffe40da7c4c26bf90974b750893db19a1fd6a8dc6"
+      },
+      {
+        "name": "format",
+        "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+        "seconds": 174.894,
+        "exitCode": 0,
+        "logSha256": "8daa06296e393b6567f4f9f6e552b8053dacbefacccb17781465100b18ffa56f"
+      },
+      {
+        "name": "packages",
+        "command": "./scripts/package:audit",
+        "seconds": 47.892,
+        "exitCode": 0,
+        "logSha256": "c0feb0f6308e6aaaada6d17dc6e9f315c071cdcdbfecf7b9100cfce64ad75f98"
+      },
+      {
+        "name": "ci:shell-syntax",
+        "command": "./scripts/ci:shell-syntax",
+        "seconds": 0.968,
+        "exitCode": 0,
+        "logSha256": "75bf3a93f64bc050c18a039cc11275e7f261f38361efda07129bf0c431f87ac5"
+      },
+      {
+        "name": "test:ci-classification",
+        "command": "./scripts/test:ci-classification",
+        "seconds": 24.331,
+        "exitCode": 0,
+        "logSha256": "8f8a66d35733c287d0298a3783a63f139d3ed77195d119b68e27139ed37228db"
+      },
+      {
+        "name": "test:coordination-guard",
+        "command": "./scripts/test:coordination-guard",
+        "seconds": 0.287,
+        "exitCode": 0,
+        "logSha256": "62919b255503695fb95148aec72ac9dfabb214471ae1aea67dcb8ac7bee51832"
+      },
+      {
+        "name": "test:pr-review-tools",
+        "command": "./scripts/test:pr-review-tools",
+        "seconds": 11.271,
+        "exitCode": 0,
+        "logSha256": "d129519f897d4de454456163735d2e9f3ab0e815f1acbbf4e336e7ac43d7a249"
+      },
+      {
+        "name": "unit0",
+        "command": "dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/astronomy --logger \"trx;LogFileName=unit-astronomy.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 246.614,
+        "exitCode": 0,
+        "logSha256": "c4c532f3606e396ae62295a684788d9a31c8b92df53a562ed5a3868bcc854048"
+      },
+      {
+        "name": "unit1",
+        "command": "dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/imaging --logger \"trx;LogFileName=unit-imaging.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 29.267,
+        "exitCode": 0,
+        "logSha256": "ee00ddfab860b79d759a072599f8ca47543415816ff535355701d4043cdc8fe2"
+      },
+      {
+        "name": "unit2",
+        "command": "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/processing --logger \"trx;LogFileName=unit-processing.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 28.788,
+        "exitCode": 0,
+        "logSha256": "f693cf4b9c9a16b6d15fc9f3b8e22517f75a9cb738c829ae4579f8aec1465e0a"
+      },
+      {
+        "name": "unit3",
+        "command": "dotnet test tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/processing-runner --logger \"trx;LogFileName=unit-processing-runner.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 14.224,
+        "exitCode": 0,
+        "logSha256": "8fbf1115f5e125959304bd7e727941c48f6ab95e7b64976245866148e7bf3f9b"
+      },
+      {
+        "name": "unit4",
+        "command": "dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/catalog-sqlite --logger \"trx;LogFileName=unit-catalog-sqlite.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 5.872,
+        "exitCode": 0,
+        "logSha256": "d86a039e86dd4816f990cd6e5bc00483c455c3da921d13e4d4adbcca2be07df1"
+      },
+      {
+        "name": "unit5",
+        "command": "dotnet test tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/storage-filesystem --logger \"trx;LogFileName=unit-storage-filesystem.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 1.664,
+        "exitCode": 0,
+        "logSha256": "1665bc56f960880dbd3c49d473346bf9fbc24f9a78fafdca198b40b65f980f28"
+      },
+      {
+        "name": "unit6",
+        "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/deployment-cli --logger \"trx;LogFileName=unit-deployment-cli.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 128.885,
+        "exitCode": 0,
+        "logSha256": "57fb9d4b33a5ba335f5fe411a908b22c9d6e8d7adcb4fc8768424d545e9da774"
+      },
+      {
+        "name": "unit7",
+        "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/deployment-distribution --logger \"trx;LogFileName=unit-deployment-distribution.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 7.582,
+        "exitCode": 0,
+        "logSha256": "e65719df8461d3662d69cebf40357e8d3dd560f67692120d3bde082417048c05"
+      },
+      {
+        "name": "unit8",
+        "command": "dotnet test tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/agent-core --logger \"trx;LogFileName=unit-agent-core.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 5.622,
+        "exitCode": 0,
+        "logSha256": "a0083b8a5453f215f2f5ed28fb33d2078ebca5f771e5159df1de6817e75572b7"
+      },
+      {
+        "name": "unit9",
+        "command": "dotnet test tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/common --logger \"trx;LogFileName=unit-common.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 2.927,
+        "exitCode": 0,
+        "logSha256": "921c24e5d7e70319cfa8babf78e228a2cada3bf45e6c4e6da1f8bceafa68011d"
+      },
+      {
+        "name": "unit10",
+        "command": "dotnet test tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/fleet-contracts --logger \"trx;LogFileName=unit-fleet-contracts.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 5.914,
+        "exitCode": 0,
+        "logSha256": "96332d6fe0d27ff30b096c1654d59e3e3e5ff2dbe61882156a301b88f0e73dd0"
+      },
+      {
+        "name": "unit11",
+        "command": "dotnet test tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/test-support --logger \"trx;LogFileName=unit-test-support.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 5.136,
+        "exitCode": 0,
+        "logSha256": "202a9f8d5c8eae93cfcaf1245088f84d68adab26d945dfd3a9076bd2400043c0"
+      },
+      {
+        "name": "unit12",
+        "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/architecture --logger \"trx;LogFileName=unit-architecture.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 43.79,
+        "exitCode": 0,
+        "logSha256": "f5c811d1f691ff73084ea04679a48a6b4e36be034a3d40b8a7d1497b3c4fa91f"
+      },
+      {
+        "name": "unit13",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent --logger \"trx;LogFileName=unit-cameraagent.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 416.054,
+        "exitCode": 0,
+        "logSha256": "5a77bdb8a76e40f187db99d827141249c26ead1c261a8b3977749b058e992434"
+      },
+      {
+        "name": "unit14",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent-acceptance --logger \"trx;LogFileName=unit-cameraagent-acceptance.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 23.187,
+        "exitCode": 0,
+        "logSha256": "0746dfc11ef027fb4e4603c8101b55800cc33ec7ec19fc0471397ffe352b16ee"
+      },
+      {
+        "name": "unit15",
+        "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/logichost --logger \"trx;LogFileName=unit-logichost.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 34.634,
+        "exitCode": 0,
+        "logSha256": "94fa48a6eb6b86baa24df902fc7b71aae79bf4b4e5ab8d432e0f165fa28fed0a"
+      },
+      {
+        "name": "unit16",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent-logichost --logger \"trx;LogFileName=unit-cameraagent-logichost.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 34.184,
+        "exitCode": 0,
+        "logSha256": "3f07598991eeace84567bba25a98aae1e9d2b42e80fe1221fd7b9a2dcb1ed7a6"
+      },
+      {
+        "name": "unit17",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/cameraagent-integration --logger \"trx;LogFileName=unit-cameraagent-integration.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 3.798,
+        "exitCode": 0,
+        "logSha256": "96e863113d403a7fb45762125fd1d919d016a5202178ec8204479e1d3cb26822"
+      },
+      {
+        "name": "unit18",
+        "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/logichost-integration --logger \"trx;LogFileName=unit-logichost-integration.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 1.858,
+        "exitCode": 0,
+        "logSha256": "aad0a57db20a2c3eab1cab8556be370bace78801dda61d7d1b5592db4f4ee212"
+      },
+      {
+        "name": "unit19",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/cameraagent-logichost-integration --logger \"trx;LogFileName=unit-cameraagent-logichost-integration.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 1.393,
+        "exitCode": 0,
+        "logSha256": "6acaecc0c80b408b28db3b12523134ef666388df957a057eb85e0df6ad839c41"
+      },
+      {
+        "name": "unit20",
+        "command": "dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/catalog-sqlite-performance --logger \"trx;LogFileName=unit-catalog-sqlite-performance.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 1.236,
+        "exitCode": 0,
+        "logSha256": "5622081947750f24d2d51fb8b9371a286c0256395b6ded29fb165edbd8f5f10a"
+      },
+      {
+        "name": "integration0",
+        "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/logichost --logger \"trx;LogFileName=integration-logichost.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 851.539,
+        "exitCode": 0,
+        "logSha256": "ab48e093b842643d579f599718e39dc5cda95399efcc1d0ffd95dd452fc36279"
+      },
+      {
+        "name": "integration1",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-storage --logger \"trx;LogFileName=integration-cameraagent-storage.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 54.269,
+        "exitCode": 0,
+        "logSha256": "f6c1f3e4301a017a6f37426aff43a0f0857cd919bcb3703c450bd897dedac333"
+      },
+      {
+        "name": "integration2",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-standalone --logger \"trx;LogFileName=integration-cameraagent-standalone.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 67.077,
+        "exitCode": 0,
+        "logSha256": "248ea6acbfd1f3641db7512e692dea4d704db305e67fd631456fb3f31d0fcbb2"
+      },
+      {
+        "name": "integration3",
+        "command": "dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/astronomy --logger \"trx;LogFileName=integration-astronomy.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 5.006,
+        "exitCode": 0,
+        "logSha256": "da67926df0f1d9d137e41e39ed7ac703ba4fd9b0cf5fe1a5fdf87f38cc751f4f"
+      },
+      {
+        "name": "integration4",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent --logger \"trx;LogFileName=integration-cameraagent.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 43.468,
+        "exitCode": 0,
+        "logSha256": "ba6dd663550b8de27dd1286de229c430a05fbfabe75371ea7fcfd3d78076d86c"
+      },
+      {
+        "name": "integration5",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-logichost --logger \"trx;LogFileName=integration-cameraagent-logichost.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 224.096,
+        "exitCode": 0,
+        "logSha256": "01bcdc0739070b5d61520a8aa3054de3a61669ca67f27e7291740347df6f53c5"
+      },
+      {
+        "name": "architecture-unit",
+        "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/architecture-unit --logger \"trx;LogFileName=architecture-unit.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 39.559,
+        "exitCode": 0,
+        "logSha256": "6db45dc0df241c7d7ef6f565ed94aea6957219802d6b897de7c4803f9e7c9d59"
+      },
+      {
+        "name": "architecture-integration",
+        "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter \"TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/architecture --logger \"trx;LogFileName=architecture-publish.trx\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 37.186,
+        "exitCode": 0,
+        "logSha256": "156ad85a073b154c53f27e39371037322740958c4fef0b7bc7121d8e71f73364"
+      },
+      {
+        "name": "publish-cameraagent",
+        "command": "./scripts/ci:component-publish cameraagent",
+        "seconds": 6.145,
+        "exitCode": 0,
+        "logSha256": "28132f52df8d0be2b970fdc1bac0f972b96ec563048cc1c974b2ab86e7092f02"
+      },
+      {
+        "name": "coverage-cameraagent",
+        "command": "./scripts/coverage:component cameraagent",
+        "seconds": 9.781,
+        "exitCode": 0,
+        "logSha256": "d1f09ec9e953193f47be3c0a64650eb14dfceff95da84f00d21083fa823f3c40"
+      },
+      {
+        "name": "coverage-combined",
+        "command": "./scripts/coverage:component combined",
+        "seconds": 9.052,
+        "exitCode": 0,
+        "logSha256": "0c160493ed897ee5553c276bb53359924ab0078314a694859a5bd2394e3fdb54"
+      },
+      {
+        "name": "coverage-policy",
+        "command": "./scripts/coverage:policy pull_request dffab19529c55769e25fbd162fe06b248386eed0",
+        "seconds": 0.091,
+        "exitCode": 1,
+        "logSha256": "811cf061008a43d26f0b90fd60cf319a4536ed023789e2456fdc5b51bcbc288f"
+      },
+      {
+        "name": "migration-shape-cameraagent",
+        "command": "./scripts/ci:canonical-migration cameraagent",
+        "seconds": 0.004,
+        "exitCode": 0,
+        "logSha256": "19fec275be76a963d92b2cb47819255650a84f0867bc6c51c079f43362bca366"
+      },
+      {
+        "name": "migration-model-cameraagent",
+        "command": "dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build",
+        "seconds": 1.45,
+        "exitCode": 0,
+        "logSha256": "1a7ebd36639ae2495bf5a8be124996ad6c6c7870907ac555d1fcb0a03c9d578f"
+      },
+      {
+        "name": "migration-shape-logichost",
+        "command": "./scripts/ci:canonical-migration logichost",
+        "seconds": 0.004,
+        "exitCode": 0,
+        "logSha256": "d715f70cad7749a74a018437bb48de6337d44e152810742423aeab2c3180afa3"
+      },
+      {
+        "name": "migration-model-logichost",
+        "command": "dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build",
+        "seconds": 1.211,
+        "exitCode": 1,
+        "logSha256": "e38c00cbbe5061ff7a842084f5a50574d72cdf0b261595d9626d59bdb0b6ee60"
+      },
+      {
+        "name": "docs",
+        "command": "./scripts/docs:audit-operations",
+        "seconds": 0.463,
+        "exitCode": 0,
+        "logSha256": "db1e36591b2622fd6ae87fa710b5dacf7e58545e7b0459528c46d8071b080bf4"
+      },
+      {
+        "name": "category-cameraagent",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --list-tests --filter \"TestCategory=Unit\" -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 1.647,
+        "exitCode": 0,
+        "logSha256": "9ded81f0cb2f010ce4aa5bd5a8069b3f711fe4d618fd8d8ed6ee08e48d0caf5a"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "TestResults/architecture/architecture-publish.trx",
+        "sha256": "e8c76740d84fb51a485346224ca428d69374cb4104bc87629addba4f2c16c1dd"
+      },
+      {
+        "path": "TestResults/architecture-unit/architecture-unit.trx",
+        "sha256": "1a124c0b9800af19dc46cfb22ad4f303c58c20f26e90f473441cb02f49e68c36"
+      },
+      {
+        "path": "TestResults/unit/astronomy/unit-astronomy.trx",
+        "sha256": "9666164798262b8edec425dd6eb0c9125810b103afb31595410ac5c7a1cfb5aa"
+      },
+      {
+        "path": "TestResults/unit/logichost-integration/unit-logichost-integration.trx",
+        "sha256": "0c0a416198a4f21830bed8d4062db2ea8aa06bf07e556d194170f2336aea0a72"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-logichost/unit-cameraagent-logichost.trx",
+        "sha256": "f7b9573724834ad9a1ae2960b5a8a2a693b0703615136ad1a21629f919b901d5"
+      },
+      {
+        "path": "TestResults/unit/logichost/unit-logichost.trx",
+        "sha256": "90e1fc74429c83a4811ef783300ebf02a8f328e7e313d21fb4561c725cbd8f31"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-integration/unit-cameraagent-integration.trx",
+        "sha256": "26b7f424cde4b65bc3b2620911c5ed9383c11728679efdce664dd2bc89282bf6"
+      },
+      {
+        "path": "TestResults/unit/deployment-cli/unit-deployment-cli.trx",
+        "sha256": "a5c5a94530083fd8305451af59d26de342e75340e30fb005f1e779a194a3af06"
+      },
+      {
+        "path": "TestResults/unit/storage-filesystem/unit-storage-filesystem.trx",
+        "sha256": "0db531652902d51bb0d7716706db3400cb94a4e04309afa2b10bfbeb0538581d"
+      },
+      {
+        "path": "TestResults/unit/processing-runner/unit-processing-runner.trx",
+        "sha256": "42be0650e00b4ec9641d4a39af920ecdb7a702d07fd0f50eb4774052a0f186db"
+      },
+      {
+        "path": "TestResults/unit/common/unit-common.trx",
+        "sha256": "9826eb2649a4d007f3206c2264e62cf1714e4963c3a1432a90fef72ee4541c6f"
+      },
+      {
+        "path": "TestResults/unit/catalog-sqlite/unit-catalog-sqlite.trx",
+        "sha256": "2c1dd2aa5518953d71d0d62cb4a5eddbc481e7fac9dbc892fa7839ceeab8247d"
+      },
+      {
+        "path": "TestResults/unit/fleet-contracts/unit-fleet-contracts.trx",
+        "sha256": "84363a56c2df5dad9d5dd2b1ff0f1171349310086faf8d2dc35b0d0cdaa4ec0e"
+      },
+      {
+        "path": "TestResults/unit/architecture/unit-architecture.trx",
+        "sha256": "94fbc909ee7e19f9efcd7e19ccbefb0eb49dded38ac6a8323e9d905eab81cd54"
+      },
+      {
+        "path": "TestResults/unit/cameraagent/unit-cameraagent.trx",
+        "sha256": "c61699af6698c48b5594e38114f5f9f1fbf79be3a9e3bb71f53635482864fc8b"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-acceptance/unit-cameraagent-acceptance.trx",
+        "sha256": "d8d0cf56a1fd376b43eac98ef9befe5c9388b0017d69b695852b072e6836d4e5"
+      },
+      {
+        "path": "TestResults/unit/test-support/unit-test-support.trx",
+        "sha256": "7b6afa97af0bd54fdae1988a298a10bc2311821caf2c62eb666ce1f3bf0110a3"
+      },
+      {
+        "path": "TestResults/unit/processing/unit-processing.trx",
+        "sha256": "440db7db53005c905031105566b4881d99a05a19f500b6b1de90be6d7d8d1946"
+      },
+      {
+        "path": "TestResults/unit/deployment-distribution/unit-deployment-distribution.trx",
+        "sha256": "e9179214651dce7fb65d48eaed1140952a8bd560ecd6a88f12d6ace9ca59b13b"
+      },
+      {
+        "path": "TestResults/unit/agent-core/unit-agent-core.trx",
+        "sha256": "7136e39d9c2b49bda2501fb6e52ad8ba6b1cf18023b114b11be6ae5fea5078f3"
+      },
+      {
+        "path": "TestResults/unit/catalog-sqlite-performance/unit-catalog-sqlite-performance.trx",
+        "sha256": "eb2b69d70725a303c9a3c601b38278a73c7a73051dbf794c1e557a1f3a206875"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-logichost-integration/unit-cameraagent-logichost-integration.trx",
+        "sha256": "cc093029f347f4087d4f5d1fe611d4365e3bd4cbb0cb2bfbd5c9c8a5b285ef30"
+      },
+      {
+        "path": "TestResults/unit/imaging/unit-imaging.trx",
+        "sha256": "9f8031dde0a10c2fb3723c2e4cbdcb0d25fdafd45169261e58858bb712241fdb"
+      },
+      {
+        "path": "TestResults/integration/astronomy/integration-astronomy.trx",
+        "sha256": "881686dd187c4f90ccd41bffff4b85af9a99cda876e20ad0b52e1a8b8772d4f1"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+        "sha256": "e754b316cd5e20d3492c2a84e9e5c3ebd0e85dcaf2f381e19539bc41ba96df22"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+        "sha256": "d96b7eb58da6a9f1f4502a0e7ec4f02d8d9695f91f4274b47dce8f92bd30b059"
+      },
+      {
+        "path": "TestResults/integration/logichost/integration-logichost.trx",
+        "sha256": "08ec5729ecf046e422b8bb25a0c3a8fda5d5cf230ddb3da30f2129381940155a"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+        "sha256": "66b592a00f5c3e625907441b2896e75914874044efc53bde4f766ec05c268310"
+      },
+      {
+        "path": "TestResults/integration/cameraagent/integration-cameraagent.trx",
+        "sha256": "79291886aebcaee13442379d2507d65ae07a9e6146659b5bfde703dda78a1a3c"
+      },
+      {
+        "path": "TestResults/unit/astronomy/cc6fe02b-67ee-42e8-83d1-a693c0cdc09f/coverage.cobertura.xml",
+        "sha256": "78bb439a34544193c2ba40e23260e713bf5a6686451c9d2653fa59919b248761"
+      },
+      {
+        "path": "TestResults/unit/astronomy/_home-dev-02_2026-10-23_14_16_50/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "78bb439a34544193c2ba40e23260e713bf5a6686451c9d2653fa59919b248761"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-logichost/575222d4-f4ab-404f-9c71-29481a568fc0/coverage.cobertura.xml",
+        "sha256": "2876bab84579ccee4fa04ffdbb79d3f4d6c4e46ac10db44ddc786d4046e9eff1"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-logichost/_home-dev-02_2026-10-23_14_33_37/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "2876bab84579ccee4fa04ffdbb79d3f4d6c4e46ac10db44ddc786d4046e9eff1"
+      },
+      {
+        "path": "TestResults/unit/logichost/42f9de9f-3569-43d0-a827-fe8627702dd5/coverage.cobertura.xml",
+        "sha256": "1f90f00e85d8660daa708ae496dc4f715c24cfcaaf310fb48b2dc0fd5740e5bb"
+      },
+      {
+        "path": "TestResults/unit/logichost/_home-dev-02_2026-10-23_14_32_59/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "1f90f00e85d8660daa708ae496dc4f715c24cfcaaf310fb48b2dc0fd5740e5bb"
+      },
+      {
+        "path": "TestResults/unit/deployment-cli/fd4d8e50-e1a8-4979-9423-0394c38feaa0/coverage.cobertura.xml",
+        "sha256": "2cd463c971166c288d77e9ce5845968275c426bba51be7995098111e937d270c"
+      },
+      {
+        "path": "TestResults/unit/deployment-cli/_home-dev-02_2026-10-23_14_22_15/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "2cd463c971166c288d77e9ce5845968275c426bba51be7995098111e937d270c"
+      },
+      {
+        "path": "TestResults/unit/storage-filesystem/a244ccf2-2bc7-456a-a1e9-95222111cc11/coverage.cobertura.xml",
+        "sha256": "ccc5cf5aea6c22852b80b30b1826807c120582871904e64d541836730f456668"
+      },
+      {
+        "path": "TestResults/unit/storage-filesystem/_home-dev-02_2026-10-23_14_22_09/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "ccc5cf5aea6c22852b80b30b1826807c120582871904e64d541836730f456668"
+      },
+      {
+        "path": "TestResults/unit/processing-runner/bdf326ae-7c22-448d-b78c-c6351f80d3c5/coverage.cobertura.xml",
+        "sha256": "944dd42fec9302f9981a47ff9de0790ad1c3ddcfef70631a2dd20b41dbfae432"
+      },
+      {
+        "path": "TestResults/unit/processing-runner/_home-dev-02_2026-10-23_14_21_53/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "944dd42fec9302f9981a47ff9de0790ad1c3ddcfef70631a2dd20b41dbfae432"
+      },
+      {
+        "path": "TestResults/unit/common/341d9774-d45d-47bc-a10c-e5a243a2ca65/coverage.cobertura.xml",
+        "sha256": "2e8bd04a5da6f8003fbfa7464966da721c5e0c7b019320c1fedc607a6ffa546b"
+      },
+      {
+        "path": "TestResults/unit/common/_home-dev-02_2026-10-23_14_24_34/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "2e8bd04a5da6f8003fbfa7464966da721c5e0c7b019320c1fedc607a6ffa546b"
+      },
+      {
+        "path": "TestResults/unit/catalog-sqlite/7a59ac4a-33bd-40d6-bb66-cf037ee34964/coverage.cobertura.xml",
+        "sha256": "b335bebf6696982dbc890fb024bd8a84f79b846b8314af1d83a2b3189878e022"
+      },
+      {
+        "path": "TestResults/unit/catalog-sqlite/_home-dev-02_2026-10-23_14_22_06/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "b335bebf6696982dbc890fb024bd8a84f79b846b8314af1d83a2b3189878e022"
+      },
+      {
+        "path": "TestResults/unit/fleet-contracts/29f734a3-730b-487a-a661-4911307231b3/coverage.cobertura.xml",
+        "sha256": "8359a05e7944d11da13a6c024e990df5f5ad4a7b19133dd3d15313ae6dcac47e"
+      },
+      {
+        "path": "TestResults/unit/fleet-contracts/_home-dev-02_2026-10-23_14_24_40/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "8359a05e7944d11da13a6c024e990df5f5ad4a7b19133dd3d15313ae6dcac47e"
+      },
+      {
+        "path": "TestResults/unit/architecture/de62eb1a-cad0-4f8b-b28b-5deefbd9bcf5/coverage.cobertura.xml",
+        "sha256": "aa615cf94177380f223c8b2ef8fa8e30eca637bed8d9d2f069a55ad286c7439c"
+      },
+      {
+        "path": "TestResults/unit/architecture/_home-dev-02_2026-10-23_14_24_47/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "aa615cf94177380f223c8b2ef8fa8e30eca637bed8d9d2f069a55ad286c7439c"
+      },
+      {
+        "path": "TestResults/unit/cameraagent/dd69216a-6e06-460e-a8b3-fde162ca5a3b/coverage.cobertura.xml",
+        "sha256": "4f6316f864533a3e6c6d29c958c7db63d070de90482c6780a4b43fdf9dfcea35"
+      },
+      {
+        "path": "TestResults/unit/cameraagent/_home-dev-02_2026-10-23_14_25_55/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "4f6316f864533a3e6c6d29c958c7db63d070de90482c6780a4b43fdf9dfcea35"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-acceptance/caa18caf-b5eb-4ffe-b5bd-d33363862de4/coverage.cobertura.xml",
+        "sha256": "11b955950365b8ae681d9d584443eb927e5645f4c394f97e288b89d1a3cfc0c8"
+      },
+      {
+        "path": "TestResults/unit/cameraagent-acceptance/_home-dev-02_2026-10-23_14_32_47/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "11b955950365b8ae681d9d584443eb927e5645f4c394f97e288b89d1a3cfc0c8"
+      },
+      {
+        "path": "TestResults/unit/test-support/c376c0f9-bb76-40e8-b185-33b15e00b59f/coverage.cobertura.xml",
+        "sha256": "c686b71524b72461584579ab321932049fe446fcd0d42d5b03b95bca55a7f0e9"
+      },
+      {
+        "path": "TestResults/unit/test-support/_home-dev-02_2026-10-23_14_24_45/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "c686b71524b72461584579ab321932049fe446fcd0d42d5b03b95bca55a7f0e9"
+      },
+      {
+        "path": "TestResults/unit/processing/a6f4ec10-2ae3-46f0-877f-48bd71518bb6/coverage.cobertura.xml",
+        "sha256": "e30b31d40c2aee58c8c81496e5220f0ed363ad003d871295d6018a7854ea5346"
+      },
+      {
+        "path": "TestResults/unit/processing/_home-dev-02_2026-10-23_14_21_25/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "e30b31d40c2aee58c8c81496e5220f0ed363ad003d871295d6018a7854ea5346"
+      },
+      {
+        "path": "TestResults/unit/deployment-distribution/38dfd200-d764-4394-a7fd-c6e178feed9e/coverage.cobertura.xml",
+        "sha256": "01fd0a3ac8126f0f68325283e592ede497b06f2a214cb30be7e0e4fe36422835"
+      },
+      {
+        "path": "TestResults/unit/deployment-distribution/_home-dev-02_2026-10-23_14_24_24/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "01fd0a3ac8126f0f68325283e592ede497b06f2a214cb30be7e0e4fe36422835"
+      },
+      {
+        "path": "TestResults/unit/agent-core/b113522e-d322-4b18-92c9-36d2c3cb9eaa/coverage.cobertura.xml",
+        "sha256": "eaee00442de3dfe8ed7522a3477e5d48a9283d8b182bed0fa9bf0b54589e75b4"
+      },
+      {
+        "path": "TestResults/unit/agent-core/_home-dev-02_2026-10-23_14_24_31/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "eaee00442de3dfe8ed7522a3477e5d48a9283d8b182bed0fa9bf0b54589e75b4"
+      },
+      {
+        "path": "TestResults/unit/imaging/38e61f22-2946-4444-8633-5f44db3c708b/coverage.cobertura.xml",
+        "sha256": "2ceaf1d852717ab1f55d5ed347fee6b4dc548c7039fd2df162afb1971707ef86"
+      },
+      {
+        "path": "TestResults/unit/imaging/_home-dev-02_2026-10-23_14_20_53/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "2ceaf1d852717ab1f55d5ed347fee6b4dc548c7039fd2df162afb1971707ef86"
+      },
+      {
+        "path": "TestResults/integration/astronomy/b248b120-83e9-419b-8ab4-83ede1adc808/coverage.cobertura.xml",
+        "sha256": "453bf6d065bc96a1e266a0f0972837b9c46c81e3c4853c77d3d780adbd16e2a9"
+      },
+      {
+        "path": "TestResults/integration/astronomy/_home-dev-02_2026-10-23_14_50_24/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "453bf6d065bc96a1e266a0f0972837b9c46c81e3c4853c77d3d780adbd16e2a9"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-logichost/7262fcc8-55b0-40e0-b3e1-95523dd1aef4/coverage.cobertura.xml",
+        "sha256": "a05587888dc8c2766ababb24a8609c74abc2c1ce02a6e51b45d4aa2a072e3ce8"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-logichost/_home-dev-02_2026-10-23_14_51_44/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "a05587888dc8c2766ababb24a8609c74abc2c1ce02a6e51b45d4aa2a072e3ce8"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-standalone/5025c5ed-b8c2-4f0c-89e7-0dd0b33444d6/coverage.cobertura.xml",
+        "sha256": "e54dfec6c431a001dd5b03f2375fe3cfe5d8a12280e0a2a3e9e4538e39aed6c1"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-standalone/_home-dev-02_2026-10-23_14_49_34/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "e54dfec6c431a001dd5b03f2375fe3cfe5d8a12280e0a2a3e9e4538e39aed6c1"
+      },
+      {
+        "path": "TestResults/integration/logichost/0118203b-162a-40ae-9d30-fcf1ff28f0b7/coverage.cobertura.xml",
+        "sha256": "e1677fc2f4157e7dcdf0c2e0247c26725ab4ef0c7e39f578215ea3a7cc7828dc"
+      },
+      {
+        "path": "TestResults/integration/logichost/_home-dev-02_2026-10-23_14_34_29/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "e1677fc2f4157e7dcdf0c2e0247c26725ab4ef0c7e39f578215ea3a7cc7828dc"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-storage/01c0ce55-844b-4200-859b-805cbcd5a685/coverage.cobertura.xml",
+        "sha256": "e4c732502aa345acf23cdb690bf3789540fd533db5234d79cafb14df3c3b94b2"
+      },
+      {
+        "path": "TestResults/integration/cameraagent-storage/_home-dev-02_2026-10-23_14_48_37/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "e4c732502aa345acf23cdb690bf3789540fd533db5234d79cafb14df3c3b94b2"
+      },
+      {
+        "path": "TestResults/integration/cameraagent/93f83a80-1ec8-4326-b440-dd6ee73131da/coverage.cobertura.xml",
+        "sha256": "87eb41ee2dbc0dc834b4f3a1cccb82b1ebbc7964cdff23a1d114448b9785f4d9"
+      },
+      {
+        "path": "TestResults/integration/cameraagent/_home-dev-02_2026-10-23_14_50_47/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "87eb41ee2dbc0dc834b4f3a1cccb82b1ebbc7964cdff23a1d114448b9785f4d9"
+      },
+      {
+        "path": "TestResults/architecture/931a5405-0748-4f44-a6c5-b0818cd5233b/coverage.cobertura.xml",
+        "sha256": "673ef9619098e299293290659c99e0d97f1d47025dbd8e4c4c70dc95f59e4757"
+      },
+      {
+        "path": "TestResults/architecture/_home-dev-02_2026-10-23_14_55_33/In/home-dev-02/coverage.cobertura.xml",
+        "sha256": "673ef9619098e299293290659c99e0d97f1d47025dbd8e4c4c70dc95f59e4757"
+      }
+    ]
+  },
+  "corrections": {
+    "head": "26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+    "baseline": "dffab19529c55769e25fbd162fe06b248386eed0",
+    "baseRef": "origin/evidence-1618-baseline",
+    "verifiedBaseRefSha": "dffab19529c55769e25fbd162fe06b248386eed0",
+    "originalLedger": "gate/ledger.json",
+    "steps": [
+      {
+        "name": "coverage-policy",
+        "command": [
+          "./scripts/coverage:policy",
+          "pull_request",
+          "evidence-1618-baseline"
+        ],
+        "environmentSource": null,
+        "reason": "Original wrapper passed immutable SHA as a branch name. A scratch-only remote-tracking alias was created and verified at the immutable baseline; target branch was not changed.",
+        "exitCode": 0,
+        "seconds": 0.106,
+        "log": "gate/coverage-policy-corrected.log",
+        "logSha256": "bc01e01e8fe3b4c862dcf287f13954ec2f2737d6d1a1fbb90d55cc329051fddf"
+      },
+      {
+        "name": "migration-model-logichost",
+        "command": [
+          "dotnet",
+          "ef",
+          "migrations",
+          "has-pending-model-changes",
+          "--project",
+          "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+          "--startup-project",
+          "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+          "--context",
+          "HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext",
+          "--configuration",
+          "Release",
+          "--no-build"
+        ],
+        "environmentSource": ".github/workflows/ci.yml migrations-logichost/Reject pending LogicHost model changes",
+        "reason": "Original wrapper omitted the canonical CI design-time connection environment.",
+        "exitCode": 0,
+        "seconds": 2.655,
+        "log": "gate/migration-model-logichost-corrected.log",
+        "logSha256": "815c5cd494b61a9d8737ba7653cd05fb05926e7b40a924683fa4eef4ca87566c"
+      }
+    ]
+  },
+  "outcomes": {
+    "source": {
+      "candidate": {
+        "head": "26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+        "trackedChanges": ""
+      },
+      "baseline": {
+        "head": "dffab19529c55769e25fbd162fe06b248386eed0",
+        "trackedChanges": ""
+      }
+    },
+    "gateGroups": {
+      "unit": {
+        "trxCount": 21,
+        "outcomes": {
+          "Passed": 13553,
+          "NotExecuted": 124
+        },
+        "total": 13677
+      },
+      "integration": {
+        "trxCount": 6,
+        "outcomes": {
+          "Passed": 948
+        },
+        "total": 948
+      },
+      "architecture-unit": {
+        "trxCount": 1,
+        "outcomes": {
+          "Passed": 32
+        },
+        "total": 32
+      },
+      "architecture-integration": {
+        "trxCount": 1,
+        "outcomes": {
+          "Passed": 7
+        },
+        "total": 7
+      }
+    },
+    "gateTrx": [
+      {
+        "path": "candidate/TestResults/architecture/architecture-publish.trx",
+        "sha256": "e8c76740d84fb51a485346224ca428d69374cb4104bc87629addba4f2c16c1dd",
+        "assemblies": [
+          "hvo.skymonitor.architecture.tests.dll"
+        ],
+        "counters": {
+          "total": 7,
+          "executed": 7,
+          "passed": 7,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 7
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/architecture-unit/architecture-unit.trx",
+        "sha256": "1a124c0b9800af19dc46cfb22ad4f303c58c20f26e90f473441cb02f49e68c36",
+        "assemblies": [
+          "hvo.skymonitor.architecture.tests.dll"
+        ],
+        "counters": {
+          "total": 32,
+          "executed": 32,
+          "passed": 32,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 32
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/astronomy/integration-astronomy.trx",
+        "sha256": "881686dd187c4f90ccd41bffff4b85af9a99cda876e20ad0b52e1a8b8772d4f1",
+        "assemblies": [
+          "hvo.skymonitor.astronomy.tests.dll"
+        ],
+        "counters": {
+          "total": 2,
+          "executed": 2,
+          "passed": 2,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 2
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/cameraagent/integration-cameraagent.trx",
+        "sha256": "79291886aebcaee13442379d2507d65ae07a9e6146659b5bfde703dda78a1a3c",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 35,
+          "executed": 35,
+          "passed": 35,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 35
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+        "sha256": "e754b316cd5e20d3492c2a84e9e5c3ebd0e85dcaf2f381e19539bc41ba96df22",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.logichost.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 24,
+          "executed": 24,
+          "passed": 24,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 24
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+        "sha256": "d96b7eb58da6a9f1f4502a0e7ec4f02d8d9695f91f4274b47dce8f92bd30b059",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 19,
+          "executed": 19,
+          "passed": 19,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 19
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+        "sha256": "66b592a00f5c3e625907441b2896e75914874044efc53bde4f766ec05c268310",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.tests.dll"
+        ],
+        "counters": {
+          "total": 286,
+          "executed": 286,
+          "passed": 286,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 286
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/integration/logichost/integration-logichost.trx",
+        "sha256": "08ec5729ecf046e422b8bb25a0c3a8fda5d5cf230ddb3da30f2129381940155a",
+        "assemblies": [
+          "hvo.skymonitor.logichost.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 582,
+          "executed": 582,
+          "passed": 582,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 582
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/agent-core/unit-agent-core.trx",
+        "sha256": "7136e39d9c2b49bda2501fb6e52ad8ba6b1cf18023b114b11be6ae5fea5078f3",
+        "assemblies": [
+          "hvo.skymonitor.agentcore.tests.dll"
+        ],
+        "counters": {
+          "total": 91,
+          "executed": 91,
+          "passed": 91,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 91
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/architecture/unit-architecture.trx",
+        "sha256": "94fbc909ee7e19f9efcd7e19ccbefb0eb49dded38ac6a8323e9d905eab81cd54",
+        "assemblies": [
+          "hvo.skymonitor.architecture.tests.dll"
+        ],
+        "counters": {
+          "total": 32,
+          "executed": 32,
+          "passed": 32,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 32
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/astronomy/unit-astronomy.trx",
+        "sha256": "9666164798262b8edec425dd6eb0c9125810b103afb31595410ac5c7a1cfb5aa",
+        "assemblies": [
+          "hvo.skymonitor.astronomy.tests.dll"
+        ],
+        "counters": {
+          "total": 781,
+          "executed": 781,
+          "passed": 781,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 781
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/cameraagent/unit-cameraagent.trx",
+        "sha256": "c61699af6698c48b5594e38114f5f9f1fbf79be3a9e3bb71f53635482864fc8b",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.tests.dll"
+        ],
+        "counters": {
+          "total": 7106,
+          "executed": 7105,
+          "passed": 7105,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 7105,
+          "NotExecuted": 1
+        },
+        "nonPassingResults": [
+          {
+            "name": "InitializeOnMacOsRejectsBeforeRuntimeAccess",
+            "outcome": "NotExecuted",
+            "message": "Test is only supported on OSX"
+          }
+        ]
+      },
+      {
+        "path": "candidate/TestResults/unit/cameraagent-acceptance/unit-cameraagent-acceptance.trx",
+        "sha256": "d8d0cf56a1fd376b43eac98ef9befe5c9388b0017d69b695852b072e6836d4e5",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 30,
+          "executed": 30,
+          "passed": 30,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 30
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/cameraagent-integration/unit-cameraagent-integration.trx",
+        "sha256": "26b7f424cde4b65bc3b2620911c5ed9383c11728679efdce664dd2bc89282bf6",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 6,
+          "executed": 6,
+          "passed": 6,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 6
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/cameraagent-logichost/unit-cameraagent-logichost.trx",
+        "sha256": "f7b9573724834ad9a1ae2960b5a8a2a693b0703615136ad1a21629f919b901d5",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.logichost.tests.dll"
+        ],
+        "counters": {
+          "total": 76,
+          "executed": 76,
+          "passed": 76,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 76
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/cameraagent-logichost-integration/unit-cameraagent-logichost-integration.trx",
+        "sha256": "cc093029f347f4087d4f5d1fe611d4365e3bd4cbb0cb2bfbd5c9c8a5b285ef30",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.logichost.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 4,
+          "executed": 4,
+          "passed": 4,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 4
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/catalog-sqlite/unit-catalog-sqlite.trx",
+        "sha256": "2c1dd2aa5518953d71d0d62cb4a5eddbc481e7fac9dbc892fa7839ceeab8247d",
+        "assemblies": [
+          "hvo.skymonitor.catalog.sqlite.tests.dll"
+        ],
+        "counters": {
+          "total": 296,
+          "executed": 296,
+          "passed": 296,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 296
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/catalog-sqlite-performance/unit-catalog-sqlite-performance.trx",
+        "sha256": "eb2b69d70725a303c9a3c601b38278a73c7a73051dbf794c1e557a1f3a206875",
+        "assemblies": [
+          "hvo.skymonitor.catalog.sqlite.performancetests.dll"
+        ],
+        "counters": {
+          "total": 4,
+          "executed": 4,
+          "passed": 4,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 4
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/common/unit-common.trx",
+        "sha256": "9826eb2649a4d007f3206c2264e62cf1714e4963c3a1432a90fef72ee4541c6f",
+        "assemblies": [
+          "hvo.skymonitor.common.tests.dll"
+        ],
+        "counters": {
+          "total": 48,
+          "executed": 48,
+          "passed": 48,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 48
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/deployment-cli/unit-deployment-cli.trx",
+        "sha256": "a5c5a94530083fd8305451af59d26de342e75340e30fb005f1e779a194a3af06",
+        "assemblies": [
+          "hvo.skymonitor.deployment.cli.tests.dll"
+        ],
+        "counters": {
+          "total": 2638,
+          "executed": 2517,
+          "passed": 2517,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 2517,
+          "NotExecuted": 121
+        },
+        "nonPassingResults": [
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-repotags-lowercase\",\"!The installer will not use the offline archive {name}'s manifest.json: an object in it names one property in two spellings, which Docker's JSON decoder reads as the same name.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\"  leading and inner\\r\\n\",\"  leading and inner\",False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanOfAReRun_SaysWhatWouldChangeAndChangesNothing",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_DefaultLimits_AreRecordedRenderedAndKeptByAnIdenticalReRun",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-tag\",\"is not the image release v{version} names: its manifest.json does not describe that image under {reference} alone.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\" skymonitor\\n\",\" skymonitor\",False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReRunDescribingADifferentInstance_IsRefusedAndNamesWhatDiffers",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-config\",\"is not the image release v{version} names: its manifest.json does not describe that image under {reference} alone.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"containerd-name\",\"is not the image release v{version} names: its OCI layout would name the loaded image something other than {reference}.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_OwnerAuthenticationFailureThenResume_PreservesPasswordAuthorityUntilSeeded",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseFromTheRegistry_PullsItsDigestAndRecordsTheRelease",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"tampered-config\",\"is not the image release v{version} names: its {platform} configuration is not the blob {config} names.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_DockerHostWithLessMemoryThanTheLimit_InstallsWithTheLimitItAskedFor",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanOfAFreshInstall_CreatesNoFileAnywhereNotEvenATemporaryOne",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ProductRootStorageThreshold_IsTwiceTheBundleAndArchivePlusHeadroom",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"manifest-of-another-platform\",\"is not the image release v{version} names: its image index does not list {platform} once, as {manifest}.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing (\"org.opencontainers.image.version\",\"9.9.9\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeThatFailsVerification_RestoresTheRecordedLimitsAndAReRunCarriesOn",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"manifest-unknown-field\",\"is not the image release v{version} names: its {platform} manifest has a field 'subject', which the installer does not accept.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_CompletedReRunKeepsTheRetainedSnapshotAndAnyOtherInstallDropsIt",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "PathPrograms_InstallAndPlan_ReportVerifiedProgramsAndRecordThem (False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RefusalAfterTheInstallHasWritten_IsAFailureNotARefusal",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"config-alias\",\"holds an entry named '{config-alias}', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"created-label\",\"The CameraAgent image {reference} in its registry is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\"  leading and inner\\n\",\"  leading and inner\",False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"dot-alias\",\"holds an entry named './index.json', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PlanOfAReRun_CreatesNoFileDirectoryLockOrTemporaryFile",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"created-other\",\"holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"other-content\",\"The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its image is not the content {digest} names. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "PathPrograms_InstallAndPlan_ReportVerifiedProgramsAndRecordThem (True)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layout-twice\",\"holds index.json twice.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_TamperedOfflineArchive_IsRefusedBeforeDockerOrTheProductRootIsTouched",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"component-label\",\"holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_AsRoot_IsRefusedBeforeAnythingIsCreated",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "PathPrograms_MismatchedReleaseProgram_IsRefusedBeforeDockerOrWrites (\"hvo-sky-install\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"other-manifest\",\"The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its {platform} manifest is not the one release.json names. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layout-link\",\"holds index.json as something other than a file.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ArchiveLoadDockerRejects_ClaimsNothingAndTheSameInstallThenCompletes",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"other-platform\",\"The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its configuration is not for {platform}. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"backslash-alias\",\"holds an entry named '{backslash-alias}', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseJsonNamingAPropertyTwice_IsRefusedBeforeDockerOrTheFileSystem",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "wildcard-bind",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_WithoutOwnerEmailOrPasswordOption_SeedsTheDocumentedDefaultSignIn",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanOfARegistryReleaseDockerDoesNotHoldYet_IsPlannedFromTheRegistryAndPullsNothing",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"repeated-slash-directory\",\"holds an entry named 'blobs//', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_CatalogBundleWithABadManifest_IsRefusedByThePlanAsByTheRun (\"malformed\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing (\"org.opencontainers.image.revision\",\"ffffffffffffffffffffffffffffffffffffffff\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"oci-layout-unknown-field\",\"is not the image release v{version} names: its oci-layout has a field 'extensions', which the installer does not accept.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_OperatorLimits_AreRecordedAsOperatorSetAndAReRunThatLeavesThemOutKeepsThem",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanOfAFreshInstall_ListsWhatItWouldCreateAndCreatesNothing",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallRecord_HoldsNoSecretBearingFieldOrValue",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"unavailable\",\"The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-repotags-long-s\",\"!The installer will not use the offline archive {name}'s manifest.json: an object in it names a property with a character outside ASCII, which Docker's JSON decoder can read as another property's name.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeWhoseRestoreFails_IsRedeployedFromTheRecordsByTheNextRun",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "CatalogSelect_CrossLineage_SelectsSideBySideRootAndRollsBackExactly",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE and HVO_HYG_V44_CATALOG_BUNDLE to run cross-lineage transitions."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"catalog-label\",\"!The CameraAgent image does not declare the required current configuration and catalog contracts.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"other-config\",\"The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its {platform} configuration is not the one release.json names. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"short-layer\",\"is not the image release v{version} names: its {platform} layer {layer} is not the size its manifest gives.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"version-label\",\"The CameraAgent image {reference} in its registry is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires. Nothing was pulled.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"missing-config\",\"is not the image release v{version} names: it holds no {platform} configuration.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeCancelledRightAfterItIsVerified_RestoresTheRecordedLimits",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanUnderTheContainerdImageStore_NamesTheImageTheInstallReports (False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"no-classic-manifest\",\"is not the image release v{version} names: it holds no manifest.json.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "Correction1_CompletedLegacyReleaseInstall_ReRunPublishesPrograms",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PulledImageDockerReportsAsAnotherRelease_IsRemovedBeforeAnythingIsClaimed",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layout-version\",\"is not the image release v{version} names: its OCI layout is not version 1.0.0.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"config-kelvin-alias\",\"!The installer will not use the offline archive {name}'s {platform} configuration: an object in it names a property with a character outside ASCII, which Docker's JSON decoder can read as another property's name.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_HumanInstallOnAHostWithLessMemoryThanTheLimit_RendersTheAdvisoryOnStandardError",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeCancelledAtRecordPublication_IsCommittedAndTheNextRunSettlesTheRecord",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_CompletedInstanceRecordedWithoutLimits_ReRunKeepsTheOriginalLimits",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"contract-label\",\"!The CameraAgent image does not declare the required current configuration and catalog contracts.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"absolute-alias\",\"holds an entry named '/index.json', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_GeneratePassword_SeedsARandomTemporaryPasswordAndNamesItsFile",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"extra-blob\",\"is not the image release v{version} names: it holds {extra}, which its image does not use.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReRunWithLimitsTheHostCannotEnforce_IsRefusedBeforeAnythingChanges",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "CatalogSelectAndRollback_CurrentContractsConverge",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions."
+          },
+          {
+            "name": "InstallAsync_ReRunAndItsPlanWithAnUnreadableIdentityDatabase_AreBothRefusedWithNothingChanged",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layer-alias\",\"holds an entry named '{layer-alias}', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layout-unknown-field\",\"is not the image release v{version} names: its OCI layout index's image has a field 'urls', which the installer does not accept.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_JsonInstallOnAHostWithLessMemoryThanTheLimit_ReportsTheAdvisoryAsAWarning",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ImageThatIsNotTheReleaseImage_FailsBeforeComposeStarts (True)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_JsonDryRun_ReportsTheMemoryAdvisoryAsAWarningAndNoneOnASupportedHost",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"version-label\",\"holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"config-property-twice\",\"!The installer will not use the offline archive {name}'s {platform} configuration: an object in it names the same property twice.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"created-label\",\"holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-manifest-alias\",\"holds an entry named 'blobs/../manifest.json', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"contract-label\",\"The CameraAgent image does not declare the required current configuration and catalog contracts.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"buildx-too-old\",\"The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (unknown flag: --format). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "PathPrograms_MismatchedReleaseProgram_IsRefusedBeforeDockerOrWrites (\"hvo-sky\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeLostBeforeItsManifest_IsSettledByTheNextRun",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"classic-unknown-field\",\"is not the image release v{version} names: its manifest.json has a field 'Parent', which the installer does not accept.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\"trailing and inner  \\n\",\"trailing and inner  \",False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_PlanUnderTheContainerdImageStore_NamesTheImageTheInstallReports (True)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\"trailing and inner  \\r\\n\",\"trailing and inner  \",False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing (\"io.hvo.skymonitor.component\",\"LogicHost\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"index-alias\",\"holds an entry named 'metadata/../index.json', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReRunWithNothingToChange_LeavesEveryFileUntouchedAndDeploysNothing",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_LimitsChangeInterruptedAfterItsManifest_IsFinishedByTheNextReRun",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_CancelledWhileTheReleaseImageIsImported_RemovesItAndClaimsNothing (False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_UnmetHostPrerequisites_RefuseInstallAndDryRunBeforeAnythingIsCreated",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"trailing-slash-file\",\"holds an entry named 'index.json/', which is not the canonical spelling of a path.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"missing-layer\",\"is not the image release v{version} names: it holds no {platform} layer {layer}.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "lan-bind",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ImageThatIsNotTheReleaseImage_FailsBeforeComposeStarts (False)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds (\"skymonitor\\r\\n\",\"skymonitor\",True)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"no-layout-version\",\"is not the image release v{version} names: it holds no OCI layout version.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReRunGivingALimitToAnInstanceRecordedWithoutLimits_MovesTheOtherToTheDefault",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing (\"org.opencontainers.image.created\",\"2026-10-17T18:00:01Z\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReRunWithTheSameAnswers_ReportsNothingToChangeAndWritesNothing",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReRunWithNewLimits_RecreatesTheContainerAndRecordsThem",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed (\"catalog-label\",\"The CameraAgent image does not declare the required current configuration and catalog contracts.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseFolder_LoadsItsOfflineArchiveAndRecordsTheRelease",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"other-image\",\"is not the image release v{version} names: its OCI layout names an image other than {digest}.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "CatalogInstall_SharedRootDeniedToTheRuntimeUser_PreparesThroughTheHelperAndInstalls",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the catalog install contract."
+          },
+          {
+            "name": "InstallAsync_CatalogBundleWithABadManifest_IsRefusedByThePlanAsByTheRun (\"unsupported\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"revision-label\",\"holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"corrupt-layer\",\"is not the image release v{version} names: its {platform} layer {layer} is not the blob that digest names.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_CancelledWhileTheReleaseImageIsImported_RemovesItAndClaimsNothing (True)",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"unknown-entry\",\"holds an entry named 'repositories', which is not part of an OCI image layout.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          },
+          {
+            "name": "InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded (\"layer-link\",\"holds {layer-name} as something other than a file.\")",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract."
+          }
+        ]
+      },
+      {
+        "path": "candidate/TestResults/unit/deployment-distribution/unit-deployment-distribution.trx",
+        "sha256": "e9179214651dce7fb65d48eaed1140952a8bd560ecd6a88f12d6ace9ca59b13b",
+        "assemblies": [
+          "hvo.skymonitor.deployment.distribution.tests.dll"
+        ],
+        "counters": {
+          "total": 116,
+          "executed": 115,
+          "passed": 115,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 115,
+          "NotExecuted": 1
+        },
+        "nonPassingResults": [
+          {
+            "name": "CreateRelease_CatalogBundle_IsAttachedUnderItsOwnVersionWithItsFilesChecksums",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE to attach the approved catalog."
+          }
+        ]
+      },
+      {
+        "path": "candidate/TestResults/unit/fleet-contracts/unit-fleet-contracts.trx",
+        "sha256": "84363a56c2df5dad9d5dd2b1ff0f1171349310086faf8d2dc35b0d0cdaa4ec0e",
+        "assemblies": [
+          "hvo.skymonitor.fleet.contracts.tests.dll"
+        ],
+        "counters": {
+          "total": 11,
+          "executed": 11,
+          "passed": 11,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 11
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/imaging/unit-imaging.trx",
+        "sha256": "9f8031dde0a10c2fb3723c2e4cbdcb0d25fdafd45169261e58858bb712241fdb",
+        "assemblies": [
+          "hvo.skymonitor.imaging.tests.dll"
+        ],
+        "counters": {
+          "total": 493,
+          "executed": 493,
+          "passed": 493,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 493
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/logichost/unit-logichost.trx",
+        "sha256": "90e1fc74429c83a4811ef783300ebf02a8f328e7e313d21fb4561c725cbd8f31",
+        "assemblies": [
+          "hvo.skymonitor.logichost.tests.dll"
+        ],
+        "counters": {
+          "total": 958,
+          "executed": 957,
+          "passed": 957,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 957,
+          "NotExecuted": 1
+        },
+        "nonPassingResults": [
+          {
+            "name": "AmbiguousDelete_IsNotAReachableStateForThisProvider",
+            "outcome": "NotExecuted",
+            "message": "Assert.Inconclusive. This provider's transport cannot lose a response after a delete; ambiguity is not a reachable state."
+          }
+        ]
+      },
+      {
+        "path": "candidate/TestResults/unit/logichost-integration/unit-logichost-integration.trx",
+        "sha256": "0c0a416198a4f21830bed8d4062db2ea8aa06bf07e556d194170f2336aea0a72",
+        "assemblies": [
+          "hvo.skymonitor.logichost.integrationtests.dll"
+        ],
+        "counters": {
+          "total": 18,
+          "executed": 18,
+          "passed": 18,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 18
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/processing/unit-processing.trx",
+        "sha256": "440db7db53005c905031105566b4881d99a05a19f500b6b1de90be6d7d8d1946",
+        "assemblies": [
+          "hvo.skymonitor.processing.tests.dll"
+        ],
+        "counters": {
+          "total": 852,
+          "executed": 852,
+          "passed": 852,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 852
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/processing-runner/unit-processing-runner.trx",
+        "sha256": "42be0650e00b4ec9641d4a39af920ecdb7a702d07fd0f50eb4774052a0f186db",
+        "assemblies": [
+          "hvo.skymonitor.processingrunner.tests.dll"
+        ],
+        "counters": {
+          "total": 29,
+          "executed": 29,
+          "passed": 29,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 29
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/storage-filesystem/unit-storage-filesystem.trx",
+        "sha256": "0db531652902d51bb0d7716706db3400cb94a4e04309afa2b10bfbeb0538581d",
+        "assemblies": [
+          "hvo.skymonitor.storage.filesystem.tests.dll"
+        ],
+        "counters": {
+          "total": 77,
+          "executed": 77,
+          "passed": 77,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 77
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "candidate/TestResults/unit/test-support/unit-test-support.trx",
+        "sha256": "7b6afa97af0bd54fdae1988a298a10bc2311821caf2c62eb666ce1f3bf0110a3",
+        "assemblies": [
+          "hvo.skymonitor.testsupport.tests.dll"
+        ],
+        "counters": {
+          "total": 11,
+          "executed": 11,
+          "passed": 11,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 11
+        },
+        "nonPassingResults": []
+      }
+    ],
+    "cohortTrx": [
+      {
+        "path": "b1/trx/attribution.trx",
+        "sha256": "45d39a0daf0e166a573e3f1325c4d91562447c879b648ca16b28b1e35859a43a",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "i1/trx/attribution.trx",
+        "sha256": "2a1f6bf94a52baadb45aded5cef1675f694005ffd087f67d7ef0f97f7602652a",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "c1/trx/attribution.trx",
+        "sha256": "3aeb5c488527bccca291fc11a8db05177a6ea9763191319751ef5bea1371e867",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "c2/trx/attribution.trx",
+        "sha256": "7d46bc2d714f8ccf29d5e4cd640640e0d4a57fe2a8264be8455ab7708af1e384",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "i2/trx/attribution.trx",
+        "sha256": "c9932947e0eef7cd445ff23d32882589e7c3ae2c3558b7f2f61e6fcf106ac7e2",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "i3/trx/attribution.trx",
+        "sha256": "2aaeb7934b67312e987a4dcb03f83509634191bceec0715c76e3a5914622cdfb",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "c3/trx/attribution.trx",
+        "sha256": "2f7933376340669e3187b93364f821c55daaa2fb6651b5d5e635a9e3a39602df",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "c4/trx/attribution.trx",
+        "sha256": "6eb2ba81e6889a37deebd7a1743227ef75cfc607ec21a01413084ab94d19c985",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "i4/trx/attribution.trx",
+        "sha256": "10a2b7f7287d01b56827b3d6a9b71c3440ffff437a4e89662fa2fb6fc46c908b",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "i5/trx/attribution.trx",
+        "sha256": "0f58a686bb4b0d0b2f927d2d54f89d404edc2609febba5c5e0ea6db4f17a0ede",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "c5/trx/attribution.trx",
+        "sha256": "a5f7c40050f204ae9fda6926c1f5eb9d1b36f7be9c48871380dbd63ed7aa87d6",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      },
+      {
+        "path": "b2/trx/attribution.trx",
+        "sha256": "0a571706c75c55bfda3dcb1a715fea7b067d5df81877e466f2888c8d59422402",
+        "assemblies": [
+          "hvo.skymonitor.cameraagent.acceptancetests.dll"
+        ],
+        "counters": {
+          "total": 1,
+          "executed": 1,
+          "passed": 1,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 1
+        },
+        "nonPassingResults": []
+      }
+    ],
+    "regressionTrx": {
+      "path": "reg/trx/regression.trx",
+      "sha256": "40ce730698aec7f99863c3045ffb34c1e8bf705ca6f5e95674ee580c2fd9be61",
+      "assemblies": [
+        "hvo.skymonitor.cameraagent.acceptancetests.dll"
+      ],
+      "counters": {
+        "total": 1,
+        "executed": 1,
+        "passed": 1,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "outcomes": {
+        "Passed": 1
+      },
+      "nonPassingResults": []
+    },
+    "coverage": {
+      "cameraagent": {
+        "path": "candidate/coverage-report/cameraagent/Cobertura.xml",
+        "sha256": "330a932e37367422f321f1425369dc068adef3f97d0f4a8fe7877ec068622326",
+        "attributes": {
+          "line-rate": "0.9010374422333302",
+          "branch-rate": "0.7665280518748238",
+          "lines-covered": "95537",
+          "lines-valid": "106030",
+          "branches-covered": "43502",
+          "branches-valid": "56752",
+          "complexity": "66484",
+          "version": "0",
+          "timestamp": "1792792582"
+        },
+        "enforcedAggregate": {
+          "linePercent": 90.0423,
+          "linesCovered": 94883,
+          "linesValid": 105376,
+          "branchPercent": 76.6528,
+          "branchesCovered": 43502,
+          "branchesValid": 56752,
+          "log": "gate/40-coverage-cameraagent.log",
+          "exitCode": 0
+        }
+      },
+      "combined": {
+        "path": "candidate/coverage-report/combined/Cobertura.xml",
+        "sha256": "e987b608474bc6e1f831071cc18be0c39715996c2b94d34722e5335ac7df50ad",
+        "attributes": {
+          "line-rate": "0.349643796466958",
+          "branch-rate": "0.20695757462860337",
+          "lines-covered": "67533",
+          "lines-valid": "193148",
+          "branches-covered": "22220",
+          "branches-valid": "107365",
+          "complexity": "128580",
+          "version": "0",
+          "timestamp": "1792792591"
+        },
+        "enforcedAggregate": {
+          "linePercent": 35.0832,
+          "linesCovered": 67533,
+          "linesValid": 192494,
+          "branchPercent": 20.6958,
+          "branchesCovered": 22220,
+          "branchesValid": 107365,
+          "log": "gate/41-coverage-combined.log",
+          "exitCode": 0
+        }
+      }
+    },
+    "gateOriginalExitCode": 1,
+    "gateOriginalFailedSteps": [
+      {
+        "name": "coverage-policy",
+        "command": "./scripts/coverage:policy pull_request dffab19529c55769e25fbd162fe06b248386eed0",
+        "seconds": 0.091,
+        "exitCode": 1,
+        "logSha256": "811cf061008a43d26f0b90fd60cf319a4536ed023789e2456fdc5b51bcbc288f"
+      },
+      {
+        "name": "migration-model-logichost",
+        "command": "dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build",
+        "seconds": 1.211,
+        "exitCode": 1,
+        "logSha256": "e38c00cbbe5061ff7a842084f5a50574d72cdf0b261595d9626d59bdb0b6ee60"
+      }
+    ],
+    "gateCorrections": {
+      "head": "26ac697fdc71eb7b822e8138cc1c26691fecbf97",
+      "baseline": "dffab19529c55769e25fbd162fe06b248386eed0",
+      "baseRef": "origin/evidence-1618-baseline",
+      "verifiedBaseRefSha": "dffab19529c55769e25fbd162fe06b248386eed0",
+      "originalLedger": "gate/ledger.json",
+      "steps": [
+        {
+          "name": "coverage-policy",
+          "command": [
+            "./scripts/coverage:policy",
+            "pull_request",
+            "evidence-1618-baseline"
+          ],
+          "environmentSource": null,
+          "reason": "Original wrapper passed immutable SHA as a branch name. A scratch-only remote-tracking alias was created and verified at the immutable baseline; target branch was not changed.",
+          "exitCode": 0,
+          "seconds": 0.106,
+          "log": "gate/coverage-policy-corrected.log",
+          "logSha256": "bc01e01e8fe3b4c862dcf287f13954ec2f2737d6d1a1fbb90d55cc329051fddf"
+        },
+        {
+          "name": "migration-model-logichost",
+          "command": [
+            "dotnet",
+            "ef",
+            "migrations",
+            "has-pending-model-changes",
+            "--project",
+            "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+            "--startup-project",
+            "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+            "--context",
+            "HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext",
+            "--configuration",
+            "Release",
+            "--no-build"
+          ],
+          "environmentSource": ".github/workflows/ci.yml migrations-logichost/Reject pending LogicHost model changes",
+          "reason": "Original wrapper omitted the canonical CI design-time connection environment.",
+          "exitCode": 0,
+          "seconds": 2.655,
+          "log": "gate/migration-model-logichost-corrected.log",
+          "logSha256": "815c5cd494b61a9d8737ba7653cd05fb05926e7b40a924683fa4eef4ca87566c"
+        }
+      ]
+    },
+    "gateEffectiveSteps": {
+      "tools": 0,
+      "restore": 0,
+      "debug": 0,
+      "release": 0,
+      "format": 0,
+      "packages": 0,
+      "ci:shell-syntax": 0,
+      "test:ci-classification": 0,
+      "test:coordination-guard": 0,
+      "test:pr-review-tools": 0,
+      "unit0": 0,
+      "unit1": 0,
+      "unit2": 0,
+      "unit3": 0,
+      "unit4": 0,
+      "unit5": 0,
+      "unit6": 0,
+      "unit7": 0,
+      "unit8": 0,
+      "unit9": 0,
+      "unit10": 0,
+      "unit11": 0,
+      "unit12": 0,
+      "unit13": 0,
+      "unit14": 0,
+      "unit15": 0,
+      "unit16": 0,
+      "unit17": 0,
+      "unit18": 0,
+      "unit19": 0,
+      "unit20": 0,
+      "integration0": 0,
+      "integration1": 0,
+      "integration2": 0,
+      "integration3": 0,
+      "integration4": 0,
+      "integration5": 0,
+      "architecture-unit": 0,
+      "architecture-integration": 0,
+      "publish-cameraagent": 0,
+      "coverage-cameraagent": 0,
+      "coverage-combined": 0,
+      "coverage-policy": 0,
+      "migration-shape-cameraagent": 0,
+      "migration-model-cameraagent": 0,
+      "migration-shape-logichost": 0,
+      "migration-model-logichost": 0,
+      "docs": 0,
+      "category-cameraagent": 0
+    },
+    "evidenceValidation": {
+      "exitCode": 0,
+      "workloadChecks": 24,
+      "path": "evidence-validation.json"
+    },
+    "summary": {
+      "exitCode": 0,
+      "trials": 12
+    },
+    "correctionSetupAttempt1": {
+      "exitCode": 1,
+      "checksStarted": 0,
+      "path": "gate/correction-setup-attempt1.json"
+    },
+    "skipReasons": {
+      "Test is only supported on OSX": 1,
+      "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract.": 74,
+      "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.": 44,
+      "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE and HVO_HYG_V44_CATALOG_BUNDLE to run cross-lineage transitions.": 1,
+      "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.": 1,
+      "Assert.Inconclusive. HVO_PRODUCTION_CATALOG_BUNDLE is required for the catalog install contract.": 1,
+      "Assert.Inconclusive. Set HVO_PRODUCTION_CATALOG_BUNDLE to attach the approved catalog.": 1,
+      "Assert.Inconclusive. This provider's transport cannot lose a response after a delete; ambiguity is not a reachable state.": 1
+    },
+    "postprocessingExitCodes": {
+      "cohortWithOriginalGate": 1,
+      "correctedChecks": 0,
+      "evidenceValidator": 0,
+      "summarize": 0,
+      "outcomeCollection": 0
+    },
+    "artifacts": {
+      "evidence-validation.json": {
+        "bytes": 3875,
+        "sha256": "2197518d87e492649d498651e299d26a8c4c6407a70aff0533ca766afef4b334"
+      },
+      "summary/issue-1618-retained-attribution.json.gz": {
+        "bytes": 1182701,
+        "sha256": "5c61454e01604e573e7bb86693367898c6e321bef940365ac1f8d9d332faedd2"
+      },
+      "summary/issue-1618-retained-summary.json": {
+        "bytes": 737569,
+        "sha256": "418bc87fc444c05381af56cc2dfc429dcc06b9d202458d476e522db360c909c1"
+      },
+      "gate/ledger.json": {
+        "bytes": 38111,
+        "sha256": "991275d1354d9d155335ba56fbbad19748d654d08479b7c56ef472072f2a3f03"
+      },
+      "gate/corrections-ledger.json": {
+        "bytes": 1787,
+        "sha256": "f91c4fa0ed1f06b3519310efa895e891cf708a51c075775e914c9972709dd2c2"
+      }
+    },
+    "performanceCautions": [
+      "Solar listener i4 steady median 381.2 ms versus other listener medians 175.21025 to 207.58765 ms.",
+      "Fixed no-listener c4 steady median 239.90375 ms versus other controls 164.3132 to 184.83825 ms.",
+      "Bracketing baseline medians increased from b1 to b2: fixed 176.31455 to 194.16935 ms; solar 184.2228 to 201.63855 ms. Timing variability limits precise overhead inference."
+    ]
+  },
+  "evidenceValidation": {
+    "corpus": "8285C4E1B9B1435C2A42A0DF6CBC311B43F74966040D3B245637ECF4FCD9E81B",
+    "checks": [
+      {
+        "trial": "b1",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "baseline-listener"
+      },
+      {
+        "trial": "b1",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "baseline-listener"
+      },
+      {
+        "trial": "i1",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i1",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "c1",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c1",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c2",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c2",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "i2",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i2",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i3",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i3",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "c3",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c3",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c4",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c4",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "i4",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i4",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i5",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "i5",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "listener"
+      },
+      {
+        "trial": "c5",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "c5",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "no-listener"
+      },
+      {
+        "trial": "b2",
+        "schedule": "fixed-all-day",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "baseline-listener"
+      },
+      {
+        "trial": "b2",
+        "schedule": "solar-astronomical-night",
+        "steadyChecks": 30,
+        "retainedMatch": true,
+        "mode": "baseline-listener"
+      }
+    ]
+  }
+}

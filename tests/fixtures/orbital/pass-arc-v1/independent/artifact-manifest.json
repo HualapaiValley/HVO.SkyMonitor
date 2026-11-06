@@ -1,0 +1,121 @@
+{
+  "schema": "independent-actual-eop-pass-arc-artifact-manifest-v1",
+  "selfExcluded": true,
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 10117,
+      "sha256": "2F05C8BB1E48B37394A815696FBC160D18CACF0EA57C429E351542779F9B2DCE"
+    },
+    {
+      "path": "cases.json",
+      "bytes": 10467363,
+      "sha256": "582D78B90C17E890C6757D997293C69658739ABDC36A7CC59FB3EF6A53EB1EDC"
+    },
+    {
+      "path": "coordinate-reference-generator.py",
+      "bytes": 13890,
+      "sha256": "47DEFF6FA0B236598EB6EBF99716C69E2A6A8E08256E4695C3F7048BED51F4D7"
+    },
+    {
+      "path": "generate.py",
+      "bytes": 14116,
+      "sha256": "84B6E3842143606A4023A0C37C8C6A875490BA7FD11B3B7839CBFF6D89BF0206"
+    },
+    {
+      "path": "inputs/SGP4-VER-original.TLE",
+      "bytes": 8616,
+      "sha256": "D246D1D9D768ACE445A38A965713FA9BA52D80FD8A41A0502FF83D7ACFFE2881"
+    },
+    {
+      "path": "inputs/SGP4-VER.TLE",
+      "bytes": 8505,
+      "sha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7"
+    },
+    {
+      "path": "inputs/coordinate-source-manifest-original.json",
+      "bytes": 6345,
+      "sha256": "5DF05E3651BC289DE489D7EF57996B7380E2A02C72654ECC6B78AA918EE6D012"
+    },
+    {
+      "path": "inputs/final-2000.finals2000A",
+      "bytes": 930,
+      "sha256": "F13535B5EC4F6B4013C610AB7C6B41ED2C4A03B5B030C08FD171D975B6C47FA2"
+    },
+    {
+      "path": "inputs/final-2006.finals2000A",
+      "bytes": 930,
+      "sha256": "68317FDD7BD2191EBC8EE86219F314D48415BE76C7ACA575659426A4B109C573"
+    },
+    {
+      "path": "inputs/gp-source-facts.json",
+      "bytes": 3173,
+      "sha256": "2FCA7AC8926E890D271E5BC4AE1E018CF21BDFE4CFAB535DEDDFFB28CC93C134"
+    },
+    {
+      "path": "inputs/leap-seconds.list",
+      "bytes": 5065,
+      "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433"
+    },
+    {
+      "path": "inputs/orbital-reference-manifest-original.json",
+      "bytes": 2429,
+      "sha256": "9E014CD5F99F037ADDC67A098818019DDA4E243EAEEE32634A525DF3F178F759"
+    },
+    {
+      "path": "inputs/pass-references-original.json",
+      "bytes": 43519,
+      "sha256": "9280F5FF6AB295B0D50613380BFD58A544DA9002FDA994CC85A37AFE2E7B8C87"
+    },
+    {
+      "path": "inputs/predicted-2026.finals2000A",
+      "bytes": 1080,
+      "sha256": "A11AD9627063DC10FA59FE25B9F9C07F0BACF81EA65F9405F40E4055DAA42E8B"
+    },
+    {
+      "path": "inputs/verification-fixture-provenance-original.json",
+      "bytes": 1641,
+      "sha256": "124CE988902CCA8775D0E0EF5BEE7CC8BBA217C34B189F6BCA03AAD8189F1918"
+    },
+    {
+      "path": "notices/AHOLINCH-LICENSE.txt",
+      "bytes": 1210,
+      "sha256": "88D9B4EB60579C191EC391CA04C16130572D7EEDC4A86DAA58BF28C6E14C9BCD"
+    },
+    {
+      "path": "notices/JPLEPHEM-LICENSE.txt",
+      "bytes": 1084,
+      "sha256": "31BBF940BAA5DA362EF4E16CCDA663CF09A096673B9EAC30413F899C1055981D"
+    },
+    {
+      "path": "notices/NUMPY-LICENSE.txt",
+      "bytes": 46794,
+      "sha256": "4860083CAA0DE2AC3292CA98BD074BD8F45D8B32624E37B1E70A240BFF61E488"
+    },
+    {
+      "path": "notices/coordinate-PYTHON-SGP4-LICENSE.txt",
+      "bytes": 1086,
+      "sha256": "4474EA9ECCBB829C6BC3652381BFE78B1C815DE021D4A284A2A5B383A374D030"
+    },
+    {
+      "path": "notices/coordinate-SKYFIELD-LICENSE.txt",
+      "bytes": 1101,
+      "sha256": "4B3CAD9301FC389F9545079B43384659B908E94D6AB271474B3F6DA2BD20D65A"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 54,
+      "sha256": "94EECA9F456CEB85943E88575151C70204F86C9703E7EA3ED05389B19C8B56AF"
+    },
+    {
+      "path": "software-hashes.json",
+      "bytes": 1523,
+      "sha256": "A1705DF4ABFAA6AB49216183AEAFBCFDE56B17440DDD60A0476CC8FC2E6D1312"
+    },
+    {
+      "path": "sources.json",
+      "bytes": 7821,
+      "sha256": "3B908CD18D7EC35A717B751A141D4FC60083A645B601080ABC06652E2E4B8A48"
+    }
+  ]
+}

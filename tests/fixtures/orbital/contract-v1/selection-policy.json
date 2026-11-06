@@ -1,0 +1,1 @@
+{"allowStaleDiagnostics":false,"identitySha256":"F55A48B1578B0666D73D1AC8AAB6499A42CF582FD85CD277C3DF1CEE2F6F6A38","maximumEpochOffsetHours":168,"minimumEpochOffsetHours":-24,"sources":[{"priority":0,"sourceDataset":"celestrak:gp:active"}],"staleAbsoluteAgeHours":48,"version":"hvo-gp-selection-v1"}

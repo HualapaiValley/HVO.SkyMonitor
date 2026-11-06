@@ -1,0 +1,50 @@
+/* Software & Catalog's orbital-element snapshot panel. The shared Operations vocabulary (.ops-*, .button, .state-chip,
+   .action-dialog) lives in OperationsLayout.razor.css; this file ports the prototype's .orbital-freshness strip from
+   operations-pages.css and lays out the facts, actions, diagnostics and the resume dialog. */
+
+.orbital-freshness { display: grid; grid-template-columns: minmax(10rem, .8fr) minmax(12rem, 1.5fr) auto; gap: .7rem; align-items: center; margin-top: .7rem; padding: .65rem .75rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); }
+.orbital-freshness strong, .orbital-freshness small { display: block; }
+.orbital-freshness strong { font-size: .72rem; }
+.orbital-freshness small { margin-top: .15rem; color: var(--muted); font-size: .52rem; line-height: 1.4; }
+/* The track spans one and a half element-age stale limits, so the stale limit sits at two thirds. */
+.orbital-freshness-track { position: relative; height: .4rem; border-radius: 999px; background: linear-gradient(90deg, var(--green-soft) 0 33.3%, var(--amber-soft) 33.3% 66.7%, var(--red-soft) 66.7%); }
+.orbital-freshness-track i { position: absolute; top: -.18rem; bottom: -.18rem; width: 2px; margin-left: -1px; background: #d9f5dc; box-shadow: 0 0 7px var(--green); }
+.orbital-freshness > span:last-child { color: var(--muted-strong); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .53rem; }
+
+.orbital-reason-body { display: grid; gap: .18rem; min-width: 0; }
+
+dl.ops-facts.software-orbital-facts { margin-top: .7rem; }
+.software-orbital-facts dd { overflow-wrap: anywhere; }
+.software-orbital-facts dd small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; font-weight: 500; }
+.software-orbital-facts a, .orbital-links a { color: var(--blue); }
+
+.orbital-actions { margin-top: .8rem; }
+.orbital-actions .ops-action-icon.warning { color: #e6bd62; background: var(--amber-soft); }
+.orbital-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .7rem; font-size: .6rem; font-weight: 700; }
+.orbital-links a { display: inline-flex; min-height: 2.75rem; align-items: center; }
+
+.orbital-diagnostics { margin-top: .8rem; padding-top: .6rem; border-top: 1px solid var(--border); font-size: .58rem; }
+.orbital-diagnostics summary { min-height: 2.75rem; display: flex; align-items: center; color: var(--muted-strong); cursor: pointer; font-weight: 700; }
+.orbital-diagnostics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem .9rem; margin: .4rem 0 0; }
+.orbital-diagnostics dt { color: var(--muted); font-size: .5rem; letter-spacing: .05em; text-transform: uppercase; }
+.orbital-diagnostics dd { margin: .15rem 0 0; overflow-wrap: anywhere; }
+.orbital-diagnostics code { color: #c4dcfa; font-size: .55rem; overflow-wrap: anywhere; }
+
+dialog.action-dialog.orbital-resume-dialog { width: min(calc(100% - 2rem), 34rem); }
+.orbital-resume-dialog fieldset { min-inline-size: 0; }
+.orbital-resume-facts { display: grid; gap: .45rem; margin: 0 1.1rem .9rem; padding: .7rem; border: 1px solid var(--border); border-radius: .42rem; background: var(--surface-raised); font-size: .65rem; }
+.orbital-resume-facts dt { color: var(--muted); font-size: .5rem; letter-spacing: .05em; text-transform: uppercase; }
+.orbital-resume-facts dd { margin: .12rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.orbital-resume-facts dd small { display: block; margin-top: .1rem; color: var(--muted); font-size: .55rem; font-weight: 500; }
+.orbital-dialog-message { padding: 0 1.1rem; }
+.orbital-dialog-message .ops-note-banner { margin-top: .8rem; margin-bottom: 0; }
+
+@media (max-width: 940px) {
+    .orbital-freshness { grid-template-columns: 1fr; }
+    .orbital-diagnostics dl { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+    dialog.action-dialog.orbital-resume-dialog { width: calc(100% - 1rem); }
+    .orbital-links { justify-content: flex-start; }
+}

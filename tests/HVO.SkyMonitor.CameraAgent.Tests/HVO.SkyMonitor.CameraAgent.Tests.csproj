@@ -47,6 +47,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Fixtures/retained-astrometry/*.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureSatelliteFixture.cs" Link="Capture/Processing/CaptureSatelliteFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredAstrometryFixture.cs" Link="Capture/Processing/MeasuredAstrometryFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredStellarAssociationFixtures.cs" Link="Capture/Processing/MeasuredStellarAssociationFixtures.cs" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/leap-seconds.list" Link="Fixtures/Nominal/leap-seconds.list" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/iss/track-03.json" Link="Fixtures/Nominal/iss/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/space-weather/swpc-v1/**/*" Link="Fixtures/space-weather/swpc-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/time-lapse-v090/working-job.sql" Link="Fixtures/time-lapse-v090/working-job.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/*" Link="Fixtures/orbital-prediction-v1/time/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -119,6 +132,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\fixtures\locations\siding-spring-synthetic-deployment-v1.json" Link="Fixtures\siding-spring-synthetic-deployment-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\fixtures\orbital-acquisition\*.json" Link="Fixtures\orbital-acquisition\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

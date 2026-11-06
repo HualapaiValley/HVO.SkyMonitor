@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Configuration;
@@ -228,33 +229,52 @@ internal sealed class EnvironmentalObservationIngestService(
             }
 
             var record = CreateObservation(observation, resolvedSource.Id, payloadSha256, now, diagnostic);
-            for (var ordinal = 0; ordinal < observation.Lineage.Count; ordinal++)
+            if (observation.Lineage.Count > 0)
             {
-                var reference = observation.Lineage[ordinal];
-                var referencedSourceIdentity = reference.SourceIdentitySha256.ToUpperInvariant();
-                var referencedSource = await dbContext.EnvironmentalObservationSources
-                    .SingleOrDefaultAsync(
-                        item => item.IdentitySha256 == referencedSourceIdentity,
-                        cancellationToken)
+                var sourceHashes = observation.Lineage.Select(reference => reference.SourceIdentitySha256.ToUpperInvariant())
+                    .Distinct(StringComparer.Ordinal).ToArray();
+                var sourceIds = await dbContext.EnvironmentalObservationSources
+                    .Where(item => sourceHashes.Contains(item.IdentitySha256))
+                    .Select(item => new { item.IdentitySha256, item.Id })
+                    .ToDictionaryAsync(item => item.IdentitySha256, item => item.Id, cancellationToken)
                     .ConfigureAwait(false);
-                var referencedObservation = referencedSource is null
-                    ? null
-                    : await dbContext.EnvironmentalObservations.SingleOrDefaultAsync(
-                        item => item.SourceRecordId == referencedSource.Id &&
-                            item.ObservationId == reference.ObservationId,
-                        cancellationToken).ConfigureAwait(false);
-                if (referencedObservation is null)
+                if (sourceIds.Count != sourceHashes.Length)
                 {
-                    telemetry.RecordConflict("lineage");
-                    throw new EnvironmentalObservationConflictException(
-                        "A referenced environmental source observation does not exist.");
+                    throw MissingLineage();
                 }
-                record.Lineage.Add(new EnvironmentalObservationLineageRecord
+
+                // Match qualified pairs in SQL. Separate source/observation sets would over-fetch their cross product.
+                Expression<Func<EnvironmentalObservationRecord, bool>> matches = item => false;
+                // Scalar pair parameters cap this query at 512, irrespective of collection-parameter bucket padding.
+                foreach (var reference in observation.Lineage)
                 {
-                    DerivedObservationRecordId = record.Id,
-                    Ordinal = ordinal,
-                    SourceObservationRecordId = referencedObservation.Id
-                });
+                    var sourceId = sourceIds[reference.SourceIdentitySha256.ToUpperInvariant()];
+                    var observationId = reference.ObservationId;
+                    Expression<Func<EnvironmentalObservationRecord, bool>> qualified = item =>
+                        item.SourceRecordId == sourceId && item.ObservationId == observationId;
+                    matches = Expression.Lambda<Func<EnvironmentalObservationRecord, bool>>(
+                        Expression.OrElse(matches.Body, Expression.Invoke(qualified, matches.Parameters)), matches.Parameters);
+                }
+                var referencedIds = await dbContext.EnvironmentalObservations
+                    .Where(matches)
+                    .Select(item => new { item.SourceRecordId, item.ObservationId, item.Id })
+                    .ToDictionaryAsync(item => (item.SourceRecordId, item.ObservationId), item => item.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                for (var ordinal = 0; ordinal < observation.Lineage.Count; ordinal++)
+                {
+                    var reference = observation.Lineage[ordinal];
+                    var sourceId = sourceIds[reference.SourceIdentitySha256.ToUpperInvariant()];
+                    if (!referencedIds.TryGetValue((sourceId, reference.ObservationId), out var referencedId))
+                    {
+                        throw MissingLineage();
+                    }
+                    record.Lineage.Add(new EnvironmentalObservationLineageRecord
+                    {
+                        DerivedObservationRecordId = record.Id,
+                        Ordinal = ordinal,
+                        SourceObservationRecordId = referencedId
+                    });
+                }
             }
             if (sourceIsNew)
             {
@@ -355,6 +375,13 @@ internal sealed class EnvironmentalObservationIngestService(
             telemetry.RecordIngestFailure();
             activity?.SetTag("environment.outcome", "failed");
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.GetType().Name);
+        }
+
+        EnvironmentalObservationConflictException MissingLineage()
+        {
+            telemetry.RecordConflict("lineage");
+            return new EnvironmentalObservationConflictException(
+                "A referenced environmental source observation does not exist.");
         }
 
         async Task AcquireRetentionLockAsync()

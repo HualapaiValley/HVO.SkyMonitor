@@ -1229,6 +1229,9 @@ public sealed class TransientCandidateDeliveryServiceTests
     [TestMethod]
     public async Task DeliveryTelemetryUsesOnlyFixedStageAndOutcomeTags()
     {
+        using var meter = new Meter(TransientWorkerTelemetry.MeterName);
+        using var existingUnrelatedMeter = new Meter(TransientWorkerTelemetry.MeterName);
+        var existingUnrelatedCounter = existingUnrelatedMeter.CreateCounter<long>("hvo.transient.worker.outcomes");
         var entry = TransientDeliveryTestData.Entry(TransientDeliveryTestData.Submission());
         var journal = new Mock<ITransientCandidateJournal>(MockBehavior.Strict);
         SetupPages(journal, [entry]);
@@ -1241,7 +1244,7 @@ public sealed class TransientCandidateDeliveryServiceTests
         {
             InstrumentPublished = (instrument, meterListener) =>
             {
-                if (instrument.Meter.Name == TransientWorkerTelemetry.MeterName &&
+                if (ReferenceEquals(instrument.Meter, meter) &&
                     instrument.Name == "hvo.transient.worker.outcomes")
                 {
                     meterListener.EnableMeasurementEvents(instrument);
@@ -1260,7 +1263,14 @@ public sealed class TransientCandidateDeliveryServiceTests
                     System.Globalization.CultureInfo.InvariantCulture)!));
         });
         listener.Start();
-        using var telemetry = new TransientWorkerTelemetry();
+        using var newUnrelatedMeter = new Meter(TransientWorkerTelemetry.MeterName);
+        // Same-name meters can publish and record from other parallel fixtures.
+        await Task.Run(() =>
+        {
+            existingUnrelatedCounter.Add(1, new("stage", "unrelated"), new("outcome", "unrelated"));
+            newUnrelatedMeter.CreateCounter<long>("hvo.transient.worker.outcomes").Add(1, new("stage", "unrelated"), new("outcome", "unrelated"));
+        }).ConfigureAwait(false);
+        using var telemetry = new TransientWorkerTelemetry(meter);
         var service = CreateService(journal.Object, transport.Object, TimeProvider.System, telemetry: telemetry);
 
         _ = await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false);

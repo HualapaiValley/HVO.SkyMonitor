@@ -1,0 +1,269 @@
+{
+  "schema": "hvo-satellite-consumer-correction-coverage-evidence-v1",
+  "sourceHead": "6186b9fdac9ba63540560abc4f3251e8b82cba62",
+  "targetProfile": "development/v1: Preflight and Build and Unit",
+  "purpose": "Post-four-finding C1 evidence; before user styling and runtime composition. Native floor failures preserved, not production qualification.",
+  "functionalUnit": {
+    "total": 9217,
+    "passed": 9098,
+    "notExecuted": 119,
+    "failed": 0
+  },
+  "functionalIntegration": {
+    "originalTotal": 843,
+    "originalPassed": 842,
+    "originalFailed": 1,
+    "nativeOriginalExitCode": 1,
+    "replacementCameraAgentTotal": 26,
+    "replacementCameraAgentPassed": 26,
+    "replacementCameraAgentFailed": 0,
+    "sameSourceAndFullTestIdsVerified": true,
+    "other817CasesPreserved": true,
+    "originalFailedTrxSha256": "0C81D1C8ABFCECA2807CA888BF0FF7C59632B2C1096A55B8D31FAF0CD6B1B454",
+    "replayTrxSha256": "00617138A5DE5D8FDE21452A90BDC45F61F856ADD0AB54E0009C8F4A474A293E",
+    "timeoutCause": "unknown; no direct C1 path found; a green replay is not a repair",
+    "diagnosticFollowupIssue": 1428
+  },
+  "reportGenerator": "5.5.11",
+  "coverlet": "10.1.0",
+  "exactCanonicalReportCount": 23,
+  "reports": [
+    {
+      "slot": "unit/astronomy",
+      "rawCoverageSha256": "83247A7AAD1D22862133719A695818834BF37A656550A1124150CDE77F8BD3FC",
+      "stagedCoverageSha256": "83247A7AAD1D22862133719A695818834BF37A656550A1124150CDE77F8BD3FC",
+      "trxSha256": "0049CB4F803F27001F5904E7E1CAB6494CFF4BB0D306A3B63777B950E266A36C",
+      "rawCoverageBytes": 7971082
+    },
+    {
+      "slot": "unit/imaging",
+      "rawCoverageSha256": "99C61885F9D483E96E22EC5953B5BB48670338206095A1F532FC708F894558B0",
+      "stagedCoverageSha256": "99C61885F9D483E96E22EC5953B5BB48670338206095A1F532FC708F894558B0",
+      "trxSha256": "C45A67141580BC4E29CC362CE023CE8E503342A1F383D4ECD732388192DF6AD4",
+      "rawCoverageBytes": 5152649
+    },
+    {
+      "slot": "unit/processing",
+      "rawCoverageSha256": "DB109A9DE8D15DFBFDF15637BADDB4CCA472EA987AF32E29CA984AF2FD808C9D",
+      "stagedCoverageSha256": "DB109A9DE8D15DFBFDF15637BADDB4CCA472EA987AF32E29CA984AF2FD808C9D",
+      "trxSha256": "19E100D6FA060CFDB8F8CFE4D756B5727C74886433B75636510FBDB190CC75F0",
+      "rawCoverageBytes": 8135458
+    },
+    {
+      "slot": "unit/catalog-sqlite",
+      "rawCoverageSha256": "99B560FBCA1CE99AD07FBB0CCE0365D57AF233F93149233EBE8366FF8F3EDAB4",
+      "stagedCoverageSha256": "99B560FBCA1CE99AD07FBB0CCE0365D57AF233F93149233EBE8366FF8F3EDAB4",
+      "trxSha256": "76027C50FE1392F966FFB98FB7B8CA52684648D3089D10C53D7E427354A2E0DD",
+      "rawCoverageBytes": 3428605
+    },
+    {
+      "slot": "unit/storage-filesystem",
+      "rawCoverageSha256": "E01DF2D15C077FB69D9F5E120423057E9B8435B324FC79B881526AFB7DEA3C65",
+      "stagedCoverageSha256": "E01DF2D15C077FB69D9F5E120423057E9B8435B324FC79B881526AFB7DEA3C65",
+      "trxSha256": "D23D96C6D67BFFA9B6B856DBFD4B39776B68D18A74B38E23198E011A99586D31",
+      "rawCoverageBytes": 107186
+    },
+    {
+      "slot": "unit/deployment-cli",
+      "rawCoverageSha256": "B6532614EACCAF4A30CBC5EA9013ECFEBF096721E00206923B6A6D630862A6DE",
+      "stagedCoverageSha256": "B6532614EACCAF4A30CBC5EA9013ECFEBF096721E00206923B6A6D630862A6DE",
+      "trxSha256": "A76EC4EE704EEE0AAA06D79185253E4C57896B7D1B6AED0703EB6C8ACAB6BFDF",
+      "rawCoverageBytes": 7128298
+    },
+    {
+      "slot": "unit/deployment-distribution",
+      "rawCoverageSha256": "7B0D38D9C04EBCB033ABC22A626DE0A6F93A0D560D1C0381C565DEB1218DAE27",
+      "stagedCoverageSha256": "7B0D38D9C04EBCB033ABC22A626DE0A6F93A0D560D1C0381C565DEB1218DAE27",
+      "trxSha256": "B50460FD0416CCF842ACECB8820137990095CDAE93D70D401E13B4D53AB3EBD5",
+      "rawCoverageBytes": 3700960
+    },
+    {
+      "slot": "unit/agent-core",
+      "rawCoverageSha256": "612D3F800F05D7EE74CB9208B7E40BC780AB8770C3425552F582E2DF2628E3EB",
+      "stagedCoverageSha256": "612D3F800F05D7EE74CB9208B7E40BC780AB8770C3425552F582E2DF2628E3EB",
+      "trxSha256": "69D5DB044C33E99D65A3DB1D04D19045BD3CDB225D33E90FBBC1C97FCB286800",
+      "rawCoverageBytes": 7913120
+    },
+    {
+      "slot": "unit/common",
+      "rawCoverageSha256": "5E22519334258379A356E8603FFA03203EAA4626620E015C0E760C7207811465",
+      "stagedCoverageSha256": "5E22519334258379A356E8603FFA03203EAA4626620E015C0E760C7207811465",
+      "trxSha256": "8D89E3E399DAFFC0903F9615AF1632D23B7AACEB649BDCD1FB1BC9EE983DE955",
+      "rawCoverageBytes": 231155
+    },
+    {
+      "slot": "unit/fleet-contracts",
+      "rawCoverageSha256": "C9B85961112A01F66CD593CEBA4125AA2E3ECCC0F4CB53C6652F8DFC7F817735",
+      "stagedCoverageSha256": "C9B85961112A01F66CD593CEBA4125AA2E3ECCC0F4CB53C6652F8DFC7F817735",
+      "trxSha256": "AC9D33C2765267C782734109AC24829BFC80ABBB1CE276D5CD67435A6DAD8633",
+      "rawCoverageBytes": 7908442
+    },
+    {
+      "slot": "unit/test-support",
+      "rawCoverageSha256": "3CD9DFB2520033FB6B742F180AE198A961651CE4AAFC183518AD53BEC02FB41A",
+      "stagedCoverageSha256": "3CD9DFB2520033FB6B742F180AE198A961651CE4AAFC183518AD53BEC02FB41A",
+      "trxSha256": "A69C07031F89E0B39A7F9DA21CA5EBCE62E55F7E538BF07776F078FB12B9450B",
+      "rawCoverageBytes": 7907632
+    },
+    {
+      "slot": "unit/architecture",
+      "rawCoverageSha256": "2C5ACC8ED3604E57AD18FA2A2804CD8B8CB108761BFAF14941AC7C5F5FA08CA4",
+      "stagedCoverageSha256": "2C5ACC8ED3604E57AD18FA2A2804CD8B8CB108761BFAF14941AC7C5F5FA08CA4",
+      "trxSha256": "C1F801572EE2453F32A6A0E1CC5927344ADB75812E89BEF4DB05B693CC96CF04",
+      "rawCoverageBytes": 231
+    },
+    {
+      "slot": "unit/cameraagent",
+      "rawCoverageSha256": "DC26A2E8939BCF0FFCAE5968F22FA13F2E65867F5424A766943761B230AEF46E",
+      "stagedCoverageSha256": "DC26A2E8939BCF0FFCAE5968F22FA13F2E65867F5424A766943761B230AEF46E",
+      "trxSha256": "38802522C5D8A7E028EB17E40F79FBD7DCD765D300A8CE4EA7DDFB74B04595EA",
+      "rawCoverageBytes": 31460558
+    },
+    {
+      "slot": "unit/cameraagent-acceptance",
+      "rawCoverageSha256": "42973CF71B6C852ECFEDED73B879D9507887D2D15E2CDACB1C4FF3CDE3CDAB92",
+      "stagedCoverageSha256": "42973CF71B6C852ECFEDED73B879D9507887D2D15E2CDACB1C4FF3CDE3CDAB92",
+      "trxSha256": "C286FDD2C59CE009C54E319B13FB2FBA81ED830B1BC824504E599EDC23D06B3D",
+      "rawCoverageBytes": 29968922
+    },
+    {
+      "slot": "unit/logichost",
+      "rawCoverageSha256": "2AF646EBED023D3DA0D015A40FFC28E52024FD72D9D6BE977AD9A4C4F5BE2D25",
+      "stagedCoverageSha256": "2AF646EBED023D3DA0D015A40FFC28E52024FD72D9D6BE977AD9A4C4F5BE2D25",
+      "trxSha256": "A8BDE37925529CEFEC96F5D685CD0C57AB61FA6914D7351FDD7B8DF2E66A090F",
+      "rawCoverageBytes": 19798857
+    },
+    {
+      "slot": "unit/cameraagent-logichost",
+      "rawCoverageSha256": "75DFAB6980BDB77EBA92A5472CFD4482FB78034B1B3EE4B4990CB1CFFEF52896",
+      "stagedCoverageSha256": "75DFAB6980BDB77EBA92A5472CFD4482FB78034B1B3EE4B4990CB1CFFEF52896",
+      "trxSha256": "8D315EEEB8254AA806F09C395F57689A5924329FD0E3DA80AE892F93A8A96F75",
+      "rawCoverageBytes": 33474920
+    },
+    {
+      "slot": "integration/cameraagent-storage",
+      "rawCoverageSha256": "EEA8335E0E309B44E3CF603E2AA8EE912D2749E75D88A9865C3813E32B0B1CDE",
+      "stagedCoverageSha256": "EEA8335E0E309B44E3CF603E2AA8EE912D2749E75D88A9865C3813E32B0B1CDE",
+      "trxSha256": "3ED6240697D87DED620F9794DCEC27551E6D49C56DF05CAC6FDA01439FB4C3A3",
+      "rawCoverageBytes": 31123716
+    },
+    {
+      "slot": "integration/cameraagent-standalone",
+      "rawCoverageSha256": "F536CB3A69C3E11B78C4B3E295469E5C569C699BBE088F8C360AB9E5FDC1A49E",
+      "stagedCoverageSha256": "F536CB3A69C3E11B78C4B3E295469E5C569C699BBE088F8C360AB9E5FDC1A49E",
+      "trxSha256": "88EFC0DBBF052CC1A3373C1986624DB7B16CEED320203090AE1C437BD7E0A410",
+      "rawCoverageBytes": 30127633
+    },
+    {
+      "slot": "integration/astronomy",
+      "rawCoverageSha256": "9B673184D861EC3B38A626F7AF7770DAA89B4E1DA38A373CC79D88EFBDB31DA6",
+      "stagedCoverageSha256": "9B673184D861EC3B38A626F7AF7770DAA89B4E1DA38A373CC79D88EFBDB31DA6",
+      "trxSha256": "AA4A5762F3A1DD44E4BBAFACFD91B22CE3C9958D0E42B3E6E94CCAC6B70E1175",
+      "rawCoverageBytes": 7910421
+    },
+    {
+      "slot": "integration/logichost",
+      "rawCoverageSha256": "B9BFA8DE5FBC49EA7A858DE48B98D2D7EDEA42384F44C633102338102EE4523E",
+      "stagedCoverageSha256": "B9BFA8DE5FBC49EA7A858DE48B98D2D7EDEA42384F44C633102338102EE4523E",
+      "trxSha256": "2A0CC888F5CEC0C1E6A8F18B794D376C132855AAB187604AE2C74710AAA988DC",
+      "rawCoverageBytes": 20033048
+    },
+    {
+      "slot": "integration/cameraagent",
+      "rawCoverageSha256": "0251996D2CD33998DBF267723C49804DC2126AF35B58CC0017A7921C5D26A024",
+      "stagedCoverageSha256": "0251996D2CD33998DBF267723C49804DC2126AF35B58CC0017A7921C5D26A024",
+      "trxSha256": "00617138A5DE5D8FDE21452A90BDC45F61F856ADD0AB54E0009C8F4A474A293E",
+      "rawCoverageBytes": 31135227
+    },
+    {
+      "slot": "integration/cameraagent-logichost",
+      "rawCoverageSha256": "DB8C69CDB37036C4FA461EAAE3F09E668E05A37296A31BF87F1ED779B00B21F2",
+      "stagedCoverageSha256": "DB8C69CDB37036C4FA461EAAE3F09E668E05A37296A31BF87F1ED779B00B21F2",
+      "trxSha256": "EBFD4F86C7C27228E87EBBDC2F35359701A1C66EE326A6926AA955C35603EBA9",
+      "rawCoverageBytes": 41116031
+    },
+    {
+      "slot": "architecture",
+      "rawCoverageSha256": "1E7901B3ED1ACEDE380E9E91D2BD15EA059FCF6F67622BEE2F66AD27863DEFF0",
+      "stagedCoverageSha256": "1E7901B3ED1ACEDE380E9E91D2BD15EA059FCF6F67622BEE2F66AD27863DEFF0",
+      "trxSha256": "E229B141989E9974F6EC8E5B173E44725CC608A5C0B60710A9742C5E93B87D93",
+      "rawCoverageBytes": 231
+    }
+  ],
+  "nativeResults": [
+    {
+      "selection": "canonical",
+      "nativeExitCode": 1,
+      "aggregateLine": "Aggregate coverage: line 87.7393 % (169822/193553), branch 73.4166 % (77583/105675)",
+      "failures": [
+        "- tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: line 40.65 % (min 50 %), branch 35.23 % (min 35 %)"
+      ],
+      "nativeLogSha256": "37223EC0812D9F59DC19C7C91064F074BA2EC4E8DD27740E5F49D68FF9D73E50",
+      "mergedXmlSha256": "4FA385FFE14B2E777CB367FA700961D7CE7AB1EEE2A8DEE7FED45CB55759A9EB",
+      "positiveInputCount": 23
+    },
+    {
+      "selection": "shared",
+      "nativeExitCode": 0,
+      "aggregateLine": "Aggregate coverage: line 88.7706 % (29858/33635), branch 73.5414 % (19626/26687)",
+      "failures": [],
+      "nativeLogSha256": "84CFC354E3ACC6A55D5E3FD9F739A8B93189D2F8A20A19C52B46CA306223B211",
+      "mergedXmlSha256": "6A728F957A88A915A0A23CAE85F10BE1AD643D4B925DB467CF727B17FA55FB88",
+      "positiveInputCount": 10
+    },
+    {
+      "selection": "cameraagent",
+      "nativeExitCode": 0,
+      "aggregateLine": "Aggregate coverage: line 84.3286 % (107928/127985), branch 65.7633 % (50207/76345)",
+      "failures": [],
+      "nativeLogSha256": "B8F9F72DDEEA98B7667DDA0C2D236F8FC1291A656A17D940F63ECFFBD950BC8A",
+      "mergedXmlSha256": "F92F5A3B862AB32347EB063A469446B577FA482B307BA3A9E17A7E61411C0AB0",
+      "positiveInputCount": 5
+    },
+    {
+      "selection": "logichost",
+      "nativeExitCode": 1,
+      "aggregateLine": "Aggregate coverage: line 68.9877 % (57851/83857), branch 46.4237 % (21717/46780)",
+      "failures": [
+        "- aggregate: line 68.9877 % (min 71.2600 %), branch 46.4237 % (min 47.7500 %)"
+      ],
+      "nativeLogSha256": "2872EF23DB74F078533778F81486A66EFF7DF8CDDD4E241BFD072911BE1D186D",
+      "mergedXmlSha256": "3841E11385DE8D529928F011BA3513F5FECD10EA74A589BA27CA5E24647ABD69",
+      "positiveInputCount": 2
+    },
+    {
+      "selection": "combined",
+      "nativeExitCode": 0,
+      "aggregateLine": "Aggregate coverage: line 34.8194 % (60225/172964), branch 20.2672 % (19057/94029)",
+      "failures": [],
+      "nativeLogSha256": "7023F508095B2346F978A749176C66EC4E2C4DFFC4D25EAD3EC17BDEF1F8076D",
+      "mergedXmlSha256": "02995B1BA2D292E291D6979F55026649452D0D72A0910496A59D3EA53B3EEC43",
+      "positiveInputCount": 2
+    },
+    {
+      "selection": "delivery",
+      "nativeExitCode": 1,
+      "aggregateLine": "Aggregate coverage: line 48.2049 % (13816/28661), branch 35.4239 % (7162/20218)",
+      "failures": [
+        "- tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: line 40.65 % (min 59 %), branch 35.23 % (min 37 %)"
+      ],
+      "nativeLogSha256": "6CE53A34D3BA3CE5F209AC0F3D75C0C078A3FAC9266F27457FDBA19F9665D4CA",
+      "mergedXmlSha256": "5832DCAA2CE75B5C834276926F045763064FB85C84923DFA11E0FF0D231A3637",
+      "positiveInputCount": 2
+    }
+  ],
+  "allSixPositiveInputConsumptionGuardsPassed": true,
+  "selectorSha256": "681C0819B40E88B8F1F22D74ACF30F8FE93B9F30330E957AD5889EDC70F1FB10",
+  "selectorStaticAudit": "c1-replay-selector-static-audit-20261020T052649Z.json",
+  "executionResultSha256": "420E651CA4D41F01655C8CA0890D099319225D9240FB29F4E999173CC4D27E04",
+  "inputVerification": "Exact TRX collector href, raw/staged SHA identity, own assembly/category/inventory count, unique closed slot and every native completion/count. Only the pinned failed26case slot is replaced by the same complete26case replay.",
+  "waivedFloors": [],
+  "evidenceLimitations": [
+    "Large immutable raw reports remain in the local artifact ledger, not this small portable manifest. Reproduce with the committed source/runbook commands.",
+    "The original843-case failure and26-case replay remain distinct. All119existing qualification-limited Unit skips remain skips.",
+    "Use native enforcer aggregates, which apply baseline exclusions; raw ReportGenerator root rates have a different denominator.",
+    "The prior initial candidate and withdrawn older529 appendix remain separately recorded; no old520replay input is used in this correction rollup.",
+    "Styling0a249 has separate45Processing/16Arc Unit checks plusManual1 and regenerated images; these are not relabeled as a new full-suite or coverage run.",
+    "B528 runtime composition, complete production qualification, optical/measured accuracy and five-second publication cadence remain open."
+  ]
+}

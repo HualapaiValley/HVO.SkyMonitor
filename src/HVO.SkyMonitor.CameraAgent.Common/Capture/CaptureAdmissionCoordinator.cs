@@ -115,6 +115,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private int _gateState;
     private int _inFlight;
     private int _maintenanceInFlight;
+    private readonly HashSet<CaptureMaintenanceLease> _maintenanceLeases = [];
     private TaskCompletionSource? _maintenanceDrainedSignal;
     private int _failedPublicationDuringDrain;
     private int _failClosed;
@@ -221,9 +222,11 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             {
                 return null;
             }
+            var lease = new CaptureMaintenanceLease(this);
+            _maintenanceLeases.Add(lease);
             _maintenanceInFlight++;
+            return lease;
         }
-        return new CaptureMaintenanceLease(this);
     }
 
     /// <summary>
@@ -240,15 +243,18 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             {
                 return null;
             }
+            var lease = new CaptureMaintenanceLease(this);
+            _maintenanceLeases.Add(lease);
             _maintenanceInFlight++;
+            return lease;
         }
-        return new CaptureMaintenanceLease(this);
     }
 
-    private void ReleaseMaintenance()
+    private void ReleaseMaintenance(CaptureMaintenanceLease lease)
     {
         lock (_maintenanceGate)
         {
+            _maintenanceLeases.Remove(lease);
             if (--_maintenanceInFlight == 0)
             {
                 _maintenanceDrainedSignal?.TrySetResult();
@@ -505,10 +511,18 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
     private void CloseGate()
     {
-        if (Interlocked.Exchange(ref _gateState, GateClosed) == GateRunning)
+        CaptureMaintenanceLease[] leases;
+        lock (_maintenanceGate)
         {
-            Volatile.Write(ref _runningSignal, NewSignal());
+            if (Interlocked.Exchange(ref _gateState, GateClosed) == GateRunning)
+            {
+                Volatile.Write(ref _runningSignal, NewSignal());
+            }
+            leases = _maintenanceLeases.ToArray();
         }
+        // Cancellation callbacks run outside admission's lock. Each lease serializes interruption with its disposal.
+        // Signalling never releases a lease: an active deletion must finish before the pause can be acknowledged.
+        foreach (var lease in leases) lease.RequestInterruption();
     }
 
     private void OpenGate()
@@ -602,13 +616,27 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     internal sealed class CaptureMaintenanceLease(CaptureAdmissionCoordinator owner) : IDisposable
     {
         private int _disposed;
+        private readonly CancellationTokenSource _interruption = new();
+
+        internal CancellationToken InterruptionToken => _interruption.Token;
+
+        internal void RequestInterruption()
+        {
+            lock (_interruption)
+            {
+                if (_disposed == 0) _interruption.Cancel();
+            }
+        }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            lock (_interruption)
             {
-                owner.ReleaseMaintenance();
+                if (_disposed != 0) return;
+                _disposed = 1;
+                _interruption.Dispose();
             }
+            owner.ReleaseMaintenance(this);
         }
     }
 

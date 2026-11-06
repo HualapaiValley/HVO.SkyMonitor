@@ -1,0 +1,61 @@
+using System.Diagnostics;
+using System.Text.Json;
+using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace HVO.SkyMonitor.IntegrationTests;
+
+public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
+{
+    [TestMethod]
+    [Timeout(600_000)]
+    public async Task Issue262_SetupOnlyControl()
+    {
+        var output = Environment.GetEnvironmentVariable("HVO_262_CONTROL_OUTPUT")
+            ?? throw new InvalidOperationException("HVO_262_CONTROL_OUTPUT is required.");
+        var root = AssemblyHooks.Fixture.Factory;
+        _ = root.Services;
+        var rows = new List<object>();
+        using var process = Process.GetCurrentProcess();
+        async Task Snapshot(int iteration)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var managed = GC.GetTotalMemory(true);
+            process.Refresh();
+            rows.Add(new { Iteration = iteration, Utc = DateTimeOffset.UtcNow,
+                RootFactories = root.Factories.Count, RssBytes = process.WorkingSet64,
+                ManagedBytes = managed, HeapSizeBytes = GC.GetGCMemoryInfo().HeapSizeBytes,
+                ServerGc = System.Runtime.GCSettings.IsServerGC });
+            await File.WriteAllTextAsync(output, JsonSerializer.Serialize(rows, JsonOptions));
+        }
+        await Snapshot(0);
+        for (var iteration = 1; iteration <= 21; iteration++)
+        {
+            var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+            { InitialCatalog = $"SkyMonitorIssue262Setup_{Guid.NewGuid():N}" }.ConnectionString;
+            var calls = new CallCounter();
+            var factory = CreateFactory(AssemblyHooks.Fixture, connection, new Probe(), calls);
+            try
+            {
+                await using (var provisionScope = root.Services.CreateAsyncScope())
+                {
+                    var db = provisionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    db.Database.SetConnectionString(connection);
+                    await db.Database.MigrateAsync();
+                }
+                await SeedAsync(factory, 0);
+                await using var scope = factory.Services.CreateAsyncScope();
+                var verification = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                Assert.AreEqual(0, await verification.CentralFrames.CountAsync());
+                Assert.AreEqual(0, await verification.CentralArtifacts.CountAsync());
+                Assert.AreEqual(0, await verification.CentralDerivativeJobs.CountAsync());
+                Assert.AreEqual(0, await verification.DeploymentLocationReconciliationWork.CountAsync());
+                Assert.AreEqual(0L, calls.Count);
+            }
+            finally { await factory.DisposeAsync(); await DeleteDatabaseAsync(connection); }
+            await Snapshot(iteration);
+        }
+    }
+}

@@ -15,6 +15,7 @@ internal static class SkyRoutes
     public const string ScheduleStage = Schedule + "/stage";
     public const string ScheduleActivate = Schedule + "/activate";
     public const string ScheduleRollback = Schedule + "/rollback";
+    public const string TimeData = SkyApiClient.OperationsRoute + "time-data";
 }
 
 /// <summary><c>GET /api/v1/operations/info</c>: CameraAgent's versions, process, catalog, restart support and the caller.</summary>

@@ -26,11 +26,13 @@ internal static class BuiltInProcessingProductContracts
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
-            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene => FrameArtifactRole.Metadata,
+            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene or MeasuredStellarAssociations or MeasuredAstrometry =>
+                FrameArtifactRole.Metadata,
             _ => throw new InvalidOperationException("The built-in recipe output contract is unavailable.")
         };
         IReadOnlyList<ProcessingArtifact> sources = request.RecipeName switch
         {
+            MeasuredAstrometry when primary is not null => MeasuredAstrometryRecipe.Sources(request, primary),
             RollingMean => RollingMeanRecipe.SelectWindow(
                 ProcessingRecipeSupport.ResolveMany(request, out _),
                 ProcessingRecipeSupport.ParseOptions<RollingMeanOptions>(
@@ -194,6 +196,60 @@ internal static class BuiltInProcessingProductContracts
                 return false;
             }
         }
+        if (string.Equals(request.RecipeName, MeasuredAstrometry, StringComparison.Ordinal))
+        {
+            try
+            {
+                var solution = MeasuredAstrometryJson.Parse(payload);
+                var context = request.AuxiliaryInputs!.Single(a => a.Name == MeasuredAstrometryJson.ContextInputName);
+                var measured = MeasuredAstrometryRecipe.ResolveMeasured(request);
+                var normalized = System.Text.Json.JsonSerializer.Deserialize<MeasuredAstrometryOptions>(
+                    BuiltInProcessingRecipes.NormalizeOptions(MeasuredAstrometry, request.Options), ProcessingRecipeSupport.SerializerOptions)!;
+                var scene = request.AuxiliaryInputs!.Single(a => a.Name == BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName);
+                var frozenContext = MeasuredAstrometryJson.ParseContext(context.Payload);
+                var raw = ProcessingRecipeSupport.ResolveSingle(request, out _);
+                var measuredPayload = MeasuredStellarAssociationJson.Parse(measured.Payload).Associations;
+                var scenePayload = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Parse(scene.Payload).Scene;
+                if (raw?.Layout is null || measuredPayload is null || scenePayload is null ||
+                    !MeasuredAstrometryRecipe.MeasuredInputIsValid(measured, raw) ||
+                    !MeasuredAstrometryJson.MembershipMatchesMeasured(solution, measuredPayload) ||
+                    !MeasuredAstrometryJson.Same(scene.IdentitySha256, scenePayload.SceneIdentitySha256) ||
+                    MeasuredAstrometryRecipe.LineageFailure(raw, measured, measuredPayload, scenePayload, frozenContext,
+                        new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
+                        MeasuredAstrometryJson.Catalog(frozenContext)) is not null) return false;
+                if (solution.Uncertainty is { } uncertainty)
+                {
+                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload);
+                    HVO.SkyMonitor.Astronomy.AstrometricUncertaintyEvidence.ValidateInputs(uncertainty, solution.Assessment,
+                        new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
+                        MeasuredAstrometryRecipe.Detections(qualified), MeasuredAstrometryRecipe.Covariances(qualified),
+                        solution.Residuals.NativeAssociations, frozenContext.Clock, raw.Layout.Readout, normalized.Solver!, normalized.Uncertainty!);
+                }
+                if (solution.RecipeIdentitySha256 != recipeIdentitySha256 ||
+                    solution.SolutionIdentitySha256 != contentIdentitySha256 ||
+                    !MeasuredAstrometryJson.Same(solution.ContextIdentitySha256, context.IdentitySha256) ||
+                    solution.MeasuredArtifactId != measured.ArtifactId ||
+                    !MeasuredAstrometryJson.Same(solution.MeasuredIdentitySha256, measured.ContentIdentitySha256) ||
+                    !algorithms.SequenceEqual(MeasuredAstrometryRecipe.Algorithms) ||
+                    !MeasuredAstrometryJson.MatchesContext(solution, frozenContext, normalized, scene.IdentitySha256!)) return false;
+            }
+            catch (Exception exception) when (exception is ArgumentException or JsonException or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+        if (string.Equals(request.RecipeName, MeasuredStellarAssociations, StringComparison.Ordinal))
+        {
+            var parsed = MeasuredStellarAssociationJson.Parse(payload);
+            if (!parsed.Validation.IsValid || parsed.Associations is not { } associations ||
+                !string.Equals(associations.AssociationIdentitySha256, contentIdentitySha256, StringComparison.Ordinal) ||
+                !string.Equals(associations.Source.RecipeIdentitySha256,
+                    ProcessingRecipeSupport.ResolveSingle(request, out _)?.RecipeIdentitySha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -324,6 +380,10 @@ internal static class BuiltInProcessingProductContracts
             WeatherCloudOverlay => CreateWeatherCloudOverlayDetails(identity, primary),
             ReferenceCalibration => CreateReferenceCalibrationDetails(request, primary),
             ProjectedScene => CreateProjectedSceneDetails(request, primary),
+            MeasuredStellarAssociations => CreateMeasuredStellarAssociationDetails(primary),
+            MeasuredAstrometry => new(MeasuredAstrometryJson.MediaType, false, null,
+                MeasuredAstrometrySolutionV1.CurrentSchemaVersion, true, null, MeasuredAstrometryRecipe.Algorithms,
+                primary.Integration, primary.Compatibility, null, null),
             _ => throw new InvalidOperationException("The built-in recipe output details are unavailable.")
         };
 
@@ -410,7 +470,7 @@ internal static class BuiltInProcessingProductContracts
             identity.Descriptor.Options.GetProperty("parameters"));
         var algorithms = CreateDisplayAlgorithms(primary, out var exactLayout);
         algorithms.Add(new("annotation-renderer", request.Annotation is { } annotation
-            ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay)
+            ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay, options.ExpectedPositionDiagnostics)
             : AnnotationRenderer.AlgorithmVersion));
         var curatedSources = (request.AuxiliaryInputs ?? [])
             .Where(static value => value.Kind == ProcessingAuxiliaryInputKind.Artifact)
@@ -418,6 +478,7 @@ internal static class BuiltInProcessingProductContracts
         var curatedScene = CuratedDeepSkyAnnotation.FindScene(primary, curatedSources);
         if (curatedScene is not null)
             algorithms.InsertRange(algorithms.Count - 1, CuratedDeepSkyAnnotation.Algorithms(curatedScene));
+        algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);
         if (!packed)
         {
@@ -529,6 +590,19 @@ internal static class BuiltInProcessingProductContracts
             null,
             ProcessingIdentity.ComputePayloadSha256(scene.Payload));
     }
+
+    private static ProductDetails CreateMeasuredStellarAssociationDetails(ProcessingArtifact primary) => new(
+        StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType,
+        false,
+        null,
+        MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+        true,
+        null,
+        MeasuredStellarAssociationRecipe.Algorithms(primary.Layout?.PixelFormat == CameraPixelFormat.BayerRggb16),
+        primary.Integration,
+        primary.Compatibility,
+        null,
+        null);
 
     private static ProductDetails MetadataDetails(
         string mediaType,

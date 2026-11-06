@@ -86,7 +86,7 @@ public sealed class TransientWorkerTelemetry : IDisposable
     public const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Transients";
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
-    private readonly Meter _meter = new(MeterName);
+    private readonly Meter _meter;
     private readonly Counter<long> _outcomes;
     private readonly Histogram<double> _duration;
     private readonly UpDownCounter<long> _backlog;
@@ -95,7 +95,14 @@ public sealed class TransientWorkerTelemetry : IDisposable
     private readonly Counter<long> _evidenceFiles;
 
     public TransientWorkerTelemetry()
+        : this(new Meter(MeterName))
     {
+    }
+
+    /// <param name="meter">The meter owned and disposed by this instance.</param>
+    internal TransientWorkerTelemetry(Meter meter)
+    {
+        _meter = meter;
         _outcomes = _meter.CreateCounter<long>("hvo.transient.worker.outcomes");
         _duration = _meter.CreateHistogram<double>("hvo.transient.worker.duration", "ms");
         _backlog = _meter.CreateUpDownCounter<long>("hvo.transient.worker.backlog");

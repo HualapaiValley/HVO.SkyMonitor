@@ -52,6 +52,44 @@ transaction, security, and publication changes together. Do not split solely to
 increase the number of developers. Contract owners coordinate shared-file and
 migration changes without becoming a repository-wide coordinator.
 
+### SkyMonitor Recovery Ordering Gate
+
+Owner clarification in [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606#issuecomment-6370275612):
+when selecting affected work, check the applicable bounded keep/change outcome
+from #1607 (CameraAgent) or #1608 (LogicHost). It must be recorded before work
+commits to an overlapping persistent-state layout, recovery protocol or
+substantial forward upgrade path. Require each affected story to cite that
+decision and its supported forward inputs. An evidence-backed keep-current
+result clears the gate; neither a new backend/framework nor an implementation
+PR is required. Studies may be scheduled now or later, retain their 60–90 minute
+initial stop rule and credit delivered evidence.
+
+The owner-requested [#1615 recurring-cost reassessment](../validation/upgrade-recovery-cost-1615.md)
+adds the current disposition: simplify the pending-upgrade protocol on existing
+primitives first, retain a controlled snapshot alternative if integrated
+complexity/pause evidence reverses that choice. Overlapping stories cite this
+comparison alongside #1606 and their #1607/#1608 inputs. Its recorded outcome
+clears the reassessment ordering gate; it does not waive implementation
+acceptance or adopt the proposed test-policy reductions.
+
+The affected overlaps include CameraAgent #1059/#1060/#1300 and LogicHost
+#1244/#1245/#589/#591. Scope dependencies to those overlaps. Unrelated features,
+clean-install preparation, release verification and strict existing-behavior
+#893 CLI parity stay independent; this is not a portfolio-wide scheduling hold.
+
+Larger DB/file/schema conversions may be explicitly **forward-only**. Do not
+add reverse migrations, previous-binary readability or rollback implementation
+solely because a conversion is substantial. Declare supported source/target
+inputs, validation, interruption/resume and operator recovery/data-loss
+expectations before conversion. Preserve ordinary protected upgrade checkpoint
+recovery: restoring a paired pre-upgrade point does not reverse a migration.
+This exception neither removes protection universally nor permits silent
+destructive conversion. The [install contract](../hvo-install-contract.md#skymonitor-qualification-and-adoption)
+and [implementation map](skymonitor-upgrade-recovery.md#ordering-and-forward-only-conversions)
+own the detailed boundary; existing required gates remain in force.
+
+### Issue Start Checklist
+
 Before changing files:
 
 1. Confirm the issue is open and mapped to the expected roadmap initiative,

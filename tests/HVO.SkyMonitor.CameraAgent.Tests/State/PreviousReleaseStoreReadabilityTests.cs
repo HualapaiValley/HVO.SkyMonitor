@@ -17,7 +17,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// record a store's version.
 /// </para>
 /// <para>
-/// Two directions are checked. The stores this release creates must be exactly the previous release's. And the
+/// Two directions are checked. The stores this release creates must be exactly the previous release's plus the ones it
+/// declares in <c>StoresAddedByThisRelease</c>, none of which the previous release kept. And the
 /// previous release's stores, once this release has opened them (and migrated them, if it does), must still be exactly
 /// the previous release's. A change the previous release cannot read fails here. It ships only as a declared
 /// <c>snapshotRollbackExceptions</c> entry naming the store, its objects, an image state-boundary label, that label's
@@ -36,8 +37,19 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 [DoNotParallelize]
 public sealed class PreviousReleaseStoreReadabilityTests
 {
+    /// <summary>
+    /// The stores this release creates that the previous release did not keep. A rollback meets each as a store the
+    /// previous release never opens. The release pull request that cuts a version regenerates the fixture with them and
+    /// empties this list.
+    /// </summary>
+    private static readonly string[] StoresAddedByThisRelease =
+    [
+        "raw/.orbital-elements/orbital-elements.db", "raw/.space-weather/space-weather.db",
+        "raw/.calibration-families/calibration-families.db"
+    ];
+
     [TestMethod]
-    public async Task CurrentStores_AreExactlyThePreviousReleaseStores()
+    public async Task CurrentStores_AreThePreviousReleaseStoresPlusTheStoresThisReleaseAdds()
     {
         var previous = PreviousRelease.Load();
         using var harness = CameraAgentStateStoreHarness.Create(previous.StorageRoots);
@@ -48,8 +60,12 @@ public sealed class PreviousReleaseStoreReadabilityTests
             Assert.Inconclusive($"Wrote the previous-release store images to {output}.");
         }
 
-        CollectionAssert.AreEqual(previous.Locations, harness.StoreLocations().ToArray(),
-            "This release keeps a different set of SQLite stores than the previous release.");
+        Assert.IsEmpty(StoresAddedByThisRelease.Intersect(previous.Locations, StringComparer.Ordinal).ToArray(),
+            "A store this release declares it adds is already a previous-release store; remove it from StoresAddedByThisRelease.");
+        CollectionAssert.AreEqual(
+            previous.Locations.Concat(StoresAddedByThisRelease).Order(StringComparer.Ordinal).ToArray(),
+            harness.StoreLocations().ToArray(),
+            "This release keeps a different set of SQLite stores than the previous release plus StoresAddedByThisRelease.");
         AssertReadableByThePreviousRelease(previous, harness);
     }
 

@@ -1,0 +1,9 @@
+{
+  "sample": "starlinks",
+  "rawSha256": "895A7E33922FCE8F8A1FC7BDD757931F40218E7AE2B27638A2726B2B863D4D8D",
+  "pngSha256": "64B0459DD9271AECC55F8156A693143B6BF3DCCD9B53C1226D5A44B53A3E6411",
+  "utc": "2026-10-20T04:00:10+00:00",
+  "componentCount": 2,
+  "predictionCount": 2,
+  "exploratoryOnly": true
+}

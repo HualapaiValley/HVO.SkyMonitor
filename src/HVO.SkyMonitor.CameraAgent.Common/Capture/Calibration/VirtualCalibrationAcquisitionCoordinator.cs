@@ -483,8 +483,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         var agentId = configuration.AgentId!;
         var input = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
         var rigIdentity = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
-        var sensorIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(
-            JsonSerializer.SerializeToElement(configuration.Rig.Sensor));
+        var sensorIdentity = SensorProfileIdentity.ComputeSha256(configuration.Rig.Sensor);
         var rigId = $"rig-{rigIdentity[..16].ToUpperInvariant()}";
         var jobMaterial = string.Join('\n', requestIdentity, agentId, rigId,
             CaptureContractJson.ComputeCanonicalJsonSha256(input));

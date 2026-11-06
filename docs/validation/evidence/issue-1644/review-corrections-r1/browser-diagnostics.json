@@ -1,0 +1,559 @@
+{
+  "schema": "issue-1644-sanitized-browser-diagnostics-v1",
+  "contexts": [
+    {
+      "scenario": "accepted",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/accepted/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0001.trace.zip",
+      "sha256": "736e5896b44b5e57901aede69a5e2d18973a88886db724874a8f2b636f29b652",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 12,
+            "pageErrors": 0,
+            "networkFailures": 6,
+            "timeline": [
+              {
+                "sequence": 1,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 2,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 3,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 4,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 5,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 6,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 7,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 8,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 9,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 10,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 11,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 12,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 13,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 14,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 15,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 16,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 17,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 18,
+                "kind": "console",
+                "detail": "type=ERROR"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "accepted",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/accepted/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0002.trace.zip",
+      "sha256": "bdd7103322788d9278b6ef50adb82549a2ed2eb60322db3ea339cb8c911dd90a",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 0,
+            "pageErrors": 0,
+            "networkFailures": 0,
+            "timeline": []
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "rejected",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/rejected/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0001.trace.zip",
+      "sha256": "95bdc6f28ac132bf1aa55781491e705c957cdafb644e882487fa6ca86054c53c",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 8,
+            "pageErrors": 0,
+            "networkFailures": 4,
+            "timeline": [
+              {
+                "sequence": 1,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 2,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 3,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 4,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 5,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 6,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 7,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 8,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 9,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 10,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 11,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 12,
+                "kind": "console",
+                "detail": "type=ERROR"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "rejected",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/rejected/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0002.trace.zip",
+      "sha256": "bd617703c5ddfd07c931f4be21c2db680a417b6156cb164b8f4fbb498a11932a",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 0,
+            "pageErrors": 0,
+            "networkFailures": 0,
+            "timeline": []
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "unavailable",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/unavailable/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0001.trace.zip",
+      "sha256": "ff9cb6943fcf5f0d9d934e2c18267491839e54f1163bac6686df046aa52561f4",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 8,
+            "pageErrors": 0,
+            "networkFailures": 4,
+            "timeline": [
+              {
+                "sequence": 1,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 2,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 3,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 4,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 5,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 6,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 7,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 8,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 9,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 10,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 11,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 12,
+                "kind": "console",
+                "detail": "type=ERROR"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "unavailable",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/unavailable/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0002.trace.zip",
+      "sha256": "57699a9d52da9d8a57a9becaab9c46165aa3753a099450845b405f3e72f201af",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 0,
+            "pageErrors": 0,
+            "networkFailures": 0,
+            "timeline": []
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "budget",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/budget/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0001.trace.zip",
+      "sha256": "c2f749ca6b2561b1794693e934a50d27cfd96ec54f4cdfa7489989e166256ac6",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 8,
+            "pageErrors": 0,
+            "networkFailures": 4,
+            "timeline": [
+              {
+                "sequence": 1,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 2,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 3,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 4,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 5,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 6,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 7,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 8,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 9,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 10,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 11,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 12,
+                "kind": "console",
+                "detail": "type=ERROR"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "budget",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/budget/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0002.trace.zip",
+      "sha256": "7e3bdbed601079f40d2242f3a0c5dd756d933863593716fdce2c7bd1659156fb",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 0,
+            "pageErrors": 0,
+            "networkFailures": 0,
+            "timeline": []
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "no-data",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/no-data/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0001.trace.zip",
+      "sha256": "9cac1016079f58920de3d69cf1d7b1bae44dc5a2d9a8300bb36a9878dd22ff81",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 8,
+            "pageErrors": 0,
+            "networkFailures": 4,
+            "timeline": [
+              {
+                "sequence": 1,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 2,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 3,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 4,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 5,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 6,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 7,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 8,
+                "kind": "console",
+                "detail": "type=ERROR"
+              },
+              {
+                "sequence": 9,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 10,
+                "kind": "console",
+                "detail": "type=INFO"
+              },
+              {
+                "sequence": 11,
+                "kind": "response-failure",
+                "detail": "status=415 method=GET resource=IMAGE"
+              },
+              {
+                "sequence": 12,
+                "kind": "console",
+                "detail": "type=ERROR"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "no-data",
+      "source": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/no-data/diagnostics/HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync.context-0002.trace.zip",
+      "sha256": "f098b31550c7e9cf35e3bf669f017efcf63a2d8726285bd2416260f9c6d956d1",
+      "trace": {
+        "schema": "hvo-playwright-acceptance-trace-v1",
+        "pages": [
+          {
+            "ordinal": 1,
+            "consoleEvents": 0,
+            "pageErrors": 0,
+            "networkFailures": 0,
+            "timeline": []
+          }
+        ]
+      }
+    }
+  ],
+  "rawLogs": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/browser-short-root.log",
+  "hostLogObservationScope": "Keyword counts in captured TRX stdout/stderr only; not a complete host log audit.",
+  "hostLogObservations": [
+    {
+      "test": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+      "stdoutBytes": 2866,
+      "stderrBytes": 0,
+      "objectDisposedExceptions": 0,
+      "footerReferences": 0,
+      "http415Mentions": 0,
+      "failureLogMentions": 0
+    },
+    {
+      "test": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+      "stdoutBytes": 2866,
+      "stderrBytes": 0,
+      "objectDisposedExceptions": 0,
+      "footerReferences": 0,
+      "http415Mentions": 0,
+      "failureLogMentions": 0
+    },
+    {
+      "test": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+      "stdoutBytes": 2671,
+      "stderrBytes": 0,
+      "objectDisposedExceptions": 0,
+      "footerReferences": 0,
+      "http415Mentions": 0,
+      "failureLogMentions": 0
+    },
+    {
+      "test": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+      "stdoutBytes": 2669,
+      "stderrBytes": 0,
+      "objectDisposedExceptions": 0,
+      "footerReferences": 0,
+      "http415Mentions": 0,
+      "failureLogMentions": 0
+    },
+    {
+      "test": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+      "stdoutBytes": 2671,
+      "stderrBytes": 0,
+      "objectDisposedExceptions": 0,
+      "footerReferences": 0,
+      "http415Mentions": 0,
+      "failureLogMentions": 0
+    }
+  ]
+}

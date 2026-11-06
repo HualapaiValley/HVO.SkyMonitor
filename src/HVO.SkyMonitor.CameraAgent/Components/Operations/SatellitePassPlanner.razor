@@ -1,0 +1,119 @@
+@using HVO.SkyMonitor.Astronomy
+
+<section class="ops-panel satellite-planner" aria-labelledby="satellite-planner-heading" aria-busy="@(_searching ? "true" : "false")">
+    <header class="ops-panel-heading">
+        <div><h2 id="satellite-planner-heading">Satellite pass planner</h2><p>Geometric planning from local orbital data for the selected site and rig. Nothing is captured or scheduled.</p></div>
+        <span class="state-chip pending">Planning only</span>
+    </header>
+    <p class="satellite-note">Sunlight, shadow, brightness, twilight eligibility, clouds and physical orbit uncertainty are unknown here. A predicted path does not establish detection or optical visibility. Baseline geometric horizon; no custom obstruction profile.</p>
+    @if (ContextLoading)
+    {
+        <p role="status">Waiting for the selected site, rig and UTC instant.</p>
+    }
+    else if (Observer is null || Rig is null || AtUtc is null)
+    {
+        <p role="status">The selected site, rig or UTC instant is unavailable. Refresh the site before planning.</p>
+    }
+    else if (Service is null)
+    {
+        <p role="status">Satellite planning is unavailable on this host. The authenticated read service is not registered.</p>
+    }
+    @if (AtUtc is { } start)
+    {
+        <p class="satellite-window">Search starts at <strong>@Timestamp(start)</strong>. Change the scene instant in Visible sky to move this window.</p>
+    }
+    <form class="satellite-form" @onsubmit="SearchAsync" @onsubmit:preventDefault>
+        <label class="ops-field" for="satellite-filter">Name or NORAD number<input id="satellite-filter" maxlength="80" value="@_filter" @oninput="ChangeFilter" /></label>
+        <label class="ops-field" for="satellite-hours">Window (hours, max 24)<input id="satellite-hours" type="number" min="1" max="24" step="1" value="@_hours" @oninput="ChangeHours" /></label>
+        <label class="ops-field" for="satellite-elevation">Minimum elevation (degrees)<input id="satellite-elevation" type="number" min="0" max="89.99" step="any" value="@_minimumElevation" @oninput="ChangeMinimumElevation" /></label>
+        <button type="submit" class="button secondary small" disabled="@(!CanSearch || _searching)">Search passes</button>
+    </form>
+    <p class="satellite-note">At most 32 matching objects and 128 pass rows per search; eight rows per page. Rise and set crossings use the selected minimum elevation. Complete computation does not imply complete satellite population coverage.</p>
+    <div role="status" aria-live="polite">
+        @if (_searching) { <p>Searching the bounded window and loading local data… The first request after data changes may take longer. The 1,500 ms numerical search/arc limits exclude local data loading.</p> }
+        else if (_message is not null) { <p>@_message</p> }
+        else if (CanSearch) { <p>Choose a filter and explicitly search to load passes.</p> }
+    </div>
+    @if (_search is { } search)
+    {
+        var prediction = search.Prediction;
+        <div class="satellite-summary">
+            <span class="state-chip @(prediction.Status == OrbitalExecutionStatus.Complete ? "success" : "warning")">Computation: @prediction.Status / @prediction.Reason</span>
+            <p>Selected @search.SelectedObjects of @search.MatchingObjects matching objects. Population: @prediction.PopulationCoverage.Completeness for @prediction.PopulationCoverage.RequestedPopulation.</p>
+            <p>Evaluated @prediction.EvaluatedObjects of @prediction.RequestedObjects requested objects; @prediction.ReturnedProducts pass products returned; @prediction.Failures.Count object failures reported.</p>
+            @if (search.MatchingObjects > search.SelectedObjects) { <p class="satellite-warning">Object selection truncated; unselected objects were not searched.</p> }
+            @if (search.Passes.Count >= MaximumPasses) { <p class="satellite-warning">Pass row limit reached. This bounded list may omit later passes.</p> }
+            <p>Known population exclusions: @(prediction.PopulationCoverage.KnownExclusions.Count == 0 ? "None declared; global completeness is not established." : string.Join("; ", prediction.PopulationCoverage.KnownExclusions))</p>
+            <p>Source retrieval: @(search.MostRecentSourceRetrievedUtc is { } retrieved ? Timestamp(retrieved) + "; most recent retrieval age at search " + SignedHours((search.CreatedUtc - retrieved).TotalHours) : "Unknown"). This is independent of element epoch age.</p>
+            <p>Original search: @Timestamp(prediction.RequestedInterval.StartUtc) to @Timestamp(prediction.RequestedInterval.EndUtc). Session expires @Timestamp(search.ExpiresUtc).</p>
+        </div>
+        @if (PassCount == 0)
+        {
+            <p role="status">No passes were returned for the selected objects and window. Partial or unavailable computation cannot establish an empty sky.</p>
+        }
+        else
+        {
+            <div class="satellite-table-wrap">
+                <table class="ops-table satellite-table">
+                    <caption>Bounded predicted passes. Select a pass for its original full angular planning arc.</caption>
+                    <thead><tr><th scope="col">Object / detail</th><th scope="col">Start boundary</th><th scope="col">Peak / max elevation</th><th scope="col">End boundary</th><th scope="col">Element age / state</th></tr></thead>
+                    <tbody>
+                        @foreach (var row in Rows)
+                        {
+                            var pass = row.Pass;
+                            <tr @key="pass.ProductSha256" class="@(_selected?.Pass.ProductSha256 == pass.ProductSha256 ? "selected" : null)">
+                                <td><button type="button" class="text-button satellite-select" aria-pressed="@(_selected?.Pass.ProductSha256 == pass.ProductSha256 ? "true" : "false")" @onclick="() => SelectAsync(row)">@row.DisplayName / NORAD @pass.Lineage.ObjectIdentity.CatalogNumber</button></td>
+                                <td><strong>@Boundary(pass.StartBoundary, true)</strong><br />@Timestamp(pass.PassInterval.StartUtc)</td>
+                                <td>@Timestamp(pass.PeakUtc)<br /><strong>@Number(pass.MaximumElevationDegrees)°</strong></td>
+                                <td><strong>@Boundary(pass.EndBoundary, false)</strong><br />@Timestamp(pass.PassInterval.EndUtc)</td>
+                                <td>Original start @SignedHours(pass.Lineage.StartEpochAgeHours)<br />Original end @SignedHours(pass.Lineage.EndEpochAgeHours)<br />@pass.Lineage.Freshness / @pass.Lineage.SourceValidity<br />@pass.Status / @pass.Reason</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <nav class="satellite-pager" aria-label="Satellite pass pages">
+                <button type="button" class="button secondary small" disabled="@(_page == 0)" @onclick="PreviousPage">Previous</button>
+                <span>Page @(_page + 1) of @Pages / @PassCount passes</span>
+                <button type="button" class="button secondary small" disabled="@(_page + 1 >= Pages)" @onclick="NextPage">Next</button>
+            </nav>
+        }
+        <details class="satellite-provenance"><summary>Search source and model identity</summary><dl>
+            <dt>Snapshot SHA256</dt><dd>@prediction.SnapshotManifestSha256</dd>
+            <dt>Search identity SHA256</dt><dd>@search.SearchIdentitySha256</dd>
+            <dt>Selection policy SHA256</dt><dd>@prediction.SelectionPolicySha256</dd>
+            <dt>Propagator</dt><dd>@prediction.Model.Propagator.Name / @prediction.Model.Propagator.Version / @prediction.Model.Propagator.ImplementationSha256</dd>
+            <dt>Model</dt><dd>@prediction.Model.GravityModel / @prediction.Model.TemeConversionVersion / @prediction.Model.Refraction</dd>
+            <dt>Earth orientation</dt><dd>@prediction.Model.EarthOrientationStatus / @prediction.Model.EarthOrientationSha256</dd>
+            <dt>Leap-second table SHA256</dt><dd>@prediction.Model.LeapSecondsSha256</dd>
+            <dt>Geometry basis</dt><dd>Configured rig, lower confidence; not measured calibration. @search.Context.Rig.RigProfileVersion / @search.Context.Rig.RigProfileHashSha256; projection basis @search.Context.Rig.ProjectionCalibrationVersion.</dd>
+        </dl></details>
+    }
+    @if (_selected is { } selected)
+    {
+        <section class="satellite-detail" aria-label="Selected satellite pass" aria-busy="@(_loadingArc ? "true" : "false")">
+            <h3>@selected.DisplayName — full-pass planning detail</h3>
+            <div class="satellite-toggles" role="group" aria-label="Planning display layers">
+                <label><input id="satellite-show-path" type="checkbox" @bind="_showPath" /> Predicted path</label>
+                <label><input id="satellite-show-labels" type="checkbox" @bind="_showLabels" /> Time labels</label>
+                <label><input id="satellite-show-rig" type="checkbox" @bind="_showRigPreview" /> Configured-rig portion</label>
+            </div>
+            <p role="status">@(_loadingArc ? "Loading the original selected pass arc…" : _arcMessage)</p>
+            <details class="satellite-provenance"><summary>Selected pass provenance</summary><dl>
+                <dt>Source dataset</dt><dd>@selected.Pass.Lineage.SourceDataset</dd>
+                <dt>Element epoch</dt><dd>@Timestamp(selected.Pass.Lineage.EpochUtc)</dd>
+                <dt>Record SHA256</dt><dd>@selected.Pass.Lineage.RecordSha256</dd>
+                <dt>Pass SHA256</dt><dd>@selected.Pass.ProductSha256</dd>
+            </dl></details>
+            @if (_arc is { } detail)
+            {
+                <p>Arc computation: @detail.Prediction.Status / @detail.Prediction.Reason. Gaps stay disconnected; unavailable anchors stay unresolved.</p>
+                @foreach (var arc in detail.Prediction.Products.Take(1))
+                {
+                    <SatellitePassArc Arc="arc" Context="detail.Context" ShowPath="_showPath" ShowLabels="_showLabels" ShowRigPreview="_showRigPreview" />
+                }
+                @if (detail.Prediction.Products.Count == 0) { <p>No angular arc is available for this selected pass.</p> }
+            }
+        </section>
+    }
+</section>

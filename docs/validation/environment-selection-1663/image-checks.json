@@ -1,0 +1,52 @@
+[
+  {
+    "State": "explicit-default",
+    "ChangedPixels": 0,
+    "ChangedBoundingBox": null
+  },
+  {
+    "State": "subset",
+    "ChangedPixels": 50883,
+    "ChangedBoundingBox": [
+      12,
+      1049,
+      452,
+      1196
+    ]
+  },
+  {
+    "State": "empty",
+    "ChangedPixels": 64339,
+    "ChangedBoundingBox": [
+      12,
+      1049,
+      452,
+      1204
+    ]
+  },
+  {
+    "State": "rollback",
+    "ChangedPixels": 0,
+    "ChangedBoundingBox": null
+  },
+  {
+    "State": "unavailable",
+    "ChangedPixels": 62836,
+    "ChangedBoundingBox": [
+      12,
+      1049,
+      452,
+      1204
+    ]
+  },
+  {
+    "State": "all-kinds",
+    "ChangedPixels": 24431,
+    "ChangedBoundingBox": [
+      12,
+      1028,
+      452,
+      1196
+    ]
+  }
+]

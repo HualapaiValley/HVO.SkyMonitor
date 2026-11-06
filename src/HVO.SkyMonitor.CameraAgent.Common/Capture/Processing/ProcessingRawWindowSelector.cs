@@ -42,6 +42,10 @@ internal static class ProcessingRawWindowSelector
         command.Parameters.AddWithValue("$agent", current.Capture.AgentId);
         command.Parameters.AddWithValue("$sequence", current.Capture.CaptureSequence);
         command.Parameters.AddWithValue("$candidate_count", Math.Min(512, maximumAllowedInputs * 4));
+        // Only a mixed-gain node declares this label (the graph compiler enforces it), so every other window keeps
+        // gain as a boundary. The frozen normalization plan then decides which gains the recipe may combine.
+        var admitGain = !requirement.CompatibilityLabels.IsDefault &&
+            requirement.CompatibilityLabels.Contains(GainNormalizationCompatibility.WindowLabel, StringComparer.Ordinal);
         var candidates = new List<(long RawRowId, long Sequence, byte[] ManifestJson, string ManifestSha256,
             string DescriptorSha256, string PayloadSha256, string PayloadPath)>();
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -70,7 +74,7 @@ internal static class ProcessingRawWindowSelector
             {
                 throw new InvalidDataException("A raw processing window input has invalid durable evidence.");
             }
-            if (!IsCompatible(current, descriptor))
+            if (!IsCompatible(current, descriptor, admitGain))
             {
                 if (requirement.Kind == ProcessingGraphWindowKind.Trailing) break;
                 continue;
@@ -108,7 +112,7 @@ internal static class ProcessingRawWindowSelector
         return selected;
     }
 
-    private static bool IsCompatible(ReconstructionDescriptor current, ReconstructionDescriptor candidate)
+    internal static bool IsCompatible(ReconstructionDescriptor current, ReconstructionDescriptor candidate, bool admitGain)
         => current.Layout == candidate.Layout &&
            current.Profiles.Rig == candidate.Profiles.Rig &&
            current.Profiles.Calibration == candidate.Profiles.Calibration &&
@@ -117,7 +121,7 @@ internal static class ProcessingRawWindowSelector
            current.Profiles.Processing == candidate.Profiles.Processing &&
            current.Location == candidate.Location &&
            current.Controls.EffectiveExposure == candidate.Controls.EffectiveExposure &&
-           current.Controls.EffectiveGain == candidate.Controls.EffectiveGain &&
+           (admitGain || current.Controls.EffectiveGain == candidate.Controls.EffectiveGain) &&
            current.Controls.EffectiveOffset == candidate.Controls.EffectiveOffset &&
            current.Controls.TemperatureSetpointC == candidate.Controls.TemperatureSetpointC;
 }

@@ -1,0 +1,657 @@
+{
+  "profile": "development-v1",
+  "rawRoot": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER",
+  "browserRoot": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM",
+  "sdk": "10.0.402",
+  "environment": {
+    "HVO_PRODUCTION_CATALOG_BUNDLE": "unset",
+    "MSBUILDDISABLENODEREUSE": "1",
+    "UseSharedCompilation": "false",
+    "unitDockerHost": "unix:///tmp/hvo-no-docker.sock"
+  },
+  "gates": [
+    {
+      "name": "red-reproducers",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence|FullyQualifiedName~RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase' --logger 'trx;LogFileName=red-reproducers.trx' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-reproducers -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:00:18.856717+00:00",
+      "seconds": 36.59310268587433,
+      "exitCode": 1,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-reproducers.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "29f97afc49ae565bd8eac14a0fd894debdccb2a7c957d062ecd08bf6706ba0b9",
+      "logSha256": "6f89557e30dd4dd49e2a89ddc062c1f775c8d1d89389489b864aefa150292413"
+    },
+    {
+      "name": "red-f1",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase' --logger 'trx;LogFileName=red-f1.trx' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-f1 -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:01:07.671284+00:00",
+      "seconds": 38.284399329917505,
+      "exitCode": 1,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-f1.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "90151c19b4befd57cbb43c3122e7357f403d41ac7b9dc3769e5666b3fcdc26b2",
+      "logSha256": "c67aa1c6c9ab7faefad5c2040470538832758e3be6d52494b4a4380de6d955f4"
+    },
+    {
+      "name": "green-reproducers",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence|FullyQualifiedName~RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase|FullyQualifiedName~AstrometricSourceMappingTests' --logger 'trx;LogFileName=green-reproducers.trx' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/green-reproducers -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:02:15.855066+00:00",
+      "seconds": 66.02871379489079,
+      "exitCode": 1,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/green-reproducers.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "0c7e77ca275cfc87cdfc9821a270b56db641661997e42214ebb898a8b2dcfe42",
+      "logSha256": "d0901bfb63d98c70bc73dbe0c399c350c651c73f46b859a946b1677c8c24aef4"
+    },
+    {
+      "name": "green-reproducers-fixed-import",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-restore --configuration Release --filter 'FullyQualifiedName~OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence|FullyQualifiedName~RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase|FullyQualifiedName~AstrometricSourceMappingTests' --logger 'trx;LogFileName=green-reproducers.trx' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/green-reproducers-fixed-import -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:03:32.973519+00:00",
+      "seconds": 35.55894285580143,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/green-reproducers-fixed-import.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "0c7e77ca275cfc87cdfc9821a270b56db641661997e42214ebb898a8b2dcfe42",
+      "logSha256": "815f7846a5eb5200071d61ab94d614640700a27a17bd49c14129ee4a9b868b40"
+    },
+    {
+      "name": "format-verify",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 900 dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "utc": "2026-10-25T00:04:14.727288+00:00",
+      "seconds": 133.0004530288279,
+      "exitCode": 2,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/format-verify.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "0c7e77ca275cfc87cdfc9821a270b56db641661997e42214ebb898a8b2dcfe42",
+      "logSha256": "9f63f6c7413fde9c0e28680be437fec00e0f61226f39bb9adf9f18af609ce4ab"
+    },
+    {
+      "name": "format-whitespace-correction",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 dotnet format whitespace HVO.SkyMonitor.v9.slnx --no-restore --include src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureAstrometricCompositionPersistence.cs src/HVO.SkyMonitor.CameraAgent/Components/Pages/CurrentSkyPage.Astrometry.cs tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/AstrometricSourceMappingTests.cs tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryViewerTests.cs tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryDurabilityTests.cs tests/HVO.SkyMonitor.CameraAgent.Tests/Components/CurrentSkyPageTests.Astrometry.cs",
+      "utc": "2026-10-25T00:04:45.811021+00:00",
+      "seconds": 107.93421631492674,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/format-whitespace-correction.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "71e6cb8f6dd2dd4d52f9be519551f73e7ca36370fbc2fbe378f5fda4c44a1121",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "build-debug",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:06:42.807649+00:00",
+      "seconds": 203.08526414912194,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/build-debug.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "logSha256": "78e991e15abaf1ed56ca0b1912c98e48b380a8c5a847d1b8adedf362352548c5"
+    },
+    {
+      "name": "build-release",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:10:05.921160+00:00",
+      "seconds": 129.5688699579332,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/build-release.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "bf1e4a7954c7f725f599cfb57a3a21124a84f7323175b5daecb4806ed5bf65f6"
+    },
+    {
+      "name": "format-final",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 900 dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "utc": "2026-10-25T00:12:15.519561+00:00",
+      "seconds": 131.06911508203484,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/format-final.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "package-audit",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 ./scripts/package:audit /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/package-audit",
+      "utc": "2026-10-25T00:14:26.612189+00:00",
+      "seconds": 40.349084632936865,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/package-audit.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6"
+    },
+    {
+      "name": "category-audit-build",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 300 dotnet build /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/category-audit/audit.csproj --configuration Release -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:15:06.985146+00:00",
+      "seconds": 1.6033564428798854,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/category-audit-build.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "d1fe06748a0f6b20a4c64d6dfc2ff0b4e2546f527e58bd9b2a8ff3eaa197599d"
+    },
+    {
+      "name": "category-audit-focused",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 600 dotnet /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/category-audit/bin/Release/net10.0/audit.dll",
+      "utc": "2026-10-25T00:15:08.615403+00:00",
+      "seconds": 23.302178240846843,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/category-audit-focused.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "dff39064a16c525fa6cf67beaacf56e8ee3402aeb11ed59d9201c3708a6ad429"
+    },
+    {
+      "name": "browser",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock HVO_ASTROMETRY_VIEWER_FIXTURE_ROOT=/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w HVO_ASTROMETRY_BROWSER_EVIDENCE_ROOT=/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM HVO_EVIDENCE_REVISION=src-tree:795fa4a2e54b80860a1651f595aae84268d18bee dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --no-restore --configuration Release --filter 'FullyQualifiedName~RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/results --logger 'trx;LogFileName=retained-browser.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:15:31.947009+00:00",
+      "seconds": 2.4479369779583067,
+      "exitCode": 1,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/browser.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "55105f84d806303d96e864cd626e2a8f584fb7fd9023b6946c0ba96033d8f833"
+    },
+    {
+      "name": "browser-short-root",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock HVO_ASTROMETRY_VIEWER_FIXTURE_ROOT=/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w HVO_ASTROMETRY_BROWSER_EVIDENCE_ROOT=/tmp/hvo-skymonitor-1644-r1b.YYd6HM HVO_EVIDENCE_REVISION=src-tree:795fa4a2e54b80860a1651f595aae84268d18bee dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --no-restore --configuration Release --filter 'FullyQualifiedName~RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync' --results-directory /tmp/hvo-skymonitor-1644-r1b.YYd6HM/results --logger 'trx;LogFileName=retained-browser.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:16:11.133398+00:00",
+      "seconds": 29.706310891080648,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/browser-short-root.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "c49ee623b93cf02a266384024d63d4bfe1621c20834cf4e30406e031a3a7133c"
+    },
+    {
+      "name": "unit-cameraagent",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-cameraagent --logger 'trx;LogFileName=unit-cameraagent.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:16:40.872094+00:00",
+      "seconds": 394.7179252039641,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/unit-cameraagent.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "0b5360a41b0eada4f237e4a905cdf1e93c0353553eb08e1ce7c2edc3a3456c11"
+    },
+    {
+      "name": "integration-cameraagent-storage",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1800 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/integration-cameraagent-storage --logger 'trx;LogFileName=integration-cameraagent-storage.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:23:15.615324+00:00",
+      "seconds": 140.71419189800508,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/integration-cameraagent-storage.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "20caf5d5904a40f39988342dcfdce2c54438e9ecc8bbe7d043ca9bfcc4c527fe"
+    },
+    {
+      "name": "unit-processing",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-processing --logger 'trx;LogFileName=unit-processing.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:25:36.359173+00:00",
+      "seconds": 62.282452141167596,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/unit-processing.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "8f6147e1dfbd9c0b7d77de771f16c02ae03771b9ac10cf0a1471b296e5780094"
+    },
+    {
+      "name": "unit-imaging",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-imaging --logger 'trx;LogFileName=unit-imaging.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:26:38.667645+00:00",
+      "seconds": 27.64430707297288,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/unit-imaging.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "7119225e12debdc608c51267c011588aeeee69a7bd0a5b91470328fc8ee2f771"
+    },
+    {
+      "name": "unit-logichost",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-logichost --logger 'trx;LogFileName=unit-logichost.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:27:06.341218+00:00",
+      "seconds": 30.270917151123285,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/unit-logichost.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "9c3adc443a47abcd3a9b5cdd9b7cbc508eea84efab0a7541c7dd23287620bacc"
+    },
+    {
+      "name": "unit-cameraagent-logichost",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1200 env DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-cameraagent-logichost --logger 'trx;LogFileName=unit-cameraagent-logichost.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:27:36.636337+00:00",
+      "seconds": 30.16253495705314,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/unit-cameraagent-logichost.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "7dc5a3b20de82a83239b339cabd554e6d89ed889e0eb664a6cc29a662aa62832"
+    },
+    {
+      "name": "integration-central-materialization",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 1800 dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --no-restore --configuration Release --filter 'TestCategory=Integration&FullyQualifiedName~CentralPresentation_RendersCachesAndMaterializesSelectedStack' --settings tests/coverage.runsettings '--collect:XPlat Code Coverage' --results-directory /tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/integration-central-materialization --logger 'trx;LogFileName=integration-central-materialization.trx' -nodeReuse:false -p:UseSharedCompilation=false",
+      "utc": "2026-10-25T00:28:06.825473+00:00",
+      "seconds": 39.88250348507427,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/integration-central-materialization.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "be22bb1be31574ec3a190ba4edc430807414432f85dab66fa8295914f68701f5"
+    },
+    {
+      "name": "final-shell-syntax",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 180 ./scripts/ci:shell-syntax",
+      "utc": "2026-10-25T00:30:38.339158+00:00",
+      "seconds": 0.7331179161556065,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/final-shell-syntax.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "32b026ff93956ac4e54cb36472e216d3fe327564d19c4836392c01873608ac67"
+    },
+    {
+      "name": "final-classification-guard",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 180 ./scripts/test:ci-classification",
+      "utc": "2026-10-25T00:30:39.095635+00:00",
+      "seconds": 17.94692789297551,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/final-classification-guard.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "8640329b856b6044b7d811aeae22bfe63207e5dbef750b124973eeb47f9ed0b7"
+    },
+    {
+      "name": "final-coordination-guard",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 180 ./scripts/test:coordination-guard",
+      "utc": "2026-10-25T00:30:57.067488+00:00",
+      "seconds": 0.22116107703186572,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/final-coordination-guard.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d"
+    },
+    {
+      "name": "final-review-tools",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 180 ./scripts/test:pr-review-tools",
+      "utc": "2026-10-25T00:30:57.312123+00:00",
+      "seconds": 8.865812140982598,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/final-review-tools.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644"
+    },
+    {
+      "name": "final-docs-audit",
+      "command": "flock -o /tmp/hvo-heavy-gate.lock timeout --signal=TERM --kill-after=30s 180 ./scripts/docs:audit-operations",
+      "utc": "2026-10-25T00:31:06.202351+00:00",
+      "seconds": 0.45937440311536193,
+      "exitCode": 0,
+      "log": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/final-docs-audit.log",
+      "head": "692ddfaa00a46105167bdb7cec1fdfb0c579b9f1",
+      "diffSha256": "2560a5e54442c80eb2e803f72ee020d8bdb40f42c75aa43b5abdcc25b255d13d",
+      "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d"
+    }
+  ],
+  "trx": [
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/green-reproducers-fixed-import/green-reproducers.trx",
+      "sha256": "7706775615fd72e9cc615c2b91032676ef1365c9fb35d9d88dc1746d6f3dac78",
+      "counters": {
+        "total": "27",
+        "executed": "27",
+        "passed": "27",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-reproducers/red-reproducers.trx",
+      "sha256": "84769a4ee46670d652231020019506713ff346b62c04e46770987fc6960dcd15",
+      "counters": {
+        "total": "10",
+        "executed": "10",
+        "passed": "6",
+        "failed": "4",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": [
+        {
+          "name": "OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence (\"timeout\")",
+          "message": "Assertion failed. Expected strings to be equal.\nStrings have different lengths (expected: 8, actual: 11) and differ at 1 location(s). First difference at index 0.\n\nexpected:   \"Accepted\"\nactual:     \"Unavailable\"\ndifference: -^\n\nAssert.AreEqual(\"Accepted\", cut.Find(\".astrometry-card .state-chip\").TextContent)"
+        },
+        {
+          "name": "OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence (\"accepted\")",
+          "message": "Assertion failed. Expected condition to be false.\nThe newer compatible base must survive the older standalone completion.\n\nactual: true\n\nAssert.IsFalse(cut.Find(\".pixel-sky-calculator button\").HasAttribute(\"disabled\"))"
+        },
+        {
+          "name": "OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence (\"failure\")",
+          "message": "Assertion failed. Expected strings to be equal.\nStrings have different lengths (expected: 8, actual: 11) and differ at 1 location(s). First difference at index 0.\n\nexpected:   \"Accepted\"\nactual:     \"Unavailable\"\ndifference: -^\n\nAssert.AreEqual(\"Accepted\", cut.Find(\".astrometry-card .state-chip\").TextContent)"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"stack\")",
+          "message": "Assertion failed. Expected values to be equal.\nastrometry.capture-cadence\n\nexpected: Completed\nactual:   TerminalFailure\n\nAssert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome)"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red/red-findings.trx",
+      "sha256": "dd2682eea174bc902b4660f1bc5a3d4ced9dba76ea127a1fefc5f7fd38464bde",
+      "counters": {
+        "total": "10",
+        "executed": "10",
+        "passed": "8",
+        "failed": "2",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": [
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"stack\")",
+          "message": "Assertion failed. Expected values to be equal.\n\nexpected: 0\nactual:   1\n\nAssert.AreEqual(0, recovered.Quarantined)"
+        },
+        {
+          "name": "OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence (\"denied\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.Tests.Components.CurrentSkyPageTests.OlderStandaloneAstrometryCannotReplaceNewerSameCaptureLayerEvidence threw exception:\r\nBunit.Extensions.WaitForHelpers.WaitForFailedException: The assertion did not pass within the timeout period.\n\nIf this test does not fail consistently, the reason may be that\nthe wait timeout is too short, and the runtime did not have enough\ntime to complete the necessary number of renders of the component under test.\nThis can happen on highly utilized or slower hardware, for example.\n\nTo determine if this is the cause, compare the check and render count(s) below\nand see if they match what is expected. If they do not,\nconsider increasing the timeout, either at the individual\nmethod call level, e.g. WaitForElement(\"div\", TimeSpan.FromSeconds(15)),\nor via the static TestContext.DefaultWaitTimeout property.\n\nCheck count: 2.\nComponent render count: 5.\nTotal render count across all components: 0. ---> Microsoft.VisualStudio.TestTools.UnitTesting.AssertFailedException: Assertion failed. Expected condition to be true.\n\nactual: false\n\nAssert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith(\"/Account/AccessDenied\", StringComparison.Ordinal))"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/red-f1/red-f1.trx",
+      "sha256": "8f138f6182254a7ae97c5192df837b2f139ae6e9886b1cdc63886d1f031c259c",
+      "counters": {
+        "total": "6",
+        "executed": "6",
+        "passed": "5",
+        "failed": "1",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": [
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"stack\")",
+          "message": "Assertion failed. Expected value to be null.\nTwo exposures cannot use one capture's midpoint mapping.\n\nactual: dead1965-7e33-857b-82de-92bf8da38ef2\n\nAssert.IsNull(composed.Evidence.CompatibleBaseArtifactId)"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-cameraagent-logichost/unit-cameraagent-logichost.trx",
+      "sha256": "f203cd53227f5a7e1526b3ee8ca9d115c151090513ff41d20f5b8720d1fa6b91",
+      "counters": {
+        "total": "94",
+        "executed": "94",
+        "passed": "94",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-processing/unit-processing.trx",
+      "sha256": "f03bbfc75d16b2e120374ae312b356312ef0555e60b524ba4bd5e8270a7c5f1b",
+      "counters": {
+        "total": "1157",
+        "executed": "1157",
+        "passed": "1157",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-imaging/unit-imaging.trx",
+      "sha256": "98d2cec35b8c8522cfa0107b16b15c7d6c8a73a2a62570bf7dd2f11832f41535",
+      "counters": {
+        "total": "493",
+        "executed": "493",
+        "passed": "493",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/integration-cameraagent-storage/integration-cameraagent-storage.trx",
+      "sha256": "4935e3ec92458ed3c38e3de7ea5327378e6fdb3e8088a80ccace2da8bfd336f3",
+      "counters": {
+        "total": "325",
+        "executed": "325",
+        "passed": "325",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-logichost/unit-logichost.trx",
+      "sha256": "6588775d3f8211e4a70dccd207c974c6072d3896a984cc3ccaed2e382642b12a",
+      "counters": {
+        "total": "985",
+        "executed": "984",
+        "passed": "984",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/integration-central-materialization/integration-central-materialization.trx",
+      "sha256": "af509bd903eade26195d78e07d80cc256e6f425a6ae42ff5258ae6970856d58c",
+      "counters": {
+        "total": "5",
+        "executed": "5",
+        "passed": "5",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-r1.aXOPER/TestResults/unit-cameraagent/unit-cameraagent.trx",
+      "sha256": "10c47d8936f9ba5f9a7601629290cd5d6a91888eaf71216c60e757c25064cf62",
+      "counters": {
+        "total": "7497",
+        "executed": "7496",
+        "passed": "7496",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-r1b.YYd6HM/results/retained-browser.trx",
+      "sha256": "21bee57d826065abe1315eb5e798e9909a9b84c26a7486d072dd3da478e2234c",
+      "counters": {
+        "total": "5",
+        "executed": "5",
+        "passed": "5",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": []
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/results/retained-browser.trx",
+      "sha256": "cc2566068fdb40fe28a7e4229cc2077d43ab9fd9b2815f85eef54fb0bc0e6519",
+      "counters": {
+        "total": "5",
+        "executed": "5",
+        "passed": "0",
+        "failed": "5",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "failures": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync threw exception:\r\nSystem.ArgumentOutOfRangeException: The path '/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-747ecb34b9814db4bc712fd0cd26d4e8/identity/owner.sock' is of an invalid length for use with domain sockets on this platform.  The length must be between 1 and 108 characters, inclusive. (Parameter 'path')\nActual value was /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-747ecb34b9814db4bc712fd0cd26d4e8/identity/owner.sock."
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync threw exception:\r\nSystem.ArgumentOutOfRangeException: The path '/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-a80a9f0b7e624758b321d3672aa936b5/identity/owner.sock' is of an invalid length for use with domain sockets on this platform.  The length must be between 1 and 108 characters, inclusive. (Parameter 'path')\nActual value was /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-a80a9f0b7e624758b321d3672aa936b5/identity/owner.sock."
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync threw exception:\r\nSystem.ArgumentOutOfRangeException: The path '/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-05790fb793574e839e9b8140a48d4f2a/identity/owner.sock' is of an invalid length for use with domain sockets on this platform.  The length must be between 1 and 108 characters, inclusive. (Parameter 'path')\nActual value was /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-05790fb793574e839e9b8140a48d4f2a/identity/owner.sock."
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync threw exception:\r\nSystem.ArgumentOutOfRangeException: The path '/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-bda74c41b27d4d0ea18b17ae9d566eda/identity/owner.sock' is of an invalid length for use with domain sockets on this platform.  The length must be between 1 and 108 characters, inclusive. (Parameter 'path')\nActual value was /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-bda74c41b27d4d0ea18b17ae9d566eda/identity/owner.sock."
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "message": "Test method HVO.SkyMonitor.CameraAgent.AcceptanceTests.RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync threw exception:\r\nSystem.ArgumentOutOfRangeException: The path '/tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-6534221836684d06970f6fa29247e192/identity/owner.sock' is of an invalid length for use with domain sockets on this platform.  The length must be between 1 and 108 characters, inclusive. (Parameter 'path')\nActual value was /tmp/hvo-skymonitor-1644-review-corrections-browser-r1.3IBsgM/iv-6534221836684d06970f6fa29247e192/identity/owner.sock."
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Red failed assertions are expected and retained independently from green evidence. Initial harness scheduling/sequence/cadence failures and a test-namespace compile failure are preserved and are not counted as finding reproductions.",
+    "No protected/full workflow was dispatched; the parent owns review and finalization."
+  ]
+}

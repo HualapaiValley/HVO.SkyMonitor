@@ -1,0 +1,4 @@
+<nav class="central-pagination" aria-label="@($"{Label} pages")">
+    @if (Current is not null) { <a href="@FirstLink">First @Label page</a> }
+    @if (Next is not null) { <a href="@NextLink">Next @Label page</a> }
+</nav>

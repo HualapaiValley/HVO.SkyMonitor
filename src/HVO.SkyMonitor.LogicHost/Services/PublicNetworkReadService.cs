@@ -297,12 +297,17 @@ internal sealed class PublicNetworkReadService(
                 && profile.SupersededAtUtc == null
                 && profile.ProfileVisibility == ObservatoryProfileVisibility.Public
                 && profile.Observatory!.IsActive));
-        var row = await releases.GroupBy(decision => decision.PublicId)
-            .Select(group => new
+        // Several authorities can release one public ID. The latest eligible decision wins;
+        // its event and source version must travel together, including when timestamps tie.
+        var row = await releases.Where(decision => decision.Id == releases
+                .Where(candidate => candidate.PublicId == decision.PublicId)
+                .OrderByDescending(candidate => candidate.OccurredAtUtc).ThenByDescending(candidate => candidate.Id)
+                .Select(candidate => candidate.Id).First())
+            .Select(decision => new
             {
-                PublicId = group.Key,
-                CentralTransientEventId = group.Select(item => item.CentralTransientEventId!.Value).First(),
-                SourceEventVersionId = group.Select(item => item.SourceEventVersionId!.Value).First()
+                decision.PublicId,
+                CentralTransientEventId = decision.CentralTransientEventId!.Value,
+                SourceEventVersionId = decision.SourceEventVersionId!.Value
             })
             .Join(dbContext.CentralTransientEventCurrent.AsNoTracking(),
                 release => new { release.CentralTransientEventId, release.SourceEventVersionId },
@@ -605,12 +610,16 @@ internal sealed class PublicNetworkReadService(
                 && profile.SupersededAtUtc == null
                 && profile.ProfileVisibility == ObservatoryProfileVisibility.Public
                 && profile.Observatory!.IsActive));
-        var query = releases.GroupBy(decision => decision.PublicId)
-            .Select(group => new
+        // Use the same latest-decision order and paired identity as the detail read.
+        var query = releases.Where(decision => decision.Id == releases
+                .Where(candidate => candidate.PublicId == decision.PublicId)
+                .OrderByDescending(candidate => candidate.OccurredAtUtc).ThenByDescending(candidate => candidate.Id)
+                .Select(candidate => candidate.Id).First())
+            .Select(decision => new
             {
-                PublicId = group.Key,
-                CentralTransientEventId = group.Select(item => item.CentralTransientEventId!.Value).First(),
-                SourceEventVersionId = group.Select(item => item.SourceEventVersionId!.Value).First()
+                decision.PublicId,
+                CentralTransientEventId = decision.CentralTransientEventId!.Value,
+                SourceEventVersionId = decision.SourceEventVersionId!.Value
             })
             .Join(dbContext.CentralTransientEventCurrent.AsNoTracking(),
                 release => new { release.CentralTransientEventId, release.SourceEventVersionId },

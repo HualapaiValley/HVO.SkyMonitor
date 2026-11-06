@@ -1,0 +1,60 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@* The Overview's compact space-weather summary. It is pure: it renders the projection it is given, or an explicit
+   unavailable state, and never reads a service or polls. SWPC's own wording and this site's HVO estimate stay on
+   separate lines, and an unreadable state never claims anything about current notices. *@
+<section id="space-weather-summary" class="ops-panel space-weather-summary" aria-labelledby="space-weather-summary-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="space-weather-summary-heading">Space weather</h2><p>Retained SWPC notices, kept apart from this site's estimate. Cloud is not assessed.</p></div>
+        <span id="space-weather-summary-state" class="state-chip @_chip.Tone">@_chip.Text</span>
+    </header>
+
+    @switch (_mode)
+    {
+        case SummaryMode.Off:
+            <div id="space-weather-summary-off" class="ops-note-banner compact" role="status">
+                <span class="status-icon skipped" aria-hidden="true"></span>
+                <span><strong>Space weather is off.</strong> Nothing is fetched and no notices are listed here. <a href="@SwitchLink">Space-weather switch</a></span>
+            </div>
+            break;
+        case SummaryMode.Unavailable:
+            <div id="space-weather-summary-unavailable" class="ops-note-banner compact" role="status">
+                <span class="status-icon failure" aria-hidden="true"></span>
+                <span><strong>@UnavailableText</strong> Nothing is claimed about current notices.</span>
+            </div>
+            break;
+        default:
+            var projection = Projection!;
+            @if (projection.Inconsistent)
+            {
+                <div class="ops-note-banner compact" role="status"><span class="status-icon warning" aria-hidden="true"></span><span>@SpaceWeatherPanel.InconsistentText</span></div>
+            }
+            <p id="space-weather-summary-count" class="space-weather-summary-count"><strong>@Number(projection.CurrentTotal)</strong> active or pending (@Number(projection.ActiveCount) active, @Number(projection.PendingCount) pending)</p>
+            @if (projection.CurrentTotal == 0)
+            {
+                <p class="ops-panel-empty">@NoCurrentText</p>
+            }
+            else
+            {
+                <ul class="space-weather-summary-list">
+                    @foreach (var notice in projection.Current.Take(SpaceWeatherUiBounds.SummaryRows))
+                    {
+                        <li class="space-weather-summary-row" data-group="@notice.Group">
+                            <span class="space-weather-summary-title"><span class="state-chip @StateTone(notice)">@notice.StateText</span><strong>@notice.Label</strong></span>
+                            <span class="space-weather-summary-global">@notice.GlobalLine</span>
+                            <span class="space-weather-summary-site">@notice.SiteLine</span>
+                        </li>
+                    }
+                </ul>
+                @if (MoreCount(projection) is > 0 and var more)
+                {
+                    <p id="space-weather-summary-more" class="space-weather-summary-more">@Number(more) more</p>
+                }
+            }
+            break;
+    }
+
+    <footer class="space-weather-summary-footer">
+        <a id="space-weather-summary-link" href="@PageLink">Open space weather</a>
+        <p class="space-weather-credit">@Credit</p>
+    </footer>
+</section>

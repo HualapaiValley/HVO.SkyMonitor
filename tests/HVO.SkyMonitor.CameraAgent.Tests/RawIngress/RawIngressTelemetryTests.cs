@@ -28,12 +28,15 @@ public sealed class RawIngressTelemetryTests
     [TestMethod]
     public void RecordsCommittedFailureReconciliationAndBoundedStateMetrics()
     {
+        using var meter = new Meter(RawIngressTelemetry.MeterName);
+        using var existingUnrelatedMeter = new Meter(RawIngressTelemetry.MeterName);
+        var existingUnrelatedCounter = existingUnrelatedMeter.CreateCounter<long>("unrelated.measurement");
         var measurements = new List<MetricSample>();
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, meterListener) =>
             {
-                if (instrument.Meter.Name == RawIngressTelemetry.MeterName)
+                if (ReferenceEquals(instrument.Meter, meter))
                 {
                     meterListener.EnableMeasurementEvents(instrument);
                 }
@@ -44,9 +47,16 @@ public sealed class RawIngressTelemetryTests
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
             measurements.Add(new MetricSample(instrument.Name, measurement, ReadTags(tags))));
         listener.Start();
+        using var newUnrelatedMeter = new Meter(RawIngressTelemetry.MeterName);
+        // Same-name meters can publish and record from other parallel fixtures.
+        Task.Run(() =>
+        {
+            existingUnrelatedCounter.Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+            newUnrelatedMeter.CreateCounter<long>("unrelated.measurement").Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+        }).GetAwaiter().GetResult();
         var state = new RawIngressState(TimeProvider.System);
         state.Set(RawIngressAvailability.Degraded, "reconciliation-findings", 3, 400, 1, 20);
-        using var telemetry = new RawIngressTelemetry(state);
+        using var telemetry = new RawIngressTelemetry(meter, state);
 
         telemetry.RecordCommit(RawIngressOutcome.Committed, 100, TimeSpan.FromMilliseconds(10));
         telemetry.RecordTransaction("commit", succeeded: true);

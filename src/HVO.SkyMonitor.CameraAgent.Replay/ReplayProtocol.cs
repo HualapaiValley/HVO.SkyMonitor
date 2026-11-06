@@ -437,7 +437,8 @@ internal sealed record ReplayArtifactMetadata(
     string? SchemaVersion,
     string? ContentIdentitySha256,
     Guid? CaptureId,
-    string? DescriptorIdentitySha256);
+    string? DescriptorIdentitySha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RecipeIdentityDescriptor? RecipeDescriptor = null);
 
 internal sealed record ReplayAuxiliaryInputMetadata(
     string Name,

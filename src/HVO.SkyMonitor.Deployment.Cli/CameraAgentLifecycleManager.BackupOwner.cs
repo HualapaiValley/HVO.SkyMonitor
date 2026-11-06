@@ -63,6 +63,6 @@ internal sealed partial class CameraAgentLifecycleManager
         var command = request.Operation == LifecycleOperationKind.Backup ? "backup" : $"restore {request.Archive}";
         return InstallerException.Refused(string.Create(
             CultureInfo.InvariantCulture,
-            $"{whose} its service account {account} (uid {ownerUid}, gid {ownerGid}), and a backup or restore runs as that account alone: run it as {account}, not with sudo or as root: hvo-sky-install cameraagent {command} --instance-id {request.InstanceId:D}. Nothing was changed."));
+            $"{whose} its service account {account} (uid {ownerUid}, gid {ownerGid}), and a backup or restore runs as that account alone: run it as {account}, not with sudo or as root: {InstallerProgram.Current} cameraagent {command} --instance-id {request.InstanceId:D}. Nothing was changed."));
     }
 }

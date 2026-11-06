@@ -1,0 +1,87 @@
+{
+  "uiSource": "fca43f2f",
+  "fixture": "Actual bUnit markup and shipped styles served as a static browser fixture. Events and lifecycle are verified separately by component/service/coordinator tests.",
+  "keyboard": "Tab skips disabled Up; Home selects AirTemperature in the subset dropdown, matching the producer image preset.",
+  "entries": [
+    {
+      "state": "default",
+      "label": "default-desktop",
+      "viewport": [
+        1280,
+        1100
+      ],
+      "scrollWidth": 1280,
+      "scrollY": 897.5,
+      "values": [
+        "AirTemperature",
+        "RelativeHumidity",
+        "AtmosphericPressure",
+        "WindSpeed",
+        "RainState",
+        "CloudCover"
+      ],
+      "focused": "node-options-0-environmentalKinds-0",
+      "minimumButtonHeight": 44,
+      "duplicateIds": [],
+      "help": "Choose existing retained observation kinds. This does not enable sensors or providers or manufacture measurements; Measured, Simulated, Imported, Manual and Derived provenance stays unchanged. An absent selection uses AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover. Remove every item to retain no environmental readings (NOT RETAINED). The producer sorts and deduplicates effective kinds; existing line, character and image-fit limits may truncate the display, so not every selected line is guaranteed to fit. ",
+      "screenshot": "browser-default-desktop.png"
+    },
+    {
+      "state": "default",
+      "label": "default-mobile",
+      "viewport": [
+        390,
+        844
+      ],
+      "scrollWidth": 390,
+      "scrollY": 1620,
+      "values": [
+        "AirTemperature",
+        "RelativeHumidity",
+        "AtmosphericPressure",
+        "WindSpeed",
+        "RainState",
+        "CloudCover"
+      ],
+      "focused": "node-options-0-environmentalKinds-0-down",
+      "minimumButtonHeight": 44,
+      "duplicateIds": [],
+      "help": "Choose existing retained observation kinds. This does not enable sensors or providers or manufacture measurements; Measured, Simulated, Imported, Manual and Derived provenance stays unchanged. An absent selection uses AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover. Remove every item to retain no environmental readings (NOT RETAINED). The producer sorts and deduplicates effective kinds; existing line, character and image-fit limits may truncate the display, so not every selected line is guaranteed to fit. ",
+      "screenshot": "browser-default-mobile.png"
+    },
+    {
+      "state": "subset",
+      "label": "subset-mobile",
+      "viewport": [
+        390,
+        844
+      ],
+      "scrollWidth": 390,
+      "scrollY": 1620,
+      "values": [
+        "AirTemperature"
+      ],
+      "focused": "node-options-0-environmentalKinds-0",
+      "minimumButtonHeight": 44,
+      "duplicateIds": [],
+      "help": "Choose existing retained observation kinds. This does not enable sensors or providers or manufacture measurements; Measured, Simulated, Imported, Manual and Derived provenance stays unchanged. An absent selection uses AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover. Remove every item to retain no environmental readings (NOT RETAINED). The producer sorts and deduplicates effective kinds; existing line, character and image-fit limits may truncate the display, so not every selected line is guaranteed to fit. ",
+      "screenshot": "browser-subset-mobile.png"
+    },
+    {
+      "state": "empty",
+      "label": "empty-mobile",
+      "viewport": [
+        390,
+        844
+      ],
+      "scrollWidth": 390,
+      "scrollY": 1620,
+      "values": [],
+      "focused": "",
+      "minimumButtonHeight": 47.546875,
+      "duplicateIds": [],
+      "help": "Choose existing retained observation kinds. This does not enable sensors or providers or manufacture measurements; Measured, Simulated, Imported, Manual and Derived provenance stays unchanged. An absent selection uses AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState and CloudCover. Remove every item to retain no environmental readings (NOT RETAINED). The producer sorts and deduplicates effective kinds; existing line, character and image-fit limits may truncate the display, so not every selected line is guaranteed to fit. ",
+      "screenshot": "browser-empty-mobile.png"
+    }
+  ]
+}

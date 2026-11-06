@@ -45,9 +45,9 @@ internal sealed class NetworkOperationsMutationService(
         using var activity = OperatorUiTelemetry.StartMutation("central-job-reprocess");
         var job = await AuthorizedJob(actorUserId, jobId).Select(item => new
         {
-            item.Job.RecipeName,
-            item.Job.RecipeOptionsJson,
-            item.Job.SourceArtifact!.Frame!.ObservatoryId,
+            item.RecipeName,
+            item.RecipeOptionsJson,
+            item.ObservatoryId,
             item.EffectiveRole
         }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (job is null)
@@ -101,7 +101,7 @@ internal sealed class NetworkOperationsMutationService(
         var authority = await AuthorizedJob(actorUserId, jobId)
             .Select(item => new
             {
-                item.Job.SourceArtifact!.Frame!.ObservatoryId,
+                item.ObservatoryId,
                 item.EffectiveRole
             })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -152,7 +152,9 @@ internal sealed class NetworkOperationsMutationService(
             .Join(ObservatoryMembershipAccess.ForManager(dbContext, actorUserId),
                 job => job.SourceArtifact!.Frame!.ObservatoryId,
                 membership => membership.ObservatoryId,
-                (job, membership) => new AuthorizedJobRow(job, membership.Role));
+                // Flatten the authority projection before consuming it. Navigating through a projected record's
+                // entity later can produce nullable SQL subprojections rather than the joined membership key.
+                (job, membership) => new AuthorizedJobRow(job.RecipeName, job.RecipeOptionsJson, membership.ObservatoryId, membership.Role));
 
-    private sealed record AuthorizedJobRow(CentralDerivativeJob Job, ObservatoryMembershipRole EffectiveRole);
+    private sealed record AuthorizedJobRow(string RecipeName, string RecipeOptionsJson, Guid ObservatoryId, ObservatoryMembershipRole EffectiveRole);
 }

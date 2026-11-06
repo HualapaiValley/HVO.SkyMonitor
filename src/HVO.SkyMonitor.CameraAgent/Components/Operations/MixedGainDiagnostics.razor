@@ -1,0 +1,28 @@
+@using HVO.SkyMonitor.Processing
+@if (Node.NormalizationPlanIdentitySha256 is not null)
+{
+    <section aria-label="Mixed-gain diagnostics">
+        <h3>Mixed-gain stack</h3>
+        @if (Node.MixedGainDiagnostics is { } diagnostic)
+        {
+            <p>Clipped low: @diagnostic.ClippedLowCount. Clipped high: @diagnostic.ClippedHighCount.
+                No measurement: @diagnostic.NoCoverageCount of @diagnostic.PhotositeCount photosites.</p>
+            <p>Output codes use ×16 reference-gain scaling. A zero code can mean no coverage; it does not establish zero flux.
+                Saturated, defective and invalid-flat samples carry no weight.</p>
+            <table class="node-table"><caption>Selected frame sample exclusions</caption>
+                <thead><tr><th>Artifact</th><th>Saturated samples</th><th>Defect or invalid-flat samples</th></tr></thead>
+                <tbody>@foreach (var input in diagnostic.Inputs)
+                { <tr><td>@input.ArtifactId</td><td>@input.SaturatedSampleCount</td><td>@input.InvalidSampleCount</td></tr> }</tbody>
+            </table>
+        }
+        else
+        {
+            <p role="note">@(Node.MixedGainDiagnosticsUnavailableReason ?? "Diagnostic counts are unavailable.")</p>
+        }
+        <table class="node-table"><caption>Frozen frame selection and exclusions</caption>
+            <thead><tr><th>Position</th><th>Capture</th><th>Gain</th><th>Disposition</th><th>Reason</th></tr></thead>
+            <tbody>@foreach (var input in Node.NormalizationInputs)
+            { <tr><td>@input.WindowPosition</td><td><a href="/gallery/@input.CaptureId">@input.CaptureId</a></td><td>@input.Gain</td><td>@input.Disposition</td><td>@(input.ExclusionReason ?? "Selected; sample exclusions shown above when recorded")</td></tr> }</tbody>
+        </table>
+    </section>
+}

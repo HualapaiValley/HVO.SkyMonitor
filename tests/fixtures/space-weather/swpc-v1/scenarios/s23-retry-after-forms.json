@@ -1,0 +1,578 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s23-retry-after-forms",
+  "title": "Retry-After accepts only delta-seconds or exact IMF-fixdate",
+  "covers": [
+    "retry-after",
+    "imf-fixdate",
+    "calendar-date",
+    "weekday"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "All response headers and the reset alert are synthetic. Each 429 is followed by an accepted reset body so the next case starts with a zero 429 count.",
+    "Invalid forms give 1800 seconds. A matching weekday is required. Valid years 0001 and 9999 give the existing 60-second floor and 21600-second cap."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-02-03T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Mon, 01 Jan 0000 00:00:00 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-03T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-02-03T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-02-04T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Mon, 30 Feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-04T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-02-04T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "fetch",
+      "atUtc": "2026-02-05T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "tue, 03 feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-05T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-02-05T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-02-06T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue, 3 Feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-06T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-02-06T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-02-07T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue, 03 Feb 2026 1:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-07T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 10,
+      "kind": "fetch",
+      "atUtc": "2026-02-07T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-02-08T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue, 03 Feb 2026 01:2:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-08T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 12,
+      "kind": "fetch",
+      "atUtc": "2026-02-08T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 13,
+      "kind": "fetch",
+      "atUtc": "2026-02-09T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue, 03 Feb 2026 01:02:3 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-09T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 14,
+      "kind": "fetch",
+      "atUtc": "2026-02-09T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 15,
+      "kind": "fetch",
+      "atUtc": "2026-02-10T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue,  03 Feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-10T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 16,
+      "kind": "fetch",
+      "atUtc": "2026-02-10T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 17,
+      "kind": "fetch",
+      "atUtc": "2026-02-11T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tuesday, 03-Feb-26 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-11T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 18,
+      "kind": "fetch",
+      "atUtc": "2026-02-11T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 19,
+      "kind": "fetch",
+      "atUtc": "2026-02-12T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Tue Feb  3 01:02:03 2026"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-12T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 20,
+      "kind": "fetch",
+      "atUtc": "2026-02-12T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 21,
+      "kind": "fetch",
+      "atUtc": "2026-02-13T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Mon, 03 Feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-13T01:30:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 22,
+      "kind": "fetch",
+      "atUtc": "2026-02-13T01:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 23,
+      "kind": "fetch",
+      "atUtc": "2026-02-14T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Sat, 14 Feb 2026 01:02:03 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-14T01:02:03Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 24,
+      "kind": "fetch",
+      "atUtc": "2026-02-14T01:02:03Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 25,
+      "kind": "fetch",
+      "atUtc": "2026-02-15T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Mon, 01 Jan 0001 00:00:00 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-15T01:01:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 26,
+      "kind": "fetch",
+      "atUtc": "2026-02-15T01:01:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    },
+    {
+      "step": 27,
+      "kind": "fetch",
+      "atUtc": "2026-02-16T01:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "Fri, 31 Dec 9999 23:59:59 GMT"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "diagnostics": [],
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-02-16T07:00:00Z",
+          "consecutiveRateLimited": 1
+        }
+      }
+    },
+    {
+      "step": 28,
+      "kind": "fetch",
+      "atUtc": "2026-02-16T07:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s23\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-02-03 00:59:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1423\\r\\nIssue Time: 2026 Feb 03 0059 UTC\\r\\n\\r\\nALERT: Synthetic retry reset\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,254 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-rounding-vectors-v1",
+  "containsSyntheticRecords": true,
+  "notes": [
+    "All numerical inputs are synthetic. Expected values are fixed golden vectors, not regenerated from round().",
+    "unroundedDouble is Python repr text for the exact binary64 input to round(value, 1). Parse it directly to isolate rounding from trigonometric library differences.",
+    "Relevance difference probes include synthetic intermediate latitudes with more precision than the normal one-decimal geomagnetic output, to exercise half-way boundaries directly.",
+    "Round the actual binary double to one decimal, nearest with ties to even. Do not round its shortest decimal repr as an exact decimal or assume Math.Round(value, 1) agrees. Preserve signed zero."
+  ],
+  "geomagneticLatitude": [
+    {
+      "input": {
+        "latitudeDeg": 33.049999999999976,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.24999999999998",
+      "expectedRounded": 42.2
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.04999999999998,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.25",
+      "expectedRounded": 42.2
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.05,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.25000000000001",
+      "expectedRounded": 42.3
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.149999999999984,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.349999999999994",
+      "expectedRounded": 42.3
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.15,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.35000000000001",
+      "expectedRounded": 42.4
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.249999999999986,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.449999999999996",
+      "expectedRounded": 42.4
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.25,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.45",
+      "expectedRounded": 42.5
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.34999999999999,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.54999999999999",
+      "expectedRounded": 42.5
+    },
+    {
+      "input": {
+        "latitudeDeg": 33.35,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "42.550000000000004",
+      "expectedRounded": 42.6
+    },
+    {
+      "input": {
+        "latitudeDeg": -51.45,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "-42.25000000000001",
+      "expectedRounded": -42.3
+    },
+    {
+      "input": {
+        "latitudeDeg": -51.449999999999996,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "-42.25",
+      "expectedRounded": -42.2
+    },
+    {
+      "input": {
+        "latitudeDeg": -51.44999999999999,
+        "longitudeDeg": -72.6
+      },
+      "unroundedDouble": "-42.24999999999998",
+      "expectedRounded": -42.2
+    }
+  ],
+  "relevanceDifference": [
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 49.95
+      },
+      "unroundedDouble": "0.04999999999999716",
+      "expectedRounded": 0.0
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 49.85
+      },
+      "unroundedDouble": "0.14999999999999858",
+      "expectedRounded": 0.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 44.95
+      },
+      "unroundedDouble": "5.049999999999997",
+      "expectedRounded": 5.0
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 44.85
+      },
+      "unroundedDouble": "5.149999999999999",
+      "expectedRounded": 5.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 39.95
+      },
+      "unroundedDouble": "10.049999999999997",
+      "expectedRounded": 10.0
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 39.85
+      },
+      "unroundedDouble": "10.149999999999999",
+      "expectedRounded": 10.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 50.05
+      },
+      "unroundedDouble": "-0.04999999999999716",
+      "expectedRounded": -0.0
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 50,
+        "geomagneticLatitudeDeg": 50.15
+      },
+      "unroundedDouble": "-0.14999999999999858",
+      "expectedRounded": -0.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 0.05,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "0.05",
+      "expectedRounded": 0.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 0.15,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "0.15",
+      "expectedRounded": 0.1
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 2.25,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "2.25",
+      "expectedRounded": 2.2
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 2.35,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "2.35",
+      "expectedRounded": 2.4
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 2.45,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "2.45",
+      "expectedRounded": 2.5
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": 2.55,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "2.55",
+      "expectedRounded": 2.5
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": -2.25,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "-2.25",
+      "expectedRounded": -2.2
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": -2.35,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "-2.35",
+      "expectedRounded": -2.4
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": -2.45,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "-2.45",
+      "expectedRounded": -2.5
+    },
+    {
+      "input": {
+        "requiredLatitudeDeg": -2.55,
+        "geomagneticLatitudeDeg": 0
+      },
+      "unroundedDouble": "-2.55",
+      "expectedRounded": -2.5
+    }
+  ]
+}

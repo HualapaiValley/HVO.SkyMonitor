@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -10,7 +11,8 @@ internal sealed partial class ExecutionEvidenceService(
     ExecutionEvidenceDatabase database,
     IOptions<ExecutionEvidenceOptions> options,
     TimeProvider timeProvider,
-    ExecutionEvidenceTelemetry telemetry)
+    ExecutionEvidenceTelemetry telemetry,
+    IDataProtectionProvider protection)
 {
     private readonly ApplicationDbContext _db = database.Context;
     private readonly ExecutionEvidenceOptions _options = options.Value;

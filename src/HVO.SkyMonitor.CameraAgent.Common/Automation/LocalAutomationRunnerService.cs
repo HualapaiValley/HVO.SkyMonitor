@@ -25,7 +25,8 @@ public sealed partial class LocalAutomationRunnerService(
     TimeProvider timeProvider,
     ILogger<LocalAutomationRunnerService> logger,
     LocalAutomationTelemetry? telemetry = null,
-    LocalAutomationWindowPlanner? windowPlanner = null) : BackgroundService
+    LocalAutomationWindowPlanner? windowPlanner = null,
+    LocalAutomationOffSweepWorker? offSweepWorker = null) : BackgroundService
 {
     private readonly LocalAutomationOptions _options = options.Value.Automation;
 
@@ -38,6 +39,15 @@ public sealed partial class LocalAutomationRunnerService(
     {
         await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (offSweepWorker is not null)
+        {
+            await offSweepWorker.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -130,11 +140,18 @@ public sealed partial class LocalAutomationRunnerService(
         long? captureSequence,
         CancellationToken cancellationToken)
     {
+        var offSweep = registry.RunsOffSweep(entry.Definition);
+        using var reservation = offSweep ? offSweepWorker?.TryReserve() : null;
+        if (offSweep && reservation is null)
+        {
+            // No durable claim, cursor advancement or run-now dequeue without capacity.
+            return;
+        }
         using var authority = (store as ILocalAutomationExecutionAuthority)?.RetainExecutionAuthority();
         if (store is ILocalAutomationOccurrenceStore occurrenceStore &&
             await occurrenceStore.TryClaimQueuedAsync(entry, cancellationToken).ConfigureAwait(false) is { Occurrence: { } prepared } queued)
         {
-            await ExecuteClaimedAsync(prepared, queued.RunKey, cancellationToken).ConfigureAwait(false);
+            await ExecuteOrDispatchAsync(prepared, queued.RunKey, reservation, cancellationToken).ConfigureAwait(false);
             return;
         }
         if (entry.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
@@ -167,7 +184,7 @@ public sealed partial class LocalAutomationRunnerService(
             }
             if (await windowStore.TryBeginOccurrenceAsync(due, cancellationToken).ConfigureAwait(false))
             {
-                await ExecuteClaimedAsync(due, due.RunKey, cancellationToken).ConfigureAwait(false);
+                await ExecuteOrDispatchAsync(due, due.RunKey, reservation, cancellationToken).ConfigureAwait(false);
             }
             return;
         }
@@ -199,7 +216,7 @@ public sealed partial class LocalAutomationRunnerService(
                     null,
                     cancellationToken).ConfigureAwait(false);
             }
-            await RunAsync(entry, RunKey(entry, 'p', index), occurrence.OccurrenceUtc, null, cancellationToken)
+            await RunAsync(entry, RunKey(entry, 'p', index), occurrence.OccurrenceUtc, null, reservation, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -219,7 +236,7 @@ public sealed partial class LocalAutomationRunnerService(
         {
             return;
         }
-        await RunAsync(entry, RunKey(entry, 'c', current), now, current, cancellationToken).ConfigureAwait(false);
+        await RunAsync(entry, RunKey(entry, 'c', current), now, current, reservation, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RunAsync(
@@ -227,6 +244,7 @@ public sealed partial class LocalAutomationRunnerService(
         string runKey,
         DateTimeOffset scheduledForUtc,
         long? observedCaptureSequence,
+        LocalAutomationOffSweepWorker.Reservation? reservation,
         CancellationToken cancellationToken)
     {
         var claimed = await store
@@ -236,8 +254,45 @@ public sealed partial class LocalAutomationRunnerService(
         {
             return;
         }
-        await ExecuteClaimedAsync(LocalAutomationOccurrence.Create(entry, runKey, scheduledForUtc), runKey,
-            cancellationToken).ConfigureAwait(false);
+        await ExecuteOrDispatchAsync(LocalAutomationOccurrence.Create(entry, runKey, scheduledForUtc), runKey,
+            reservation, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task ExecuteOrDispatchAsync(LocalAutomationOccurrence occurrence, string journalRunKey,
+        LocalAutomationOffSweepWorker.Reservation? reservation, CancellationToken cancellationToken)
+    {
+        if (reservation is null)
+        {
+            return ExecuteClaimedAsync(occurrence, journalRunKey, cancellationToken);
+        }
+        var authority = (store as ILocalAutomationExecutionAuthority)?.RetainExecutionAuthority();
+        reservation.Dispatch(async token =>
+        {
+            using (authority)
+            {
+                await ExecuteTrackedAsync(occurrence, journalRunKey, token).ConfigureAwait(false);
+            }
+        }, cancellationToken);
+        return Task.CompletedTask;
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Tracked work observes every fault; a journal failure leaves the durable claim for restart reconciliation.")]
+    private async Task ExecuteTrackedAsync(LocalAutomationOccurrence occurrence, string journalRunKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ExecuteClaimedAsync(occurrence, journalRunKey, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Restart reconciliation settles the durable claim; no automatic provider replay.
+        }
+        catch (Exception exception)
+        {
+            DefinitionFailed(logger, occurrence.Definition.DefinitionId, exception);
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

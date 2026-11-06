@@ -1,5 +1,5 @@
 # Pin to Ubuntu LTS; the .NET SDK is supplied by the devcontainer feature.
-FROM mcr.microsoft.com/devcontainers/base:3.0.7-ubuntu24.04@sha256:456e33716a8570448b7deca1ffd98fc337adc7b446aceeadb8beaf8d660345b4
+FROM mcr.microsoft.com/devcontainers/base:3.0.12-ubuntu24.04@sha256:ec556aed93f62aa6d13fe72c5db09da4e29a7c9b87c568dbca0ee5717466926a
 
 ENV NUGET_XMLDOC_MODE=
 ENV PATH="/home/vscode/.dotnet/tools:${PATH}"

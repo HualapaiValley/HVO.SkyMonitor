@@ -1,0 +1,285 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s19-early-resume-spacing",
+  "title": "An early resume lifts a halt only: spacing, backoff, Retry-After and the 429 count stand",
+  "covers": [
+    "halt",
+    "resume",
+    "rate-limit",
+    "manual-refresh",
+    "backoff"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s19-a\"",
+        "lastModified": "Mon, 19 Oct 2026 18:59:30 GMT",
+        "body": "[{\"product_id\":\"BHIS\",\"issue_datetime\":\"2026-10-19 09:09:16.063\",\"message\":\"Space Weather Message Code: SUM10R\\r\\nSerial Number: 930\\r\\nIssue Time: 2026 Oct 19 0909 UTC\\r\\n\\r\\nSUMMARY: 10cm Radio Burst \\nBegin Time: 2026 Oct 19 0858 UTC\\nMaximum Time: 2026 Oct 19 0859 UTC\\nEnd Time: 2026 Oct 19 0859 UTC\\nPeak Flux: 430 sfu\\nDuration: 1 minutes\\nLatest Penticton Noon Flux: 137 sfu\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:02:00Z"
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:00:30Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "600"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "product": {
+          "consecutiveRateLimited": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:10:30Z"
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 403
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "provider",
+            "reason": "forbidden",
+            "sinceUtc": "2026-10-19T19:02:00Z"
+          },
+          "nextAttemptNotBeforeUtc": null
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "resume",
+      "atUtc": "2026-10-19T19:02:05Z",
+      "scope": "provider",
+      "operator": "fixture-operator",
+      "expect": {
+        "products": {
+          "alerts": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:03:00Z"
+          },
+          "scales": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:10:30Z",
+            "consecutiveRateLimited": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:10Z",
+      "product": "alerts",
+      "trigger": "manual",
+      "expect": {
+        "refused": "min-interval"
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:10Z",
+      "product": "scales",
+      "trigger": "manual",
+      "expect": {
+        "refused": "backoff"
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:03:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "120"
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "product": {
+          "consecutiveRateLimited": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:05:00Z"
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:05:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429
+      },
+      "expect": {
+        "outcome": "rate-limited",
+        "product": {
+          "consecutiveRateLimited": 2,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:35:00Z"
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:35:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429,
+        "retryAfter": "900"
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "provider",
+            "reason": "rate-limited",
+            "sinceUtc": "2026-10-19T19:35:00Z"
+          },
+          "nextAttemptNotBeforeUtc": null,
+          "retryNotBeforeUtc": "2026-10-19T19:50:00Z",
+          "consecutiveRateLimited": 3
+        }
+      }
+    },
+    {
+      "step": 10,
+      "kind": "resume",
+      "atUtc": "2026-10-19T19:35:05Z",
+      "scope": "provider",
+      "operator": "fixture-operator",
+      "expect": {
+        "products": {
+          "alerts": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:50:00Z",
+            "retryNotBeforeUtc": null,
+            "consecutiveRateLimited": 3
+          },
+          "scales": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:35:05Z",
+            "consecutiveRateLimited": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:40:00Z",
+      "product": "alerts",
+      "trigger": "manual",
+      "expect": {
+        "refused": "backoff"
+      }
+    },
+    {
+      "step": 12,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:50:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 429
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "provider",
+            "reason": "rate-limited",
+            "sinceUtc": "2026-10-19T19:50:00Z"
+          },
+          "retryNotBeforeUtc": "2026-10-19T20:20:00Z",
+          "consecutiveRateLimited": 4
+        }
+      }
+    },
+    {
+      "step": 13,
+      "kind": "resume",
+      "atUtc": "2026-10-19T20:30:00Z",
+      "scope": "provider",
+      "operator": "fixture-operator",
+      "expect": {
+        "products": {
+          "alerts": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T20:30:00Z",
+            "retryNotBeforeUtc": null
+          }
+        }
+      }
+    },
+    {
+      "step": 14,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T20:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s19-b\"",
+        "lastModified": "Mon, 19 Oct 2026 18:59:30 GMT",
+        "body": "[{\"product_id\":\"BHIS\",\"issue_datetime\":\"2026-10-19 09:09:16.063\",\"message\":\"Space Weather Message Code: SUM10R\\r\\nSerial Number: 930\\r\\nIssue Time: 2026 Oct 19 0909 UTC\\r\\n\\r\\nSUMMARY: 10cm Radio Burst \\nBegin Time: 2026 Oct 19 0858 UTC\\nMaximum Time: 2026 Oct 19 0859 UTC\\nEnd Time: 2026 Oct 19 0859 UTC\\nPeak Flux: 430 sfu\\nDuration: 1 minutes\\nLatest Penticton Noon Flux: 137 sfu\\nComment: \"}]"
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": "\"fixture-s19-a\""
+        },
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveRateLimited": 0,
+          "consecutiveTransientFailures": 0,
+          "halt": null,
+          "freshness": "fresh",
+          "nextAttemptNotBeforeUtc": "2026-10-19T20:32:00Z"
+        }
+      }
+    }
+  ]
+}

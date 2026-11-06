@@ -12,13 +12,16 @@ public sealed class CalibrationTelemetryTests
     [TestMethod]
     public void RecordsBoundedMetricsAndReservedEvents()
     {
+        using var meter = new Meter(CalibrationTelemetry.MeterName);
+        using var existingUnrelatedMeter = new Meter(CalibrationTelemetry.MeterName);
+        var existingUnrelatedCounter = existingUnrelatedMeter.CreateCounter<long>("unrelated.measurement");
         var samples = new List<MetricSample>();
         var logger = new RecordingLogger<CalibrationTelemetry>();
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, meterListener) =>
             {
-                if (instrument.Meter.Name == CalibrationTelemetry.MeterName)
+                if (ReferenceEquals(instrument.Meter, meter))
                 {
                     meterListener.EnableMeasurementEvents(instrument);
                 }
@@ -29,7 +32,14 @@ public sealed class CalibrationTelemetryTests
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
             samples.Add(new MetricSample(instrument.Name, measurement, ReadTags(tags))));
         listener.Start();
-        using var telemetry = new CalibrationTelemetry(logger);
+        using var newUnrelatedMeter = new Meter(CalibrationTelemetry.MeterName);
+        // Same-name meters can publish and record from other parallel fixtures.
+        Task.Run(() =>
+        {
+            existingUnrelatedCounter.Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+            newUnrelatedMeter.CreateCounter<long>("unrelated.measurement").Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+        }).GetAwaiter().GetResult();
+        using var telemetry = new CalibrationTelemetry(meter, logger);
 
         telemetry.ReplaceInventory(new CalibrationTelemetryInventory(
             new Dictionary<(string State, string Source), long>

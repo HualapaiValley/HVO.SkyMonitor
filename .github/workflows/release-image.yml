@@ -1,0 +1,112 @@
+name: Native Release Image
+
+on:
+  workflow_call:
+    inputs:
+      architecture:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      commit:
+        required: true
+        type: string
+      created:
+        required: true
+        type: string
+    outputs:
+      sha256:
+        description: SHA-256 of the single-platform OCI archive, checked by the combining job
+        value: ${{ jobs.image.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Build (${{ inputs.architecture }})
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 120
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Set up Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        with:
+          version: v0.36.1
+          driver-opts: image=moby/buildkit:v0.26.1@sha256:8290a3b1183f45fb0c7ccd2faa7aa88eeb9af0ea85ff54458cbd8cbdb576e721
+      - name: Verify two clean native ReadyToRun publishes
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          CREATED: ${{ inputs.created }}
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          case "$ARCHITECTURE:$(uname -m)" in
+            amd64:x86_64) rid=linux-x64 ;;
+            arm64:aarch64) rid=linux-arm64 ;;
+            *) echo "The publish must build on its native architecture." >&2; exit 1 ;;
+          esac
+          source_date_epoch="$(git show -s --format=%ct "$COMMIT")"
+          evidence="$RUNNER_TEMP/cameraagent-publish"
+          mkdir -p "$evidence"
+          for trial in 1 2; do
+            # Both trials use identical source, identity, paths and arguments. --no-cache recompiles all sources.
+            docker buildx build --builder "$BUILDER" --platform "linux/$ARCHITECTURE" \
+              --file src/HVO.SkyMonitor.CameraAgent/Dockerfile --target cameraagent-publish --no-cache \
+              --build-arg HVO_READY_TO_RUN=true \
+              --build-arg "HVO_VERSION=$VERSION" --build-arg "HVO_SOURCE_REVISION=$COMMIT" \
+              --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" --build-arg "HVO_CREATED=$CREATED" --provenance=false --sbom=false \
+              --output "type=local,dest=$evidence/trial-$trial" .
+            ./scripts/release:check-cameraagent-publish "$evidence/trial-$trial" --rid "$rid" --created "$CREATED" \
+              --manifest "$evidence/trial-$trial.files.json" --report "$evidence/trial-$trial.r2r.json"
+          done
+          diff -u "$evidence/trial-1.files.json" "$evidence/trial-2.files.json"
+      - name: Retain both publish trials and hash records
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: cameraagent-publish-${{ inputs.architecture }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/cameraagent-publish/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build the native image
+        id: build
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          CREATED: ${{ inputs.created }}
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          case "$ARCHITECTURE:$(uname -m)" in
+            amd64:x86_64 | arm64:aarch64) ;;
+            *) echo "The image must build on its native architecture." >&2; exit 1 ;;
+          esac
+          source_date_epoch="$(git show -s --format=%ct "$COMMIT")"
+          mkdir -p "$RUNNER_TEMP/image"
+          # Same image command as release:assets, with exactly one native platform and no emulation.
+          docker buildx build --builder "$BUILDER" --platform "linux/$ARCHITECTURE" \
+            --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+            --build-arg "HVO_VERSION=$VERSION" --build-arg "HVO_SOURCE_REVISION=$COMMIT" \
+            --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" --build-arg "HVO_CREATED=$CREATED" --build-arg HVO_READY_TO_RUN=true --provenance=false --sbom=false \
+            --output "type=oci,dest=$RUNNER_TEMP/image/$ARCHITECTURE.oci.tar,rewrite-timestamp=true" .
+          printf 'sha256=%s\n' "$(sha256sum "$RUNNER_TEMP/image/$ARCHITECTURE.oci.tar" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Upload the platform image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-platform-${{ inputs.architecture }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/image/${{ inputs.architecture }}.oci.tar
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true

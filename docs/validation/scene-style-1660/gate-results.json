@@ -1,0 +1,1675 @@
+{
+  "profile": "development-v1",
+  "tier": "C",
+  "base": "9c8f4c4eefd0fe14fc7a1a0d90b97e40c695ff37",
+  "fullMatrixSourceCandidate": "c163d0ebc23a00a5b427e2d6c16750ea878e9d82",
+  "testCorrectionSourceCandidate": "5ba405919812a26e1cbb6db024778b92008cc2be",
+  "classifierInitial": [
+    "mode=full",
+    "deployment=false",
+    "deployment_catalog=false",
+    "deployment_shards=false",
+    "deployment_installer=false",
+    "complete=false",
+    "shared=true",
+    "cameraagent=true",
+    "logichost=true",
+    "combined=true",
+    "delivery=true",
+    "secret_scan_contract=false",
+    "release_scripts=false"
+  ],
+  "classifierCorrected": [
+    "mode=full",
+    "deployment=false",
+    "deployment_catalog=false",
+    "deployment_shards=false",
+    "deployment_installer=false",
+    "complete=false",
+    "shared=true",
+    "cameraagent=true",
+    "logichost=true",
+    "combined=true",
+    "delivery=true",
+    "secret_scan_contract=false",
+    "release_scripts=false"
+  ],
+  "stages": [
+    {
+      "utc": "2026-10-24T21:44:18Z",
+      "stage": "tool-restore",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T21:45:15Z",
+      "stage": "tool-restore",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T21:45:15Z",
+      "stage": "restore",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T21:45:18Z",
+      "stage": "fixture-alignment",
+      "state": "before-build; selector unchanged"
+    },
+    {
+      "utc": "2026-10-24T21:51:01Z",
+      "stage": "central-saved-version-gate",
+      "state": "before-build; selector updated"
+    },
+    {
+      "utc": "2026-10-24T21:51:53Z",
+      "stage": "restore",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T21:51:53Z",
+      "stage": "debug-build",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T21:55:21Z",
+      "stage": "font-fixture-alignment",
+      "state": "test-only literal/assertion; before Release/Unit"
+    },
+    {
+      "utc": "2026-10-24T21:58:05Z",
+      "stage": "mixed-alias-anchor-fix",
+      "state": "before Release/Unit; affected Debug build added"
+    },
+    {
+      "utc": "2026-10-24T21:59:09Z",
+      "stage": "debug-build",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T21:59:09Z",
+      "stage": "release-build",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:08:58Z",
+      "stage": "release-build",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:08:58Z",
+      "stage": "format-verify",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:13:49Z",
+      "stage": "format-verify",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:13:49Z",
+      "stage": "package-audit",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:14:33Z",
+      "stage": "package-audit",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:14:33Z",
+      "stage": "shell-syntax",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:14:37Z",
+      "stage": "shell-syntax",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:14:37Z",
+      "stage": "ci-classification",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:14:56Z",
+      "stage": "ci-classification",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:14:56Z",
+      "stage": "coordination-guard",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:14:57Z",
+      "stage": "coordination-guard",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:14:57Z",
+      "stage": "pr-review-tools",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:27:48Z",
+      "stage": "pr-review-tools",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:27:48Z",
+      "stage": "unit",
+      "state": "STARTED"
+    },
+    {
+      "utc": "2026-10-24T22:33:46Z",
+      "stage": "unit-temp-permissions-correction",
+      "state": "TMPDIR restricted to mode 700; deployment failure preserved; affected rerun required"
+    },
+    {
+      "utc": "2026-10-24T22:34:02Z",
+      "stage": "unit-deployment-environment-rerun",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:36:55Z",
+      "stage": "unit-deployment-environment-rerun",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:37:52Z",
+      "stage": "registration-debug",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:38:32Z",
+      "stage": "compatibility-debug",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:39:43Z",
+      "stage": "unit-deployment-old-queue-canceled",
+      "state": "No test execution; old queued wrapper terminated before replacing TMPDIR environment; wrapper exited 2 after script replacement"
+    },
+    {
+      "utc": "2026-10-24T22:40:40Z",
+      "stage": "unit",
+      "state": "1"
+    },
+    {
+      "utc": "2026-10-24T22:44:58Z",
+      "stage": "unit-deployment-environment-rerun",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:47:38Z",
+      "stage": "registration-debug",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:47:38Z",
+      "stage": "registration-release",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:47:48Z",
+      "stage": "compatibility-debug",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:47:48Z",
+      "stage": "compatibility-release",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:50:25Z",
+      "stage": "registration-release",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:50:25Z",
+      "stage": "unit-edge-corrections",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:50:35Z",
+      "stage": "compatibility-release",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:50:35Z",
+      "stage": "unit-processing-correction",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:51:46Z",
+      "stage": "unit-edge-corrections",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:51:56Z",
+      "stage": "unit-processing-correction",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:51:56Z",
+      "stage": "correction-format",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T22:56:35Z",
+      "stage": "correction-format",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T22:57:12Z",
+      "stage": "integration",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T23:15:57Z",
+      "stage": "integration-identity-rebuild",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T23:20:07Z",
+      "stage": "integration",
+      "state": "1"
+    },
+    {
+      "utc": "2026-10-24T23:22:15Z",
+      "stage": "integration-identity-rebuild",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T23:22:56Z",
+      "stage": "integration-identity-correction",
+      "state": "QUEUED"
+    },
+    {
+      "utc": "2026-10-24T23:25:01Z",
+      "stage": "integration-identity-correction",
+      "state": "0"
+    },
+    {
+      "utc": "2026-10-24T23:25:02Z",
+      "stage": "COMPLETE",
+      "state": "0"
+    }
+  ],
+  "unit": {
+    "originalCompleteSelection": {
+      "assemblies": [
+        {
+          "assembly": "hvo.skymonitor.agentcore.tests.dll",
+          "counters": {
+            "total": 91,
+            "executed": 91,
+            "passed": 91,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "7CFCF39CDAF4C28AAF626C48760365EE1CB23614E39AC56ABCCDE74F47D7B5E2"
+        },
+        {
+          "assembly": "hvo.skymonitor.architecture.tests.dll",
+          "counters": {
+            "total": 32,
+            "executed": 32,
+            "passed": 32,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "E8B5CFC15F1154242CE3C32F7D57641B727DDFD80DD359A2939B1D59136637B2"
+        },
+        {
+          "assembly": "hvo.skymonitor.astronomy.tests.dll",
+          "counters": {
+            "total": 798,
+            "executed": 798,
+            "passed": 798,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "FA4C9FFA7265ECCD8A2749E0BE7557CD6AFCD91EF73CD120C79A4B5A31780F36"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+          "counters": {
+            "total": 30,
+            "executed": 30,
+            "passed": 30,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "69612551F71463E670E2255232FDA899A49C83181073757FC9050B7D51234F35"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+          "counters": {
+            "total": 6,
+            "executed": 6,
+            "passed": 6,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "6132F83E7173831BD8E66E884FBD8BEF2712E6180F9FF6237DCCA44A1B6623B2"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+          "counters": {
+            "total": 4,
+            "executed": 4,
+            "passed": 4,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "F1C777B4CE59348C3490C702898D020EC96F7156725EBBB66BB4D432E6CD6993"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.logichost.tests.dll",
+          "counters": {
+            "total": 94,
+            "executed": 94,
+            "passed": 94,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "412FEDCB8A45E93B54011333A41A47FA44BF25FE069C0AA3678048D9567F8469"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+          "counters": {
+            "total": 7459,
+            "executed": 7458,
+            "passed": 7455,
+            "failed": 3,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "C9AE9D71527D26909EF4A45BE7567F2952C0317479DC40D06E7820CB4A0EE6E8"
+        },
+        {
+          "assembly": "hvo.skymonitor.catalog.sqlite.performancetests.dll",
+          "counters": {
+            "total": 4,
+            "executed": 4,
+            "passed": 4,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "54E2E10BCEE0680AA9069C0B827307D048B3701BAD6DACB2BE0A24239E40C473"
+        },
+        {
+          "assembly": "hvo.skymonitor.catalog.sqlite.tests.dll",
+          "counters": {
+            "total": 296,
+            "executed": 296,
+            "passed": 296,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "B42EA03C9B6F82E29B0D3A04A7D7B64C771D32DFE6CE887609645D5EE5698E81"
+        },
+        {
+          "assembly": "hvo.skymonitor.common.tests.dll",
+          "counters": {
+            "total": 48,
+            "executed": 48,
+            "passed": 48,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "253CFB14A26017FCB0FF932B7AC2EA79E1F8B7DB61FFA876298970802C737FA5"
+        },
+        {
+          "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+          "counters": {
+            "total": 2777,
+            "executed": 2656,
+            "passed": 2637,
+            "failed": 19,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "1E990FC1B582B538556C1BFE51D4D0853814AC93F1FD75C351311672D7CE1E99"
+        },
+        {
+          "assembly": "hvo.skymonitor.deployment.distribution.tests.dll",
+          "counters": {
+            "total": 116,
+            "executed": 115,
+            "passed": 115,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "59710C8621BEEF10173A4BE43389A5D13233BB8EFA3FA79928D88A633F363DE0"
+        },
+        {
+          "assembly": "hvo.skymonitor.fleet.contracts.tests.dll",
+          "counters": {
+            "total": 11,
+            "executed": 11,
+            "passed": 11,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "14D181C27E51EB0CE81DD0A7FE6DFC1EEA4ED27670C36325B53D1810740DA5ED"
+        },
+        {
+          "assembly": "hvo.skymonitor.imaging.tests.dll",
+          "counters": {
+            "total": 493,
+            "executed": 493,
+            "passed": 493,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "E662F3C032C4772B08B3B2311F58F0784B5F2B2547A43D4E290CBCE13CE9E0BF"
+        },
+        {
+          "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+          "counters": {
+            "total": 19,
+            "executed": 19,
+            "passed": 19,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "959AF46BEDD9E6DBFE9816491FAB8210FEAB7BCBA21B3AB310E7B21984135E60"
+        },
+        {
+          "assembly": "hvo.skymonitor.logichost.tests.dll",
+          "counters": {
+            "total": 985,
+            "executed": 984,
+            "passed": 984,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "7BA6D3071D1045F0BF61AEBD14F383B6F13D4E61FA948E308FFB1F37A1BE04DF"
+        },
+        {
+          "assembly": "hvo.skymonitor.processing.tests.dll",
+          "counters": {
+            "total": 1155,
+            "executed": 1155,
+            "passed": 1154,
+            "failed": 1,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "552E882F35E3E84F3734C925BF885D30DAF7AF912898CD46873223BCB2CC83BC"
+        },
+        {
+          "assembly": "hvo.skymonitor.processingrunner.tests.dll",
+          "counters": {
+            "total": 35,
+            "executed": 35,
+            "passed": 35,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "28EB432A528277A9C8A642DCD593BB8D3CED78755FA5E10554CFCF916174AFEC"
+        },
+        {
+          "assembly": "hvo.skymonitor.storage.filesystem.tests.dll",
+          "counters": {
+            "total": 77,
+            "executed": 77,
+            "passed": 77,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "1DBC4849959533E619A441F34B3948F3304436C87D8EE16DEC753B875E62E2F9"
+        },
+        {
+          "assembly": "hvo.skymonitor.testsupport.tests.dll",
+          "counters": {
+            "total": 11,
+            "executed": 11,
+            "passed": 11,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "0EB41316A302E3D0CF47D0C8883AB0F59B01CFD811A278409155AFD16E90C8BA"
+        }
+      ],
+      "counters": {
+        "total": 14541,
+        "executed": 14417,
+        "passed": 14394,
+        "failed": 23,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "outcomes": {
+        "Passed": 14394,
+        "Failed": 23,
+        "NotExecuted": 124
+      },
+      "canonicalCoverageFiles": 21
+    },
+    "affectedCorrections": [
+      {
+        "selection": "unit-deployment-rerun",
+        "assemblies": [
+          {
+            "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+            "counters": {
+              "total": 2777,
+              "executed": 2656,
+              "passed": 2656,
+              "failed": 0,
+              "error": 0,
+              "timeout": 0,
+              "aborted": 0,
+              "inconclusive": 0,
+              "passedButRunAborted": 0,
+              "notRunnable": 0,
+              "notExecuted": 0,
+              "disconnected": 0,
+              "warning": 0,
+              "completed": 0,
+              "inProgress": 0,
+              "pending": 0
+            },
+            "trxSha256": "8F477A3355C585684E7A2A7E3E95A82BD1E74B51B8FECACCD24E65CD0432E34E"
+          }
+        ],
+        "counters": {
+          "total": 2777,
+          "executed": 2656,
+          "passed": 2656,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 2656,
+          "NotExecuted": 121
+        },
+        "canonicalCoverageFiles": 1
+      },
+      {
+        "selection": "unit-edge-corrections",
+        "assemblies": [
+          {
+            "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+            "counters": {
+              "total": 8,
+              "executed": 8,
+              "passed": 8,
+              "failed": 0,
+              "error": 0,
+              "timeout": 0,
+              "aborted": 0,
+              "inconclusive": 0,
+              "passedButRunAborted": 0,
+              "notRunnable": 0,
+              "notExecuted": 0,
+              "disconnected": 0,
+              "warning": 0,
+              "completed": 0,
+              "inProgress": 0,
+              "pending": 0
+            },
+            "trxSha256": "1F836EBA6AEDA4FDC4346BF10F2DD682411605B11008B542400710FF49BDA66F"
+          }
+        ],
+        "counters": {
+          "total": 8,
+          "executed": 8,
+          "passed": 8,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 8
+        },
+        "canonicalCoverageFiles": 1
+      },
+      {
+        "selection": "unit-processing-correction",
+        "assemblies": [
+          {
+            "assembly": "hvo.skymonitor.processing.tests.dll",
+            "counters": {
+              "total": 33,
+              "executed": 33,
+              "passed": 33,
+              "failed": 0,
+              "error": 0,
+              "timeout": 0,
+              "aborted": 0,
+              "inconclusive": 0,
+              "passedButRunAborted": 0,
+              "notRunnable": 0,
+              "notExecuted": 0,
+              "disconnected": 0,
+              "warning": 0,
+              "completed": 0,
+              "inProgress": 0,
+              "pending": 0
+            },
+            "trxSha256": "1FD10937F70035A64B27B9C2BE53908514BA217C8D7704E070D5D8B4BDEEB7B1"
+          }
+        ],
+        "counters": {
+          "total": 33,
+          "executed": 33,
+          "passed": 33,
+          "failed": 0,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "outcomes": {
+          "Passed": 33
+        },
+        "canonicalCoverageFiles": 1
+      }
+    ],
+    "effectiveTotal": 14541,
+    "effectiveOutcomes": {
+      "Passed": 14417,
+      "NotExecuted": 124
+    },
+    "initialFailureDispositions": [
+      {
+        "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+        "class": "HVO.SkyMonitor.CameraAgent.Tests.Authorization.OwnerRecoveryTransportTests",
+        "method": "PrepareSocketPath_RemovesSocketLeftByHardTerminationAsync",
+        "case": "PrepareSocketPath_RemovesSocketLeftByHardTerminationAsync",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+        "class": "HVO.SkyMonitor.CameraAgent.Tests.Authorization.OwnerRecoveryTransportTests",
+        "method": "PrepareSocketPath_RefusesActiveListener",
+        "case": "PrepareSocketPath_RefusesActiveListener",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+        "class": "HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing.CaptureProcessingGraphTests",
+        "method": "PreviewPlan_ProductionAliasesComposeCalibratedCombinedAndQualityProducts",
+        "case": "PreviewPlan_ProductionAliasesComposeCalibratedCombinedAndQualityProducts",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_PasswordOutsideTheRecoveryRulesRetainsNoOperationOrStagedCopy",
+        "case": "Execute_PasswordOutsideTheRecoveryRulesRetainsNoOperationOrStagedCopy (\"abcdefg\\n\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_PasswordOutsideTheRecoveryRulesRetainsNoOperationOrStagedCopy",
+        "case": "Execute_PasswordOutsideTheRecoveryRulesRetainsNoOperationOrStagedCopy (\"abcd efgh\\n\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_EightToFifteenCharacterPasswordFileCompletesRecovery",
+        "case": "Execute_EightToFifteenCharacterPasswordFileCompletesRecovery (\"abcdefgh\\n\",\"abcdefgh\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_MissingRuntimeSocketIsUnsupportedAndRetainsOperationForResume",
+        "case": "Execute_MissingRuntimeSocketIsUnsupportedAndRetainsOperationForResume",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "Problem_FolderNotMadeYetUnderSafeFolders_IsNoneAndCreatesNothing",
+        "case": "Problem_FolderNotMadeYetUnderSafeFolders_IsNoneAndCreatesNothing",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "OwnerVault_CommitUnderANameAlreadyCommitted_IsRefusedAndLeavesTheCommittedRecord",
+        "case": "OwnerVault_CommitUnderANameAlreadyCommitted_IsRefusedAndLeavesTheCommittedRecord",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_EightToFifteenCharacterPasswordFileCompletesRecovery",
+        "case": "Execute_EightToFifteenCharacterPasswordFileCompletesRecovery (\"abcdefghijklmno\\r\\n\",\"abcdefghijklmno\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_DefinitiveRejectionAllowsFreshOperation",
+        "case": "Execute_DefinitiveRejectionAllowsFreshOperation",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_CorruptRetainedStateReturnsBoundedError",
+        "case": "Execute_CorruptRetainedStateReturnsBoundedError",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_ReadyReceiptDoesNotReportStaleCredential",
+        "case": "Execute_ReadyReceiptDoesNotReportStaleCredential",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_RejectsRootOrDifferentRuntimeIdentityBeforeRecovery",
+        "case": "Execute_RejectsRootOrDifferentRuntimeIdentityBeforeRecovery",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "Problem_BackupFolderNotOwnerOnly_IsNamed",
+        "case": "Problem_BackupFolderNotOwnerOnly_IsNamed (\"group-readable\",\"chmod 700\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "OwnerVault_CommitsOnlyARecordedWholeArchiveAndNeverDiscardsOne",
+        "case": "OwnerVault_CommitsOnlyARecordedWholeArchiveAndNeverDiscardsOne",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "Problem_BackupFolderNotOwnerOnly_IsNamed",
+        "case": "Problem_BackupFolderNotOwnerOnly_IsNamed (\"link\",\"is not a folder\")",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath",
+        "case": "Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_ResumeReusesOperationAndCredentialAfterLostAcknowledgement",
+        "case": "Execute_ResumeReusesOperationAndCredentialAfterLostAcknowledgement",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_UnsupportedRecoveryRetainsOperationForResume",
+        "case": "Execute_UnsupportedRecoveryRetainsOperationForResume",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.BackupVaultTests",
+        "method": "Problem_FolderAboveOthersCanWrite_IsNamedUnlessSticky",
+        "case": "Problem_FolderAboveOthersCanWrite_IsNamedUnlessSticky (OtherWrite, GroupWrite, StickyBit,False)",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+        "class": "HVO.SkyMonitor.Deployment.Cli.Tests.OwnerRecoveryManagerTests",
+        "method": "Execute_ResumeRejectsMissingStagedCredential",
+        "case": "Execute_ResumeRejectsMissingStagedCredential",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.processing.tests.dll",
+        "class": "HVO.SkyMonitor.Processing.Tests.FrameFactsPresentationTests",
+        "method": "OldCreatorsAndVersionsStayPinnedAndNewFieldsAreAbsentFromLegacyBytes",
+        "case": "OldCreatorsAndVersionsStayPinnedAndNewFieldsAreAbsentFromLegacyBytes",
+        "outcome": "Passed"
+      }
+    ]
+  },
+  "integration": {
+    "originalCompleteSelection": {
+      "assemblies": [
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "E2F52A075C2DF7BF6237A1150162D4C0DCEDFA44B1D2C29ED7C563E5EEF66004"
+        },
+        {
+          "assembly": "hvo.skymonitor.architecture.tests.dll",
+          "counters": {
+            "total": 7,
+            "executed": 7,
+            "passed": 7,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "A024C0C24775B727A1F581465160699D2E4ADE3F7383DE423E0A5CE032BAD8A4"
+        },
+        {
+          "assembly": "hvo.skymonitor.astronomy.tests.dll",
+          "counters": {
+            "total": 2,
+            "executed": 2,
+            "passed": 2,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "56F70BEC5FA1E61B11E26B37E67539D6726C42EBD653D3F41192402BBFCC3D10"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+          "counters": {
+            "total": 19,
+            "executed": 19,
+            "passed": 19,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "7AFA0D1E2F677011E83A8EEB8113C4678393E251B39DC5382BEA684D2237AAD0"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+          "counters": {
+            "total": 35,
+            "executed": 35,
+            "passed": 35,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "A43FBE61FB9604536C89A1F65056ECD3B8D220AB72B83460162A02C37DA358C4"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+          "counters": {
+            "total": 24,
+            "executed": 24,
+            "passed": 24,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "5B73A02D511AC4FE662052031DF0A91DFCE482D43D352F4F2413D103FEBA5BDB"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "4F92578722E01F7F13B03573F347F52E8F8BD2A7A6CCD40C81FD3261C8E385B8"
+        },
+        {
+          "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+          "counters": {
+            "total": 319,
+            "executed": 319,
+            "passed": 319,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "87B7EA9EB37987FDC330135826D4868209F108231E2959A486489B60ED0E4D82"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "1ABB438F75430C1CD20E19712CC4A2FC4B0E09582EC63B7C9F1252058F5B0FED"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "43A68F9ACABC5A4F8D27E1265777544DAD38A737DD1011A2B54B2EB0E694FAA2"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "33039CF4A65B83F967A49C9B4137599EEC80C5B18A9B18252DA0990E07EE2607"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "9E56A94AE39D2727D01C2AF5B9C56D332284870184A4D718E42BF074B38F5EB2"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "0D0AF2602AA1E296FAA12AE6A1BCAC1ECDB8280F92C2B468F06704F63CF7DBB2"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "50C0F770E862EC5B59523B98DF1516A2A58633623E90C717EB8D4A4CECDF08E8"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "E3BE85EB5C1AB2C91D7B40E400CD40F961734163912A5ED5BA2CA32404127630"
+        },
+        {
+          "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+          "counters": {
+            "total": 588,
+            "executed": 588,
+            "passed": 585,
+            "failed": 3,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "874EE99F8539626074F2EBA4DF3977173542D53C8D56E14823D1C38C85EF5A68"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "6B934366360C5680F1EF52131AAF4364E0D5789943A334A7B9108EE48081173F"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "AF3BB3D04D7F1D2D89E539ABEE9D29BFA416F4F6D8C28642C5613367D0F41110"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "8E722899C77F7CE15DD410C7CE2DD4FA240C7172C53027383880055DD03D0A73"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "508E7CD36AF66DCEF8EC2C7C7AD5C863AAF9625443269D8400076FCF19E87C6B"
+        },
+        {
+          "assembly": "no-discovered-cases",
+          "counters": {
+            "total": 0,
+            "executed": 0,
+            "passed": 0,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "A2ADBDA1E9437DDF93F7963DFF0138A0BC3740153579183E73162AD4C1343E3A"
+        }
+      ],
+      "counters": {
+        "total": 994,
+        "executed": 994,
+        "passed": 991,
+        "failed": 3,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "outcomes": {
+        "Passed": 991,
+        "Failed": 3
+      },
+      "canonicalCoverageFiles": 21
+    },
+    "affectedIdentityCorrection": {
+      "assemblies": [
+        {
+          "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+          "counters": {
+            "total": 3,
+            "executed": 3,
+            "passed": 3,
+            "failed": 0,
+            "error": 0,
+            "timeout": 0,
+            "aborted": 0,
+            "inconclusive": 0,
+            "passedButRunAborted": 0,
+            "notRunnable": 0,
+            "notExecuted": 0,
+            "disconnected": 0,
+            "warning": 0,
+            "completed": 0,
+            "inProgress": 0,
+            "pending": 0
+          },
+          "trxSha256": "8E61471709A5BE3AC4517635478E0925ECB23700E65AD0D03B63C6CAD07FF8B8"
+        }
+      ],
+      "counters": {
+        "total": 3,
+        "executed": 3,
+        "passed": 3,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "outcomes": {
+        "Passed": 3
+      },
+      "canonicalCoverageFiles": 1
+    },
+    "effectiveTotal": 994,
+    "effectiveOutcomes": {
+      "Passed": 994
+    },
+    "initialFailureDispositions": [
+      {
+        "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+        "class": "HVO.SkyMonitor.IntegrationTests.HybridTransientSubmissionIntegrationTests",
+        "method": "GenerationCheck_HoldsObjectFencesWithoutSqlTransactionAndRejectsChangedSource",
+        "case": "GenerationCheck_HoldsObjectFencesWithoutSqlTransactionAndRejectsChangedSource",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+        "class": "HVO.SkyMonitor.IntegrationTests.CentralTransientEventPersistenceIntegrationTests",
+        "method": "PayloadReleaseDelete_HasNoTransactionAndAllowsWriterDuringMinioIo",
+        "case": "PayloadReleaseDelete_HasNoTransactionAndAllowsWriterDuringMinioIo",
+        "outcome": "Passed"
+      },
+      {
+        "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+        "class": "HVO.SkyMonitor.IntegrationTests.Issue243SqlCriticalSectionEvidenceTests",
+        "method": "RetentionDelete_HoldsSessionLockWithoutSqlTransactionAcrossMinioIo",
+        "case": "RetentionDelete_HoldsSessionLockWithoutSqlTransactionAcrossMinioIo",
+        "outcome": "Passed"
+      }
+    ]
+  }
+}

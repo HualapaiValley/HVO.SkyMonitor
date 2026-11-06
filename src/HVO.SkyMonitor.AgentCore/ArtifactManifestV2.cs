@@ -12,6 +12,11 @@ public sealed record ArtifactManifestV2(
 {
     public const string CurrentSchemaVersion = "v2";
 
+    /// <summary>Optional capture-local graph binding for interrupted raw publication recovery.
+    /// Consumers need no graph registry to read or reconstruct this artifact.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CaptureGraphRevisionId { get; init; }
+
     public string IdempotencyKey => CaptureContractJson.ComputeDescriptorSha256(Descriptor);
 
     public CaptureContractValidationResult Validate()
@@ -29,6 +34,8 @@ public sealed record ArtifactManifestV2(
         {
             return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "producerStepId");
         }
+        if (CaptureGraphRevisionId is not null && !IsSha256(CaptureGraphRevisionId))
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "captureGraphRevisionId");
         var descriptorValidation = Descriptor?.Validate() ?? CaptureContractValidationResult.Failure(
             CaptureContractReasonCodes.InvalidIdentity, "descriptor");
         if (!descriptorValidation.IsValid)

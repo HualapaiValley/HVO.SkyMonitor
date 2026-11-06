@@ -36,6 +36,7 @@ public sealed class OperatorRouteTests
             typeof(HealthPage),
             typeof(ControlPage),
             typeof(SoftwarePage),
+            typeof(SpaceWeatherPage),
             typeof(RegistrationPage),
             typeof(PipelineSummaryPage),
             typeof(AutomationsPage),
@@ -116,6 +117,7 @@ public sealed class OperatorRouteTests
             ("/operations/health", "Operations"),
             ("/operations/control", "Operations"),
             ("/operations/software", "Operations"),
+            ("/operations/space-weather", "Operations"),
             ("/operations/registration", "Operations")
         })
         {
@@ -144,6 +146,7 @@ public sealed class OperatorRouteTests
             (typeof(HealthPage), ["/operations/health", "/operations/system", "/system"]),
             (typeof(ControlPage), ["/operations/control"]),
             (typeof(SoftwarePage), ["/operations/software"]),
+            (typeof(SpaceWeatherPage), ["/operations/space-weather"]),
             (typeof(QuarantinePage), ["/operations/quarantine"]),
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
             (typeof(AutomationsPage), ["/operations/automations"]),

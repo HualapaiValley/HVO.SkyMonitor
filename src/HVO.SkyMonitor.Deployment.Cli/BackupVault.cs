@@ -178,12 +178,12 @@ internal sealed partial class BackupVaultFiles(string root)
         EnsureFolder(create: false);
         if (!partial && ReadRecord(name) is null)
         {
-            throw InstallerException.Refused($"'{name}' is not a recorded backup in {Root}.");
+            throw InstallerException.RefusedFormatted($"'{CameraAgentStateDiagnostics.Reason(name)}' is not a recorded backup in {CameraAgentStateDiagnostics.Reason(Root)}.");
         }
         var path = PathOf(name) + (partial ? PartialSuffix : string.Empty);
         if (!File.Exists(path))
         {
-            throw InstallerException.Refused($"'{name}' is not in {Root}.");
+            throw InstallerException.RefusedFormatted($"'{CameraAgentStateDiagnostics.Reason(name)}' is not in {CameraAgentStateDiagnostics.Reason(Root)}.");
         }
         return SafeFileSystem.OpenOwnerFileRead(path);
     }
@@ -200,16 +200,17 @@ internal sealed partial class BackupVaultFiles(string root)
         if (File.Exists(archive))
         {
             if (ReadRecord(record.Name) == record) return;
-            throw InstallerException.Refused($"'{record.Name}' is already a committed backup in {Root}; a backup never replaces another.");
+            throw InstallerException.RefusedFormatted(
+                $"'{CameraAgentStateDiagnostics.Reason(record.Name)}' is already a committed backup in {CameraAgentStateDiagnostics.Reason(Root)}; a backup never replaces another.");
         }
         if (!File.Exists(partial))
         {
-            throw new InstallerException($"The partial backup '{record.Name}' is missing, so it cannot be committed.");
+            throw InstallerException.Formatted($"The partial backup '{CameraAgentStateDiagnostics.Reason(record.Name)}' is missing, so it cannot be committed.");
         }
         SafeFileSystem.ValidateOwnerFile(partial);
         if (new FileInfo(partial).Length != record.ArchiveLength)
         {
-            throw new InstallerException($"The partial backup '{record.Name}' is not the length its record names.");
+            throw InstallerException.Formatted($"The partial backup '{CameraAgentStateDiagnostics.Reason(record.Name)}' is not the length its record names.");
         }
         // The record comes first: a committed name always has its record, and a record beside a partial is finished by
         // committing again.
@@ -267,7 +268,7 @@ internal sealed partial class BackupVaultFiles(string root)
 
     private string PathOf(string name)
     {
-        if (!IsName(name)) throw InstallerException.Refused($"'{name}' is not the name of a backup this installer writes.");
+        if (!IsName(name)) throw InstallerException.RefusedFormatted($"'{CameraAgentStateDiagnostics.Reason(name)}' is not the name of a backup this installer writes.");
         return Path.Combine(Root, name);
     }
 
@@ -279,34 +280,35 @@ internal sealed partial class BackupVaultFiles(string root)
     /// folder above it must be a folder, not a link, that no group or other user can write, unless its sticky bit keeps
     /// them from renaming what is not theirs, so no one else can put another folder in its place. The folder itself, once
     /// it exists, must be a folder, not a link, owned by the account running the command, with mode 0700. A folder that
-    /// does not exist yet is created with that mode on the first write. Only reads metadata; creates nothing.
+    /// does not exist yet is created with that mode on the first write. Only reads metadata; creates nothing. Every path in
+    /// the reason is already redacted and escaped (#1491).
     /// </summary>
     public string? Problem()
     {
         for (var current = Path.GetDirectoryName(Root); current is not null; current = Path.GetDirectoryName(current))
         {
             if (NativeLinux.TryGetNodeIdentity(current) is not { } ancestor) continue;
-            if (ancestor.Type != DirectoryType) return $"{current}, which holds it, is not a folder";
+            if (ancestor.Type != DirectoryType) return $"{CameraAgentStateDiagnostics.Reason(current)}, which holds it, is not a folder";
             if ((ancestor.Mode & GroupOrOtherWrite) != 0 && (ancestor.Mode & UnixFileMode.StickyBit) == 0)
             {
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"{current}, which holds it, has mode {Convert.ToString((int)ancestor.Mode & 0xFFF, 8)}, so someone else can replace what is in it. Remove the group and other write permissions (chmod go-w {current})");
+                    $"{CameraAgentStateDiagnostics.Reason(current)}, which holds it, has mode {Convert.ToString((int)ancestor.Mode & 0xFFF, 8)}, so someone else can replace what is in it. Remove the group and other write permissions (chmod go-w {CameraAgentStateDiagnostics.Reason(current)})");
             }
         }
         if (NativeLinux.TryGetNodeIdentity(Root) is not { } folder) return null;
-        if (folder.Type != DirectoryType) return $"{Root} is not a folder";
+        if (folder.Type != DirectoryType) return $"{CameraAgentStateDiagnostics.Reason(Root)} is not a folder";
         if (folder.Uid != NativeLinux.getuid())
         {
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"{Root} belongs to uid {folder.Uid}, not to the account running the backup, uid {NativeLinux.getuid()}. Give it to the instance's service account");
+                $"{CameraAgentStateDiagnostics.Reason(Root)} belongs to uid {folder.Uid}, not to the account running the backup, uid {NativeLinux.getuid()}. Give it to the instance's service account");
         }
         if ((folder.Mode & (UnixFileMode)0xFFF) != OwnerOnly)
         {
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"{Root} has mode {Convert.ToString((int)folder.Mode & 0xFFF, 8)}, not 0700, the service account's alone. Make it so (chmod 700 {Root})");
+                $"{CameraAgentStateDiagnostics.Reason(Root)} has mode {Convert.ToString((int)folder.Mode & 0xFFF, 8)}, not 0700, the service account's alone. Make it so (chmod 700 {CameraAgentStateDiagnostics.Reason(Root)})");
         }
         return null;
     }
@@ -316,7 +318,7 @@ internal sealed partial class BackupVaultFiles(string root)
     {
         if (Problem() is { } problem)
         {
-            throw InstallerException.Refused(
+            throw InstallerException.RefusedFormatted(
                 $"Backups are kept only in the service account's own folder, mode 0700, in folders no one else can change, and {problem}. Then run it again. Nothing was changed.");
         }
     }
@@ -330,7 +332,7 @@ internal sealed partial class BackupVaultFiles(string root)
         Admit();
         if (!Directory.Exists(Root))
         {
-            if (!create) throw InstallerException.Refused($"There is no backup folder {Root}.");
+            if (!create) throw InstallerException.RefusedFormatted($"There is no backup folder {CameraAgentStateDiagnostics.Reason(Root)}.");
             SafeFileSystem.CreateOwnerDirectory(Root);
             NativeLinux.FlushDirectory(Path.GetDirectoryName(Root)!);
             Admit();

@@ -177,6 +177,7 @@ internal sealed partial class CameraAgentApiKeyStore(
 
         var rows = await dbContext.UserTokens.AsNoTracking()
             .Where(row => row.LoginProvider == LoginProvider && row.Name == id)
+            .OrderBy(static row => row.UserId)
             .Take(2)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

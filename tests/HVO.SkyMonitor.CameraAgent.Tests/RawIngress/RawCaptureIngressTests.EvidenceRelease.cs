@@ -178,8 +178,9 @@ public sealed partial class RawCaptureIngressTests
             using (var original = CreateIngress(root, new(TimeProvider.System)))
                 payload = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(6), originalBytes), CancellationToken.None).ConfigureAwait(false))!.StoredFrame.AbsolutePath;
             // Move missing evidence aside rather than deleting raw data; corrupt evidence is retained in quarantine.
+            // Startup checks committed evidence by length, so the corruption changes it.
             if (missing) File.Move(payload, Path.Combine(root, "recovery-backup.bin"));
-            else await File.WriteAllBytesAsync(payload, new byte[] { 9, 8, 7, 6 }).ConfigureAwait(false);
+            else await File.WriteAllBytesAsync(payload, new byte[] { 9, 8, 7 }).ConfigureAwait(false);
             using (var restarted = CreateIngress(root, new(TimeProvider.System)))
             {
                 await Assert.ThrowsExactlyAsync<InvalidDataException>(() => restarted.AcceptAsync(
@@ -229,7 +230,8 @@ public sealed partial class RawCaptureIngressTests
                 payload = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(6), bytes), CancellationToken.None).ConfigureAwait(false))!.StoredFrame.AbsolutePath;
             var sidecar = Path.ChangeExtension(payload, ".json");
             var manifest = await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(payload, new byte[] { 9, 9, 9, 9 }).ConfigureAwait(false);
+            // Startup checks committed evidence by length; revalidation below still rejects same-length bytes.
+            await File.WriteAllBytesAsync(payload, new byte[] { 9, 9, 9 }).ConfigureAwait(false);
             using var restarted = CreateIngress(root, new(TimeProvider.System));
             var target = (await restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single().Target;
             var quarantineBytes = await SnapshotEvidenceFilesAsync(Path.Combine(root, "quarantine"), "*").ConfigureAwait(false);

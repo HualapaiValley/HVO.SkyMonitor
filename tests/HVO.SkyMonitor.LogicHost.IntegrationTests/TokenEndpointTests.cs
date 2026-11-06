@@ -24,6 +24,8 @@ public sealed class TokenEndpointTests
 
     private HttpClient? _client;
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestInitialize]
     public void SetUp()
     {
@@ -63,7 +65,13 @@ public sealed class TokenEndpointTests
             scope).ConfigureAwait(false);
 
         Assert.IsFalse(string.IsNullOrEmpty(token.AccessToken), "Access token should not be empty.");
+    }
 
+    [TestMethod]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Cleanup is best-effort and reports its own failure without replacing the test's result.")]
+    public async Task RefreshGrantReturnsTokensAndRejectsRevokedTokenAsync()
+    {
         // A separate subject keeps token revocation isolated from the shared seeded users.
         await using var services = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var users = services.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
@@ -130,8 +138,20 @@ public sealed class TokenEndpointTests
         }
         finally
         {
-            var deleted = await users.DeleteAsync(user).ConfigureAwait(false);
-            Assert.IsTrue(deleted.Succeeded);
+            // Best-effort: a cleanup failure is reported here and never replaces the test's own result.
+            try
+            {
+                var deleted = await users.DeleteAsync(user).ConfigureAwait(false);
+                if (!deleted.Succeeded)
+                {
+                    TestContext.WriteLine("Cleanup did not delete the temporary user: {0}",
+                        string.Join("; ", deleted.Errors.Select(static error => error.Code)));
+                }
+            }
+            catch (Exception exception)
+            {
+                TestContext.WriteLine("Cleanup did not delete the temporary user: {0}", exception);
+            }
         }
     }
 

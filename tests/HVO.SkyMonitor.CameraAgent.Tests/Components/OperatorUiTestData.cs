@@ -308,6 +308,10 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
             ? OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null))
             : OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "unavailable");
     }
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>> AstrometryHandler { get; set; } =
+        (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+        => AstrometryHandler(captureId, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>>> TransientHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
             id, HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, null)));

@@ -1,0 +1,1136 @@
+{
+  "schema": "issue-1591-same-load-reuse-v1",
+  "revisions": {
+    "baseline": "4da834295aa37be242dac6ae9b6e3ab69ef6dc63",
+    "candidate": "f904018368c05194f5eb088a26fd73bef294b845"
+  },
+  "order": [
+    "b1",
+    "c1",
+    "c2",
+    "b2",
+    "b3",
+    "c3",
+    "c4",
+    "b4",
+    "b5",
+    "c5"
+  ],
+  "corpusSha256": "8285C4E1B9B1435C2A42A0DF6CBC311B43F74966040D3B245637ECF4FCD9E81B",
+  "summary": {
+    "fixed-all-day": {
+      "baseline": {
+        "endpointMs": {
+          "median": 190.0198,
+          "minimum": 179.48525,
+          "maximum": 197.2912
+        },
+        "cpuMs": {
+          "median": 184.406,
+          "minimum": 176.058,
+          "maximum": 194.364
+        },
+        "allocatedBytes": {
+          "median": 128189692.0,
+          "minimum": 128189072.0,
+          "maximum": 128189836.0
+        },
+        "rssMaxBytes": {
+          "median": 317284352,
+          "minimum": 311320576,
+          "maximum": 319385600
+        },
+        "peakRssBytes": {
+          "median": 319090688,
+          "minimum": 312725504,
+          "maximum": 320905216
+        },
+        "loadMs": {
+          "median": 187.75670000000002,
+          "minimum": 177.8268,
+          "maximum": 194.9875
+        },
+        "expandMs": {
+          "median": 3.8442,
+          "minimum": 3.6272,
+          "maximum": 4.0987
+        },
+        "expandAllocatedBytes": {
+          "median": 2506632.0,
+          "minimum": 2506632.0,
+          "maximum": 2506632.0
+        },
+        "retainedMs": {
+          "median": 177.8207,
+          "minimum": 169.52204999999998,
+          "maximum": 187.30815
+        },
+        "retainedAllocatedBytes": {
+          "median": 125376520.0,
+          "minimum": 125376520.0,
+          "maximum": 125376608.0
+        },
+        "initializeMs": {
+          "median": 182.8854,
+          "minimum": 172.8245,
+          "maximum": 190.4885
+        },
+        "expansionsPerRead": {
+          "median": 2,
+          "minimum": 2,
+          "maximum": 2
+        },
+        "logicalReadBytes": {
+          "median": 32734915.0,
+          "minimum": 32734903.0,
+          "maximum": 32735016.0
+        },
+        "physicalReadBytes": {
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        },
+        "readCalls": {
+          "median": 10127.0,
+          "minimum": 10127.0,
+          "maximum": 10127.0
+        },
+        "batchMs": {
+          "median": 694.5494,
+          "minimum": 656.6906,
+          "maximum": 719.9465
+        },
+        "batchCpuMs": {
+          "median": 689.546,
+          "minimum": 645.223,
+          "maximum": 705.265
+        },
+        "batchAllocatedBytes": {
+          "median": 512779716.0,
+          "minimum": 512778232.0,
+          "maximum": 512924748.0
+        },
+        "configChangeMs": {
+          "median": 176.2341,
+          "minimum": 165.7459,
+          "maximum": 189.8894
+        },
+        "manualLocationChangeMs": {
+          "median": 350.515,
+          "minimum": 332.386,
+          "maximum": 364.3141
+        },
+        "settlingLateExpandPerCallMs": {
+          "median": 2.0181,
+          "minimum": 1.9493,
+          "maximum": 2.1396499999999996
+        },
+        "repeatEarlyExpandPerCallMs": {
+          "median": 1.93035,
+          "minimum": 1.80195,
+          "maximum": 2.0444
+        },
+        "repeatLateExpandPerCallMs": {
+          "median": 1.883,
+          "minimum": 1.76505,
+          "maximum": 1.9296
+        },
+        "repeatEarlyEndpointMs": {
+          "median": 195.6494,
+          "minimum": 185.40085,
+          "maximum": 203.3484
+        },
+        "repeatLateEndpointMs": {
+          "median": 174.07635,
+          "minimum": 162.07639999999998,
+          "maximum": 197.14525
+        }
+      },
+      "candidate": {
+        "endpointMs": {
+          "median": 172.57920000000001,
+          "minimum": 171.23315,
+          "maximum": 197.58505000000002
+        },
+        "cpuMs": {
+          "median": 167.938,
+          "minimum": 161.594,
+          "maximum": 193.94400000000002
+        },
+        "allocatedBytes": {
+          "median": 126942292.0,
+          "minimum": 126293304.0,
+          "maximum": 126943760.0
+        },
+        "rssMaxBytes": {
+          "median": 312758272,
+          "minimum": 308428800,
+          "maximum": 327245824
+        },
+        "peakRssBytes": {
+          "median": 314388480,
+          "minimum": 310398976,
+          "maximum": 328962048
+        },
+        "loadMs": {
+          "median": 170.8951,
+          "minimum": 169.53075,
+          "maximum": 194.97500000000002
+        },
+        "expandMs": {
+          "median": 1.93775,
+          "minimum": 0.84125,
+          "maximum": 2.0622
+        },
+        "expandAllocatedBytes": {
+          "median": 1252928.0,
+          "minimum": 1244120.0,
+          "maximum": 1252928.0
+        },
+        "retainedMs": {
+          "median": 163.9259,
+          "minimum": 158.3454,
+          "maximum": 189.15845000000002
+        },
+        "retainedAllocatedBytes": {
+          "median": 125376520.0,
+          "minimum": 124736408.0,
+          "maximum": 125376552.0
+        },
+        "initializeMs": {
+          "median": 168.59244999999999,
+          "minimum": 166.6078,
+          "maximum": 192.54575
+        },
+        "expansionsPerRead": {
+          "median": 1,
+          "minimum": 1,
+          "maximum": 1
+        },
+        "logicalReadBytes": {
+          "median": 32735018.0,
+          "minimum": 32734914.0,
+          "maximum": 32735370.0
+        },
+        "physicalReadBytes": {
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        },
+        "readCalls": {
+          "median": 10127.0,
+          "minimum": 10126.0,
+          "maximum": 10129.0
+        },
+        "batchMs": {
+          "median": 699.0107,
+          "minimum": 630.2715000000001,
+          "maximum": 744.7207
+        },
+        "batchCpuMs": {
+          "median": 683.5364999999999,
+          "minimum": 618.7325000000001,
+          "maximum": 740.2525
+        },
+        "batchAllocatedBytes": {
+          "median": 507806336.0,
+          "minimum": 505338672.0,
+          "maximum": 508075164.0
+        },
+        "configChangeMs": {
+          "median": 175.9304,
+          "minimum": 160.2771,
+          "maximum": 236.3527
+        },
+        "manualLocationChangeMs": {
+          "median": 359.0995,
+          "minimum": 330.1901,
+          "maximum": 382.3292
+        },
+        "settlingLateExpandPerCallMs": {
+          "median": 1.9367,
+          "minimum": 0.90435,
+          "maximum": 2.0728
+        },
+        "repeatEarlyExpandPerCallMs": {
+          "median": 1.9405999999999999,
+          "minimum": 0.83725,
+          "maximum": 2.07105
+        },
+        "repeatLateExpandPerCallMs": {
+          "median": 1.89745,
+          "minimum": 0.8896999999999999,
+          "maximum": 2.02975
+        },
+        "repeatEarlyEndpointMs": {
+          "median": 190.7258,
+          "minimum": 173.59449999999998,
+          "maximum": 204.88745
+        },
+        "repeatLateEndpointMs": {
+          "median": 166.7844,
+          "minimum": 159.21314999999998,
+          "maximum": 188.15465
+        }
+      }
+    },
+    "solar-astronomical-night": {
+      "baseline": {
+        "endpointMs": {
+          "median": 191.3562,
+          "minimum": 183.62225,
+          "maximum": 202.19435
+        },
+        "cpuMs": {
+          "median": 188.708,
+          "minimum": 179.591,
+          "maximum": 200.7125
+        },
+        "allocatedBytes": {
+          "median": 140205128.0,
+          "minimum": 140205008.0,
+          "maximum": 140205464.0
+        },
+        "rssMaxBytes": {
+          "median": 411435008,
+          "minimum": 373215232,
+          "maximum": 419254272
+        },
+        "peakRssBytes": {
+          "median": 412803072,
+          "minimum": 393179136,
+          "maximum": 425914368
+        },
+        "loadMs": {
+          "median": 190.45685,
+          "minimum": 182.19254999999998,
+          "maximum": 201.22135
+        },
+        "expandMs": {
+          "median": 31.0643,
+          "minimum": 29.44695,
+          "maximum": 32.19365
+        },
+        "expandAllocatedBytes": {
+          "median": 15171200.0,
+          "minimum": 15171200.0,
+          "maximum": 15171200.0
+        },
+        "retainedMs": {
+          "median": 156.57150000000001,
+          "minimum": 148.04985,
+          "maximum": 166.17835000000002
+        },
+        "retainedAllocatedBytes": {
+          "median": 124736904.0,
+          "minimum": 124736876.0,
+          "maximum": 124736904.0
+        },
+        "initializeMs": {
+          "median": 159.18455,
+          "minimum": 151.786,
+          "maximum": 168.4604
+        },
+        "expansionsPerRead": {
+          "median": 2,
+          "minimum": 2,
+          "maximum": 2
+        },
+        "logicalReadBytes": {
+          "median": 32738441.0,
+          "minimum": 32738089.0,
+          "maximum": 32738572.0
+        },
+        "physicalReadBytes": {
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        },
+        "readCalls": {
+          "median": 10133.0,
+          "minimum": 10131.0,
+          "maximum": 10133.0
+        },
+        "batchMs": {
+          "median": 777.5173,
+          "minimum": 730.3728,
+          "maximum": 798.04225
+        },
+        "batchCpuMs": {
+          "median": 773.8385000000001,
+          "minimum": 722.4155000000001,
+          "maximum": 794.0025
+        },
+        "batchAllocatedBytes": {
+          "median": 560987300.0,
+          "minimum": 560981212.0,
+          "maximum": 561126656.0
+        },
+        "configChangeMs": {
+          "median": 198.2547,
+          "minimum": 188.6122,
+          "maximum": 209.5569
+        },
+        "manualLocationChangeMs": {
+          "median": 344.0147,
+          "minimum": 334.3779,
+          "maximum": 370.9633
+        },
+        "settlingLateExpandPerCallMs": {
+          "median": 15.47105,
+          "minimum": 14.9962,
+          "maximum": 16.135399999999997
+        },
+        "repeatEarlyExpandPerCallMs": {
+          "median": 15.4199,
+          "minimum": 14.677900000000001,
+          "maximum": 16.04005
+        },
+        "repeatLateExpandPerCallMs": {
+          "median": 15.51785,
+          "minimum": 14.7582,
+          "maximum": 15.93465
+        },
+        "repeatEarlyEndpointMs": {
+          "median": 192.31119999999999,
+          "minimum": 182.05630000000002,
+          "maximum": 199.2308
+        },
+        "repeatLateEndpointMs": {
+          "median": 194.34965,
+          "minimum": 183.50869999999998,
+          "maximum": 202.79035
+        }
+      },
+      "candidate": {
+        "endpointMs": {
+          "median": 181.25369999999998,
+          "minimum": 165.89705,
+          "maximum": 189.12025
+        },
+        "cpuMs": {
+          "median": 171.418,
+          "minimum": 162.727,
+          "maximum": 179.5095
+        },
+        "allocatedBytes": {
+          "median": 132625192.0,
+          "minimum": 132625084.0,
+          "maximum": 132625480.0
+        },
+        "rssMaxBytes": {
+          "median": 408506368,
+          "minimum": 395726848,
+          "maximum": 466243584
+        },
+        "peakRssBytes": {
+          "median": 409866240,
+          "minimum": 396460032,
+          "maximum": 466849792
+        },
+        "loadMs": {
+          "median": 180.34820000000002,
+          "minimum": 164.96385,
+          "maximum": 188.20835
+        },
+        "expandMs": {
+          "median": 15.11675,
+          "minimum": 14.7173,
+          "maximum": 15.635100000000001
+        },
+        "expandAllocatedBytes": {
+          "median": 7585344.0,
+          "minimum": 7585344.0,
+          "maximum": 7585344.0
+        },
+        "retainedMs": {
+          "median": 154.33085,
+          "minimum": 146.27595000000002,
+          "maximum": 161.48329999999999
+        },
+        "retainedAllocatedBytes": {
+          "median": 124736904.0,
+          "minimum": 124736904.0,
+          "maximum": 124736904.0
+        },
+        "initializeMs": {
+          "median": 163.89695,
+          "minimum": 149.85155,
+          "maximum": 172.0517
+        },
+        "expansionsPerRead": {
+          "median": 1,
+          "minimum": 1,
+          "maximum": 1
+        },
+        "logicalReadBytes": {
+          "median": 32737088.0,
+          "minimum": 32736834.0,
+          "maximum": 32737520.0
+        },
+        "physicalReadBytes": {
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        },
+        "readCalls": {
+          "median": 10129.0,
+          "minimum": 10127.0,
+          "maximum": 10131.0
+        },
+        "batchMs": {
+          "median": 714.7655500000001,
+          "minimum": 667.6438,
+          "maximum": 736.90425
+        },
+        "batchCpuMs": {
+          "median": 675.251,
+          "minimum": 656.6575,
+          "maximum": 717.659
+        },
+        "batchAllocatedBytes": {
+          "median": 530779296.0,
+          "minimum": 530526732.0,
+          "maximum": 530921484.0
+        },
+        "configChangeMs": {
+          "median": 180.1387,
+          "minimum": 176.4345,
+          "maximum": 190.8886
+        },
+        "manualLocationChangeMs": {
+          "median": 352.0144,
+          "minimum": 329.8338,
+          "maximum": 362.2342
+        },
+        "settlingLateExpandPerCallMs": {
+          "median": 15.778,
+          "minimum": 14.9294,
+          "maximum": 16.40495
+        },
+        "repeatEarlyExpandPerCallMs": {
+          "median": 15.625399999999999,
+          "minimum": 14.707699999999999,
+          "maximum": 15.99745
+        },
+        "repeatLateExpandPerCallMs": {
+          "median": 15.0576,
+          "minimum": 14.7173,
+          "maximum": 15.6034
+        },
+        "repeatEarlyEndpointMs": {
+          "median": 176.1802,
+          "minimum": 165.84915,
+          "maximum": 188.68935
+        },
+        "repeatLateEndpointMs": {
+          "median": 181.25369999999998,
+          "minimum": 165.1485,
+          "maximum": 185.83645
+        }
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial": "b1",
+      "kind": "baseline",
+      "schedule": "fixed-all-day",
+      "endpointMs": 190.0198,
+      "cpuMs": 177.62,
+      "allocatedBytes": 128189072.0,
+      "rssMaxBytes": 311320576,
+      "peakRssBytes": 312725504,
+      "loadMs": 187.75670000000002,
+      "expandMs": 3.8442,
+      "expandAllocatedBytes": 2506632.0,
+      "retainedMs": 171.05945000000003,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 182.8854,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32734904.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 719.9465,
+      "batchCpuMs": 689.8805,
+      "batchAllocatedBytes": 512779088.0,
+      "configChangeMs": 176.2341,
+      "manualLocationChangeMs": 332.386,
+      "settlingLateExpandPerCallMs": 2.0475000000000003,
+      "repeatEarlyExpandPerCallMs": 1.9179499999999998,
+      "repeatLateExpandPerCallMs": 1.88945,
+      "repeatEarlyEndpointMs": 194.4724,
+      "repeatLateEndpointMs": 173.8237
+    },
+    {
+      "trial": "b1",
+      "kind": "baseline",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 191.3562,
+      "cpuMs": 188.708,
+      "allocatedBytes": 140205084.0,
+      "rssMaxBytes": 414568448,
+      "peakRssBytes": 414568448,
+      "loadMs": 190.45685,
+      "expandMs": 31.0643,
+      "expandAllocatedBytes": 15171200.0,
+      "retainedMs": 156.57150000000001,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 159.18455,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32738441.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10133.0,
+      "batchMs": 777.5173,
+      "batchCpuMs": 773.8385000000001,
+      "batchAllocatedBytes": 560981212.0,
+      "configChangeMs": 200.2711,
+      "manualLocationChangeMs": 360.4395,
+      "settlingLateExpandPerCallMs": 15.47105,
+      "repeatEarlyExpandPerCallMs": 15.4199,
+      "repeatLateExpandPerCallMs": 15.51785,
+      "repeatEarlyEndpointMs": 192.31119999999999,
+      "repeatLateEndpointMs": 194.34965
+    },
+    {
+      "trial": "b2",
+      "kind": "baseline",
+      "schedule": "fixed-all-day",
+      "endpointMs": 179.48525,
+      "cpuMs": 176.058,
+      "allocatedBytes": 128189540.0,
+      "rssMaxBytes": 317284352,
+      "peakRssBytes": 319090688,
+      "loadMs": 177.8268,
+      "expandMs": 3.6272,
+      "expandAllocatedBytes": 2506632.0,
+      "retainedMs": 169.52204999999998,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 172.8245,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32734903.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 656.6906,
+      "batchCpuMs": 645.223,
+      "batchAllocatedBytes": 512918780.0,
+      "configChangeMs": 165.7459,
+      "manualLocationChangeMs": 342.6293,
+      "settlingLateExpandPerCallMs": 1.9493,
+      "repeatEarlyExpandPerCallMs": 1.80195,
+      "repeatLateExpandPerCallMs": 1.76505,
+      "repeatEarlyEndpointMs": 185.40085,
+      "repeatLateEndpointMs": 162.07639999999998
+    },
+    {
+      "trial": "b2",
+      "kind": "baseline",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 183.95535,
+      "cpuMs": 179.591,
+      "allocatedBytes": 140205008.0,
+      "rssMaxBytes": 419254272,
+      "peakRssBytes": 425914368,
+      "loadMs": 182.19254999999998,
+      "expandMs": 29.44695,
+      "expandAllocatedBytes": 15171200.0,
+      "retainedMs": 148.04985,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 151.786,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32738129.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10131.0,
+      "batchMs": 730.3728,
+      "batchCpuMs": 722.9285,
+      "batchAllocatedBytes": 560987300.0,
+      "configChangeMs": 188.6122,
+      "manualLocationChangeMs": 336.3466,
+      "settlingLateExpandPerCallMs": 15.46275,
+      "repeatEarlyExpandPerCallMs": 14.677900000000001,
+      "repeatLateExpandPerCallMs": 14.7582,
+      "repeatEarlyEndpointMs": 182.05630000000002,
+      "repeatLateEndpointMs": 185.48694999999998
+    },
+    {
+      "trial": "b3",
+      "kind": "baseline",
+      "schedule": "fixed-all-day",
+      "endpointMs": 195.6494,
+      "cpuMs": 191.5615,
+      "allocatedBytes": 128189836.0,
+      "rssMaxBytes": 319385600,
+      "peakRssBytes": 319385600,
+      "loadMs": 193.98005,
+      "expandMs": 3.8552500000000003,
+      "expandAllocatedBytes": 2506632.0,
+      "retainedMs": 185.20175,
+      "retainedAllocatedBytes": 125376584.0,
+      "initializeMs": 189.67745000000002,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32735016.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 664.49225,
+      "batchCpuMs": 654.7925,
+      "batchAllocatedBytes": 512924748.0,
+      "configChangeMs": 165.9351,
+      "manualLocationChangeMs": 350.515,
+      "settlingLateExpandPerCallMs": 1.9875,
+      "repeatEarlyExpandPerCallMs": 1.93035,
+      "repeatLateExpandPerCallMs": 1.883,
+      "repeatEarlyEndpointMs": 195.6494,
+      "repeatLateEndpointMs": 197.14525
+    },
+    {
+      "trial": "b3",
+      "kind": "baseline",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 183.62225,
+      "cpuMs": 180.0385,
+      "allocatedBytes": 140205128.0,
+      "rssMaxBytes": 381931520,
+      "peakRssBytes": 395014144,
+      "loadMs": 182.78449999999998,
+      "expandMs": 29.8273,
+      "expandAllocatedBytes": 15171200.0,
+      "retainedMs": 148.0935,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 152.2999,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32738572.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10133.0,
+      "batchMs": 731.79565,
+      "batchCpuMs": 722.4155000000001,
+      "batchAllocatedBytes": 560991120.0,
+      "configChangeMs": 192.4174,
+      "manualLocationChangeMs": 334.3779,
+      "settlingLateExpandPerCallMs": 14.9962,
+      "repeatEarlyExpandPerCallMs": 14.73385,
+      "repeatLateExpandPerCallMs": 14.87865,
+      "repeatEarlyEndpointMs": 183.6166,
+      "repeatLateEndpointMs": 183.50869999999998
+    },
+    {
+      "trial": "b4",
+      "kind": "baseline",
+      "schedule": "fixed-all-day",
+      "endpointMs": 197.2912,
+      "cpuMs": 194.364,
+      "allocatedBytes": 128189784.0,
+      "rssMaxBytes": 314634240,
+      "peakRssBytes": 316420096,
+      "loadMs": 194.9875,
+      "expandMs": 4.0987,
+      "expandAllocatedBytes": 2506632.0,
+      "retainedMs": 187.30815,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 190.4885,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32734915.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 709.7696000000001,
+      "batchCpuMs": 705.265,
+      "batchAllocatedBytes": 512778232.0,
+      "configChangeMs": 184.4095,
+      "manualLocationChangeMs": 364.3141,
+      "settlingLateExpandPerCallMs": 2.1396499999999996,
+      "repeatEarlyExpandPerCallMs": 2.0444,
+      "repeatLateExpandPerCallMs": 1.9296,
+      "repeatEarlyEndpointMs": 203.3484,
+      "repeatLateEndpointMs": 174.07635
+    },
+    {
+      "trial": "b4",
+      "kind": "baseline",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 202.19435,
+      "cpuMs": 200.7125,
+      "allocatedBytes": 140205200.0,
+      "rssMaxBytes": 373215232,
+      "peakRssBytes": 393179136,
+      "loadMs": 201.22135,
+      "expandMs": 32.19365,
+      "expandAllocatedBytes": 15171200.0,
+      "retainedMs": 166.17835000000002,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 168.4604,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32738089.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10131.0,
+      "batchMs": 798.04225,
+      "batchCpuMs": 794.0025,
+      "batchAllocatedBytes": 561126656.0,
+      "configChangeMs": 209.5569,
+      "manualLocationChangeMs": 370.9633,
+      "settlingLateExpandPerCallMs": 16.135399999999997,
+      "repeatEarlyExpandPerCallMs": 16.04005,
+      "repeatLateExpandPerCallMs": 15.93465,
+      "repeatEarlyEndpointMs": 199.2308,
+      "repeatLateEndpointMs": 202.79035
+    },
+    {
+      "trial": "b5",
+      "kind": "baseline",
+      "schedule": "fixed-all-day",
+      "endpointMs": 186.05259999999998,
+      "cpuMs": 184.406,
+      "allocatedBytes": 128189692.0,
+      "rssMaxBytes": 319033344,
+      "peakRssBytes": 320905216,
+      "loadMs": 184.4545,
+      "expandMs": 3.7788,
+      "expandAllocatedBytes": 2506632.0,
+      "retainedMs": 177.8207,
+      "retainedAllocatedBytes": 125376608.0,
+      "initializeMs": 180.23905000000002,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32735016.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 694.5494,
+      "batchCpuMs": 689.546,
+      "batchAllocatedBytes": 512779716.0,
+      "configChangeMs": 189.8894,
+      "manualLocationChangeMs": 351.2355,
+      "settlingLateExpandPerCallMs": 2.0181,
+      "repeatEarlyExpandPerCallMs": 1.93225,
+      "repeatLateExpandPerCallMs": 1.8242,
+      "repeatEarlyEndpointMs": 198.99865,
+      "repeatLateEndpointMs": 178.0294
+    },
+    {
+      "trial": "b5",
+      "kind": "baseline",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 196.0044,
+      "cpuMs": 194.4955,
+      "allocatedBytes": 140205464.0,
+      "rssMaxBytes": 411435008,
+      "peakRssBytes": 412803072,
+      "loadMs": 195.00650000000002,
+      "expandMs": 31.5833,
+      "expandAllocatedBytes": 15171200.0,
+      "retainedMs": 160.5819,
+      "retainedAllocatedBytes": 124736876.0,
+      "initializeMs": 162.24205,
+      "expansionsPerRead": 2,
+      "logicalReadBytes": 32738571.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10133.0,
+      "batchMs": 785.7562,
+      "batchCpuMs": 782.2495,
+      "batchAllocatedBytes": 560984168.0,
+      "configChangeMs": 198.2547,
+      "manualLocationChangeMs": 344.0147,
+      "settlingLateExpandPerCallMs": 15.7485,
+      "repeatEarlyExpandPerCallMs": 15.67545,
+      "repeatLateExpandPerCallMs": 15.6904,
+      "repeatEarlyEndpointMs": 193.04365,
+      "repeatLateEndpointMs": 195.33435
+    },
+    {
+      "trial": "c1",
+      "kind": "candidate",
+      "schedule": "fixed-all-day",
+      "endpointMs": 197.58505000000002,
+      "cpuMs": 193.94400000000002,
+      "allocatedBytes": 126943760.0,
+      "rssMaxBytes": 325279744,
+      "peakRssBytes": 327032832,
+      "loadMs": 194.97500000000002,
+      "expandMs": 2.0622,
+      "expandAllocatedBytes": 1252928.0,
+      "retainedMs": 189.15845000000002,
+      "retainedAllocatedBytes": 125376552.0,
+      "initializeMs": 192.54575,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32734914.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10126.0,
+      "batchMs": 744.7207,
+      "batchCpuMs": 740.2525,
+      "batchAllocatedBytes": 507806336.0,
+      "configChangeMs": 186.0275,
+      "manualLocationChangeMs": 382.3292,
+      "settlingLateExpandPerCallMs": 2.03165,
+      "repeatEarlyExpandPerCallMs": 2.07105,
+      "repeatLateExpandPerCallMs": 2.02975,
+      "repeatEarlyEndpointMs": 204.88745,
+      "repeatLateEndpointMs": 188.15465
+    },
+    {
+      "trial": "c1",
+      "kind": "candidate",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 169.14159999999998,
+      "cpuMs": 165.07049999999998,
+      "allocatedBytes": 132625480.0,
+      "rssMaxBytes": 465231872,
+      "peakRssBytes": 466575360,
+      "loadMs": 168.23919999999998,
+      "expandMs": 14.9551,
+      "expandAllocatedBytes": 7585344.0,
+      "retainedMs": 148.54104999999998,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 152.52935,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32737088.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10129.0,
+      "batchMs": 670.4064000000001,
+      "batchCpuMs": 656.6575,
+      "batchAllocatedBytes": 530526732.0,
+      "configChangeMs": 176.4345,
+      "manualLocationChangeMs": 329.8338,
+      "settlingLateExpandPerCallMs": 15.310849999999999,
+      "repeatEarlyExpandPerCallMs": 14.98255,
+      "repeatLateExpandPerCallMs": 14.9158,
+      "repeatEarlyEndpointMs": 170.44684999999998,
+      "repeatLateEndpointMs": 167.97969999999998
+    },
+    {
+      "trial": "c2",
+      "kind": "candidate",
+      "schedule": "fixed-all-day",
+      "endpointMs": 172.57920000000001,
+      "cpuMs": 167.938,
+      "allocatedBytes": 126943380.0,
+      "rssMaxBytes": 327245824,
+      "peakRssBytes": 328962048,
+      "loadMs": 170.8951,
+      "expandMs": 1.90835,
+      "expandAllocatedBytes": 1252928.0,
+      "retainedMs": 163.9259,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 168.43810000000002,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32735062.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 630.2715000000001,
+      "batchCpuMs": 618.7325000000001,
+      "batchAllocatedBytes": 507808304.0,
+      "configChangeMs": 160.2771,
+      "manualLocationChangeMs": 330.1901,
+      "settlingLateExpandPerCallMs": 1.90755,
+      "repeatEarlyExpandPerCallMs": 1.9405999999999999,
+      "repeatLateExpandPerCallMs": 1.8042500000000001,
+      "repeatEarlyEndpointMs": 179.7679,
+      "repeatLateEndpointMs": 159.21314999999998
+    },
+    {
+      "trial": "c2",
+      "kind": "candidate",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 165.89705,
+      "cpuMs": 162.727,
+      "allocatedBytes": 132625084.0,
+      "rssMaxBytes": 466243584,
+      "peakRssBytes": 466849792,
+      "loadMs": 164.96385,
+      "expandMs": 14.7173,
+      "expandAllocatedBytes": 7585344.0,
+      "retainedMs": 146.27595000000002,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 149.85155,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32736842.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 667.6438,
+      "batchCpuMs": 656.7835,
+      "batchAllocatedBytes": 530803476.0,
+      "configChangeMs": 177.6652,
+      "manualLocationChangeMs": 331.5018,
+      "settlingLateExpandPerCallMs": 14.9294,
+      "repeatEarlyExpandPerCallMs": 14.707699999999999,
+      "repeatLateExpandPerCallMs": 14.7173,
+      "repeatEarlyEndpointMs": 165.84915,
+      "repeatLateEndpointMs": 165.1485
+    },
+    {
+      "trial": "c3",
+      "kind": "candidate",
+      "schedule": "fixed-all-day",
+      "endpointMs": 171.23315,
+      "cpuMs": 167.091,
+      "allocatedBytes": 126942128.0,
+      "rssMaxBytes": 309817344,
+      "peakRssBytes": 310681600,
+      "loadMs": 169.53075,
+      "expandMs": 2.0029500000000002,
+      "expandAllocatedBytes": 1252928.0,
+      "retainedMs": 162.18585,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 166.6078,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32735370.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10129.0,
+      "batchMs": 699.0107,
+      "batchCpuMs": 683.5364999999999,
+      "batchAllocatedBytes": 507805792.0,
+      "configChangeMs": 175.9304,
+      "manualLocationChangeMs": 361.8901,
+      "settlingLateExpandPerCallMs": 1.9367,
+      "repeatEarlyExpandPerCallMs": 1.97285,
+      "repeatLateExpandPerCallMs": 2.01955,
+      "repeatEarlyEndpointMs": 173.59449999999998,
+      "repeatLateEndpointMs": 170.73485
+    },
+    {
+      "trial": "c3",
+      "kind": "candidate",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 181.25369999999998,
+      "cpuMs": 176.437,
+      "allocatedBytes": 132625152.0,
+      "rssMaxBytes": 408506368,
+      "peakRssBytes": 409866240,
+      "loadMs": 180.34820000000002,
+      "expandMs": 15.635100000000001,
+      "expandAllocatedBytes": 7585344.0,
+      "retainedMs": 158.67270000000002,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 163.89695,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32736834.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 723.4185500000001,
+      "batchCpuMs": 709.7355,
+      "batchAllocatedBytes": 530921484.0,
+      "configChangeMs": 180.1387,
+      "manualLocationChangeMs": 357.0826,
+      "settlingLateExpandPerCallMs": 16.2369,
+      "repeatEarlyExpandPerCallMs": 15.99745,
+      "repeatLateExpandPerCallMs": 15.6034,
+      "repeatEarlyEndpointMs": 181.74995,
+      "repeatLateEndpointMs": 181.25369999999998
+    },
+    {
+      "trial": "c4",
+      "kind": "candidate",
+      "schedule": "fixed-all-day",
+      "endpointMs": 171.91795000000002,
+      "cpuMs": 161.594,
+      "allocatedBytes": 126293304.0,
+      "rssMaxBytes": 312758272,
+      "peakRssBytes": 314388480,
+      "loadMs": 170.10395,
+      "expandMs": 0.84125,
+      "expandAllocatedBytes": 1244120.0,
+      "retainedMs": 158.3454,
+      "retainedAllocatedBytes": 124736408.0,
+      "initializeMs": 168.59244999999999,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32735002.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 704.5251000000001,
+      "batchCpuMs": 688.779,
+      "batchAllocatedBytes": 505338672.0,
+      "configChangeMs": 236.3527,
+      "manualLocationChangeMs": 359.0995,
+      "settlingLateExpandPerCallMs": 0.90435,
+      "repeatEarlyExpandPerCallMs": 0.83725,
+      "repeatLateExpandPerCallMs": 0.8896999999999999,
+      "repeatEarlyEndpointMs": 190.7258,
+      "repeatLateEndpointMs": 166.7844
+    },
+    {
+      "trial": "c4",
+      "kind": "candidate",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 189.12025,
+      "cpuMs": 179.5095,
+      "allocatedBytes": 132625324.0,
+      "rssMaxBytes": 396075008,
+      "peakRssBytes": 397803520,
+      "loadMs": 188.20835,
+      "expandMs": 15.5318,
+      "expandAllocatedBytes": 7585344.0,
+      "retainedMs": 161.48329999999999,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 172.0517,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32737520.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10131.0,
+      "batchMs": 736.90425,
+      "batchCpuMs": 717.659,
+      "batchAllocatedBytes": 530779296.0,
+      "configChangeMs": 190.8886,
+      "manualLocationChangeMs": 362.2342,
+      "settlingLateExpandPerCallMs": 16.40495,
+      "repeatEarlyExpandPerCallMs": 15.754999999999999,
+      "repeatLateExpandPerCallMs": 15.5271,
+      "repeatEarlyEndpointMs": 188.68935,
+      "repeatLateEndpointMs": 184.76205
+    },
+    {
+      "trial": "c5",
+      "kind": "candidate",
+      "schedule": "fixed-all-day",
+      "endpointMs": 191.05805,
+      "cpuMs": 181.4735,
+      "allocatedBytes": 126942292.0,
+      "rssMaxBytes": 308428800,
+      "peakRssBytes": 310398976,
+      "loadMs": 188.96945,
+      "expandMs": 1.93775,
+      "expandAllocatedBytes": 1252928.0,
+      "retainedMs": 176.72650000000002,
+      "retainedAllocatedBytes": 125376520.0,
+      "initializeMs": 186.6266,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32735018.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10127.0,
+      "batchMs": 670.8008,
+      "batchCpuMs": 667.204,
+      "batchAllocatedBytes": 508075164.0,
+      "configChangeMs": 169.6783,
+      "manualLocationChangeMs": 337.6331,
+      "settlingLateExpandPerCallMs": 2.0728,
+      "repeatEarlyExpandPerCallMs": 1.93005,
+      "repeatLateExpandPerCallMs": 1.89745,
+      "repeatEarlyEndpointMs": 199.37754999999999,
+      "repeatLateEndpointMs": 166.59615000000002
+    },
+    {
+      "trial": "c5",
+      "kind": "candidate",
+      "schedule": "solar-astronomical-night",
+      "endpointMs": 181.66570000000002,
+      "cpuMs": 171.418,
+      "allocatedBytes": 132625192.0,
+      "rssMaxBytes": 395726848,
+      "peakRssBytes": 396460032,
+      "loadMs": 180.5697,
+      "expandMs": 15.11675,
+      "expandAllocatedBytes": 7585344.0,
+      "retainedMs": 154.33085,
+      "retainedAllocatedBytes": 124736904.0,
+      "initializeMs": 164.80185,
+      "expansionsPerRead": 1,
+      "logicalReadBytes": 32737515.0,
+      "physicalReadBytes": 0.0,
+      "readCalls": 10131.0,
+      "batchMs": 714.7655500000001,
+      "batchCpuMs": 675.251,
+      "batchAllocatedBytes": 530665900.0,
+      "configChangeMs": 186.0202,
+      "manualLocationChangeMs": 352.0144,
+      "settlingLateExpandPerCallMs": 15.778,
+      "repeatEarlyExpandPerCallMs": 15.625399999999999,
+      "repeatLateExpandPerCallMs": 15.0576,
+      "repeatEarlyEndpointMs": 176.1802,
+      "repeatLateEndpointMs": 185.83645
+    }
+  ]
+}

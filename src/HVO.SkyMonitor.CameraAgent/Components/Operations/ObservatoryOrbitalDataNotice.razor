@@ -1,0 +1,10 @@
+@* The orbital data notice for the Observatory pass area. It describes the snapshot installed now, through the shared
+   compact notice and its one freshness rule. It passes nothing to the pass planner, so a completed search keeps the
+   snapshot it was computed from. *@
+@if (_loaded)
+{
+    <div class="observatory-orbital-notice" role="group" aria-labelledby="observatory-orbital-notice-label">
+        <p id="observatory-orbital-notice-label" class="observatory-orbital-notice-label">Orbital data installed now. A completed pass search keeps the snapshot it was computed from.</p>
+        <OrbitalDataStatusNotice View="_view" Id="observatory-orbital-data-notice" />
+    </div>
+}

@@ -629,3 +629,84 @@ Next: classify the actual base-sync delta, run its affected local candidate and
 CI-control guards, obtain independent deep conflict/interaction review, then
 start protected CI on the reviewed head. This entry records preparation, not
 a green union gate or a merge of the PR.
+
+
+## First-load grace and page refresh diagnostics (#1472)
+
+The first live-page refresh has a named 30-second bound, allowing six times the
+steady-state read budget for cold preview validation, database opens and startup
+contention. This is a bounded candidate for the next Pi smoke test, not a claim
+of measured Pi startup latency. It is based on the first attempt of this page,
+not inferred container-restart state. Later attempts retain the five-second
+bound, including retries after the first attempt times out.
+
+Loading and deadline notices sit inside the image card below CameraAgent status,
+with `role="status"` and neutral styling. Initial loading and an image-less retry
+say “The current image is still loading. Retrying automatically.” With a retained
+image, a missed steady-state bound says “Current Sky couldn’t refresh within 5 s;
+showing the last image; retrying automatically.” Capture state and facts stay in
+their existing positions. These notices describe page reads, never exposure or
+processing duration. The 15-second poll continues and the next applied read
+clears the notice. No capture-control command is issued by a deadline miss.
+
+`CurrentSkyPageTests.Refresh.cs` advances the injected clock to prove loading
+past five seconds and completion at twenty seconds, first-attempt cancellation
+at thirty seconds, automatic next-poll recovery and the steady-state retained
+image/status contract. The shared view/layer deadline regressions keep their
+existing retained-image checks. No fixture is constructed inside an exception
+assertion. No tracked screenshot or SVG contains the replaced deadline banner;
+normal completed-image visuals are unaffected.
+
+Runtime signal manifest:
+
+- Debug event 14720: `Current Sky page refresh phase {Phase} took {ElapsedMs} ms.` The bounded
+  phase names are `view-read`, `preview-validation`, `layer-availability` and
+  `layer-read`; phases that do not run emit no sample. Cancellation records the
+  elapsed phase in its `Dispose` path.
+- Information event 14721: one `Current Sky page refresh missed {BoundSeconds} s bound` line
+  per missed refresh, with `FirstRefresh`, `ElapsedMs` and `SlowestPhase`. The
+  slowest phase compares exclusive view time against its nested preview and
+  availability timings, layer-read time and dispatcher wait, avoiding an outer
+  read that always obscures its slow nested operation. Successful reads do not
+  emit warnings. Fields contain no capture payload, paths or credentials.
+- Scope: request-local timing context flows through the nested asynchronous
+  presentation reads. An internal activity supplies correlation; there is no
+  new exporter requirement, metric or health transition. Capture and storage
+  lifecycle signals remain owned by their existing services.
+
+Release smoke checkpoint: after a restart, visit Current Sky without pausing
+capture. Confirm the neutral image-card loading text and capture status remain
+separate, retain Debug phase logs and any Information deadline line, then verify
+automatic recovery. Measure initial latency on the Pi before treating the
+30-second candidate as hardware qualification. Storage-lock work is #1471.
+
+### Initial HTTP delivery correction (PR #1481 F1)
+
+Component rendering tests establish page state, but do not establish when a
+direct HTTP navigation receives that state. The normal prerender-enabled
+InteractiveServer path previously awaited the initial read to quiescence and
+withheld the loading notice. Current Sky now opts into streaming rendering on
+this page. Authorization, the render mode and initialization remain in place;
+no global layout or other route is opted in. The framework attribute affects
+supported HTTP renderers, not the interactive renderer. See the
+[ASP.NET Core 10 streaming contract](https://learn.microsoft.com/en-us/aspnet/core/blazor/components/rendering?view=aspnetcore-10.0#streaming-rendering)
+and [attribute source](https://github.com/dotnet/aspnetcore/blob/v10.0.0/src/Components/Components/src/StreamRenderingAttribute.cs).
+
+`CurrentSkyPrerenderAcceptanceTests` uses the existing real Kestrel fixture,
+owner cookie sign-in and a signal-gated initial presentation read. It requires
+the response headers and loading-notice body bytes while that read remains
+pending, then releases the gate and checks the streamed completion update and
+the next request. Anonymous and authenticated non-owner requests must reach
+their authorization destination without reading or streaming the presentation.
+The gate and five-second I/O watchdog avoid a 20/30-second sleep. Against
+unchanged product `f66689be`, the probe failed with the read entered, gate closed,
+read not returned and response headers undelivered; the same probe passed with
+the page-local streaming attribute. Raw red/green evidence is retained privately.
+
+Existing component tests remain responsible for injected-clock deadlines,
+interactive polling/recovery/cancellation, archived rendering and exact-capture
+behavior. Old complete matrices remain evidence for their recorded old head;
+the correction ledger identifies the immutable new head and affected reruns.
+The smoke checkpoint above must use a fresh direct navigation as well as an
+already-interactive page. No text or completed-image geometry changed in F1,
+so no retained screenshot or SVG requires replacement.

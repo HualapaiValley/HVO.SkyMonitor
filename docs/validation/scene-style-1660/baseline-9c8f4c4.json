@@ -1,0 +1,794 @@
+[
+  {
+    "revision": "9c8f4c4eefd0fe14fc7a1a0d90b97e40c695ff37",
+    "name": "baseline-v13",
+    "trial": 0,
+    "warmup": 5,
+    "operations": 30,
+    "concurrency": 1,
+    "processors": 2,
+    "scene": "19387240E63A1EC8BD7332B079C5AB7B6C4195512E9238AC77732EE50A3C3723",
+    "style": null,
+    "input": "9A42A15321159CA67F99087D9B229E6835EBD6A11AA5D2C4989F4BCCB53F329D",
+    "output": "D451567EDBC9C31B759971C6C14B6E542F58A9726F167C784F6C5EE41CBFF2E2",
+    "cpuMs": 890.5459999999996,
+    "allocatedBytesPerOperation": 7969561,
+    "maximumWorkingSet": 145883136,
+    "medianMs": 27.2911,
+    "p95Ms": 29.3608,
+    "labels": 30,
+    "markers": 101,
+    "primitives": 197,
+    "samples": [
+      {
+        "ms": 27.5974,
+        "producerMs": 3.7793,
+        "cpuMs": 27.643,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.7057,
+        "producerMs": 3.7548,
+        "cpuMs": 30.492,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.8484,
+        "producerMs": 3.6006,
+        "cpuMs": 26.864,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.6749,
+        "producerMs": 5.901,
+        "cpuMs": 29.73,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 0
+      },
+      {
+        "ms": 27.2911,
+        "producerMs": 3.4593,
+        "cpuMs": 37.736,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.3134,
+        "producerMs": 4.2005,
+        "cpuMs": 28.7,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.1192,
+        "producerMs": 4.0335,
+        "cpuMs": 26.148,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.9459,
+        "producerMs": 4.1874,
+        "cpuMs": 25.968,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.0822,
+        "producerMs": 4.0369,
+        "cpuMs": 42.993,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 25.3226,
+        "producerMs": 3.9279,
+        "cpuMs": 25.349,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.4288,
+        "producerMs": 4.0805,
+        "cpuMs": 27.46,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.8853,
+        "producerMs": 4.1298,
+        "cpuMs": 26.909,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.4697,
+        "producerMs": 4.9829,
+        "cpuMs": 27.686,
+        "gen0": 2,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.9134,
+        "producerMs": 3.9421,
+        "cpuMs": 26.945,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.2606,
+        "producerMs": 4.0411,
+        "cpuMs": 28.889,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.9035,
+        "producerMs": 3.9177,
+        "cpuMs": 34.89,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.4953,
+        "producerMs": 4.5391,
+        "cpuMs": 28.897,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.6605,
+        "producerMs": 4.6343,
+        "cpuMs": 27.685,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.0994,
+        "producerMs": 4.3805,
+        "cpuMs": 27.121,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.8123,
+        "producerMs": 4.4982,
+        "cpuMs": 29.53,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.9608,
+        "producerMs": 4.4935,
+        "cpuMs": 26.992,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.6354,
+        "producerMs": 4.9888,
+        "cpuMs": 26.661,
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.4581,
+        "producerMs": 4.398,
+        "cpuMs": 34.804,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.1089,
+        "producerMs": 5.4479,
+        "cpuMs": 27.852,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.9665,
+        "producerMs": 5.9227,
+        "cpuMs": 28.991,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.3608,
+        "producerMs": 5.8169,
+        "cpuMs": 29.391,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.112,
+        "producerMs": 5.6642,
+        "cpuMs": 30.298,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.3609,
+        "producerMs": 5.6016,
+        "cpuMs": 27.39,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 27.113,
+        "producerMs": 5.3669,
+        "cpuMs": 27.146,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.2901,
+        "producerMs": 5.4027,
+        "cpuMs": 43.386,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      }
+    ],
+    "fonts": "C805F9436DBC268644C1D9584F01A601A653E028E08FD74B9B949F6CF8304D88:3A3C502EEFF669A231549E80DF9F7C49DE109BAFE303170409E905D0B31A38FE:975DCDA37D80F038DCD143C22E33CA2D97A0CC5A929AACE1C749153B0FE1AFA5"
+  },
+  {
+    "revision": "9c8f4c4eefd0fe14fc7a1a0d90b97e40c695ff37",
+    "name": "baseline-v13",
+    "trial": 1,
+    "warmup": 5,
+    "operations": 30,
+    "concurrency": 1,
+    "processors": 2,
+    "scene": "19387240E63A1EC8BD7332B079C5AB7B6C4195512E9238AC77732EE50A3C3723",
+    "style": null,
+    "input": "9A42A15321159CA67F99087D9B229E6835EBD6A11AA5D2C4989F4BCCB53F329D",
+    "output": "D451567EDBC9C31B759971C6C14B6E542F58A9726F167C784F6C5EE41CBFF2E2",
+    "cpuMs": 1074.6490000000001,
+    "allocatedBytesPerOperation": 7973716,
+    "maximumWorkingSet": 146952192,
+    "medianMs": 28.6298,
+    "p95Ms": 38.6174,
+    "labels": 30,
+    "markers": 101,
+    "primitives": 197,
+    "samples": [
+      {
+        "ms": 28.2329,
+        "producerMs": 5.3376,
+        "cpuMs": 28.266,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.1988,
+        "producerMs": 5.3489,
+        "cpuMs": 31.261,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 29.3579,
+        "producerMs": 5.6167,
+        "cpuMs": 58.799,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.9203,
+        "producerMs": 5.9515,
+        "cpuMs": 57.935,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.8679,
+        "producerMs": 5.9473,
+        "cpuMs": 28.885,
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.6125,
+        "producerMs": 5.6808,
+        "cpuMs": 31.504,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.4837,
+        "producerMs": 5.9812,
+        "cpuMs": 27.499,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.5766,
+        "producerMs": 5.679,
+        "cpuMs": 28.612,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.2497,
+        "producerMs": 5.5784,
+        "cpuMs": 32.051,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 28.6298,
+        "producerMs": 5.7624,
+        "cpuMs": 28.644,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.5854,
+        "producerMs": 5.5403,
+        "cpuMs": 46.129,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.7159,
+        "producerMs": 5.6636,
+        "cpuMs": 29.786,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.4109,
+        "producerMs": 5.6348,
+        "cpuMs": 31.62,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.403,
+        "producerMs": 5.8088,
+        "cpuMs": 27.421,
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.3304,
+        "producerMs": 5.521,
+        "cpuMs": 28.382,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 29.1275,
+        "producerMs": 5.5532,
+        "cpuMs": 31.631,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 28.3153,
+        "producerMs": 5.4585,
+        "cpuMs": 28.332,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.8298,
+        "producerMs": 5.3912,
+        "cpuMs": 44.792,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.694,
+        "producerMs": 5.3855,
+        "cpuMs": 29.218,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.5793,
+        "producerMs": 5.3642,
+        "cpuMs": 30.787,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.5284,
+        "producerMs": 5.304,
+        "cpuMs": 26.542,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.7301,
+        "producerMs": 5.2042,
+        "cpuMs": 49.158,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 40.8137,
+        "producerMs": 5.8412,
+        "cpuMs": 45.201,
+        "gen0": 2,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.9024,
+        "producerMs": 5.2288,
+        "cpuMs": 27.916,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 30.2704,
+        "producerMs": 5.0134,
+        "cpuMs": 34.048,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 27.8535,
+        "producerMs": 5.4756,
+        "cpuMs": 55.814,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.7018,
+        "producerMs": 4.8781,
+        "cpuMs": 53.713,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.1481,
+        "producerMs": 4.9322,
+        "cpuMs": 28.719,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 28.2885,
+        "producerMs": 4.7643,
+        "cpuMs": 28.3,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 38.6174,
+        "producerMs": 7.0766,
+        "cpuMs": 43.684,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      }
+    ],
+    "fonts": "C805F9436DBC268644C1D9584F01A601A653E028E08FD74B9B949F6CF8304D88:3A3C502EEFF669A231549E80DF9F7C49DE109BAFE303170409E905D0B31A38FE:975DCDA37D80F038DCD143C22E33CA2D97A0CC5A929AACE1C749153B0FE1AFA5"
+  },
+  {
+    "revision": "9c8f4c4eefd0fe14fc7a1a0d90b97e40c695ff37",
+    "name": "baseline-v13",
+    "trial": 2,
+    "warmup": 5,
+    "operations": 30,
+    "concurrency": 1,
+    "processors": 2,
+    "scene": "19387240E63A1EC8BD7332B079C5AB7B6C4195512E9238AC77732EE50A3C3723",
+    "style": null,
+    "input": "9A42A15321159CA67F99087D9B229E6835EBD6A11AA5D2C4989F4BCCB53F329D",
+    "output": "D451567EDBC9C31B759971C6C14B6E542F58A9726F167C784F6C5EE41CBFF2E2",
+    "cpuMs": 1031.4319999999998,
+    "allocatedBytesPerOperation": 7949497,
+    "maximumWorkingSet": 157782016,
+    "medianMs": 25.1885,
+    "p95Ms": 26.6997,
+    "labels": 30,
+    "markers": 101,
+    "primitives": 197,
+    "samples": [
+      {
+        "ms": 26.002,
+        "producerMs": 3.1322,
+        "cpuMs": 26.06,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.2546,
+        "producerMs": 2.9733,
+        "cpuMs": 27.646,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 24.6204,
+        "producerMs": 3.0618,
+        "cpuMs": 24.635,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.6601,
+        "producerMs": 3.6589,
+        "cpuMs": 25.68,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.6997,
+        "producerMs": 3.0777,
+        "cpuMs": 44.781,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 26.3612,
+        "producerMs": 3.1074,
+        "cpuMs": 53.181,
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 31.2832,
+        "producerMs": 2.9457,
+        "cpuMs": 63.479,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.5808,
+        "producerMs": 2.4578,
+        "cpuMs": 51.601,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.6207,
+        "producerMs": 2.178,
+        "cpuMs": 52.305,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 23.5502,
+        "producerMs": 2.1766,
+        "cpuMs": 47.804,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.1455,
+        "producerMs": 2.2985,
+        "cpuMs": 26.283,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.2096,
+        "producerMs": 2.5661,
+        "cpuMs": 26.406,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 23.4492,
+        "producerMs": 2.0857,
+        "cpuMs": 23.464,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.1885,
+        "producerMs": 2.0378,
+        "cpuMs": 25.223,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.0159,
+        "producerMs": 2.1566,
+        "cpuMs": 25.03,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.4825,
+        "producerMs": 2.5093,
+        "cpuMs": 26.776,
+        "gen0": 2,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 25.2367,
+        "producerMs": 2.08,
+        "cpuMs": 25.257,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.43,
+        "producerMs": 2.0947,
+        "cpuMs": 43.289,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 24.2182,
+        "producerMs": 2.3248,
+        "cpuMs": 28.684,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.8878,
+        "producerMs": 2.1273,
+        "cpuMs": 24.903,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.8668,
+        "producerMs": 2.0894,
+        "cpuMs": 24.88,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.7162,
+        "producerMs": 2.7884,
+        "cpuMs": 29.244,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 26.1249,
+        "producerMs": 2.113,
+        "cpuMs": 54.101,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 23.5918,
+        "producerMs": 2.2238,
+        "cpuMs": 25.915,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 24.4239,
+        "producerMs": 2.3191,
+        "cpuMs": 24.444,
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.0906,
+        "producerMs": 2.1682,
+        "cpuMs": 26.462,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      },
+      {
+        "ms": 23.844,
+        "producerMs": 2.0789,
+        "cpuMs": 26.908,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.071,
+        "producerMs": 2.114,
+        "cpuMs": 50.29,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.8197,
+        "producerMs": 2.0729,
+        "cpuMs": 50.294,
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      {
+        "ms": 25.3036,
+        "producerMs": 2.1199,
+        "cpuMs": 26.407,
+        "gen0": 1,
+        "gen1": 1,
+        "gen2": 1
+      }
+    ],
+    "fonts": "C805F9436DBC268644C1D9584F01A601A653E028E08FD74B9B949F6CF8304D88:3A3C502EEFF669A231549E80DF9F7C49DE109BAFE303170409E905D0B31A38FE:975DCDA37D80F038DCD143C22E33CA2D97A0CC5A929AACE1C749153B0FE1AFA5"
+  }
+]

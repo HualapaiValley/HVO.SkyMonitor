@@ -33,12 +33,15 @@ public sealed class CaptureLaneTelemetryTests
     [TestMethod]
     public void RecordsBoundedPerLaneOperationsAndDurableBacklog()
     {
+        using var meter = new Meter(CaptureLaneTelemetry.MeterName);
+        using var existingUnrelatedMeter = new Meter(CaptureLaneTelemetry.MeterName);
+        var existingUnrelatedCounter = existingUnrelatedMeter.CreateCounter<long>("unrelated.measurement");
         var measurements = new List<MetricSample>();
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, meterListener) =>
             {
-                if (instrument.Meter.Name == CaptureLaneTelemetry.MeterName)
+                if (ReferenceEquals(instrument.Meter, meter))
                 {
                     meterListener.EnableMeasurementEvents(instrument);
                 }
@@ -49,12 +52,19 @@ public sealed class CaptureLaneTelemetryTests
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
             measurements.Add(new MetricSample(instrument.Name, measurement, ReadTags(tags))));
         listener.Start();
+        using var newUnrelatedMeter = new Meter(CaptureLaneTelemetry.MeterName);
+        // Same-name meters can publish and record from other parallel fixtures.
+        Task.Run(() =>
+        {
+            existingUnrelatedCounter.Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+            newUnrelatedMeter.CreateCounter<long>("unrelated.measurement").Add(1, new KeyValuePair<string, object?>("unrelated", "value"));
+        }).GetAwaiter().GetResult();
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = "raw" });
         var state = new CaptureLaneState(TimeProvider.System, options);
         state.Update([
             new CaptureLaneBacklog("standard", true, 2, 8, DateTimeOffset.UtcNow.AddSeconds(-2), 1, 0, 0)
         ]);
-        using var telemetry = new CaptureLaneTelemetry(state);
+        using var telemetry = new CaptureLaneTelemetry(meter, state);
         var lane = new CaptureLaneDefinition("standard", true, true, true, new string('A', 64));
         var lease = new CaptureLaneLease(
             1, "standard", true, true, 1, "token", "owner", DateTimeOffset.UtcNow.AddMinutes(1), null!);

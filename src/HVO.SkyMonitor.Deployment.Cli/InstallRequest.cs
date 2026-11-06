@@ -161,7 +161,7 @@ internal sealed record InstallRequest
         }
         if (PasswordFile is not null && GeneratePassword)
         {
-            throw new InstallUsageException("--generate-password cannot be combined with --password-file.");
+            throw new InstallUsageException("--password-file cannot be combined with --generate-password.");
         }
 
         if (!double.IsFinite(LatitudeDegrees) || !double.IsFinite(LongitudeDegrees) || !double.IsFinite(ElevationMeters) ||

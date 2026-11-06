@@ -1,0 +1,489 @@
+{
+  "schema": "issue-1644-evidence-runs-v1",
+  "productionRevision": "d579532bf553129cd994fb4f22838f8daede5f0a",
+  "runs": [
+    {
+      "label": "focused-generator-and-guards",
+      "trx": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/results/generator-guards.trx",
+      "counts": {
+        "total": "33",
+        "executed": "33",
+        "passed": "33",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"tamper-context\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures (\"mismatch\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"interrupted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"rejected\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"tamper-measured\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryAbsenceMismatchAndDenialFailClosed (\"denied\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"budget\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"rejected\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryShowsRetainedStatusAndOnlyAcceptedSourceAllowsCalculators (\"unavailable\",\"Unavailable\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ArchivedAstrometryUsesSelectedCaptureAndStageAndClearsSensitiveEvidenceOnDenial",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryShowsRetainedStatusAndOnlyAcceptedSourceAllowsCalculators (\"budget\",\"Budget exceeded\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"accepted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryAbsenceMismatchAndDenialFailClosed (\"failure\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryAbsenceMismatchAndDenialFailClosed (\"missing\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryShowsRetainedStatusAndOnlyAcceptedSourceAllowsCalculators (\"accepted\",\"Accepted\",True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"interrupted-budget\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"tamper-raw\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"tamper-solution\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryShowsRetainedStatusAndOnlyAcceptedSourceAllowsCalculators (\"rejected\",\"Rejected\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures (\"missing\",\"Success\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AStaleLayerAuthorizationDenialClearsTheNewCapturesSensitiveEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "PendingAssessmentAppearsOnSameCaptureRefreshWithoutReloadingAnAcceptedFit",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LateAstrometryCannotFollowAChangedCaptureOrImageStage",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures (\"denied\",\"Unauthorized\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AstrometryAbsenceMismatchAndDenialFailClosed (\"foreign\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "MeasuredTogglesUseFrozenTypedManifestAndKeepExpectedLayerIndependent",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryAuthorizesBeforeReadAndSanitizesFailures (\"failure\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"budget\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"accepted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"no-data\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"tamper-scene\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_RawAdmissionRestartReadExportAndReconstructionPreserveIdentity (\"unavailable\")",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "label": "canonical-generator-without-evidence-env",
+      "trx": "/tmp/hvo-skymonitor-1644-canonical-browser.vgOybz/standalone-results/canonical-standalone.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "5",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"accepted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"no-data\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"budget\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"rejected\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometry_ViewerPublishesTypedDiagnosticsAndFrozenExportWithoutChangingBase (\"unavailable\")",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "label": "diagnostic-sanitization-and-lifecycle",
+      "trx": "/tmp/hvo-skymonitor-1644-browser-final.QoEN5t/diagnostic-results/diagnostics.trx",
+      "counts": {
+        "total": "3",
+        "executed": "3",
+        "passed": "3",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "ConcurrentContextsUseDistinctArtifactNames",
+          "outcome": "Passed"
+        },
+        {
+          "name": "FailureRetainsSanitizedArtifactsAndSuccessRetainsNothing",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CompletedCollectorRejectsLateContextsWithoutCreatingFailureBundles",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "label": "functional-acceptance",
+      "trx": "/tmp/hvo-skymonitor-1644-browser-final.QoEN5t/results/browser.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "5",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "label": "original-incompatible-fixtures",
+      "trx": "/tmp/hvo-skymonitor-1644-browser-evidence.PuHwuP/results/browser.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "0",
+        "failed": "5",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "outcome": "Failed"
+        }
+      ]
+    },
+    {
+      "label": "path-only-import-incompatible-timing",
+      "trx": "/tmp/hvo-skymonitor-1644-browser-fixed.WVnv6Q/results/browser.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "0",
+        "failed": "5",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "outcome": "Failed"
+        }
+      ]
+    },
+    {
+      "label": "canonical-fixtures-ambiguous-selector",
+      "trx": "/tmp/hvo-skymonitor-1644-canonical-browser.vgOybz/results/browser.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "4",
+        "failed": "1",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "outcome": "Failed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "label": "corrected-process-cpu-browser-acceptance",
+      "trx": "/tmp/hvo-skymonitor-1644-browser-final2.EWOLfw/results/browser.trx",
+      "counts": {
+        "total": "5",
+        "executed": "5",
+        "passed": "5",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"no-data\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"accepted\",\"Accepted\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"rejected\",\"Rejected\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"unavailable\",\"Unavailable\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync (\"budget\",\"Budget exceeded\")",
+          "outcome": "Passed"
+        }
+      ]
+    }
+  ],
+  "functionalRunLimitation": "TaskDuration resets on navigation. Functional acceptance remains passed; corrected whole-route process CPU evidence is recorded separately.",
+  "prerequisiteWait": {
+    "root": "/tmp/hvo-skymonitor-1644-browser-evidence.PuHwuP",
+    "firstBoundSeconds": 2400,
+    "firstBoundOutcome": "timeout; zero tests, heavy lock not held",
+    "secondBoundOutcome": "ready; parent producer alone completed"
+  },
+  "compileOnlyAttempts": [
+    {
+      "path": "/tmp/hvo-skymonitor-1644-browser-evidence.PuHwuP/build-browser-attempt1.log",
+      "outcome": "failed harness compilation; no browser cases executed"
+    },
+    {
+      "path": "/tmp/hvo-skymonitor-1644-canonical-browser.vgOybz/build-browser-attempt3-compile.log",
+      "outcome": "failed harness SVG-byte counting compilation; browser not executed; standalone generator5/5 passed"
+    }
+  ],
+  "affectedVerification": {
+    "focusedWhitespaceVerification": "passed",
+    "manualDiscovery": {
+      "actual": 93,
+      "expected": 93,
+      "source": "/tmp/hvo-skymonitor-1644-browser-final2.EWOLfw/manual-discovery.log"
+    },
+    "docsAuditOperations": "passed",
+    "gitDiffCheck": "passed"
+  }
+}

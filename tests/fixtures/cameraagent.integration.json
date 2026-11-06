@@ -143,6 +143,12 @@
       "required": true
     },
     {
+      "id": "MeasuredStellarAssociations",
+      "type": "MeasuredStellarAssociations",
+      "order": 16,
+      "dependsOn": ["ProjectedScene"]
+    },
+    {
       "id": "CloudObservation",
       "type": "VirtualSkyCloudObservation",
       "order": 5,
@@ -197,7 +203,7 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
-      "dependsOn": ["Preview", "ProjectedScene"],
+      "dependsOn": ["Preview", "ProjectedScene", "MeasuredStellarAssociations"],
       "options": {
         "requireProjectedSceneDependency": true,
         "drawLabels": true,

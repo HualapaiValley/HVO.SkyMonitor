@@ -45,7 +45,7 @@ internal sealed partial class RawCaptureIngress
                     cancellationToken).ConfigureAwait(false);
                 activity?.SetTag("duplicate", receipt.Duplicate);
                 activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-                Volatile.Write(ref _initialized, false);
+                RequireReconciliation();
                 var health = await _journal.ReadHealthTotalsAsync(CancellationToken.None).ConfigureAwait(false);
                 var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
                 Volatile.Write(ref _evidenceUnavailable, health.FailureCount > 0);

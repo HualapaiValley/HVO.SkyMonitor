@@ -152,8 +152,10 @@ public sealed partial class ProjectedSceneAnnotationTests
     public async Task CrowdedCombinedGroupRetainsCaptionWithoutExceedingSharedTextBudget()
     {
         var scene = await SceneAsync(crowded: true).ConfigureAwait(false);
+        // #526: every star is measured here so the shared text budget, not the association gate, limits the labels.
         var grouped = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeImageCircle: false,
-            includeCardinalDirections: false, includeConstellations: false).StarAnnotations;
+            includeCardinalDirections: false, includeConstellations: false,
+            associations: MeasuredStellarAssociationFixtures.AllEligible(scene)).StarAnnotations;
         Assert.AreEqual(PresentationLayerPayloadV1.MaximumTextBlocks, grouped.TextBlocks.Count,
             $"The fixture must actually reach the 64-block boundary; scene objects={scene.Objects.Count}.");
         Assert.IsTrue(grouped.TextBlocks.Count <= PresentationLayerPayloadV1.MaximumTextBlocks);

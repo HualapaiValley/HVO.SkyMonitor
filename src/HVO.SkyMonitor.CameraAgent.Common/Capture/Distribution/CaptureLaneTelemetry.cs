@@ -9,7 +9,7 @@ public sealed class CaptureLaneTelemetry : IDisposable
     public const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.CaptureLanes";
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
-    private readonly Meter _meter = new(MeterName);
+    private readonly Meter _meter;
     private readonly CaptureLaneState _state;
     private readonly Counter<long> _created;
     private readonly Counter<long> _claims;
@@ -26,7 +26,14 @@ public sealed class CaptureLaneTelemetry : IDisposable
     private long _lockWaitSamples;
 
     public CaptureLaneTelemetry(CaptureLaneState state)
+        : this(new Meter(MeterName), state)
     {
+    }
+
+    /// <param name="meter">The meter owned and disposed by this instance.</param>
+    internal CaptureLaneTelemetry(Meter meter, CaptureLaneState state)
+    {
+        _meter = meter;
         _state = state;
         _created = _meter.CreateCounter<long>("camera_agent.lanes.work.created", "{work}");
         _claims = _meter.CreateCounter<long>("camera_agent.lanes.claims", "{claim}");

@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text;
 using Bunit;
 using FluentAssertions;
+using HVO.SkyMonitor.LogicHost.Components.Shared;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -17,7 +18,7 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Components;
 [TestCategory("Unit")]
 public sealed class OperationsCaptureDetailBaseImageTests
 {
-    private const string ModulePath = "./Components/Pages/Operations/OperationsCaptureDetail.razor.js";
+    private const string ModulePath = ExactCaptureViewer.ModulePath;
     private static readonly Guid CaptureA = Guid.Parse("0f8e5b52-1a54-4f43-9a65-6f3d1f0a0001");
     private static readonly Guid CaptureB = Guid.Parse("0f8e5b52-1a54-4f43-9a65-6f3d1f0a0002");
 
@@ -65,10 +66,10 @@ public sealed class OperationsCaptureDetailBaseImageTests
         var cut = RenderCapture(context, CaptureA);
         await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
 
-        await cut.InvokeAsync(cut.Instance.SaveSelectedStackAsync);
+        await cut.InvokeAsync(Viewer(cut).SaveSelectedStackAsync);
 
         materializer.Calls.Should().Be(0);
-        cut.Instance.MaterializationMessage.Should().BeNull();
+        Viewer(cut).MaterializationMessage.Should().BeNull();
     }
 
     [TestMethod]
@@ -78,7 +79,7 @@ public sealed class OperationsCaptureDetailBaseImageTests
         var selection = context.JSInterop.SetupModule(ModulePath).Setup<string[]>("selectedLayerIdentities", _ => true);
         var cut = RenderCapture(context, CaptureA);
 
-        await Task.WhenAll(cut.InvokeAsync(cut.Instance.SaveSelectedStackAsync), FailBaseThenReturnSelectionAsync());
+        await Task.WhenAll(cut.InvokeAsync(Viewer(cut).SaveSelectedStackAsync), FailBaseThenReturnSelectionAsync());
 
         async Task FailBaseThenReturnSelectionAsync()
         {
@@ -93,8 +94,8 @@ public sealed class OperationsCaptureDetailBaseImageTests
         }
 
         materializer.Calls.Should().Be(0);
-        cut.Instance.MaterializationMessage.Should().BeNull();
-        cut.Instance.IsSavingPresentation.Should().BeFalse();
+        Viewer(cut).MaterializationMessage.Should().BeNull();
+        Viewer(cut).IsSavingPresentation.Should().BeFalse();
     }
 
     [TestMethod]
@@ -102,12 +103,12 @@ public sealed class OperationsCaptureDetailBaseImageTests
     {
         using var context = CreateContext(out _);
         var cut = RenderCapture(context, CaptureA);
-        var failedKey = cut.Instance.BaseImageKey;
+        var failedKey = Viewer(cut).BaseImageKey;
         await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
 
         await cut.Find(".layered-unavailable button").ClickAsync(new());
 
-        cut.Instance.BaseImageKey.Should().NotBe(failedKey);
+        Viewer(cut).BaseImageKey.Should().NotBe(failedKey);
         cut.Find(".layered-canvas img").GetAttribute("src").Should().Be(BasePath(CaptureA));
         cut.Find(".layered-overlay svg").Should().NotBeNull();
         cut.FindAll(".layered-unavailable").Should().BeEmpty();
@@ -115,8 +116,8 @@ public sealed class OperationsCaptureDetailBaseImageTests
         SaveButton(cut).HasAttribute("disabled").Should().BeFalse();
         context.JSInterop.VerifyInvoke("bindLayerToggles", 2);
 
-        await cut.InvokeAsync(() => cut.Instance.OnBaseImageError(failedKey));
-        cut.Instance.IsBaseImageUnavailable.Should().BeFalse("an error from the superseded attempt is stale");
+        await cut.InvokeAsync(() => Viewer(cut).OnBaseImageError(failedKey));
+        Viewer(cut).IsBaseImageUnavailable.Should().BeFalse("an error from the superseded attempt is stale");
 
         await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
         cut.FindAll(".layered-unavailable").Should().ContainSingle("the current attempt can still fail");
@@ -127,21 +128,53 @@ public sealed class OperationsCaptureDetailBaseImageTests
     {
         using var context = CreateContext(out _);
         var cut = RenderCapture(context, CaptureA);
-        var captureAKey = cut.Instance.BaseImageKey;
+        var captureAKey = Viewer(cut).BaseImageKey;
         await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
 
         cut.Render(parameters => parameters.Add(page => page.CaptureId, CaptureB));
         cut.WaitForAssertion(() => cut.Find(".layered-canvas img").GetAttribute("src").Should().Be(BasePath(CaptureB)));
 
-        await cut.InvokeAsync(() => cut.Instance.OnBaseImageError(captureAKey));
+        await cut.InvokeAsync(() => Viewer(cut).OnBaseImageError(captureAKey));
 
-        cut.Instance.IsBaseImageUnavailable.Should().BeFalse("an error from the previous capture is stale");
+        Viewer(cut).IsBaseImageUnavailable.Should().BeFalse("an error from the previous capture is stale");
         cut.FindAll(".layered-unavailable").Should().BeEmpty();
         cut.Find(".layered-overlay svg").Should().NotBeNull();
         cut.Find("h1").TextContent.Should().Be($"Capture {CapturedAt(CaptureB):u}");
         cut.Markup.Should().Contain(PresentationIdentity(CaptureB)).And.NotContain(PresentationIdentity(CaptureA))
             .And.NotContain(BasePath(CaptureA));
         cut.FindAll(".layer-controls input[type=checkbox]").Should().OnlyContain(input => !input.HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    public void Page_RendersTheCaptureThroughTheExactCaptureViewer()
+    {
+        using var context = CreateContext(out _);
+        var cut = RenderCapture(context, CaptureA);
+
+        var viewer = cut.FindComponent<ExactCaptureViewer>().Instance;
+        viewer.CaptureId.Should().Be(CaptureA);
+        viewer.Detail.Should().BeSameAs(cut.Instance.Detail);
+        cut.FindAll("h1").Should().ContainSingle();
+        cut.Markup.Should().Contain("Artifact evidence");
+    }
+
+    [TestMethod]
+    public async Task SavedStack_ReloadsThePageDetailForTheSameCapture()
+    {
+        using var context = CreateContext(out var materializer, out var reads);
+        materializer.Result = new CentralPresentationMaterializationResult(CentralPresentationMaterializationStatus.Saved,
+            new CentralPresentationMaterializationReceipt(CaptureA, Guid.NewGuid(), new string('6', 64), new string('7', 64),
+                10, "/content", Replayed: true));
+        context.JSInterop.SetupModule(ModulePath).Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([]);
+        var cut = RenderCapture(context, CaptureA);
+        reads.CaptureReads.Should().Equal(CaptureA);
+
+        await SaveButton(cut).ClickAsync(new());
+
+        materializer.Calls.Should().Be(1);
+        reads.CaptureReads.Should().Equal(CaptureA, CaptureA);
+        cut.Markup.Should().Contain("This exact presentation stack was already materialized.");
+        cut.Find(".layered-canvas img").GetAttribute("src").Should().Be(BasePath(CaptureA));
     }
 
     private static IRenderedComponent<CaptureDetailPage> RenderCapture(BunitContext context, Guid captureId)
@@ -151,17 +184,24 @@ public sealed class OperationsCaptureDetailBaseImageTests
         return cut;
     }
 
+    private static ExactCaptureViewer Viewer(IRenderedComponent<CaptureDetailPage> cut)
+        => cut.FindComponent<ExactCaptureViewer>().Instance;
+
     private static AngleSharp.Dom.IElement SaveButton(IRenderedComponent<CaptureDetailPage> cut)
         => cut.FindAll("button").Single(button => button.TextContent.Contains("Save selected stack", StringComparison.Ordinal));
 
-    private static BunitContext CreateContext(out CountingMaterializer materializer)
+    private static BunitContext CreateContext(out CountingMaterializer materializer) => CreateContext(out materializer, out _);
+
+    private static BunitContext CreateContext(out CountingMaterializer materializer, out CaptureReadService reads)
     {
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         context.JSInterop.SetupModule(ModulePath);
         context.Services.AddSingleton<AuthenticationStateProvider>(new FixedAuthentication());
         context.Services.AddCascadingAuthenticationState();
-        context.Services.AddSingleton(CaptureReadService.Create());
+        var readService = CaptureReadService.Create();
+        reads = (CaptureReadService)readService;
+        context.Services.AddSingleton(readService);
         context.Services.AddSingleton<ICentralLayeredPresentationService>(new FixedPresentations());
         materializer = new CountingMaterializer();
         context.Services.AddSingleton<ICentralPresentationMaterializer>(materializer);
@@ -220,12 +260,14 @@ public sealed class OperationsCaptureDetailBaseImageTests
     private sealed class CountingMaterializer : ICentralPresentationMaterializer
     {
         internal int Calls { get; private set; }
+        internal CentralPresentationMaterializationResult Result { get; set; } =
+            new(CentralPresentationMaterializationStatus.Invalid);
 
         public Task<CentralPresentationMaterializationResult> SaveAsync(Guid captureId, string manifestIdentitySha256,
             IReadOnlyList<string> enabledLayerIdentitySha256, ClaimsPrincipal principal, CancellationToken cancellationToken = default)
         {
             Calls++;
-            return Task.FromResult(new CentralPresentationMaterializationResult(CentralPresentationMaterializationStatus.Invalid));
+            return Task.FromResult(Result);
         }
     }
 
@@ -243,12 +285,19 @@ public sealed class OperationsCaptureDetailBaseImageTests
         Justification = "DispatchProxy dynamically derives the generated interface proxy from this base type.")]
     internal class CaptureReadService : DispatchProxy
     {
+        internal List<Guid> CaptureReads { get; } = [];
+
         internal static INetworkOperationsReadService Create() => Create<INetworkOperationsReadService, CaptureReadService>();
 
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod?.Name switch
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
-            nameof(INetworkOperationsReadService.GetCaptureAsync) => Task.FromResult<OperationsCaptureDetail?>(Detail((Guid)args![1]!)),
-            _ => throw new AssertFailedException($"{targetMethod?.Name} is not exercised by capture detail image tests.")
-        };
+            if (targetMethod?.Name != nameof(INetworkOperationsReadService.GetCaptureAsync))
+            {
+                throw new AssertFailedException($"{targetMethod?.Name} is not exercised by capture detail image tests.");
+            }
+            var captureId = (Guid)args![1]!;
+            CaptureReads.Add(captureId);
+            return Task.FromResult<OperationsCaptureDetail?>(Detail(captureId));
+        }
     }
 }

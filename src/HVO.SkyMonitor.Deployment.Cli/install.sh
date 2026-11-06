@@ -368,6 +368,9 @@ EOF
     take "${asset}" "${installer}"
     verify_listed "${installer}" "${asset}"
     if ${hand_release} && [ -z "${from}" ]; then
+      cp -- "${installer}" "${work}/release/${asset}"
+      take "hvo-sky-${rid}" "${work}/release/hvo-sky-${rid}"
+      verify_listed "${work}/release/hvo-sky-${rid}" "hvo-sky-${rid}"
       take release.json "${work}/release/release.json"
       verify_listed "${work}/release/release.json" release.json
     fi

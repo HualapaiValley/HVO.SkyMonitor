@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class VirtualSkyCloudScenarioTests
+public sealed partial class VirtualSkyCloudScenarioTests
 {
     private static readonly DateTimeOffset FixtureUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions FixtureSerializerOptions = new(JsonSerializerDefaults.Web);

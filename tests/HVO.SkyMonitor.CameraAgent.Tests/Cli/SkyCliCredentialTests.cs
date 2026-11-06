@@ -1,5 +1,8 @@
+using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.Versioning;
+using System.Text;
 using HVO.SkyMonitor.CameraAgent.Cli;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
 
@@ -503,6 +506,276 @@ public sealed class SkyCliCredentialTests
         StringAssert.Contains(remote.Error, "unencrypted", StringComparison.Ordinal);
         Assert.DoesNotContain("unencrypted", local.Error, StringComparison.Ordinal);
         Assert.DoesNotContain("unencrypted", tls.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An address bound to one of this machine's interfaces is this machine: a request to it never crosses the network,
+    /// so <c>hvo-sky</c> run on the CameraAgent host against its own LAN address does not warn. Any other address, and a
+    /// name, still does (#1384).
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToAnAddressOfThisMachine_DoesNotWarnAsync()
+    {
+        using var harness = new CliHarness();
+        harness.LocalAddresses = [IPAddress.Parse("192.0.2.10"), IPAddress.Parse("2001:db8::10")];
+
+        var lan = await harness.RunAsync("status", "--url", "http://192.0.2.10:5130/").ConfigureAwait(false);
+        var lan6 = await harness.RunAsync("status", "--url", "http://[2001:db8::10]:5130/").ConfigureAwait(false);
+        var other = await harness.RunAsync("status", "--url", "http://192.0.2.11:5130/").ConfigureAwait(false);
+        var name = await harness.RunAsync("status", "--url", "http://allsky.example:5130/").ConfigureAwait(false);
+
+        Assert.DoesNotContain("unencrypted", lan.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", lan6.Error, StringComparison.Ordinal);
+        StringAssert.Contains(other.Error, "unencrypted", StringComparison.Ordinal);
+        StringAssert.Contains(name.Error, "unencrypted", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Through a proxy, a request to this machine's own address leaves it, Authorization header and all (PR-1390-R1 F1):
+    /// such an address is this machine only when the proxy bypasses it, as <c>no_proxy</c> does. With no proxy it is this
+    /// machine, and a name is warned about whatever the proxy.
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToAnAddressOfThisMachine_ThroughAProxy_WarnsUnlessTheProxyBypassesItAsync()
+    {
+        using var harness = new CliHarness();
+        harness.LocalAddresses = [IPAddress.Parse("192.0.2.10")];
+        const string local = "http://192.0.2.10:5130/";
+
+        harness.Proxy = new EnvironmentLikeProxy(new Uri("http://192.0.2.99:8080/"));
+        var proxied = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+        harness.Proxy = new EnvironmentLikeProxy(new Uri("http://192.0.2.99:8080/"), "192.0.2.10");
+        var bypassed = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+        var named = await harness.RunAsync("status", "--url", "http://allsky.example:5130/").ConfigureAwait(false);
+        harness.Proxy = null;
+        var direct = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+
+        StringAssert.Contains(proxied.Error, "unencrypted", StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", bypassed.Error, StringComparison.Ordinal);
+        StringAssert.Contains(named.Error, "unencrypted", StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", direct.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>hvo-sky's own connections go through <see cref="HttpClient.DefaultProxy"/>, so the warning asks it.</summary>
+    [TestMethod]
+    public void Host_TheProxyTheWarningAsks_IsTheOneTheConnectionUses()
+    {
+        var host = SkyCliHost.System();
+
+        Assert.AreSame(HttpClient.DefaultProxy, host.Proxy());
+        Assert.IsNull(host.CreateHandler, "the connection's handler is the default one, which uses HttpClient.DefaultProxy");
+    }
+
+    /// <summary>
+    /// A loopback address is this machine, and the connection reaches it directly whatever the proxy. An environment proxy
+    /// does not bypass loopback, so with <c>http_proxy</c> and no matching <c>no_proxy</c> the key reached the proxy in
+    /// clear, unwarned, and the request went to the proxy's own loopback rather than to this machine (#1404). With a
+    /// bypass it went direct already.
+    /// </summary>
+    [TestMethod]
+    [DataRow("127.0.0.1")]
+    [DataRow("localhost")]
+    public async Task Loopback_ThroughAnEnvironmentProxy_GoesDirectAndTheKeyNeverReachesTheProxyAsync(string host)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var agent = new RecordingHttpServer();
+        await using var agentLifetime = agent.ConfigureAwait(false);
+        var proxy = new RecordingHttpServer();
+        await using var proxyLifetime = proxy.ConfigureAwait(false);
+        var address = new Uri($"http://{host}:{agent.Port}/");
+
+        await GetInfoAsync(address, new EnvironmentLikeProxy(proxy.Address), timeout.Token).ConfigureAwait(false);
+        await GetInfoAsync(address, new EnvironmentLikeProxy(proxy.Address, host), timeout.Token).ConfigureAwait(false);
+
+        Assert.IsEmpty(proxy.Requests, "the key never reaches the proxy");
+        Assert.HasCount(2, agent.Requests);
+        foreach (var request in agent.Requests)
+        {
+            StringAssert.StartsWith(request, "GET /api/v1/operations/info HTTP/1.1", StringComparison.Ordinal);
+            StringAssert.Contains(request, $"Authorization: Bearer {CliHarness.Key}", StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Any other address still goes through the proxy, as the environment configures it, and is warned about there
+    /// (#1384); only loopback goes direct.
+    /// </summary>
+    [TestMethod]
+    public async Task AnotherAddress_ThroughAnEnvironmentProxy_StillGoesThroughItAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var proxy = new RecordingHttpServer();
+        await using var proxyLifetime = proxy.ConfigureAwait(false);
+
+        await GetInfoAsync(new Uri("http://192.0.2.10:5130/"), new EnvironmentLikeProxy(proxy.Address), timeout.Token)
+            .ConfigureAwait(false);
+
+        var request = Assert.ContainsSingle(proxy.Requests);
+        StringAssert.StartsWith(request, "GET http://192.0.2.10:5130/api/v1/operations/info HTTP/1.1", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The plain-HTTP warning never names loopback, which is right only because the connection's own handler, the one
+    /// <see cref="Host_TheProxyTheWarningAsks_IsTheOneTheConnectionUses"/> pins, uses no proxy for it, in every form
+    /// (#1404). Every other address uses the proxy the environment gives.
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToLoopback_ThroughAProxy_IsNotWarnedAboutBecauseTheConnectionGoesDirectAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Proxy = new EnvironmentLikeProxy(new Uri("http://192.0.2.99:8080/"));
+        string[] loopback = ["http://127.0.0.1:5130/", "http://localhost:5130/", "http://[::1]:5130/"];
+        string[] other = ["http://192.0.2.10:5130/", "http://[2001:db8::10]:5130/", "http://allsky.example:5130/", "https://allsky.example/"];
+
+        foreach (var url in loopback)
+        {
+            var result = await harness.RunAsync("status", "--url", url).ConfigureAwait(false);
+            Assert.DoesNotContain("unencrypted", result.Error, StringComparison.Ordinal);
+            using var handler = SkyApiClient.CreateHandler(new Uri(url));
+            Assert.IsFalse(handler.UseProxy, url);
+        }
+
+        foreach (var url in other)
+        {
+            using var handler = SkyApiClient.CreateHandler(new Uri(url));
+            Assert.IsTrue(handler.UseProxy, url);
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>info</c> from <paramref name="address"/> with the key, on the connection's own handler, through
+    /// <paramref name="proxy"/>.
+    /// </summary>
+    private static async Task GetInfoAsync(Uri address, IWebProxy proxy, CancellationToken cancellationToken)
+    {
+        using var client = new SkyApiClient(new SkyConnectionOptions
+        {
+            BaseAddress = address,
+            ApiKey = CliHarness.Key,
+            CreateHandler = () =>
+            {
+                var handler = SkyApiClient.CreateHandler(address);
+                handler.Proxy = proxy;
+                return handler;
+            }
+        });
+        await client.GetAsync(SkyApiClient.OperationsRoute + "info", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A plain HTTP/1.1 server on loopback that records the head of every request and answers it with an empty JSON
+    /// object. It stands for CameraAgent, or for a proxy, which is sent the same request with the absolute address.
+    /// </summary>
+    private sealed class RecordingHttpServer : IAsyncDisposable
+    {
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new();
+        private readonly ConcurrentQueue<string> _requests = new();
+        private readonly Task _serving;
+
+        public RecordingHttpServer()
+        {
+            _listener.Start();
+            _serving = ServeAsync(_stop.Token);
+        }
+
+        public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+        public Uri Address => new($"http://127.0.0.1:{Port}/");
+
+        public IReadOnlyList<string> Requests => [.. _requests];
+
+        /// <summary>
+        /// Stops the server. Stopping is signalled before the listener stops, so the accept loop ends on its own, however
+        /// its shutdown reaches it, and only a fault of the server itself is thrown here.
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+            await _stop.CancelAsync().ConfigureAwait(false);
+            _listener.Stop();
+            await _serving.ConfigureAwait(false);
+            _listener.Dispose();
+            _stop.Dispose();
+        }
+
+        private async Task ServeAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                TcpClient connection;
+                try
+                {
+                    connection = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                }
+                // Stopping reaches a pending accept as cancellation, and an accept begun after the listener stopped as
+                // "not listening" (InvalidOperationException), a disposed listener or a socket error.
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (InvalidOperationException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (SocketException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                using (connection)
+                {
+                    try
+                    {
+                        var stream = connection.GetStream();
+                        _requests.Enqueue(await ReadHeadAsync(stream, cancellationToken).ConfigureAwait(false));
+                        await stream.WriteAsync(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"u8.ToArray(),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+
+        private static async Task<string> ReadHeadAsync(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            var head = new StringBuilder();
+            var one = new byte[1];
+            while (!head.ToString().EndsWith("\r\n\r\n", StringComparison.Ordinal)
+                && await stream.ReadAsync(one, cancellationToken).ConfigureAwait(false) == 1)
+            {
+                head.Append((char)one[0]);
+            }
+
+            return head.ToString();
+        }
+    }
+
+    /// <summary>
+    /// A proxy as <c>http_proxy</c> with <c>no_proxy</c> configures one: every request goes through it except those to a
+    /// host the bypass list names.
+    /// </summary>
+    private sealed class EnvironmentLikeProxy(Uri proxy, params string[] noProxy) : IWebProxy
+    {
+        public ICredentials? Credentials { get; set; }
+
+        public Uri? GetProxy(Uri destination) => IsBypassed(destination) ? null : proxy;
+
+        public bool IsBypassed(Uri host)
+        {
+            ArgumentNullException.ThrowIfNull(host);
+            return noProxy.Contains(host.Host, StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     [TestMethod]

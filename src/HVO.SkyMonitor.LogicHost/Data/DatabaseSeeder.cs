@@ -242,16 +242,37 @@ internal static class DatabaseSeeder
             .Concat(recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Calibrated))
             .DistinctBy(static recipe => recipe.RecipeName, StringComparer.Ordinal)
             .ToArray();
+        var associations = CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsRecipe;
         var nodes = recipes.Select((recipe, index) => CreateCentralGraphNode(
             recipe,
             index * 10,
-            [new ProcessingGraphDependencyDefinition(SourceId(recipe.SourceRole))],
-            [new ProcessingGraphInputContract(
-                [recipe.SourceRole],
-                [ProcessingProductKind.PixelData],
-                [],
-                [],
-                [])]))
+            [
+                new ProcessingGraphDependencyDefinition(SourceId(recipe.SourceRole)),
+                // Annotation labels only stars the frame itself measured (#526). The association product is optional:
+                // when it is omitted the annotation still renders, with every star label suppressed.
+                .. recipe.RecipeName == BuiltInProcessingRecipes.Annotation
+                    ? [new ProcessingGraphDependencyDefinition("MeasuredStellarAssociations", Required: false)]
+                    : Array.Empty<ProcessingGraphDependencyDefinition>()
+            ],
+            [
+                new ProcessingGraphInputContract(
+                    [recipe.SourceRole],
+                    [ProcessingProductKind.PixelData],
+                    [],
+                    [],
+                    []),
+                .. recipe.RecipeName == BuiltInProcessingRecipes.Annotation
+                    ? [new ProcessingGraphInputContract(
+                        [FrameArtifactRole.Metadata],
+                        [ProcessingProductKind.Metadata],
+                        [CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant],
+                        [BuiltInProcessingRecipes.MeasuredStellarAssociations],
+                        [MeasuredStellarAssociationsV1.CurrentSchemaVersion],
+                        Required: false,
+                        BindingName: BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+                        BindingKind: ProcessingGraphInputBindingKind.AuxiliaryArtifact)]
+                    : Array.Empty<ProcessingGraphInputContract>()
+            ]))
             .ToList();
         var weather = CentralDerivativeRecipeCatalog.WeatherCloudOverlayRecipe;
         nodes.Add(CreateCentralGraphNode(
@@ -278,6 +299,17 @@ internal static class DatabaseSeeder
                     BindingName: "assessment",
                     BindingKind: ProcessingGraphInputBindingKind.AuxiliaryArtifact)
             ]));
+        // The frame's projected scene is attached by the host at expansion, never declared as a graph binding.
+        nodes.Add(CreateCentralGraphNode(
+            associations,
+            nodes.Count * 10,
+            [new ProcessingGraphDependencyDefinition(SourceId(associations.SourceRole))],
+            [new ProcessingGraphInputContract(
+                [associations.SourceRole],
+                [ProcessingProductKind.PixelData],
+                [],
+                [],
+                [])]));
         var sourceRoles = recipes.Select(static recipe => recipe.SourceRole)
             .Append(FrameArtifactRole.Raw)
             .Distinct()
@@ -322,6 +354,7 @@ internal static class DatabaseSeeder
             BuiltInProcessingRecipes.CloudAssessment => "CloudAssessment",
             BuiltInProcessingRecipes.RollingMean => "RollingMean",
             BuiltInProcessingRecipes.WeatherCloudOverlay => "WeatherCloudOverlay",
+            BuiltInProcessingRecipes.MeasuredStellarAssociations => "MeasuredStellarAssociations",
             CentralTransientRuntime.RecipeName => "TransientDetection",
             _ => throw new InvalidOperationException("The central recipe cannot be represented in the basic graph.")
         };
@@ -357,7 +390,7 @@ internal static class DatabaseSeeder
             isTransient ? ProcessingOperationKind.Window : builtInDefinition!.OperationKind,
             true,
             recipe.RecipeName is BuiltInProcessingRecipes.CloudAssessment or
-                BuiltInProcessingRecipes.WeatherCloudOverlay
+                BuiltInProcessingRecipes.WeatherCloudOverlay or BuiltInProcessingRecipes.MeasuredStellarAssociations
                 ? ProcessingGraphNodeFailurePolicy.Optional
                 : ProcessingGraphNodeFailurePolicy.Required,
             order,
@@ -373,9 +406,13 @@ internal static class DatabaseSeeder
                         ? ProcessingProductKind.Metadata
                         : ProcessingProductKind.PixelData,
                     builtInDefinition,
-                    SchemaVersion: recipe.RecipeName == BuiltInProcessingRecipes.CloudAssessment
-                        ? CloudAssessmentV1.CurrentSchemaVersion
-                        : null,
+                    SchemaVersion: recipe.RecipeName switch
+                    {
+                        BuiltInProcessingRecipes.CloudAssessment => CloudAssessmentV1.CurrentSchemaVersion,
+                        BuiltInProcessingRecipes.MeasuredStellarAssociations =>
+                            MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+                        _ => null
+                    },
                     MediaType: recipe.RecipeName switch
                     {
                         BuiltInProcessingRecipes.RollingMean => "application/x-hvo-linear-frame",
@@ -383,6 +420,8 @@ internal static class DatabaseSeeder
                         BuiltInProcessingRecipes.CloudAssessment =>
                             StructuredProcessingProductContracts.CloudAssessmentMediaType,
                         BuiltInProcessingRecipes.WeatherCloudOverlay => "application/x-hvo-packed-image",
+                        BuiltInProcessingRecipes.MeasuredStellarAssociations =>
+                            StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType,
                         _ => "image/jpeg"
                     })],
             window,

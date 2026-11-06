@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -17,6 +18,114 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class CameraAgentProcessingGraphUiServiceTests
 {
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+
+    [TestMethod]
+    public async Task EnvironmentPolicyFailureIsInvalidAndExplainedWithoutExposingInternalDetails()
+    {
+        var pipeline = new CapturePipelineConfig([new("EnvironmentPresentationLayer", "environment",
+            Options: JsonSerializer.Deserialize<JsonElement>("""{"widthPixels":1936,"heightPixels":1216,"environmentalKinds":["SkyQuality"]}"""))]);
+        var failure = new ValidationException("Environmental observations SkyQuality are outside the configured association policy. /private/configuration.json");
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.CreateRevisionAsync("environment", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(failure);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>())).Throws(failure);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var saved = await service.CreateRevisionAsync("environment", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+        foreach (var result in new[] { (preview.Kind, preview.Message), (saved.Kind, saved.Message) })
+        {
+            Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+            Assert.AreEqual("Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider.", result.Message);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("Preview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("CalibratedPreview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("CombinedPreview", "\"AsinhStrength\":\"4\"")]
+    [DataRow("Preview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    [DataRow("CalibratedPreview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    [DataRow("CombinedPreview", "\"BlackPercentile\":0.25,\"blackPercentile\":0.5")]
+    public async Task FixedPreviewScalarEditsPreserveInactiveMembersThroughPreviewAndCreate(string alias, string inactive)
+    {
+        var sourceText = "{ \"FixedTransfer\":{\"BlackLevel\":0,\"WhiteLevel\":65535,\"Gamma\":1}, " + inactive + ", \"future\":[1e+02] }";
+        var source = JsonDocument.Parse(sourceText).RootElement.Clone();
+        var descriptor = ProcessingNodeOptionsForm.DescriptorFor(alias, source)!;
+        Assert.AreEqual("fixed-preview-v1", descriptor.StepVersion);
+        var form = new ProcessingNodeOptionsForm(descriptor, source);
+        form.Set("outputVariant", "fixed-custom");
+        Assert.IsTrue(form.TryBuild(out var edited, out var errors), string.Join(' ', errors));
+        var expected = sourceText[..^2] + ",\"outputVariant\":\"fixed-custom\" }";
+        Assert.AreEqual(expected, edited!.Value.GetRawText());
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        PreviewProcessingStepOptions runtime = alias switch
+        {
+            "CalibratedPreview" => edited.Value.Deserialize<CalibratedPreviewProcessingStepOptions>(jsonOptions)!,
+            "CombinedPreview" => edited.Value.Deserialize<CombinedPreviewProcessingStepOptions>(jsonOptions)!,
+            _ => edited.Value.Deserialize<PreviewProcessingStepOptions>(jsonOptions)!
+        };
+        var validation = new List<ValidationResult>();
+        Assert.IsTrue(Validator.TryValidateObject(runtime, new ValidationContext(runtime), validation, true));
+
+        var pipeline = new CapturePipelineConfig([new(alias, "fixed", Options: edited, DependsOn: ["$raw"])]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.CreateRevisionAsync("fixed", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphRevisionState("rev-new", "fixed", "2", ProcessingGraphRevisionLifecycle.Draft,
+                new string('A', 64), new string('B', 64), new string('C', 64), Now, null, null, null));
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        factory.Setup(value => value.PreviewPlan(It.Is<CameraModuleConfig>(config => config.Pipeline == pipeline)))
+            .Returns(new CaptureProcessingPlanPreview(pipeline.SchemaVersion, pipeline.DependencyPolicy, new string('D', 64), new string('E', 64), [], []));
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var created = await service.CreateRevisionAsync("fixed", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(preview.IsSuccess, preview.Message);
+        Assert.IsTrue(created.IsSuccess, created.Message);
+        Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, created.Value!.Lifecycle);
+        Assert.AreEqual(expected, pipeline.Steps[0].Options!.Value.GetRawText());
+        Assert.AreEqual(sourceText, source.GetRawText());
+        factory.Verify(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>()), Times.Once);
+        operations.Verify(value => value.CreateRevisionAsync("fixed", "2", pipeline, "create", "owner-id", null, It.IsAny<CancellationToken>()), Times.Once);
+        operations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow("ImageQuality")]
+    [DataRow("WeatherCloudOverlay")]
+    public async Task ScalarDraftAuthorizationAndIdentifierValidationPrecedePersistence(string alias)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var pipeline = new CapturePipelineConfig([
+            new(alias, "quality", 17, JsonSerializer.SerializeToElement(new { outputVariant = " " }), ["$raw"])
+        ]);
+        var denied = await CreateService(operations.Object, authorized: false)
+            .CreateRevisionAsync("quality", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
+        var invalid = await CreateService(operations.Object, authorized: true)
+            .CreateRevisionAsync("quality", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        StringAssert.Contains(invalid.Message!, "processing.options.not-allowed", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task FrameFactsDraftAuthorizationAndSemanticValidationStayAtTheServiceBoundary()
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(
+            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias, "facts", 70,
+            JsonSerializer.SerializeToElement(new { topLeftTemplate = "{{unknown.token}}" }), ["$raw"])]);
+        var denied = CreateService(operations.Object, authorized: false);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await denied.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await denied.CreateRevisionAsync("facts", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false)).Kind);
+        var allowed = CreateService(operations.Object, authorized: true);
+        var invalid = await allowed.CreateRevisionAsync("facts", "2", pipeline, "key", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        StringAssert.Contains(invalid.Message!, "frame-facts.unknown-token", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+    }
 
     [TestMethod]
     public async Task GetExecutions_ReadsBothClassesWithinTheBoundAndSummarizesAsync()
@@ -51,6 +160,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
                     HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
                  [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
               {
+                  NormalizationPlanIdentitySha256 = new string('A', 64),
+                  NormalizationInputs = [new(0, Guid.NewGuid(), Guid.NewGuid(), 0, "excluded", "/var/lib/secret failed")],
                   Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")],
                   OutputContracts = [new HVO.SkyMonitor.Processing.ProcessingGraphProductContract(
                       FrameArtifactRole.Metadata, "custom-assessment", HVO.SkyMonitor.Processing.ProcessingProductKind.Metadata,
@@ -73,6 +184,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value!.Nodes[0].Reason);
         Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].Outputs[0].AvailabilityReason);
         Assert.IsFalse(serialized.Contains("LeaseOwner", StringComparison.Ordinal));
+        Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].NormalizationInputs.Single().ExclusionReason);
         Assert.AreEqual("Produced", found.Value!.Nodes[0].Attempts[0].Outcome);
         Assert.AreEqual("$raw", found.Value.Nodes[0].Dependencies.Single().ProducerId);
         Assert.AreEqual("custom-assessment", found.Value.Nodes[0].OutputContracts.Single().Variant);
@@ -203,6 +315,81 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         var invalid = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
         Assert.AreEqual("The desired graph contains a dependency cycle.", invalid.Message);
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":256}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":96,\"CONSTELLATIONLINERED\":96}", "processing.options.duplicate-member")]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":-30.01}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":30.01}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":0}", "processing.options.out-of-range")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":\"1\"}", "processing.options.wrong-type")]
+    [DataRow("ProjectedScene", "{\"includeConstellationEndpointStars\":null}", "processing.options.wrong-type")]
+    [DataRow("ProjectedScene", "{\"maximumResults\":1,\"MAXIMUMRESULTS\":1}", "processing.options.duplicate-member")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":0}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":16385}", "processing.options.out-of-range")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1.5}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":1e400}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":\"4\"}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":true}", "processing.options.wrong-type")]
+    [DataRow("JpegEncoding", "{\"MaximumDimension\":null,\"maximumDimension\":4}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":256}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-1}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":true}", "processing.options.wrong-type")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":1.5}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[999]}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"Unknown\"]}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":1e400}", "processing.options.wrong-type")]
+    [DataRow("EnvironmentPresentationLayer", "{\"Value\":null,\"value\":0}", "processing.options.duplicate-member")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"labelValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"imageCircleValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("ScenePresentationLayer", "{\"cardinalValue\":-0}", "processing.options.out-of-range")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":-0}", "processing.options.out-of-range")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"pointGlyph\":\"star\"}", "processing.options.not-allowed")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexBold\"}", "processing.options.not-allowed")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"markerBlue\":256}", "processing.options.out-of-range")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"pointGlyph\":\"Circle\",\"PointGlyph\":\"Crosshair\"}", "processing.options.duplicate-member")]
+    public async Task TypedOptions_PreviewAndCreateRejectInvalidValuesBeforeCompilationOrStorage(string alias, string json, string code)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(alias, "scene",
+            Options: JsonDocument.Parse(json).RootElement.Clone(), DependsOn: ["$raw"], Enabled: false)]);
+
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var created = await service.CreateRevisionAsync("sky", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, preview.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, created.Kind);
+        Assert.AreEqual(preview.Message, created.Message);
+        StringAssert.Contains(preview.Message!, code, StringComparison.Ordinal);
+        StringAssert.Contains(preview.Message!, "steps[0].options", StringComparison.Ordinal);
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow("ProjectedScene", "{\"maximumMagnitude\":2,\"maximumResults\":1,\"includeConstellationEndpointStars\":true}")]
+    [DataRow("JpegEncoding", "{\"maximumDimension\":4}")]
+    [DataRow("ScenePresentationLayer", "{\"markerValue\":0,\"labelValue\":255}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"environmentalKinds\":[\"WindDirection\"]}")]
+    [DataRow("EnvironmentPresentationLayer", "{\"value\":null}")]
+    [DataRow("SceneStylePresentationLayerV1", "{\"labelFont\":\"PlexRegular\",\"pointGlyph\":\"Crosshair\"}")]
+    public async Task TypedDraftPreviewAndCreateRequireAuthorization(string alias, string json)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: false, factory.Object);
+        var pipeline = new CapturePipelineConfig([new(alias, "scene", Options:
+            JsonSerializer.Deserialize<JsonElement>(json), DependsOn: ["$raw"])]);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.CreateRevisionAsync("query", "2", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false)).Kind);
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
     }
 
     private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized, ICaptureProcessingPipelineFactory? factory = null)

@@ -44,16 +44,18 @@ public sealed class PresentationProcessingProductTests
     }
 
     [TestMethod]
-    public void SupplementaryManifestMaterializationRetainsEveryCanonicalBindingAndRejectsUnknownSchema()
+    [DataRow(TransientTrailPresentation.CompositionSchemaVersion)]
+    [DataRow(AstrometricDiagnosticPresentation.CompositionSchema)]
+    public void SupplementaryManifestMaterializationRetainsEveryCanonicalBindingAndRejectsUnknownSchema(string schema)
     {
         var baseArtifact = Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "base", Layout(), new byte[64]);
         var baseReference = PresentationProcessingProducts.CreateReference(baseArtifact, new string('E', 64));
         var layer = LayerInput("measured", 500, 2, 2, new(255, 220, 32), baseReference.Compatibility);
         var manifest = LayeredPresentationJson.CreateManifest(baseReference, null, [layer.Layer]);
         var product = PresentationProcessingProducts.CreateManifestProduct(baseReference, null, [layer],
-            TransientTrailPresentation.CompositionSchemaVersion, baseArtifact) with
+            schema, baseArtifact) with
         {
-            SchemaVersion = TransientTrailPresentation.CompositionSchemaVersion
+            SchemaVersion = schema
         };
         var artifact = ToArtifact(product);
         var rendered = PresentationMaterializationExecutor.MaterializePacked(baseArtifact, artifact, manifest,

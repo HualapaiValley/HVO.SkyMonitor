@@ -1,0 +1,483 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s12-malformed-bodies",
+  "title": "Rejected bodies keep last-known-good; record-level faults reject only the record and raise record drift once",
+  "covers": [
+    "malformed",
+    "quarantine",
+    "format-drift",
+    "record-drift",
+    "unknown-code",
+    "json-value-type"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Every body after step 1 is synthetic or a damaged copy of a real body.",
+    "Step 5's ALTEF3 3754 is the real record with its issue_datetime moved six minutes later; its other damaged records are copies of WARK04 5436 and ALTK04 2691, plus a synthetic header-only ALTK04 2692. Index 9 doubles the space after 'Issue Time:', and index 10 ends its message with the unpaired surrogate escape \\ud800.",
+    "Step 5's WATA20 950 is a synthetic G1 watch with the impossible day line 'Oct 32'. Indexes 12 to 17 are copies of ALTK04 2691: index 12 writes the Issue Time year in Arabic-Indic digits, as the JSON escapes \\u0662\\u0660\\u0662\\u0666; index 13 has the Issue Time 9999 Dec 31 2339 UTC; index 14 has a 4,301-digit integer as its product_id; index 15 has the JSON number 1E5 as its product_id; index 16 has the JSON number 1.5 as its issue_datetime; and index 17 has the JSON number 1.5 as its message.",
+    "Step 7 body is described, not embedded: a valid JSON empty array padded with spaces to 1 MiB + 1 byte.",
+    "Step 10 body is described, not embedded: 2,001 copies of one small record, within the byte limit.",
+    "Steps 11 and 12 nest arrays 64 and 65 levels deep."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:45:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "lkgSha256": "B7FF62108F4E18A221A70D1BAFE0F532B46ECED47B8051B3A8B6F360019E9A8E"
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:47:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-trunc\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "attention": [],
+        "product": {
+          "lkgSha256": "B7FF62108F4E18A221A70D1BAFE0F532B46ECED47B8051B3A8B6F360019E9A8E",
+          "consecutiveRejected": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-16T19:49:00Z",
+          "validators": {
+            "etag": "W/\"fixture-s12-a\""
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:49:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:schema"
+        ],
+        "attention": [],
+        "product": {
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:51:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "text/html; charset=UTF-8",
+        "etag": null,
+        "lastModified": null,
+        "body": "<html><body>Service temporarily unavailable</body></html>"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:content-type"
+        ],
+        "attention": [
+          {
+            "group": "provider/alerts/format-drift",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "product": {
+          "consecutiveRejected": 3,
+          "lkgSha256": "B7FF62108F4E18A221A70D1BAFE0F532B46ECED47B8051B3A8B6F360019E9A8E",
+          "freshness": "stale"
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:53:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-mixed\"",
+        "lastModified": "Fri, 16 Oct 2026 19:52:50 GMT",
+        "body": "[{\"product_id\":\"ZZZA\",\"issue_datetime\":\"2026-10-16 19:50:10.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1\\r\\nIssue Time: 2026 Oct 16 1950 UTC\\r\\n\\r\\nALERT: Synthetic fixture product with an unknown code \\nComment: Synthetic; not an SWPC product.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16T19:38:53Z\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-16 14:25:49.850\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3754\\r\\nIssue Time: 2026 Oct 16 1419 UTC\\r\\n\\r\\nALERT: Electron 2MeV Integral Flux exceeded 1,000pfu \\nThreshold Reached: 2026 Oct 16 1345 UTC\\nStation: GOES-19\\nComment: \"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\\r\\nComment: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:51:02.000\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2692\\r\\nIssue Time: 2026 Oct 16 1951 UTC\\r\\n\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 1234567\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time:  2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\\ud800\"},{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-10-16 19:49:30.000\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 950\\r\\nIssue Time: 2026 Oct 16 1949 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 17:  G1 (Minor)   Oct 32:  G1 (Minor)   Oct 18:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: Synthetic fixture with an impossible watch day; not an SWPC product.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: \\u0662\\u0660\\u0662\\u0666 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 9999 Dec 31 2339 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111,\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":1E5,\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04A\",\"issue_datetime\":1.5,\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":1.5}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [
+          "issue-time-mismatch:ALTEF3/3754/2026-10-16T14:19:00Z",
+          "record-rejected:issue-datetime:3",
+          "record-rejected:message-header:12",
+          "record-rejected:message-header:13",
+          "record-rejected:message-header:4",
+          "record-rejected:message-header:7",
+          "record-rejected:message-header:8",
+          "record-rejected:message-header:9",
+          "record-rejected:record-oversize:6",
+          "record-rejected:record-schema:10",
+          "record-rejected:record-schema:14",
+          "record-rejected:record-schema:15",
+          "record-rejected:record-schema:16",
+          "record-rejected:record-schema:17",
+          "record-rejected:record-schema:2"
+        ],
+        "attention": [
+          {
+            "group": "ALTEF3/3754",
+            "reason": "new",
+            "level": null
+          },
+          {
+            "group": "ALTZZZ/1",
+            "reason": "new",
+            "level": null
+          },
+          {
+            "group": "WARK04/5436",
+            "reason": "new",
+            "level": "K4"
+          },
+          {
+            "group": "WATA20/950",
+            "reason": "new",
+            "level": "G1"
+          },
+          {
+            "group": "provider/alerts/record-drift",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "notices": {
+          "ALTEF3/3754": {
+            "state": "active"
+          },
+          "ALTK04/2691": {
+            "state": "active",
+            "versions": 1
+          },
+          "ALTZZZ/1": {
+            "family": "unclassified",
+            "state": "active",
+            "fromUtc": "2026-10-16T19:50:00Z",
+            "untilUtc": "2026-10-17T01:50:00Z",
+            "relevance": {
+              "hvo": "Unknown"
+            }
+          },
+          "WARK04/5436": {
+            "state": "active"
+          },
+          "WATA20/950": {
+            "family": "watch",
+            "level": "G1",
+            "state": "active",
+            "days": null,
+            "fromUtc": "2026-10-16T19:49:00Z",
+            "untilUtc": "2026-10-17T01:49:00Z"
+          }
+        },
+        "product": {
+          "consecutiveRejected": 0,
+          "lkgSha256": "798280930B33674F4C054BC76A41BB1704D2760EFCE1FD49A6534295B492B293",
+          "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:50:00Z",
+          "facts": {
+            "records": 18,
+            "acceptedRecords": 4
+          }
+        }
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:55:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:suspect-empty"
+        ],
+        "attention": [],
+        "notices": {
+          "ALTEF3/3754": {
+            "state": "active"
+          },
+          "ALTK04/2691": {
+            "state": "active"
+          },
+          "ALTZZZ/1": {
+            "state": "active"
+          },
+          "WARK04/5436": {
+            "state": "active"
+          },
+          "WATA20/950": {
+            "state": "active"
+          }
+        },
+        "product": {
+          "consecutiveRejected": 1,
+          "recordDriftOpen": true
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:57:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": null,
+        "lastModified": null,
+        "bodySynthesis": {
+          "kind": "padded-empty-array",
+          "totalBytes": 1048577
+        }
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:oversize"
+        ],
+        "product": {
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:59:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": null,
+        "lastModified": null,
+        "bodyBase64": "W3sicHJvZHVjdF9pZCI6IkswNEEiLCJpc3N1ZV9kYXRldGltZSI6IjIwMjYtMTAtMTYgMTk6Mzk6NDUuMjY3IiwibWVzc2FnZSI6Iv/+In1d"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:encoding"
+        ],
+        "attention": [
+          {
+            "group": "provider/alerts/format-drift",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "product": {
+          "consecutiveRejected": 3
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T20:01:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:51:02.000\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2692\\r\\nIssue Time: 2026 Oct 16 1951 UTC\\r\\n\"}]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:no-valid-records"
+        ],
+        "attention": [],
+        "product": {
+          "consecutiveRejected": 4
+        }
+      }
+    },
+    {
+      "step": 10,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T20:03:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": null,
+        "lastModified": null,
+        "bodySynthesis": {
+          "kind": "repeated-record",
+          "record": {
+            "product_id": "ZZZA",
+            "issue_datetime": "2026-10-16 20:00:00.000",
+            "message": "Synthetic"
+          },
+          "count": 2001
+        }
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:too-many-records"
+        ],
+        "attention": [],
+        "notices": {
+          "ALTEF3/3754": {
+            "state": "active"
+          },
+          "ALTK04/2691": {
+            "state": "active"
+          },
+          "ALTZZZ/1": {
+            "state": "active"
+          },
+          "WARK04/5436": {
+            "state": "active"
+          },
+          "WATA20/950": {
+            "state": "active"
+          }
+        },
+        "product": {
+          "consecutiveRejected": 5,
+          "recordDriftOpen": true,
+          "lkgSha256": "798280930B33674F4C054BC76A41BB1704D2760EFCE1FD49A6534295B492B293"
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T20:05:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:no-valid-records"
+        ],
+        "attention": [],
+        "product": {
+          "consecutiveRejected": 6
+        }
+      }
+    },
+    {
+      "step": 12,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T20:07:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s12-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "attention": [],
+        "notices": {
+          "ALTEF3/3754": {
+            "state": "active"
+          },
+          "ALTK04/2691": {
+            "state": "active"
+          },
+          "ALTZZZ/1": {
+            "state": "active"
+          },
+          "WARK04/5436": {
+            "state": "active"
+          },
+          "WATA20/950": {
+            "state": "active"
+          }
+        },
+        "product": {
+          "consecutiveRejected": 7,
+          "recordDriftOpen": true,
+          "lkgSha256": "798280930B33674F4C054BC76A41BB1704D2760EFCE1FD49A6534295B492B293"
+        }
+      }
+    }
+  ]
+}

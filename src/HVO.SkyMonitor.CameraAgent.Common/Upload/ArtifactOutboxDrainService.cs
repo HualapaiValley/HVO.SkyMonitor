@@ -254,7 +254,7 @@ public sealed class ArtifactOutboxDrainService(
         // it is no longer pending, so retention removes it on its root's schedule.
         using var maintenance = await Capture.CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
         var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "outbox", logger, cancellationToken).ConfigureAwait(false);
         try
         {
             await outbox.AcknowledgeAsync(storageRoot, lease, acknowledgement, cancellationToken).ConfigureAwait(false);

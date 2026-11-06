@@ -1,0 +1,350 @@
+{
+  "Schema": "hvo-issue-1558-retained-v1",
+  "RecordedAtUtc": "2026-10-23T11:35:33.524829+00:00",
+  "Measurements": {
+    "Before": {
+      "Revision": "267c8974586a6822f7d39e048d8e3162d0041ad2",
+      "EnvironmentSha256": "a5eec2ed3e3a8e8b80223feb4f13d7dece502e3aeabea1f538d4f298a058912b",
+      "ServiceSourceSha256": "fe7e064fecd877400d46dec92e911c970ffa52bc5b5840dde7560d6cd1d9e212",
+      "Assemblies": [
+        {
+          "Name": "HVO.SkyMonitor.LogicHost",
+          "Sha256": "587DC97A2A1BFEE0F17D3A22CCA9FE74D92B0717B7669D2B7DF62852288FD4CC",
+          "ModuleVersionId": "bdad1069-02f5-4625-972e-373f90e8a5f4",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+267c8974586a6822f7d39e048d8e3162d0041ad2",
+          "SourceSha256": "DFFA25F9959EF4CA5B11FDED11C107B11B967D3D27048EE857763937236DE030",
+          "AssemblyWrittenUtc": "2026-10-23T09:58:38.7189535Z",
+          "LatestSourceWriteUtc": "2026-10-23T09:04:52.9779862Z"
+        },
+        {
+          "Name": "HVO.SkyMonitor.LogicHost.IntegrationTests",
+          "Sha256": "744CE0DD2DB2861638E66985F3E5047F6B14D496B037D0CF29D03285F1BCB6F5",
+          "ModuleVersionId": "0dc3c877-8677-4f7b-aa87-21e6358cf2d5",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+267c8974586a6822f7d39e048d8e3162d0041ad2",
+          "SourceSha256": "2835ADDF86339F25A51F30E3CCF17BE8E260F82C38AD0A43EA8E8D1C1D49E90B",
+          "AssemblyWrittenUtc": "2026-10-23T09:58:56.6750572Z",
+          "LatestSourceWriteUtc": "2026-10-23T09:46:59.4833578Z"
+        },
+        {
+          "Name": "HVO.SkyMonitor.TestSupport",
+          "Sha256": "8A6D53E48223428EA4552A5A6D7427113DB86CBC3793ACA6F562BA8147B61958",
+          "ModuleVersionId": "65c9bb03-8f8a-4cfc-8150-bcadba160deb",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+267c8974586a6822f7d39e048d8e3162d0041ad2",
+          "SourceSha256": "EBD7C90CA13B9F0D78C8761D5BD6CE175DD7E529BB9F2FD033FADE81DC714D01",
+          "AssemblyWrittenUtc": "2026-10-23T09:58:07.14777Z",
+          "LatestSourceWriteUtc": "2026-10-23T09:04:52.9479861Z"
+        }
+      ]
+    },
+    "After": {
+      "Revision": "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+      "EnvironmentSha256": "a5eec2ed3e3a8e8b80223feb4f13d7dece502e3aeabea1f538d4f298a058912b",
+      "ServiceSourceSha256": "725c518587fc135f43a4b9a39bfe93570923e33df7189b37bcc5588f5d46b4a8",
+      "Assemblies": [
+        {
+          "Name": "HVO.SkyMonitor.LogicHost",
+          "Sha256": "CCDDB9C934FFEB5D473F011452E658BACD6D1D41AAFF36C535454CE15DA8C55E",
+          "ModuleVersionId": "2f46f73a-3240-491f-b9d9-fc69be560fd3",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+          "SourceSha256": "7A41149D7059BC192DDE87A1E52B7C8BF1CAB6853A43AF1E7548813C07FAFBBB",
+          "AssemblyWrittenUtc": "2026-10-23T10:18:43.5406394Z",
+          "LatestSourceWriteUtc": "2026-10-23T10:02:20.527209Z"
+        },
+        {
+          "Name": "HVO.SkyMonitor.LogicHost.IntegrationTests",
+          "Sha256": "C3BF303EA48627E67B67D282DA890D0CA44C23DC1128D710C85CC831AACF5B31",
+          "ModuleVersionId": "2676db00-3791-4194-a333-17fa2eec8c11",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+          "SourceSha256": "2835ADDF86339F25A51F30E3CCF17BE8E260F82C38AD0A43EA8E8D1C1D49E90B",
+          "AssemblyWrittenUtc": "2026-10-23T10:19:02.0226608Z",
+          "LatestSourceWriteUtc": "2026-10-23T09:46:59.4833578Z"
+        },
+        {
+          "Name": "HVO.SkyMonitor.TestSupport",
+          "Sha256": "4BBCA0103D7CF80F745CD7281E906A247D6227F960CD795B9B12263EE78F2432",
+          "ModuleVersionId": "4386e4a9-b352-4883-9442-a4c09ebd37e2",
+          "Configuration": "Release",
+          "InformationalVersion": "0.9.1-dev+924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+          "SourceSha256": "EBD7C90CA13B9F0D78C8761D5BD6CE175DD7E529BB9F2FD033FADE81DC714D01",
+          "AssemblyWrittenUtc": "2026-10-23T10:18:09.8236051Z",
+          "LatestSourceWriteUtc": "2026-10-23T09:04:52.9479861Z"
+        }
+      ]
+    }
+  },
+  "Files": [
+    {
+      "Path": "after/deadlocks.xml.gz",
+      "Bytes": 39650,
+      "Sha256": "ea773128e0e77b29688c115842a9e2cf53f43f1c1e5ba3119d0a50a0346a98c4",
+      "DecompressedSha256": "323fa9346c04ae7b322b397948396294987f2aa32c1c2f9d85c7a54eaaf4bef1"
+    },
+    {
+      "Path": "after/maximum-lineage-bounded.json",
+      "Bytes": 82557,
+      "Sha256": "d9820135e6532c9c7fed196454770638528b8e642cb737d6b4df0e764500234c"
+    },
+    {
+      "Path": "after/sql-replay-1.json.gz",
+      "Bytes": 13935,
+      "Sha256": "5a504084c4d365795fc204b451ca6d36db26e536871697897d3b174404ee860e",
+      "DecompressedSha256": "11d71d6d8e525b897feb0d3b3a49b6ae63ecc4ef606fee5fd2f57febd68b6db8"
+    },
+    {
+      "Path": "after/sql-replay-128.json.gz",
+      "Bytes": 57528,
+      "Sha256": "d438a25978d2e37b218e92444683d80c769207c53be0f12c2acec98befb1d9ca",
+      "DecompressedSha256": "9099bf94e9604cfabf7ec8e94063e93ced7a056a093c098c1da7d54912de4a48"
+    },
+    {
+      "Path": "after/sql-replay-256.json.gz",
+      "Bytes": 96918,
+      "Sha256": "419c0fc93c2fec03b863cfe278522f7ae9e807c520353119b56e03e74a47ebf7",
+      "DecompressedSha256": "308c39489b3e6f744876af1237c259a341251994ac5f7e2ad4896ecde74d8b9a"
+    },
+    {
+      "Path": "after/sql-replay-32.json.gz",
+      "Bytes": 25929,
+      "Sha256": "140962a751a6d00daac849caf3ebabc909ad0f0cd243654b2f0b815899b81cb4",
+      "DecompressedSha256": "c64b65ec2a61c2d25890f6d8f6824695bd2357c3cf83191192426fb7f3d5747b"
+    },
+    {
+      "Path": "before/deadlocks.xml.gz",
+      "Bytes": 39793,
+      "Sha256": "6dbd05ac29ccecc8eb16b3cf738b9784cfdd205172d822a2b36c892d85b0ea17",
+      "DecompressedSha256": "fa3f3cdd32b4d5fbfea7921f77a44ccbd73a74f069912a20c132ec1b00dee78d"
+    },
+    {
+      "Path": "before/maximum-lineage-baseline.json",
+      "Bytes": 83961,
+      "Sha256": "5a90d3df4115c62ee7e1debc34f61422472551373ff2e959139735bf6a600944"
+    },
+    {
+      "Path": "before/sql-replay-1.json.gz",
+      "Bytes": 16442,
+      "Sha256": "5f45dab5d8aaf046f82ea25f3342a9a80f529a6f90f268f142666c9be4ad4ce6",
+      "DecompressedSha256": "8893655aba5e39f6a22fde9329c493dedbe8d1065d1670f0d8dc0935c7751fa4"
+    },
+    {
+      "Path": "before/sql-replay-128.json.gz",
+      "Bytes": 474394,
+      "Sha256": "baee3ae7049c209250d5aa2210fb81471316855808262fec995cbb933ce9ea51",
+      "DecompressedSha256": "9bb05bdaab1c11c86487afac62760b20e28426408ae9dfb6c996fd70a71e7f82"
+    },
+    {
+      "Path": "before/sql-replay-256.json.gz",
+      "Bytes": 936205,
+      "Sha256": "7c2e12351e7d0186bf7bad4cc3639f702222d69995359211f4824d916e1c6947",
+      "DecompressedSha256": "83660706ade16863a7cc53886c7beabe323dc8ba549d64abdbcda7e02c96ac3c"
+    },
+    {
+      "Path": "before/sql-replay-32.json.gz",
+      "Bytes": 126772,
+      "Sha256": "9244631c91323540fad684a3ca05e7c1a0491954d17b7c59eab8aec5904fb670",
+      "DecompressedSha256": "6a959cf72cd221f55b283475381a2da2ce639c92e0b2922c75738ac27bb1bb83"
+    },
+    {
+      "Path": "candidate-gates.json",
+      "Bytes": 8933,
+      "Sha256": "6eb6a3cbe824bf3177da9b35da50ac5c8e103e428bf5e1220436521d4f1270ec"
+    },
+    {
+      "Path": "classifier.json",
+      "Bytes": 574,
+      "Sha256": "36cd213084dc03030b6c27fd06fd2378df3bb774beb191c9a5720fab46f64b1b"
+    },
+    {
+      "Path": "classifier.txt",
+      "Bytes": 242,
+      "Sha256": "4675155896b344441eff06a5372f7243eeda16138090350548648a2d12733e83"
+    },
+    {
+      "Path": "commands.json",
+      "Bytes": 4040,
+      "Sha256": "25a15e3ee7b57ebefe4ef010ab9f975c682ed3e71e9d7e08a7f778f158e5f68f"
+    },
+    {
+      "Path": "coverage-mapping.json",
+      "Bytes": 2863,
+      "Sha256": "df54f1a60307904dd3e86d8d0ffab57693ba5275ca002d4e1e471c9a06b5979a"
+    },
+    {
+      "Path": "gate-logs/build-debug.log.gz",
+      "Bytes": 852,
+      "Sha256": "c9d91fae9612a2bec9bbbca9e093addf8c00f149d1ea3b55f16aa6ef68e416c3",
+      "DecompressedSha256": "5885fa8a3d067b376e08f77dc37f550e1e6a6c89fdb087ebeb872a9e56fc147c"
+    },
+    {
+      "Path": "gate-logs/build-release.log.gz",
+      "Bytes": 852,
+      "Sha256": "e9a297a27d2bb8000a2bea2a7ac9910c4370b6287b4254fab7190bfdfdc59daa",
+      "DecompressedSha256": "58c83c1bdf74eaa20ae94061844dd4069d3859e9c2d0b1c989dcbb0de1fece4d"
+    },
+    {
+      "Path": "gate-logs/canonical-migration-cameraagent.log.gz",
+      "Bytes": 120,
+      "Sha256": "7511082488993cbce3e7b0a546a7d6edd355cbbf94b527a7ecb1b8ecb6c74a2f",
+      "DecompressedSha256": "abe817b52cc3ac8e8cc746a38cd89439aa709ded81554b0136cc87d3aa3b3e53"
+    },
+    {
+      "Path": "gate-logs/canonical-migration.log.gz",
+      "Bytes": 119,
+      "Sha256": "261a4878fdb9139d81bb726bbe3ff41cd5226517fc6b5336759d6d53560ccd30",
+      "DecompressedSha256": "d1f3c5fac970b9d189ef124ae461c50dd49f396be1a342f2cd3e859fe5ba0124"
+    },
+    {
+      "Path": "gate-logs/category-audit.log.gz",
+      "Bytes": 118,
+      "Sha256": "5f8af6ca81a45ed2411671ee921b18316e0a43c65c85c5d97a0cf7f73c03b2e7",
+      "DecompressedSha256": "f75e78fa11e97e3ef7194b0c139765d0918407a676d256572beb7884ea55b1cd"
+    },
+    {
+      "Path": "gate-logs/ci-shell-syntax.log.gz",
+      "Bytes": 103,
+      "Sha256": "66ca551dfe8b89d01eb9e595b016f2b5db22c2aa110c5e311d488da89a8225dd",
+      "DecompressedSha256": "468bb945837991882be5e5ec8a343cb1500be49c0cb1b1ce2fcbf5f8878b3cea"
+    },
+    {
+      "Path": "gate-logs/coverage-combined.log.gz",
+      "Bytes": 732,
+      "Sha256": "68865ac71a810d88ec10a8e5d93ccfcfc9f2aa9f45652d9e99963460fbeab456",
+      "DecompressedSha256": "0265322e54fc6927066ed0c8e82c9807b0115a37d2f426076a31fe646b925adc"
+    },
+    {
+      "Path": "gate-logs/coverage-logichost.log.gz",
+      "Bytes": 846,
+      "Sha256": "7a238ef66706609a48729ec7b8d61ec553af4957976158b46d243b59a06fd098",
+      "DecompressedSha256": "b039927d2b0fcd72637d599e86fc9f3c71c1cc14b13aa015e39a51a25279cea0"
+    },
+    {
+      "Path": "gate-logs/coverage-policy.log.gz",
+      "Bytes": 151,
+      "Sha256": "03073683a958adc291cf51d7c62f5ed2101c79529b222559d13efc686c153c76",
+      "DecompressedSha256": "ab00d10ced1e842fa255b01708bd7ca86ffc09646a044064462b6aa905451e50"
+    },
+    {
+      "Path": "gate-logs/docs-operations.log.gz",
+      "Bytes": 74,
+      "Sha256": "a4be165b6bc2bf3002a16a54037ab1954836e0378ccb8d73f0fc322d5c97d4fd",
+      "DecompressedSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d"
+    },
+    {
+      "Path": "gate-logs/format.log.gz",
+      "Bytes": 20,
+      "Sha256": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec",
+      "DecompressedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "Path": "gate-logs/package-audit.log.gz",
+      "Bytes": 97,
+      "Sha256": "801752b2304d478dc41ca692dc3c77e2667343e32252a2fced4626fa51cc605b",
+      "DecompressedSha256": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6"
+    },
+    {
+      "Path": "gate-logs/pending-model-cameraagent.log.gz",
+      "Bytes": 79,
+      "Sha256": "fe7ac7b7a813f2c2715a9a815a48ab08ae0d0004dc6785293a24c19ca0989292",
+      "DecompressedSha256": "815c5cd494b61a9d8737ba7653cd05fb05926e7b40a924683fa4eef4ca87566c"
+    },
+    {
+      "Path": "gate-logs/pending-model.log.gz",
+      "Bytes": 79,
+      "Sha256": "fe7ac7b7a813f2c2715a9a815a48ab08ae0d0004dc6785293a24c19ca0989292",
+      "DecompressedSha256": "815c5cd494b61a9d8737ba7653cd05fb05926e7b40a924683fa4eef4ca87566c"
+    },
+    {
+      "Path": "gate-logs/publish-logichost.log.gz",
+      "Bytes": 392,
+      "Sha256": "00a19602d52b557c6fb925657f057bbddc928c7a010fb34a519fec51a370430d",
+      "DecompressedSha256": "3219899345ce42e23b07060ce45b1b64cf5af35c5a0145e672e5a14a3ee3b5c0"
+    },
+    {
+      "Path": "gate-logs/restore.log.gz",
+      "Bytes": 618,
+      "Sha256": "5b01a35adfd68c29d32548f4f0bcd8d4b05a96f3c59ddf34a0b241e1a7da3bdf",
+      "DecompressedSha256": "bdeacf7ed9364809c3bff6081ad209bd143d6d0dec02cdf8809a48b8712a49b5"
+    },
+    {
+      "Path": "gate-logs/solution-integration.log.gz",
+      "Bytes": 1530,
+      "Sha256": "7a96d935434ec1aa40470ac0124ab83281e4d36fab7d1eea4fb2d56e88d0fbf8",
+      "DecompressedSha256": "0c7fc19ba2615469a37465b20be3dbfb106ab2d8ea25e6d3c230a2c21000876f"
+    },
+    {
+      "Path": "gate-logs/solution-unit.log.gz",
+      "Bytes": 5142,
+      "Sha256": "ce9371afd10b603c52170868d30b543d271b1e2e7cad15b6678f3fec1440331e",
+      "DecompressedSha256": "d192f036f9a9fef0abf044251c3c174d2e5fd54027b2c799a9a2ff29e9420b10"
+    },
+    {
+      "Path": "gate-logs/test-ci-classification.log.gz",
+      "Bytes": 3055,
+      "Sha256": "a8a6a1980b91d79150edd3ba8bf0c03ff6d0325ddb0181afd8d1dd186ab00dac",
+      "DecompressedSha256": "dfe56a57a08a99e01f9a4d51ad5752c790f93e5fb3261739fcbaeae67c9293f6"
+    },
+    {
+      "Path": "gate-logs/test-coordination-guard.log.gz",
+      "Bytes": 143,
+      "Sha256": "341c49b237c8b6cb484709782d62a2478f09d7dba19a0fc12c8d99f56f3a4dc0",
+      "DecompressedSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d"
+    },
+    {
+      "Path": "gate-logs/test-pr-review-tools.log.gz",
+      "Bytes": 141,
+      "Sha256": "05c2f4ed97e9da1ca6d977faa94f0cad007cd908028fa74c00e5c33d6ac120e8",
+      "DecompressedSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644"
+    },
+    {
+      "Path": "gate-logs/tool-restore.log.gz",
+      "Bytes": 144,
+      "Sha256": "1fbbc2a5801fe35aa11a333bee9d4e46e6d2aa86fbaa7672ff304c0d168b6b8c",
+      "DecompressedSha256": "76ea2e61d6137bf32550d861a9c32ed55446fcecb040de00747ed690949737ea"
+    },
+    {
+      "Path": "local-wrapper-disposition.json",
+      "Bytes": 640,
+      "Sha256": "200e341c3d0166a42e3eba484542c497447b86103c06ee2fd6dda3244c8f92cf"
+    },
+    {
+      "Path": "original-aborted-progress.json.gz",
+      "Bytes": 7186,
+      "Sha256": "5238211178672a35fa1c5205a0e9da37feb005b3c27e4b2f06d8b7b8833f1022",
+      "DecompressedSha256": "d8c31961bd63304034f4a0e88e1fe047a25bba16dd3a64a64ba88a28b5a266b4"
+    },
+    {
+      "Path": "original-aborted-run.json",
+      "Bytes": 1370,
+      "Sha256": "6f098fcf70caa3df728c5349ebc8f7c9a2299566f28bce00388a2486096b13c2"
+    },
+    {
+      "Path": "plan-attribution.json",
+      "Bytes": 4895,
+      "Sha256": "fdaf0b8b9b4c8ca7fc3fa5eec8fac04054c06625e40fb9d4a55b479eca5fc4fd"
+    },
+    {
+      "Path": "publish-logichost.sha256",
+      "Bytes": 27003,
+      "Sha256": "f8ffb3909dd611035fc261d9cca7b46a90d4095651f51f6322e85b1041ac08c4"
+    },
+    {
+      "Path": "publish-summary.txt",
+      "Bytes": 36,
+      "Sha256": "4855f32c35bd8035735c3025459b0a2ca3353ef8d68a1e879a9cf0d1224864a3"
+    },
+    {
+      "Path": "solution-test-results.json",
+      "Bytes": 25409,
+      "Sha256": "ad6236f52e80c028371cc70845e7d2b1baf157f1b846a45558845ce0b8b515ea"
+    },
+    {
+      "Path": "sql-regressions.json",
+      "Bytes": 6471,
+      "Sha256": "7cd6abed1094cebbff3f43c840d253ac28b4259ed0e8409506c636ae64b59bc6"
+    }
+  ]
+}

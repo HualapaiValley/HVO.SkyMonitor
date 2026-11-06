@@ -10,9 +10,21 @@ internal sealed class InstallerException : Exception
     {
     }
 
-    public InstallerException(string message, Exception innerException) : base(message, innerException)
+    public InstallerException(string message, Exception? innerException) : base(message, innerException)
     {
+        IsFormattedDiagnostic = innerException is InstallerException { IsFormattedDiagnostic: true } && message == innerException.Message;
     }
+
+    /// <summary>Whether the message is composed from fixed prose and already formatted untrusted fragments.</summary>
+    public bool IsFormattedDiagnostic { get; private init; }
+
+    /// <summary>An operator diagnostic whose untrusted fragments have already been redacted and escaped.</summary>
+    public static InstallerException Formatted(string message, Exception? innerException = null)
+        => new(message, innerException) { IsFormattedDiagnostic = true };
+
+    /// <summary>A refusal composed from fixed prose and already formatted untrusted fragments.</summary>
+    public static InstallerException RefusedFormatted(string message, Exception? innerException = null)
+        => new(message, innerException) { IsRefusal = true, IsFormattedDiagnostic = true };
 
     /// <summary>
     /// Whether the installer refused before it changed anything, which exits 3 rather than 1 (install contract section 5).

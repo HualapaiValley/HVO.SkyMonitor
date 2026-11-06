@@ -79,11 +79,12 @@
                                     {
                                         <button id="@TriggerId(revision.RevisionId, "activate")" type="button" class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Activate, revision)">Review activate</button>
                                     }
-                                    @if (revision.Lifecycle == ProcessingGraphRevisionLifecycle.Retired)
+                                    @if (!isActive && revision.Lifecycle == ProcessingGraphRevisionLifecycle.Validated &&
+                                        (revision.RevisionId == _registry.ConfiguredBasicRevisionId || revision.ActivatedUtc is not null))
                                     {
                                         <button id="@TriggerId(revision.RevisionId, "rollback")" type="button" class="btn btn-sm btn-outline-warning" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Rollback, revision)">Review rollback</button>
                                     }
-                                    @if (!isActive && revision.Lifecycle is ProcessingGraphRevisionLifecycle.Draft or ProcessingGraphRevisionLifecycle.Validated)
+                                    @if (!isActive && revision.RevisionId != _registry.ConfiguredBasicRevisionId && revision.Lifecycle is ProcessingGraphRevisionLifecycle.Draft or ProcessingGraphRevisionLifecycle.Validated)
                                     {
                                         <button id="@TriggerId(revision.RevisionId, "retire")" type="button" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Retire, revision)">Retire</button>
                                     }

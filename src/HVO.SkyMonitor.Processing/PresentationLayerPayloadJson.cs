@@ -30,14 +30,16 @@ public static class PresentationLayerPayloadJson
         IEnumerable<PresentationSegmentV1>? segments = null,
         IEnumerable<PresentationEllipseV1>? ellipses = null,
         IEnumerable<PresentationTextBlockV1>? textBlocks = null,
-        PresentationTileMaskV1? tileMask = null)
+        PresentationTileMaskV1? tileMask = null,
+        string? sceneStyleIdentitySha256 = null)
     {
         var value = new PresentationLayerPayloadV1(
-            PresentationLayerPayloadV1.CurrentSchemaVersion, string.Empty, NormalizeSha256(sourceIdentitySha256),
+            sceneStyleIdentitySha256 is null ? PresentationLayerPayloadV1.CurrentSchemaVersion : PresentationLayerPayloadV1.SceneStyleSchemaVersion,
+            string.Empty, NormalizeSha256(sourceIdentitySha256),
             widthPixels, heightPixels, Freeze(markers, PresentationLayerPayloadV1.MaximumMarkers),
             Freeze(segments, PresentationLayerPayloadV1.MaximumSegments),
             Freeze(ellipses, PresentationLayerPayloadV1.MaximumEllipses),
-            Freeze(textBlocks, PresentationLayerPayloadV1.MaximumTextBlocks), Freeze(tileMask));
+            Freeze(textBlocks, PresentationLayerPayloadV1.MaximumTextBlocks), Freeze(tileMask), SceneStyleIdentitySha256: sceneStyleIdentitySha256);
         value = FreezePayload(value);
         value = value with { ContentIdentitySha256 = ComputeIdentityCore(value) };
         var bytes = CanonicalBytes(value);
@@ -46,6 +48,20 @@ public static class PresentationLayerPayloadJson
             throw new ArgumentException("Presentation layer payload exceeds 4 MiB.", nameof(markers));
         }
         ValidateFrozen(value);
+        return value;
+    }
+
+    /// <summary>Only explicit rich-text producers opt into v4; all existing creators remain byte-identical v3.</summary>
+    public static PresentationLayerPayloadV1 CreateRichText(string sourceIdentitySha256, int widthPixels, int heightPixels,
+        PresentationRichTextV1 rich)
+    {
+        ArgumentNullException.ThrowIfNull(rich);
+        PresentationRichText.Validate(rich, widthPixels, heightPixels);
+        var value = new PresentationLayerPayloadV1(PresentationLayerPayloadV1.RichTextSchemaVersion, string.Empty,
+            NormalizeSha256(sourceIdentitySha256), widthPixels, heightPixels, [], [], [], [], null, PresentationRichText.Freeze(rich));
+        value = value with { ContentIdentitySha256 = ComputeIdentityCore(value) };
+        ValidateFrozen(value);
+        if (CanonicalBytes(value).Length > MaximumPayloadBytes) throw new ArgumentException("Rich-text payload exceeds 4 MiB.", nameof(rich));
         return value;
     }
 
@@ -98,6 +114,7 @@ public static class PresentationLayerPayloadJson
     private static void ValidateFrozen(PresentationLayerPayloadV1 payload)
     {
         payload.ValidateStructure();
+        if (payload.RichText is { } rich) FrameFactsPresentation.ValidateContract(rich);
         if (!string.Equals(payload.ContentIdentitySha256, ComputeIdentityCore(payload), StringComparison.Ordinal))
             throw new ArgumentException("Presentation payload identity does not match its content.", nameof(payload));
     }
@@ -114,8 +131,16 @@ public static class PresentationLayerPayloadJson
         {
             Lines = Freeze(block.Lines, PresentationLayerPayloadV1.MaximumLinesPerBlock)
         }).ToArray()),
-        TileMask = Freeze(value.TileMask)
+        TileMask = Freeze(value.TileMask),
+        RichText = FreezeRichText(value.RichText, value.WidthPixels, value.HeightPixels)
     };
+
+    private static PresentationRichTextV1? FreezeRichText(PresentationRichTextV1? rich, int width, int height)
+    {
+        if (rich is null) return null;
+        PresentationRichText.Validate(rich, width, height);
+        return PresentationRichText.Freeze(rich);
+    }
 
     private static PresentationTileMaskV1? Freeze(PresentationTileMaskV1? value) =>
         value is null ? null : value with { Bits = value.Bits.ToArray() };

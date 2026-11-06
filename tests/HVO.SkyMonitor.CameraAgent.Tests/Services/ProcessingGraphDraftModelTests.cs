@@ -14,6 +14,29 @@ public sealed class ProcessingGraphDraftModelTests
     private static readonly string[] MovedIds = ["preview", "telemetry", "preview-2"];
 
     [TestMethod]
+    public void OptionOnlyEditPreservesSourceGraphShapeAndNoOpIdentity()
+    {
+        var pipeline = new CapturePipelineConfig([
+            new CaptureProcessingStepConfig("ProjectedScene", "scene", Order: 77, DependsOn: ["$raw"], Enabled: true),
+            new CaptureProcessingStepConfig("sCeNePrEsEnTaTiOnLaYeR", Options: JsonSerializer.SerializeToElement(new { future = 17 }),
+                DependsOn: ["scene", "$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal))
+        ]);
+        var sourceJson = JsonSerializer.Serialize(pipeline);
+        var model = ProcessingGraphDraftModel.FromPipeline(pipeline, "retained", "sky", "2");
+        Assert.IsTrue(model.TryBuild(out var unchanged, out _));
+        Assert.AreEqual(sourceJson, JsonSerializer.Serialize(unchanged));
+        Assert.IsFalse(model.HasGraphChanges(unchanged));
+
+        model.Nodes[1].OptionsForm!.Set("constellationLineThickness", "6");
+        Assert.IsTrue(model.TryBuild(out var edited, out _));
+        Assert.IsTrue(model.HasGraphChanges(edited));
+        Assert.AreEqual(sourceJson, JsonSerializer.Serialize(pipeline), "The retained definition must remain immutable.");
+        Assert.AreEqual(pipeline.Steps[0], edited.Steps[0]);
+        Assert.AreEqual(pipeline.Steps[1], edited.Steps[1] with { Options = pipeline.Steps[1].Options });
+        Assert.AreEqual(6, edited.Steps[1].Options!.Value.GetProperty("constellationLineThickness").GetInt32());
+    }
+
+    [TestMethod]
     public void FromPipeline_ThenBuild_RoundTripsNodesDependenciesAndOpaqueOptions()
     {
         var options = JsonSerializer.SerializeToElement(new { outputVariant = "display" });
@@ -31,7 +54,7 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, built.SchemaVersion);
         Assert.AreEqual(CapturePipelineDependencyPolicy.RejectEnabledDependent, built.DependencyPolicy);
         Assert.AreEqual(options.GetRawText(), built.Steps[0].Options!.Value.GetRawText());
-        Assert.IsNull(built.Steps[0].Enabled);
+        Assert.IsTrue(built.Steps[0].Enabled);
         Assert.IsFalse(built.Steps[1].Enabled);
         Assert.IsFalse(built.Steps[1].Required);
         CollectionAssert.AreEqual(PreviewOnly, built.Steps[1].DependsOn!.ToArray());

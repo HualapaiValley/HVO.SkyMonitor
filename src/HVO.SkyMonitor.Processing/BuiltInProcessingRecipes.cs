@@ -19,9 +19,18 @@ public static class BuiltInProcessingRecipes
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
     public const string ReferenceCalibration = "reference-calibration";
     public const string ProjectedScene = "projected-scene";
+    public const string MeasuredAstrometry = "measured-astrometry";
+    public const string MeasuredStellarAssociations = "measured-stellar-associations";
     public const string Keogram = "keogram";
     public const string StarTrail = "star-trail";
     public const string KeogramAssembly = "keogram-assembly";
+    public const string MixedGainNormalizedMean = "mixed-gain-normalized-mean";
+
+    /// <summary>Auxiliary input through which Annotation receives the frame's measured stellar associations.</summary>
+    public const string MeasuredStellarAssociationsInputName = "measured-stellar-associations";
+
+    /// <summary>Canonical-JSON auxiliary input through which the association recipe receives the projected scene.</summary>
+    public const string MeasuredStellarAssociationsSceneInputName = "scene";
 
     private static readonly Dictionary<string, ProcessingRecipeDefinition> Definitions = CreateAll()
         .Select(static recipe => recipe.Definition)
@@ -110,9 +119,12 @@ public static class BuiltInProcessingRecipes
         new WeatherCloudOverlayRecipe(),
         new ReferenceCalibrationRecipe(),
         new ProjectedSceneRecipe(),
+        new MeasuredStellarAssociationRecipe(),
+        new MeasuredAstrometryRecipe(),
         new KeogramRecipe(),
         new StarTrailRecipe(),
-        new KeogramAssemblyRecipe()
+        new KeogramAssemblyRecipe(),
+        new MixedGainNormalizedMeanRecipe()
     ];
 }
 
@@ -648,17 +660,30 @@ public sealed record AnnotationRecipeOptions(
     double BlackPercentile = 0.5,
     double WhitePercentile = 0.9999,
     double AsinhStrength = 4,
-    string OutputEncoding = "Jpeg");
+    string OutputEncoding = "Jpeg",
+    bool ExpectedPositionDiagnostics = false)
+{
+    /// <summary>Normalized by the recipe only for diagnostic output; omitted for released ordinary label identities.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpectedPositionLabelFormatVersion { get; init; }
+}
 
 internal sealed class AnnotationRecipe : IProcessingRecipe
 {
+    internal const string MeasuredAssociationsAuxiliaryInputName = BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName;
+    internal const string ProjectedSceneAuxiliaryInputName = "projected-scene";
+
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v3",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v4",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
     {
         var parsed = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(options);
+        parsed = parsed with
+        {
+            ExpectedPositionLabelFormatVersion = parsed.ExpectedPositionDiagnostics ? AnnotationLabelFormatter.Version : null
+        };
         CreateAnnotationOptions(parsed).ValidateForProcessing();
         _ = CreateStretch(parsed);
         if (parsed.JpegQuality is < 1 or > 100 ||
@@ -705,6 +730,11 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 nameof(request.AuxiliaryInputs)));
         }
 
+        if (!TryResolveMeasuredAssociations(request, input, auxiliarySources!, out var associations, out var associationFailure))
+        {
+            return ValueTask.FromResult(associationFailure!);
+        }
+
         var options = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(
             identity.Descriptor.Options.GetProperty("parameters"));
         if (!TryCreateDisplay(input, options, cancellationToken, out var display, out var format, out var algorithms, out var displayFailure))
@@ -714,13 +744,14 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
 
         cancellationToken.ThrowIfCancellationRequested();
         var annotationOptions = CreateAnnotationOptions(options);
+        var objects = StellarLabelPolicy.Apply(request.Annotation.Objects, associations, options.ExpectedPositionDiagnostics);
         var annotation = format == CameraPixelFormat.Rgb24
             ? AnnotationRenderer.AnnotateRgb24WithSegments(
-                display.PixelData, display.Width, display.Height, request.Annotation.Objects,
+                display.PixelData, display.Width, display.Height, objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken)
             : AnnotationRenderer.AnnotateMono8WithSegments(
-                display.PixelData, display.Width, display.Height, request.Annotation.Objects,
+                display.PixelData, display.Width, display.Height, objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -733,14 +764,15 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 new PresentationDeepSkyStyleV1(MaximumLabels: options.DrawLabels ? 24 : 0,
                     LegendBaselinePixels: CuratedDeepSkyAnnotation.LegendBaseline(request.Annotation.MetadataOverlay)),
                 request.Annotation.Transform, display.Width, display.Height,
-                CuratedDeepSkyAnnotation.ReservedLabels(request.Annotation.Objects, request.Annotation.Transform, annotationOptions));
+                CuratedDeepSkyAnnotation.ReservedLabels(objects, request.Annotation.Transform, annotationOptions));
             annotatedPixels = PresentationLayerCompositor.Composite(
                 new ImageLayout(display.Width, display.Height, format, packedStride), annotatedPixels,
                 [new(layer.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellationToken);
             algorithms.AddRange(CuratedDeepSkyAnnotation.Algorithms(curatedScene));
         }
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
-            request.Annotation.Objects, request.Annotation.ProjectionOverlay)));
+            request.Annotation.Objects, request.Annotation.ProjectionOverlay, options.ExpectedPositionDiagnostics)));
+        algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         ReadOnlyMemory<byte> output;
         string mediaType;
         FrameLayoutDescriptor? outputLayout;
@@ -773,6 +805,64 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             input.Integration,
             input.Compatibility);
         return ValueTask.FromResult(ProcessingOutcome.Produced(product));
+    }
+
+    /// <summary>
+    /// Resolves the optional measured-association product bound as an artifact auxiliary. It must describe the capture
+    /// of the annotated input and, when the projected scene is also bound, that exact scene; at least one of the two
+    /// bindings must be present. Absence of the product is not a failure: the fail-closed label policy then suppresses
+    /// every star label.
+    /// </summary>
+    internal static bool TryResolveMeasuredAssociations(
+        ProcessingExecutionRequest request,
+        ProcessingArtifact input,
+        IReadOnlyList<ProcessingArtifact> auxiliarySources,
+        out MeasuredStellarAssociationsV1? associations,
+        out ProcessingOutcome? failure)
+    {
+        associations = null;
+        failure = null;
+        var auxiliaries = (request.AuxiliaryInputs ?? [])
+            .Where(static auxiliary => auxiliary.Kind == ProcessingAuxiliaryInputKind.Artifact)
+            .ToArray();
+        var matches = auxiliaries.Select((auxiliary, index) => (auxiliary, source: auxiliarySources[index]))
+            .Where(static pair => string.Equals(pair.auxiliary.Name, MeasuredAssociationsAuxiliaryInputName, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length == 0)
+            return true;
+        var source = matches[0].source;
+        if (matches.Length != 1 || source.ProductKind != ProcessingProductKind.Metadata ||
+            !string.Equals(source.MediaType, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, StringComparison.Ordinal) ||
+            !string.Equals(source.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations, nameof(request.AuxiliaryInputs));
+            return false;
+        }
+        var parsed = MeasuredStellarAssociationJson.Parse(source.Payload);
+        if (!parsed.Validation.IsValid || parsed.Associations is not { } product ||
+            (source.ContentIdentitySha256 is { } content &&
+             !string.Equals(content, product.AssociationIdentitySha256, StringComparison.OrdinalIgnoreCase)))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations,
+                parsed.Validation.FieldPath ?? nameof(request.AuxiliaryInputs));
+            return false;
+        }
+        var scene = auxiliaries.Select((auxiliary, index) => (auxiliary, source: auxiliarySources[index]))
+            .Where(static pair => string.Equals(pair.auxiliary.Name, ProjectedSceneAuxiliaryInputName, StringComparison.Ordinal))
+            .Select(static pair => pair.source)
+            .SingleOrDefault();
+        var sceneIdentity = scene?.ContentIdentitySha256;
+        if (input.CaptureId is null && sceneIdentity is null ||
+            input.CaptureId is { } captureId && product.Source.CaptureId != captureId ||
+            sceneIdentity is not null &&
+            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
+                nameof(product.Source));
+            return false;
+        }
+        associations = product;
+        return true;
     }
 
     private static bool TryCreateDisplay(
@@ -1036,8 +1126,10 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
                 layout.BlackLevel != firstLayout.BlackLevel || layout.WhiteLevel != firstLayout.WhiteLevel ||
                 layout.StoredCodeTransform != firstLayout.StoredCodeTransform ||
                 layout.LevelCodeSpace != firstLayout.LevelCodeSpace || layout.Readout != firstLayout.Readout) ||
-            selected.Any(source => source.Compatibility != firstCompatibility
-                || !string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)))
+            selected.Any(source => source.Compatibility != firstCompatibility) ||
+            !(GainNormalizationCompatibility.IsNormalized(firstCompatibility)
+                ? selected.All(IsVerifiedNormalizedProduct)
+                : SharesRecipeAndGain(selected, firstRecipeIdentity)))
         {
             layouts = [];
             return false;
@@ -1046,6 +1138,28 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
         layouts = values;
         return true;
     }
+
+    // The arithmetic mean never combines gains (#1475): inputs share one recipe identity and one gain.
+    private static bool SharesRecipeAndGain(List<ProcessingArtifact> selected, string? firstRecipeIdentity)
+        => selected.All(source => string.Equals(source.RecipeIdentitySha256, firstRecipeIdentity, StringComparison.OrdinalIgnoreCase)) &&
+           selected
+               .Where(static source => source.Conditions is not null)
+               .Select(static source => source.Conditions!.Gain)
+               .Distinct()
+               .Count() <= 1;
+
+    // A normalized gain hides the inputs' gains (#1475). The label alone proves nothing, so each input must be a combined
+    // product whose descriptor, under the input's own recipe identity, names the mixed-gain recipe or a rolling mean of
+    // its products. Successive mixed-gain products each name their own frozen plan, so their identities may differ; the
+    // one normalized compatibility already checked fixes the family, policy and response, and so the scale they share.
+    private static bool IsVerifiedNormalizedProduct(ProcessingArtifact source)
+        => source.Role == FrameArtifactRole.Combined &&
+           source.RecipeDescriptor is { } recipe &&
+           GainNormalizationCompatibility.MayCarryNormalizedGain(recipe.Name, recipe.SemanticVersion) &&
+           string.Equals(
+               ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+               source.RecipeIdentitySha256,
+               StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed class ImageQualityRecipe : IProcessingRecipe

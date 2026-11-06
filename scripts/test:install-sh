@@ -65,6 +65,7 @@ printf 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nV
 printf 'Raspberry Pi 5 Model B Rev 1.0\0' >"${SUITE}/root/proc/device-tree/model"
 for name in linux-arm64 linux-x64; do
   cp "${FAKES_DIR}/hvo-sky-install" "${SUITE}/release/hvo-sky-install-${name}"
+  printf 'runtime client\n' >"${SUITE}/release/hvo-sky-${name}"
 done
 # The release's offline image archives and release.json: install.sh checks only that the ones it needs are there, and
 # hands the installer the folder or release.json.
@@ -450,7 +451,7 @@ test_a_pi_is_checked_and_the_installer_downloaded_verified_and_started() {
   assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\[cameraagent\]\[install\]\[--friendly-name\]\[North sky\]\[--port\]\[5130\]\[--release\]\[$(re "${WORK}/tmp")/hvo-sky-install\.[A-Za-z0-9]{8}/release\]\[--image-source\]\[registry\]\[--catalog-bundle\]\[$(re "${CATALOG_DIR}")\]$"
-  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
   assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
   assert_installer "terminal=no"
   assert_no_download_folder_left
@@ -834,7 +835,7 @@ test_online_without_arguments_installs() {
   assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
-  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
   assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
 }
 
@@ -848,7 +849,7 @@ test_online_an_install_gets_the_release_s_small_files_and_never_its_image_archiv
   assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]\\[--port\\]\\[5130\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
-  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
   assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
   assert_no_download_folder_left
 }
@@ -861,7 +862,17 @@ test_online_an_upgrade_gets_the_release_and_no_catalog() {
   assert_not_called "${CATALOG}.tar.gz"
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\\[cameraagent\\]\\[upgrade\\]\\[--instance-id\\]\\[1\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]$"
-  assert_installer "release-files=SHA256SUMS release.json "
+  assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 release.json "
+}
+
+test_online_runtime_client_with_a_bad_checksum_starts_nothing() {
+  printf 'tampered\n' >>"${WORK}/release/hvo-sky-linux-arm64"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "hvo-sky-linux-arm64's SHA-256 is"
+  assert_installer_did_not_run
+  assert_no_download_folder_left
 }
 
 test_online_release_json_that_is_not_the_release_s_starts_nothing() {

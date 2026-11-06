@@ -1,0 +1,3 @@
+.central-pagination { display: flex; flex-wrap: wrap; gap: 1rem; margin-block: 1rem; }
+a { display: inline-block; min-height: 2.75rem; overflow-wrap: anywhere; }
+a:focus-visible { outline: 3px solid #67d9f1; outline-offset: 3px; }

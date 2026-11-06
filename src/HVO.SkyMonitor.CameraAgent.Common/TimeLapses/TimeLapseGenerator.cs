@@ -71,10 +71,10 @@ internal sealed class TimeLapseGenerator(SqliteTimeLapseStore store, TimeLapseSo
         var byId = plan.Sources.ToDictionary(static source => source.Descriptor.Artifact.ArtifactId);
         var sequence = new TimeLapseFrameSequence(plan.Sources.Select(static source => TimeLapseSourceReader.Describe(source.Descriptor)).ToArray(),
             job.Preset.Rig, job.Preset.Frames, size.Width, size.Height, (id, cancellationToken) => sources.RestoreAsync(byId[id], cancellationToken),
-            utc => sources.IsDaytime(job, utc));
+            utc => sources.IsDaytime(job, utc), job.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion);
         async ValueTask<ReadOnlyMemory<byte>> Restore(int? ordinal, CancellationToken cancellationToken)
         {
-            if (ordinal is null) return TimeLapseFrameRenderer.GapImage(size.Width, size.Height);
+            if (ordinal is null) return TimeLapseFrameRenderer.GapImage(size.Width, size.Height, job.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion);
             var id = timeline.Sources[ordinal.Value].ArtifactId;
             var rendered = await sequence.RenderAsync(id, cancellationToken).ConfigureAwait(false);
             lineage.Add(new(id, rendered.RenderingIdentitySha256, rendered.StackSourceIds,
@@ -122,7 +122,7 @@ internal sealed class TimeLapseGenerator(SqliteTimeLapseStore store, TimeLapseSo
                 var size = actual.Encoding.Media;
                 await store.RequireWorkspaceCapacityAsync(token).ConfigureAwait(false);
                 var gap = await encoder.EncodeAsync(empty, size.Width, size.Height, actual.Encoding.Profile,
-                    (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(TimeLapseFrameRenderer.GapImage(size.Width, size.Height)), token).ConfigureAwait(false);
+                    (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(TimeLapseFrameRenderer.GapImage(size.Width, size.Height, child.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion)), token).ConfigureAwait(false);
                 await using var gapLifetime = gap.ConfigureAwait(false);
                 product = CreateProduct(child, empty, [], [], child.Exclusions, gap.Evidence, true);
                 product = await store.PublishAsync(product, gap, token).ConfigureAwait(false);

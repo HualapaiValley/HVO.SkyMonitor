@@ -3897,7 +3897,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private static readonly string[] ProjectedSceneReplayInputEvidence = ["0|0|RawCapture", "1|0|ProcessingOutput"];
 
-    private static CameraModuleConfig CreateProjectedSceneConfiguration()
+    internal static CameraModuleConfig CreateProjectedSceneConfiguration()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
             new CameraModuleDescriptor("VirtualSky"),
@@ -4097,7 +4097,7 @@ public sealed partial class ProcessingGraphOperationsTests
             CapturePipelineConfig.Empty,
             "agent-test");
 
-    private static ServiceProvider CreateProvider(
+    internal static ServiceProvider CreateProvider(
         string root,
         IReadOnlyDictionary<string, string?>? overrides = null,
         TimeProvider? timeProvider = null,

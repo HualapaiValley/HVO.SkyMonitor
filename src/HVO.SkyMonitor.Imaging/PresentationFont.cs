@@ -29,6 +29,15 @@ public static class PresentationFont
 
     public static SKFont Create(int scale) => new(TypefaceSource.Value, 7 * scale);
 
+    /// <summary>Only checksum-verified packaged faces are admitted by rich-text layouts.</summary>
+    public static SKFont Create(PresentationRichFontFaceV1 face, int sizeMilliPixels, bool bold) => new(face switch
+    {
+        PresentationRichFontFaceV1.MonoRegular => bold ? MonoBold.Value : MonoRegular.Value,
+        PresentationRichFontFaceV1.MonoBold => MonoBold.Value,
+        PresentationRichFontFaceV1.PlexRegular when !bold => TypefaceSource.Value,
+        _ => throw new ArgumentException("The requested packaged face/emphasis combination is unavailable.", nameof(face))
+    }, sizeMilliPixels / 1000f);
+
     public static SKFont Create(PresentationTextStyleV3 style)
     {
         ArgumentNullException.ThrowIfNull(style);
@@ -36,6 +45,7 @@ public static class PresentationFont
         {
             PresentationFontFaceV3.MonoRegular => MonoRegular.Value,
             PresentationFontFaceV3.MonoBold => MonoBold.Value,
+            PresentationFontFaceV3.PlexRegular => TypefaceSource.Value,
             _ => throw new ArgumentOutOfRangeException(nameof(style))
         }, style.SizeMilliPixels / 1000f);
     }

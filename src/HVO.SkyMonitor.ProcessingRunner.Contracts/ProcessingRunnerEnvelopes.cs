@@ -77,7 +77,9 @@ public sealed record ProcessingRunnerArtifactMetadata(
     string? SchemaVersion,
     string? ContentIdentitySha256,
     Guid? CaptureId,
-    string? DescriptorIdentitySha256);
+    string? DescriptorIdentitySha256,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    RecipeIdentityDescriptor? RecipeDescriptor = null);
 
 public sealed record ProcessingRunnerAuxiliaryInputMetadata(
     string Name,

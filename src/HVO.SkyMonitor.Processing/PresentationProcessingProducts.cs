@@ -64,7 +64,7 @@ public static class PresentationProcessingProducts
         ArgumentNullException.ThrowIfNull(facts);
         ValidateSources(canonicalSources);
         ValidateMetadataFacts(facts);
-        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
+        if (facts.SchemaVersion is not (PresentationMetadataFactsProductV1.CurrentSchemaVersion or PresentationMetadataFactsProductV1.RichTextSchemaVersion) ||
             facts.SourceArtifactIds is null ||
             !facts.SourceArtifactIds.SequenceEqual(canonicalSources.Select(static source => source.ArtifactId)))
         {
@@ -72,13 +72,15 @@ public static class PresentationProcessingProducts
         }
         var payload = System.Text.Encoding.UTF8.GetBytes(
             CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(facts)).GetRawText());
-        var identity = Identity(MetadataFactsRecipeName, PresentationLayerProducers.MetadataProducerVersion,
+        var producer = facts.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion
+            ? FrameFactsPresentation.ProducerVersion : PresentationLayerProducers.MetadataProducerVersion;
+        var identity = Identity(MetadataFactsRecipeName, producer,
             new { facts.SchemaVersion, facts.FactsIdentitySha256 });
         return ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, outputVariant,
             PresentationMetadataFactsProductV1.MediaType, null, payload, identity,
-            [new("presentation-metadata-facts", PresentationLayerProducers.MetadataProducerVersion)], canonicalSources,
+            [new("presentation-metadata-facts", producer)], canonicalSources,
             canonicalSources[0].Integration, canonicalSources[0].Compatibility, ProcessingProductKind.Metadata,
-            PresentationMetadataFactsProductV1.CurrentSchemaVersion, facts.FactsIdentitySha256);
+            facts.SchemaVersion, facts.FactsIdentitySha256);
     }
 
     public static string ComputeMetadataFactsIdentity(PresentationMetadataFactsProductV1 facts)
@@ -95,7 +97,8 @@ public static class PresentationProcessingProducts
     public static void ValidateMetadataFacts(PresentationMetadataFactsProductV1 facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
-        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
+        if (facts.SchemaVersion is not (PresentationMetadataFactsProductV1.CurrentSchemaVersion or PresentationMetadataFactsProductV1.RichTextSchemaVersion) ||
+            (facts.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion) != (facts.FrameFacts is not null) ||
             facts.CaptureId == Guid.Empty || facts.CaptureSequence < 0 || facts.Environment is null ||
             (facts.SourceArtifactIds is null || facts.SourceArtifactIds.Count != 2 ||
              facts.SourceArtifactIds.Any(static id => id == Guid.Empty) ||
@@ -111,6 +114,13 @@ public static class PresentationProcessingProducts
             !string.Equals(ComputeMetadataFactsIdentity(facts), facts.FactsIdentitySha256, StringComparison.Ordinal))
         {
             throw new ArgumentException("Presentation metadata facts are invalid.", nameof(facts));
+        }
+        if (facts.FrameFacts is { } snapshot)
+        {
+            var context = snapshot.ToContext();
+            if (context.Get("capture.captureId").Value.Text != facts.CaptureId.ToString("D") ||
+                context.Get("capture.sequence").Value.WholeNumber != facts.CaptureSequence)
+                throw new ArgumentException("Frame Facts snapshot capture lineage is invalid.", nameof(facts));
         }
     }
 
@@ -230,6 +240,7 @@ public static class PresentationProcessingProducts
             PresentationLayerPayloadV1.SupportsSchema(input.Product.SchemaVersion) &&
             parsed.Payload is { } payload &&
             input.Product.SchemaVersion == payload.SchemaVersion &&
+            SceneStylePresentation.MatchesRetainedLayer(payload, input.Layer) &&
             string.Equals(input.Product.ContentIdentitySha256, payload.ContentIdentitySha256, StringComparison.Ordinal) &&
             payload.WidthPixels == input.Layer.SourceProduct.Compatibility.WidthPixels &&
             payload.HeightPixels == input.Layer.SourceProduct.Compatibility.HeightPixels;
@@ -273,7 +284,8 @@ public static class PresentationProcessingProducts
         => new(JsonSerializerDefaults.Web)
         {
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-            RespectRequiredConstructorParameters = true
+            RespectRequiredConstructorParameters = true,
+            Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
         };
 
     private static JsonElement SerializeMetadataFacts(PresentationMetadataFactsProductV1 facts) =>
@@ -311,7 +323,7 @@ public static class PresentationMaterializationExecutor
         LayeredPresentationJson.Validate(manifest);
         PresentationProcessingProducts.ValidateReference(manifest.BaseProduct, baseArtifact, requirePackedLayout: true);
         if (manifestArtifact.ArtifactId == Guid.Empty || manifestArtifact.ProductKind != ProcessingProductKind.Metadata ||
-            manifestArtifact.SchemaVersion is not (OverlayManifestV1.CurrentSchemaVersion or TransientTrailPresentation.CompositionSchemaVersion) ||
+            manifestArtifact.SchemaVersion is not (OverlayManifestV1.CurrentSchemaVersion or TransientTrailPresentation.CompositionSchemaVersion or AstrometricDiagnosticPresentation.CompositionSchema) ||
             !string.Equals(manifestArtifact.ContentIdentitySha256, manifest.ManifestIdentitySha256, StringComparison.Ordinal) ||
             !string.Equals(manifestArtifact.MediaType, PresentationProcessingProducts.ManifestMediaType, StringComparison.OrdinalIgnoreCase) ||
             !manifestArtifact.Payload.Span.SequenceEqual(LayeredPresentationJson.Serialize(manifest)))
@@ -345,7 +357,8 @@ public static class PresentationMaterializationExecutor
                 throw new ArgumentException("An enabled layer product is missing.", nameof(layerProducts));
             var parsed = PresentationLayerPayloadJson.Parse(input.Product.Payload);
             if (!parsed.IsValid || parsed.Payload is not { } payload ||
-                !string.Equals(payload.ContentIdentitySha256, input.Layer.SourceProduct.ProductIdentitySha256, StringComparison.Ordinal))
+                !string.Equals(payload.ContentIdentitySha256, input.Layer.SourceProduct.ProductIdentitySha256, StringComparison.Ordinal) ||
+                !SceneStylePresentation.MatchesRetainedLayer(payload, layer))
                 throw new ArgumentException("Layer payload is invalid.", nameof(layerProducts));
             compositorLayers.Add(new(payload, true, layer.BlendMode switch
             {

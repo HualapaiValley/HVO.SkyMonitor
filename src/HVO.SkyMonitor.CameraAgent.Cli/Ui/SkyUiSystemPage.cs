@@ -81,7 +81,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             ]
             : [connection is null ? new SkyUiField(string.Empty, "Not signed in: Sign in below.", HvoTone.Warning) : Pending(info, "CameraAgent's information")];
         _signOut.Enabled = connection is not null && connection.KeySource == Ui.Context.CredentialsPath;
-        _restart.Enabled = CanChange && info.Value?.Restart is { Supervised: true, Requested: false };
+        _restart.Enabled = CanRestart;
     }
 
     public override string Describe()
@@ -109,7 +109,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
 
             // The key goes to CameraAgent now: over plain HTTP to another machine, that is said first, as 'hvo-sky login' says it.
             var context = Ui.Context;
-            if (SkyCliContext.ClearTextWarning(url!) is { } warning)
+            if (context.ClearTextWarning(url!) is { } warning)
             {
                 Ui.Say(HvoNotice.Warning, warning, "[PLAIN HTTP]");
             }
@@ -189,14 +189,16 @@ internal sealed class SkyUiSystemPage : SkyUiPage
         }));
     }
 
+    private bool CanRestart => CanChange && Ui.Data.Info.Value?.Restart is { Supervised: true, Requested: false };
+
     private void Restart()
     {
-        if (!_restart.Enabled)
+        if (!CanRestart)
         {
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Restart / Review",
+        Ui.OpenChangePrompt(new SkyUiPromptSpec("Restart / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url}? Capture stops until it is back."),
             new("Settings and a staged rig that apply at its next start take effect. The interface waits for the new process.", HvoTone.Muted)
@@ -206,6 +208,6 @@ internal sealed class SkyUiSystemPage : SkyUiPage
                 error is null ? $"CameraAgent is back: started {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}, running {outcome.After.Application.InformationalVersion}." : string.Empty,
                 "CameraAgent was not restarted"));
             return null;
-        }));
+        }), () => CanRestart);
     }
 }

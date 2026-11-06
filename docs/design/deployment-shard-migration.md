@@ -123,3 +123,48 @@ Stage 5 acceptance from #875 is measured against this table: no single
 multi-thousand-line contract file, every shard independently invocable, wall and
 peak RSS per shard and per lane recorded before and after, and ShellCheck able to
 cover every retained shell file without a per-file exception.
+
+## 5. First phase cutover (#1588)
+
+Partial-prepare recovery is now owned by `Deployment.Cli`, with independently
+invocable `PartialPrepareRecoveryTests` and a reusable `DeploymentFakeHost` using
+real Linux descriptor/lock operations. The closed shard inventory and coordinator
+remain; only this shard routes to MSTest. The old operator spelling delegates to
+the CLI, and the runbook uses `hvo-sky-install partial-prepare-cleanup`.
+
+The complete original shell comparison and every assertion are traced in
+[partial-prepare evidence](../validation/partial-prepare-1588.md). The legacy phase,
+its recovery-only transport/validation code and assertions were removed after
+that source/input/result proof was retained. The remaining shell preflight and
+all other phases keep their existing ownership; shared v8 inventory predicates
+are kept identical by a test. The next `existing-down` phase reuses the typed
+host fixture and command conventions. #893 remains open for the remaining ports;
+this is neither whole-lane migration nor production qualification.
+
+## 6. Existing-services teardown cutover (#1589)
+
+`Deployment.Cli` now owns existing-services down, reusing the typed host and
+publication seams from #1588. `ExistingDownTests` owns lifecycle state, drain,
+private-artifact absence, recovery, cancellation and preservation assertions.
+The retained `teardown-context.sh` tests the Docker CLI boundary. The shell command
+forwards existing-services inventories to the CLI, and its old implementation
+refuses that mode; deploy-owned teardown remains with the later deploy-services
+port. Catalog/up assertions formerly at the end of the down shard remain with
+`existing-catalog-up`. The complete comparison, exact source/input pins, current
+wall/RSS evidence and assertion trace are in
+[existing-down evidence](../validation/existing-down-1589.md). No current whole-lane
+improvement or completion of #893 is claimed.
+
+## 7. Inventory/preflight cutover (#1593)
+
+`Deployment.Contracts` and `Deployment.Cli` now own the inventory/preflight probe
+decisions, retaining the inventory primitives from #1588/#1589 and the schema-1
+manifest/evidence contract. The original three preflight parts, including their
+private-transport, continuity, transient-confirm and workload assertions, map to
+`Preflight*Tests`. The production `bash -n` boundary remains in `preflight-2.sh`.
+The manifest order is unchanged, and the preflight shard runs without constructing
+the old shared shell target fixture. Other phases retain their shared inventory
+predicate and existing shell ownership. The [complete 69-case comparison,
+assertion trace and current paired wall/RSS receipts](../validation/preflight-1593.md)
+precede this authority change. No target-phase or whole-lane speedup, production
+qualification or completion of #893 is claimed.

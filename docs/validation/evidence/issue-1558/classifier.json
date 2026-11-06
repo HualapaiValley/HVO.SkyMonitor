@@ -1,0 +1,25 @@
+{
+  "Selector": "scripts/ci:classify",
+  "Arguments": [
+    "pull_request",
+    "e20f945d8f7108cb7a15e272dc42a6289107b2ed",
+    "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30"
+  ],
+  "Profile": "development-v1",
+  "Tier": "C",
+  "Output": [
+    "mode=full",
+    "deployment=false",
+    "deployment_catalog=false",
+    "deployment_shards=false",
+    "deployment_installer=false",
+    "complete=false",
+    "shared=false",
+    "cameraagent=false",
+    "logichost=true",
+    "combined=true",
+    "delivery=false",
+    "secret_scan_contract=false",
+    "release_scripts=false"
+  ]
+}

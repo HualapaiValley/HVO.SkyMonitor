@@ -320,11 +320,8 @@ internal sealed class CentralTransientSubmissionService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return CreateRetired(retirement, envelope, payloadSha256);
         }
-        var conflict = await dbContext.CentralTransientValidationIdentitySlots.AsNoTracking()
-            .Where(slot => slot.CandidateId == envelope.CandidateId ||
-                slot.AgentId == registration.DeviceId && slot.SubmittedEventId == envelope.EventId)
-            .Select(slot => new { slot.CentralDerivativeJobId, slot.CandidateId, slot.SubmittedEventId })
-            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var conflict = await FindIdentityConflictAsync(dbContext, envelope.CandidateId,
+            registration.DeviceId, envelope.EventId, cancellationToken).ConfigureAwait(false);
         var retirementConflict = await dbContext.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
             audit.DevicePublicId == devicePublicId
             && audit.AgentId == registration.DeviceId
@@ -335,7 +332,7 @@ internal sealed class CentralTransientSubmissionService(
         {
             await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.IdentityConflict,
                 envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
-                conflict?.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false);
+                conflict, cancellationToken).ConfigureAwait(false);
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             telemetry.RecordOperation("transient-submit", "rejected");
@@ -607,6 +604,16 @@ internal sealed class CentralTransientSubmissionService(
         return null;
     }
 
+    internal static Task<Guid?> FindIdentityConflictAsync(
+        ApplicationDbContext context, Guid candidateId, string agentId, Guid eventId,
+        CancellationToken cancellationToken)
+        => context.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .Where(slot => slot.CandidateId == candidateId ||
+                slot.AgentId == agentId && slot.SubmittedEventId == eventId)
+            .OrderBy(slot => slot.Id)
+            .Select(slot => (Guid?)slot.CentralDerivativeJobId)
+            .FirstOrDefaultAsync(cancellationToken);
+
     private async Task<CentralTransientValidationJob?> FindExistingAsync(
         string submissionIdentitySha256,
         Guid devicePublicId,
@@ -656,11 +663,8 @@ internal sealed class CentralTransientSubmissionService(
             return CreateRetired(retirement, envelope, payloadSha256);
         }
 
-        var acceptedConflict = await dbContext.CentralTransientValidationIdentitySlots.AsNoTracking()
-            .Where(slot => slot.CandidateId == envelope.CandidateId ||
-                slot.AgentId == registration.DeviceId && slot.SubmittedEventId == envelope.EventId)
-            .Select(slot => (Guid?)slot.CentralDerivativeJobId)
-            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var acceptedConflict = await FindIdentityConflictAsync(dbContext, envelope.CandidateId,
+            registration.DeviceId, envelope.EventId, cancellationToken).ConfigureAwait(false);
         var retiredConflict = await dbContext.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
             audit.DevicePublicId == devicePublicId
             && audit.AgentId == registration.DeviceId

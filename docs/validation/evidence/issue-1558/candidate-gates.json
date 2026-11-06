@@ -1,0 +1,316 @@
+{
+  "profile": "development-v1",
+  "tier": "C",
+  "head": "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+  "results": [
+    {
+      "gate": "tool-restore",
+      "command": [
+        "dotnet",
+        "tool",
+        "restore"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:20:23.897757+00:00",
+      "finishedAtUtc": "2026-10-23T10:20:24.029682+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "restore",
+      "command": [
+        "dotnet",
+        "restore"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:20:24.031698+00:00",
+      "finishedAtUtc": "2026-10-23T10:20:25.662449+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "build-debug",
+      "command": [
+        "dotnet",
+        "build",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--configuration",
+        "Debug",
+        "-warnaserror",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:20:25.663920+00:00",
+      "finishedAtUtc": "2026-10-23T10:23:14.356487+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "build-release",
+      "command": [
+        "dotnet",
+        "build",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--configuration",
+        "Release",
+        "-warnaserror",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:23:14.358633+00:00",
+      "finishedAtUtc": "2026-10-23T10:25:18.559145+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "format",
+      "command": [
+        "dotnet",
+        "format",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-restore",
+        "--verify-no-changes"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:25:18.561321+00:00",
+      "finishedAtUtc": "2026-10-23T10:27:22.070794+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "package-audit",
+      "command": [
+        "./scripts/package:audit"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:27:22.072180+00:00",
+      "finishedAtUtc": "2026-10-23T10:28:03.657474+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "ci-shell-syntax",
+      "command": [
+        "./scripts/ci:shell-syntax"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:28:03.658723+00:00",
+      "finishedAtUtc": "2026-10-23T10:28:04.482047+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "test-ci-classification",
+      "command": [
+        "./scripts/test:ci-classification"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:28:04.484035+00:00",
+      "finishedAtUtc": "2026-10-23T10:28:26.747380+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "test-coordination-guard",
+      "command": [
+        "./scripts/test:coordination-guard"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:28:26.749750+00:00",
+      "finishedAtUtc": "2026-10-23T10:28:27.019067+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "test-pr-review-tools",
+      "command": [
+        "./scripts/test:pr-review-tools"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T10:28:27.021202+00:00",
+      "finishedAtUtc": "2026-10-23T10:28:37.543749+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "solution-unit",
+      "command": [
+        "dotnet",
+        "test",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Unit",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--logger",
+        "trx;LogFileName=candidate-unit.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {
+        "DOCKER_HOST": "unix:///tmp/hvo-no-docker.sock"
+      },
+      "startedAtUtc": "2026-10-23T10:28:37.545044+00:00",
+      "finishedAtUtc": "2026-10-23T10:35:54.283142+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "solution-integration",
+      "command": [
+        "dotnet",
+        "test",
+        "HVO.SkyMonitor.v9.slnx",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "TestCategory=Integration",
+        "--settings",
+        "tests/coverage.runsettings",
+        "--collect:XPlat Code Coverage",
+        "--logger",
+        "trx;LogFileName=candidate-integration.trx",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {
+        "HVO_PUBLISH_EVIDENCE_ROOT": "/home/roys/.t3/worktrees/HVO.SkyMonitor/agent-1558-252-slice-b-bound-lineage-validation-and/TestResults/publish/issue1558"
+      },
+      "startedAtUtc": "2026-10-23T10:35:54.285380+00:00",
+      "finishedAtUtc": "2026-10-23T10:48:55.984139+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "coverage-policy",
+      "command": [
+        "./scripts/coverage:policy",
+        "pull_request",
+        "development/v1"
+      ],
+      "startedAtUtc": "2026-10-23T10:57:31.286Z",
+      "finishedAtUtc": "2026-10-23T10:57:31.449Z",
+      "exitCode": 0
+    },
+    {
+      "gate": "docs-operations",
+      "command": [
+        "./scripts/docs:audit-operations"
+      ],
+      "startedAtUtc": "2026-10-23T10:57:31.294Z",
+      "finishedAtUtc": "2026-10-23T10:57:31.920Z",
+      "exitCode": 0
+    },
+    {
+      "gate": "canonical-migration",
+      "command": [
+        "./scripts/ci:canonical-migration",
+        "logichost"
+      ],
+      "startedAtUtc": "2026-10-23T10:57:31.294Z",
+      "finishedAtUtc": "2026-10-23T10:57:31.331Z",
+      "exitCode": 0
+    },
+    {
+      "gate": "canonical-migration-cameraagent",
+      "command": [
+        "./scripts/ci:canonical-migration",
+        "cameraagent"
+      ],
+      "startedAtUtc": "2026-10-23T10:57:31.294Z",
+      "finishedAtUtc": "2026-10-23T10:57:31.331Z",
+      "exitCode": 0
+    },
+    {
+      "gate": "coverage-logichost",
+      "command": [
+        "./scripts/coverage:component",
+        "logichost"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T11:33:08.905541+00:00",
+      "finishedAtUtc": "2026-10-23T11:33:14.479615+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "coverage-combined",
+      "command": [
+        "./scripts/coverage:component",
+        "combined"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T11:33:14.481289+00:00",
+      "finishedAtUtc": "2026-10-23T11:33:23.008687+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "category-audit",
+      "command": [
+        "dotnet",
+        "run",
+        "--project",
+        "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
+        "--configuration",
+        "Release"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T11:33:23.011041+00:00",
+      "finishedAtUtc": "2026-10-23T11:35:05.908015+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "pending-model",
+      "command": [
+        "dotnet",
+        "ef",
+        "migrations",
+        "has-pending-model-changes",
+        "--project",
+        "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+        "--startup-project",
+        "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+        "--context",
+        "HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext",
+        "--configuration",
+        "Release",
+        "--no-build"
+      ],
+      "environmentOverrides": {
+        "ConnectionStrings__skymonitordb": "Server=127.0.0.1,1;Database=ModelCheck;Integrated Security=True;TrustServerCertificate=True"
+      },
+      "startedAtUtc": "2026-10-23T11:35:05.909337+00:00",
+      "finishedAtUtc": "2026-10-23T11:35:08.569087+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "pending-model-cameraagent",
+      "command": [
+        "dotnet",
+        "ef",
+        "migrations",
+        "has-pending-model-changes",
+        "--project",
+        "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj",
+        "--startup-project",
+        "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj",
+        "--context",
+        "HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext",
+        "--configuration",
+        "Release",
+        "--no-build"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T11:35:08.570421+00:00",
+      "finishedAtUtc": "2026-10-23T11:35:09.946726+00:00",
+      "exitCode": 0
+    },
+    {
+      "gate": "publish-logichost",
+      "command": [
+        "./scripts/ci:component-publish",
+        "logichost"
+      ],
+      "environmentOverrides": {},
+      "startedAtUtc": "2026-10-23T11:35:09.948309+00:00",
+      "finishedAtUtc": "2026-10-23T11:35:12.873351+00:00",
+      "exitCode": 0
+    }
+  ]
+}

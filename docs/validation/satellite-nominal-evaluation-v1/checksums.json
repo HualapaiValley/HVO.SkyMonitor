@@ -1,0 +1,175 @@
+{
+  "files": [
+    {
+      "path": "candidate-unit-evidence.json",
+      "bytes": 5109,
+      "sha256": "C7EEB6C3D2AFCDD7DDB25CCE31DD4B49536457BDD73D6D1EEC66CB965D3262F3"
+    },
+    {
+      "path": "geometry/hvo.json",
+      "bytes": 2297,
+      "sha256": "4232BB01BA3A9CF69F8508476E77F92D79EA53BB2C1A0AA136D2F5D4F43FA3DC"
+    },
+    {
+      "path": "geometry/seattle.json",
+      "bytes": 2300,
+      "sha256": "DB1F9A6B00FD9106530F9B39777E6E6A6DDADA92529110C9BA57192AE8A02CF8"
+    },
+    {
+      "path": "geometry/sydney.json",
+      "bytes": 2300,
+      "sha256": "466B91245B0BA685763D5134878335018216838EA7A9EBE93A0BA492D772D1AE"
+    },
+    {
+      "path": "inputs/686ef62ab251556d6776.json",
+      "bytes": 8289,
+      "sha256": "8980EB53C2205C3904589B2FBC03E5606B2DCE83376C21DE51A9B60D23E83309"
+    },
+    {
+      "path": "inputs/8cab2244a73a3736dccd.json",
+      "bytes": 8289,
+      "sha256": "ACEAEF6BDA87570D202927C6FF69A82A4EA401DB6A5D421542EF2A6E3587559E"
+    },
+    {
+      "path": "inputs/bab84089a2e6edd9071e.json",
+      "bytes": 8289,
+      "sha256": "CA8ED80D5D8B70D11C0357936914AA97CF61085F8A72B9AC083E9F6315FBEE93"
+    },
+    {
+      "path": "inputs/cb0d235eb6e5d8b2c2dc.json",
+      "bytes": 8274,
+      "sha256": "1B130824E47B3A8CC53947248B1A3B24A32873FF933069A3D9AE527DBFAEA596"
+    },
+    {
+      "path": "inputs/ee22be3c5e42449b3e0d.json",
+      "bytes": 8274,
+      "sha256": "BBF67187AE4BE1306115E2AC2630DD4ECE2404BAA378B102AFB35A75EFDEDE46"
+    },
+    {
+      "path": "inputs/f401c68e4904c45e1901.json",
+      "bytes": 8289,
+      "sha256": "F6688D87EAC29E4CDBED8E65001928FB6E9D669A9CF4ECC396B679D89D169B78"
+    },
+    {
+      "path": "inputs/fa1a95d6e3738bfb984f.json",
+      "bytes": 8289,
+      "sha256": "8E93F15B455D4FBEAE7A9AF4D3F1096858BFF1A508FC6C1C9F46519483C98861"
+    },
+    {
+      "path": "replay-summary.json",
+      "bytes": 25492,
+      "sha256": "2DE2122D2CF533C1A0FC2E04BB7BF415392CDA36C6474478694D013738CB7845"
+    },
+    {
+      "path": "reports/control-comparison.json",
+      "bytes": 12337,
+      "sha256": "37BFAAE3BA26ADF5AD70D0E99E4F67D87D6956F55AFC37251040EBED0D9F667C"
+    },
+    {
+      "path": "reports/control-evaluation.json",
+      "bytes": 43764,
+      "sha256": "B0050D3727564485FEB066FFB13E02D89AD014139E9425B5958CE0F530421C21"
+    },
+    {
+      "path": "reports/fade-comparison.json",
+      "bytes": 13841,
+      "sha256": "F7C7AF31CB80FB2A04604BE785D12D09E1C6D222EBBC166E7ECE9D4345EDF38B"
+    },
+    {
+      "path": "reports/fade-evaluation.json",
+      "bytes": 44828,
+      "sha256": "84E1B96E7B884D3A198002EFBD30FD17B9A4FF6DB563104D068D24615DA51EFB"
+    },
+    {
+      "path": "reports/inactive-comparison.json",
+      "bytes": 17061,
+      "sha256": "A535AF0E539A9413CBAC7129172D9D033D869BD85FAB4EC4C4B7AA25F8B2122D"
+    },
+    {
+      "path": "reports/inactive-evaluation.json",
+      "bytes": 46744,
+      "sha256": "45DB5FC7AACD220FD99965A160F75F91502E1BCCD6B7FD76F59F8D113F7A7D7C"
+    },
+    {
+      "path": "reports/iss-comparison.json",
+      "bytes": 17435,
+      "sha256": "26190C9D450447F2C746C913D02417C05B37BB66DF534D7E9A61A4D181873A5A"
+    },
+    {
+      "path": "reports/iss-evaluation.json",
+      "bytes": 47409,
+      "sha256": "F87DCC546DCBD7F4292BABF1F13EA8E681A7C91FFDD864B9AACC06C2CD6DCB5B"
+    },
+    {
+      "path": "reports/starlinks-comparison.json",
+      "bytes": 34458,
+      "sha256": "787DDB4E5E40AED0F99C6A8BB76890486BDEA89763115524B2C75CFB43934517"
+    },
+    {
+      "path": "reports/starlinks-evaluation.json",
+      "bytes": 50620,
+      "sha256": "A0679DD971234ED576C8E43C61FE91875A8DA45B22509A85BD8BC94FD8889C42"
+    },
+    {
+      "path": "samples/ATTRIBUTION-HYG.md",
+      "bytes": 1361,
+      "sha256": "E3ADDC3480A0D0F07129F332B0DEA592FA315373F21111D54AC8E2AEBD03B5F1"
+    },
+    {
+      "path": "samples/LICENSE-HYG.md",
+      "bytes": 423,
+      "sha256": "9AB0956D22D8390B54456C2AFB3B47281B4A5A0313C6871F0AF4489ED8395F05"
+    },
+    {
+      "path": "samples/control.json",
+      "bytes": 311,
+      "sha256": "EB2F1FDC0621E9E72DC86C64EC97F9E7DA22C411F1903E7EB09B5E2A51350CBB"
+    },
+    {
+      "path": "samples/control.png",
+      "bytes": 297742,
+      "sha256": "A50B32163F4B58C552AF883F55D1A6EEC43C33B4C9EB7C0762EBC5C6D386E905"
+    },
+    {
+      "path": "samples/fade.json",
+      "bytes": 308,
+      "sha256": "294C68843447E0F2FF7DB9C1B1DD50818B0A22524A153C02105B6B889402DA3C"
+    },
+    {
+      "path": "samples/fade.png",
+      "bytes": 297938,
+      "sha256": "80CC69F9CC2B92030A18AA9ECD5446CF7EB20D3EBBF0378B392BEFAC7CB773CE"
+    },
+    {
+      "path": "samples/inactive.json",
+      "bytes": 305,
+      "sha256": "005775CDC062BA77E57AA059D4E67247FFDF4405E0205A689DE9E77C964AEE5F"
+    },
+    {
+      "path": "samples/inactive.png",
+      "bytes": 336590,
+      "sha256": "BF4103EAF0B88DE453C7614C2764DA6565F81EDC4C36DFE158D8A559A71123FE"
+    },
+    {
+      "path": "samples/iss.json",
+      "bytes": 307,
+      "sha256": "D6DBD9E48A2F57A352A266ACE712702AD4778769FA48F34C710F6D29A7EFF370"
+    },
+    {
+      "path": "samples/iss.png",
+      "bytes": 298144,
+      "sha256": "7E30DF3A26A65FC7C80585A2A5F0392E25F8A80167AE5A84AB42EB40BD07B94C"
+    },
+    {
+      "path": "samples/starlinks.json",
+      "bytes": 306,
+      "sha256": "C0B97E53BAC2954A356916AF297A9F8479779E39C906491E95E04F6E433FE922"
+    },
+    {
+      "path": "samples/starlinks.png",
+      "bytes": 337657,
+      "sha256": "64B0459DD9271AECC55F8156A693143B6BF3DCCD9B53C1226D5A44B53A3E6411"
+    }
+  ],
+  "scope": "All portable data/image/report files. README and this checksum index excluded."
+}

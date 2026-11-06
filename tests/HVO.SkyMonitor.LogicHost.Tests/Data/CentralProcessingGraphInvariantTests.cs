@@ -89,9 +89,11 @@ public sealed class CentralProcessingGraphInvariantTests
             StringComparison.Ordinal);
         Assert.IsGreaterThan(-1, predicateEnd);
         var predicate = sql[predicateStart..predicateEnd];
-        var triggerColumns = System.Text.RegularExpressions.Regex.Matches(predicate, @"i\.\[(\w+)\]")
-            .Select(match => match.Groups[1].Value)
-            .Where(column => column != "Id")
+        // Frozen columns are the compared ones (i.[X] <> d.[X] or ISNULL(i.[X], ...) <> ...); the columns the single
+        // re-derivation exemption merely tests are pinned by GraphJobExpectedIdentityExemptionMatchesEfGuard.
+        var triggerColumns = System.Text.RegularExpressions.Regex.Matches(
+                predicate, @"(?:ISNULL\(i\.\[(\w+)\],|i\.\[(\w+)\]\s*<>)")
+            .Select(match => match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
@@ -104,6 +106,162 @@ public sealed class CentralProcessingGraphInvariantTests
             guardProperties,
             $"EF guard vs trigger mismatch. Only in trigger: [{string.Join(", ", triggerColumns.Except(guardProperties))}]. " +
             $"Only in EF guard: [{string.Join(", ", guardProperties.Except(triggerColumns))}].");
+    }
+
+    [TestMethod]
+    public void GraphJobExpectedIdentityExemptionMatchesEfGuard()
+    {
+        const string resourceName = "HVO.SkyMonitor.LogicHost.Data.Migrations.BaselineTriggers.sql";
+        using var stream = typeof(ApplicationDbContext).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' must exist.");
+        using var reader = new StreamReader(stream);
+        var sql = reader.ReadToEnd();
+        var triggerStart = sql.IndexOf(
+            "CREATE TRIGGER [TR_CentralDerivativeJobs_GraphIdentityImmutable]", StringComparison.Ordinal);
+        var predicateEnd = sql.IndexOf(
+            "THROW 51000, 'Derivative graph executable identity is immutable.', 1;", triggerStart, StringComparison.Ordinal);
+        var predicate = sql[triggerStart..predicateEnd];
+
+        // Exactly one exempt column, and it is the one the EF guard names.
+        var exemptions = System.Text.RegularExpressions.Regex.Matches(
+                predicate, @"OR \(i\.\[(\w+)\] <> d\.\[\1\]\s+AND NOT \(")
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
+        CollectionAssert.AreEqual(new[] { ApplicationDbContext.GraphJobRederivableProperty }, exemptions);
+        var exemptionStart = predicate.IndexOf("AND NOT (", StringComparison.Ordinal);
+        var exemption = System.Text.RegularExpressions.Regex.Replace(predicate[exemptionStart..], @"\s+", " ");
+        string[] elements =
+        [
+            "d.[Status] = N'Waiting' AND i.[Status] = N'Waiting'",
+            "d.[AttemptCount] = 0 AND i.[AttemptCount] = 0",
+            "d.[LeaseOwner] IS NULL AND i.[LeaseOwner] IS NULL",
+            "d.[LeaseToken] IS NULL AND i.[LeaseToken] IS NULL",
+            "d.[LeaseAcquiredAtUtc] IS NULL AND i.[LeaseAcquiredAtUtc] IS NULL",
+            "d.[LeaseExpiresAtUtc] IS NULL AND i.[LeaseExpiresAtUtc] IS NULL",
+            $"d.[RecipeName] = N'{ApplicationDbContext.GraphJobRederivableRecipeName}' AND i.[RecipeName] = N'{ApplicationDbContext.GraphJobRederivableRecipeName}'",
+            "requirement.[CentralDerivativeJobId] = i.[Id]",
+            $"requirement.[BindingName] = N'{ApplicationDbContext.GraphJobRederivationBindingName}'",
+            $"requirement.[ResolutionState] = N'{nameof(CentralDerivativeInputResolutionState.Missing)}'"
+        ];
+        foreach (var element in elements)
+        {
+            StringAssert.Contains(exemption, element, StringComparison.Ordinal);
+        }
+        StringAssert.Contains(exemption, CentralProcessingGraphScheduler.ExpectedIdentityRederivationTriggerMarker,
+            StringComparison.Ordinal);
+        // The trigger spells these as literals; the elements above interpolate the EF guard's constants into them.
+        StringAssert.Contains(exemption, "N'annotation'", StringComparison.Ordinal);
+        StringAssert.Contains(exemption, "N'measured-stellar-associations'", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void GraphIdentityTriggerDefinitionClassificationFailsClosedOnEachUnprovenSchema()
+    {
+        var sql = ReadBaselineTriggerSql();
+        var current = sql[sql.IndexOf("CREATE TRIGGER [TR_CentralDerivativeJobs_GraphIdentityImmutable]", StringComparison.Ordinal)..];
+        var earlier = current.Replace(
+            CentralProcessingGraphScheduler.ExpectedIdentityRederivationTriggerMarker, string.Empty, StringComparison.Ordinal);
+
+        Assert.IsNull(CentralProcessingGraphScheduler.ClassifyGraphIdentityTriggerDefinition(current));
+        Assert.AreEqual(CentralProcessingGraphScheduler.AnnotationRederivationUnsupportedSchemaReasonCode,
+            CentralProcessingGraphScheduler.ClassifyGraphIdentityTriggerDefinition(earlier), "earlier baseline");
+        Assert.AreEqual(CentralProcessingGraphScheduler.AnnotationRederivationUnverifiableSchemaReasonCode,
+            CentralProcessingGraphScheduler.ClassifyGraphIdentityTriggerDefinition(null),
+            "a null definition, as a login without VIEW DEFINITION reads it, is not an earlier baseline");
+    }
+
+    [TestMethod]
+    public async Task SaveChangesAdmitsMeasuredAssociationExpectedIdentityRederivation()
+    {
+        await using var context = CreateContext();
+        var (job, _) = await CreateRederivationCaseAsync(context, "exact").ConfigureAwait(false);
+
+        var expectedIdentity = new string('9', 64);
+        job.ExpectedRecipeIdentitySha256 = expectedIdentity;
+
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        Assert.AreEqual(expectedIdentity, job.ExpectedRecipeIdentitySha256);
+    }
+
+    [TestMethod]
+    [DataRow("persisted-pending")]
+    [DataRow("transitions-to-pending")]
+    [DataRow("attempted")]
+    [DataRow("leased")]
+    [DataRow("lease-acquired")]
+    [DataRow("other-recipe")]
+    [DataRow("requirement-waiting")]
+    [DataRow("requirement-same-batch")]
+    [DataRow("other-binding")]
+    [DataRow("other-frozen-column")]
+    [DataRow("requested-identity")]
+    public async Task SaveChangesRejectsExpectedIdentityRederivationOutsideTheExemption(string boundary)
+    {
+        await using var context = CreateContext();
+        var (job, requirement) = await CreateRederivationCaseAsync(context, boundary).ConfigureAwait(false);
+
+        job.ExpectedRecipeIdentitySha256 = new string('9', 64);
+        switch (boundary)
+        {
+            case "transitions-to-pending":
+                job.Status = CentralDerivativeJobStatus.Pending;
+                break;
+            case "requirement-same-batch":
+                requirement.ResolutionState = CentralDerivativeInputResolutionState.Missing;
+                requirement.ResolutionReasonCode = "processing.graph.optional-dependency-omitted";
+                requirement.ResolvedAtUtc = DateTimeOffset.UtcNow;
+                break;
+            case "other-frozen-column":
+                job.TargetVariant = "rewritten";
+                break;
+            case "requested-identity":
+                job.RequestedRecipeIdentitySha256 = new string('9', 64);
+                break;
+        }
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => context.SaveChangesAsync()).ConfigureAwait(false);
+        StringAssert.Contains(exception.Message, "executable identity is immutable", StringComparison.Ordinal);
+    }
+
+    private static async Task<(CentralDerivativeJob Job, CentralDerivativeJobInputRequirement Requirement)>
+        CreateRederivationCaseAsync(ApplicationDbContext context, string boundary)
+    {
+        var execution = CreateExecution(expectedNodeCount: 1);
+        var job = CreateJob(execution);
+        job.RecipeName = boundary == "other-recipe" ? "recipe" : BuiltInProcessingRecipes.Annotation;
+        job.Status = boundary == "persisted-pending" ? CentralDerivativeJobStatus.Pending : CentralDerivativeJobStatus.Waiting;
+        job.InputSetIdentitySha256 = boundary == "persisted-pending" ? job.InputSetIdentitySha256 : null;
+        job.AttemptCount = boundary == "attempted" ? 1 : 0;
+        if (boundary == "leased")
+        {
+            job.LeaseOwner = "worker";
+            job.LeaseToken = Guid.NewGuid();
+            job.LeaseExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5);
+        }
+        if (boundary == "lease-acquired")
+        {
+            job.LeaseAcquiredAtUtc = DateTimeOffset.UtcNow;
+        }
+        var missing = boundary is not ("requirement-waiting" or "requirement-same-batch");
+        var requirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            BindingName = boundary == "other-binding" ? "assessment" : BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            IsRequired = false,
+            SelectorJson = "{}",
+            CompatibilityMode = CentralDerivativeCompatibilityMode.Exact,
+            ExpectedAgentId = "agent",
+            ResolutionState = missing ? CentralDerivativeInputResolutionState.Missing : CentralDerivativeInputResolutionState.Waiting,
+            ResolutionReasonCode = missing ? "processing.graph.optional-dependency-omitted" : null,
+            ResolvedAtUtc = missing ? DateTimeOffset.UtcNow : null
+        };
+        job.InputRequirements.Add(requirement);
+        context.AddRange(execution, job);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        return (job, requirement);
     }
 
     [TestMethod]
@@ -442,6 +600,15 @@ public sealed class CentralProcessingGraphInvariantTests
         Assert.AreEqual(CentralProcessingGraphExecutionStatus.Completed, execution.Status);
         Assert.AreEqual(now, execution.StartedAtUtc);
         Assert.AreEqual(now, execution.CompletedAtUtc);
+    }
+
+    private static string ReadBaselineTriggerSql()
+    {
+        const string resourceName = "HVO.SkyMonitor.LogicHost.Data.Migrations.BaselineTriggers.sql";
+        using var stream = typeof(ApplicationDbContext).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' must exist.");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     private static ApplicationDbContext CreateContext()

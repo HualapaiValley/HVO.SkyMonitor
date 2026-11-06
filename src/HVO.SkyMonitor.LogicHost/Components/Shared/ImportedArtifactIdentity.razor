@@ -1,0 +1,19 @@
+@using HVO.SkyMonitor.Processing
+<dl class="artifact-identity">
+    <dt>Capture</dt><dd>@Value.CaptureId</dd>
+    <dt>Artifact</dt><dd>@Value.ArtifactId</dd>
+    <dt>Output identity SHA-256</dt><dd>@(Value.OutputIdentitySha256 ?? "Not recorded")</dd>
+    <dt>Payload SHA-256</dt><dd>@(Value.PayloadSha256 ?? "Not recorded")</dd>
+    <dt>Descriptor SHA-256</dt><dd>@(Value.DescriptorSha256 ?? "Not recorded")</dd>
+    <dt>Payload length</dt><dd>@(Value.PayloadLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Not recorded")</dd>
+    <dt>Media type</dt><dd>@(Value.MediaType ?? "Not recorded")</dd>
+    <dt>Role / variant</dt><dd>@(Value.Role?.ToString() ?? "Not recorded") / @(Value.Variant ?? "Not recorded")</dd>
+</dl>
+@if (ReconciliationPath is not null)
+{
+    <a href="@ReconciliationPath">Inspect exact central observations</a>
+}
+else
+{
+    <p>No exact reconciliation mapping on the current artifact page. This does not establish missing or available bytes.</p>
+}

@@ -40,6 +40,13 @@ public sealed class HybridTransientSubmissionTests
     {
         using var fixture = new CameraAgentIntegrationFixture(hybridTransientMode: true, startupDelayMilliseconds);
         await fixture.InitializeAsync().ConfigureAwait(false);
+        await SqlDiagnosticObservation.WhileAsync(() => AssertDurableSubmissionAsync(fixture, startupDelayMilliseconds),
+            fixture.HostFixture.SqlServerConnectionString, TestContext.WriteLine,
+            maximumSamples: 300, interval: TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+    }
+
+    private async Task AssertDurableSubmissionAsync(CameraAgentIntegrationFixture fixture, int startupDelayMilliseconds)
+    {
         using var scope = fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
         var captureService = services.GetServices<IHostedService>().OfType<CameraCaptureService>().Single();

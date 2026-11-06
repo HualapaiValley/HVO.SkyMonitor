@@ -1,0 +1,60 @@
+<figure class="satellite-arc">
+    <svg viewBox="0 0 512 512" role="img" aria-label="Full angular satellite planning paths and prediction points on a fixed full-sky hemisphere">
+        <circle class="sky-disc" cx="256" cy="256" r="240" />
+        <circle class="sky-grid" cx="256" cy="256" r="160" />
+        <circle class="sky-grid" cx="256" cy="256" r="80" />
+        <text class="sky-axis" x="256" y="31" text-anchor="middle">N</text>
+        <text class="sky-axis" x="481" y="260" text-anchor="middle">E</text>
+        <text class="sky-axis" x="256" y="485" text-anchor="middle">S</text>
+        <text class="sky-axis" x="31" y="260" text-anchor="middle">W</text>
+        @if (ShowPath)
+        {
+            @foreach (var path in _fullPaths) { <polyline class="predicted-path" points="@path" /> }
+            @foreach (var anchor in _anchors)
+            {
+                @if (anchor.Point is { } point) { <circle class="arc-anchor" cx="@Number(point.X)" cy="@Number(point.Y)" r="3"><title>@anchor.Name: @Timestamp(anchor.Sample!.Utc)</title></circle> }
+            }
+            @foreach (var prediction in _fullPoints)
+            {
+                <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="2"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+            }
+        }
+        @if (ShowLabels)
+        {
+            @foreach (var anchor in _anchors)
+            {
+                @if (anchor.LabelX is not null && anchor.Sample is { } sample)
+                {
+                    <g class="arc-time-label"><text x="@anchor.LabelX" y="@anchor.LabelY">@anchor.Name @sample.Utc.ToString("HH:mm:ss 'UTC'", System.Globalization.CultureInfo.InvariantCulture)</text></g>
+                }
+            }
+        }
+    </svg>
+    <figcaption>Full-pass angular planning view, including off-rig portions. Fixed equidistant hemisphere; orange dashes are predicted paths and orange dots mark single prediction points. Time labels and point titles include UTC; up to three non-overlapping labels. Hidden or omitted labels retain their facts below. No exact capture segment or measured trail is drawn.</figcaption>
+    @if (_fullPaths.Count == 0 && _fullPoints.Count == 0) { <p>No projected arc samples are available.</p> }
+    <dl class="anchor-facts">
+        @foreach (var anchor in _anchors)
+        {
+            <dt>@anchor.Name</dt>
+            <dd>@(anchor.Sample is { } sample ? $"{Timestamp(sample.Utc)}; altitude {Number(sample.Horizontal.AltitudeDegrees)}°; azimuth {Number(sample.Horizontal.AzimuthDegrees)}°; sunlight {sample.Illumination}" : "Unresolved; no declared sample anchor.")</dd>
+        }
+    </dl>
+    <p>Arc status: @Arc.Status / @Arc.Reason. Physical orbit uncertainty: @(Arc.OrbitUncertainty.Value is { } uncertainty ? Number(uncertainty) + " " + Arc.OrbitUncertainty.Unit : "Unknown") / @Arc.OrbitUncertainty.Reason.</p>
+    @if (ShowRigPreview)
+    {
+        <div class="rig-preview">
+            <h4>Configured-rig portion — lower confidence</h4>
+            <svg viewBox="@($"0 0 {Context.RigProjection.WidthPixels} {Context.RigProjection.HeightPixels}")" role="img" aria-label="Configured rig projection of planning paths and prediction points">
+                @if (ShowPath)
+                {
+                    @foreach (var path in _rigPaths) { <polyline class="predicted-path" points="@path" /> }
+                    @foreach (var prediction in _rigPoints)
+                    {
+                        <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="2"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+                    }
+                }
+            </svg>
+            <p>Direct shared projection of the configured geometry, not measured calibration. Only declared samples inside the rig are shown, joined within connected runs. Orange dots mark single prediction points with UTC titles; boundary intersections are not inferred. The full-pass view above retains off-rig geometry.</p>
+        </div>
+    }
+</figure>

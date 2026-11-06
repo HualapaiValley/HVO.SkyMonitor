@@ -1,0 +1,736 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "583cc485d70007e2ca97672b0165bcb30af03cdb",
+  "assemblySha256": "132C146D7EC6A05819454898E7B2F8D3499F9A36599BD28C57655EE69FC24CBE",
+  "uniqueInputSequences": 7,
+  "scenarioStreamReferences": 8,
+  "evaluatedUniqueTargets": 35,
+  "cliInvocations": 49,
+  "allReadAllowlistsVerified": true,
+  "allRepeatedEvaluationBytesEqual": true,
+  "streams": [
+    {
+      "inputKey": "fa1a95d6e3738bfb984f",
+      "scene": "iss-labeled-final-0b2eb1a3",
+      "sourceStream": "control",
+      "exploratoryOnly": true,
+      "manifestSha256": "8E93F15B455D4FBEAE7A9AF4D3F1096858BFF1A508FC6C1C9F46519483C98861",
+      "evaluationSha256": "B0050D3727564485FEB066FFB13E02D89AD014139E9425B5958CE0F530421C21",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        0,
+        0,
+        0
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "03FDB0DF0B3635565E2585D1166FCCAA41DF3FFB8F8FBC7B208842B608E7ABF9",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "A89D20F80C010505A088916E7245BC42F1F204D6F6EEED93A71F2F2321C7CD95",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "37BFAAE3BA26ADF5AD70D0E99E4F67D87D6956F55AFC37251040EBED0D9F667C",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "AE22983653DC707252C380A03A1F40669E53F8A09373EF16006EE52ADB82A186",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "8CE28B09BB94C1DC8C54C1A611C8D6CF991D59360E491204D105726CB6EB4B65",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        }
+      ]
+    },
+    {
+      "inputKey": "f401c68e4904c45e1901",
+      "scene": "iss-labeled-final-0b2eb1a3",
+      "sourceStream": "injected",
+      "exploratoryOnly": true,
+      "manifestSha256": "F6688D87EAC29E4CDBED8E65001928FB6E9D669A9CF4ECC396B679D89D169B78",
+      "evaluationSha256": "F87DCC546DCBD7F4292BABF1F13EA8E681A7C91FFDD864B9AACC06C2CD6DCB5B",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        1,
+        1,
+        1
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "2F8B36D4D79422F14C6793C3692B7A6AB8A35E66D73005E8D90512409BCE4396",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "4B1A9AC8B65EC6AA89EFE40E6A16DE0D81382D4FBCEA01BA76C26319D2ACBED5",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "26190C9D450447F2C746C913D02417C05B37BB66DF534D7E9A61A4D181873A5A",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "FFABDD4C757A63583FB699BB064B409E5CC8E3362628FA6AF868DCB94B80472D",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.027875519138836027,
+                      "maximumPerpendicularPixels": 0.06037917409400445,
+                      "unorderedMaximumEndpointErrorPixels": 1.2458349459338738
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "139D0BBA200C9E4D470F401953888860400133C4E772F211247AEB514DD8BC35",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "337A05A6BF5912F2B5DCD01A0463A43653C11199727CD378D21B06F059794EC4",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.009452556372548914,
+                      "maximumPerpendicularPixels": 0.022389308476487475,
+                      "unorderedMaximumEndpointErrorPixels": 1.1560281529489245
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "C261E58BE193EA1408164A0FBB99661C2B5D565CD753C68B07D37EB3756C925B",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "C75A06C00E9B6F165793BCF81334E0B87F498141E1C34F3622BEDDC9ADA03814",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.014912429837226527,
+                      "maximumPerpendicularPixels": 0.027786721315502663,
+                      "unorderedMaximumEndpointErrorPixels": 1.17575483269566
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "inputKey": "ee22be3c5e42449b3e0d",
+      "scene": "constellation-labeled-final-0b2eb1a3",
+      "sourceStream": "control",
+      "exploratoryOnly": true,
+      "manifestSha256": "BBF67187AE4BE1306115E2AC2630DD4ECE2404BAA378B102AFB35A75EFDEDE46",
+      "evaluationSha256": "A17A8D0E6B3EDB350BBB54FD7DD70E24293FF6E9A43243D770786640FCA4228A",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        0,
+        0,
+        0
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "4372AAD262F8917E220AADB3B908A99848EFA4AE4A678FA21BA7C9978100693B",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "8691EC140B4A29CF67FCC476C2859968A60114324ACFFC9F6F4007F3D947BD32",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "84CA8081117D057E4E43FD57E0B916DA52BEAC84505B17BB6211C6DC2B5E58EC",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "87E42D81B5FF78AF46C232AD6C8F624BD36CB5E2DD030030F5F1968B41987F63",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "32B0D0740FFD7E62C659594955584EB943DD9E474CB3BC0CBFA6996FABB96D99",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        }
+      ]
+    },
+    {
+      "inputKey": "cb0d235eb6e5d8b2c2dc",
+      "scene": "constellation-labeled-final-0b2eb1a3",
+      "sourceStream": "injected",
+      "exploratoryOnly": true,
+      "manifestSha256": "1B130824E47B3A8CC53947248B1A3B24A32873FF933069A3D9AE527DBFAEA596",
+      "evaluationSha256": "A0679DD971234ED576C8E43C61FE91875A8DA45B22509A85BD8BC94FD8889C42",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        2,
+        2,
+        2
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "9336B572F4A11F9CA9C1D51976DC3786B5F3F2DF661AAABD9F7300468DB0A1D6",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "F1D611CA295C56FCEADB778EFC29BD4E6798290F372DC34750122BF57EE7D669",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "787DDB4E5E40AED0F99C6A8BB76890486BDEA89763115524B2C75CFB43934517",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 2,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "94D3B55563C54CB44F71F7C96440C572BC2374FC36F68FA4F348FF003FE234AC",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.00549581483081371,
+                      "maximumPerpendicularPixels": 0.008336465966241255,
+                      "unorderedMaximumEndpointErrorPixels": 0.4589234011919348
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "AA5B4DF44335FD450FC73F3EB363E4F11B81763D16A34D4AC7DEE485C28947D9",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 5.288727226291907,
+                      "maximumPerpendicularPixels": 9.452813359925017,
+                      "unorderedMaximumEndpointErrorPixels": 54.62730606506558
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "component": 2,
+              "alternatives": [
+                {
+                  "productSha256": "94D3B55563C54CB44F71F7C96440C572BC2374FC36F68FA4F348FF003FE234AC",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 36.309494493561836,
+                      "maximumPerpendicularPixels": 41.52053609708109,
+                      "unorderedMaximumEndpointErrorPixels": 54.227704028475685
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "AA5B4DF44335FD450FC73F3EB363E4F11B81763D16A34D4AC7DEE485C28947D9",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.014651826276697468,
+                      "maximumPerpendicularPixels": 0.020473877821928374,
+                      "unorderedMaximumEndpointErrorPixels": 1.5341768034745051
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "87835C21D13D0C4976131C49989233CA2A1981B8063BD223D1065AC7902557F7",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 2,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "F3775B4C74C1D23C4FC3B13273CE8E251419EB0D8374FA7472C0C069070A2397",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 14.70220744457754,
+                      "maximumPerpendicularPixels": 19.589404819458686,
+                      "unorderedMaximumEndpointErrorPixels": 79.4931465899502
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "39ED230BB1113E523896082824FA8002CC696AC0F627843656DBFCE3C32D1739",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.0064904417873504604,
+                      "maximumPerpendicularPixels": 0.009530564484199642,
+                      "unorderedMaximumEndpointErrorPixels": 1.2618410435623255
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "component": 2,
+              "alternatives": [
+                {
+                  "productSha256": "F3775B4C74C1D23C4FC3B13273CE8E251419EB0D8374FA7472C0C069070A2397",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.015529055869215621,
+                      "maximumPerpendicularPixels": 0.03565188014321595,
+                      "unorderedMaximumEndpointErrorPixels": 1.4765210019647268
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "39ED230BB1113E523896082824FA8002CC696AC0F627843656DBFCE3C32D1739",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 46.040023537170114,
+                      "maximumPerpendicularPixels": 50.93566822937872,
+                      "unorderedMaximumEndpointErrorPixels": 78.03553053232415
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "2CA6B3DFC957F47AE3F2880E09E8B20A20BAFE4D037E4E14C3E21990942D26AC",
+          "eligibleAlternatives": 2,
+          "measuredComponents": 2,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "F4069EF34FA4283DA3FD8E574EE7BAFBF146F25A26AFDD89D161C4845ED1FF71",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 24.2965108494363,
+                      "maximumPerpendicularPixels": 29.13964708210645,
+                      "unorderedMaximumEndpointErrorPixels": 102.74807234650832
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "D890581E2FEB87F120C45894260BF54668CD5214293D1EFAF9FB61D50E91FD9D",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.014042969141838458,
+                      "maximumPerpendicularPixels": 0.02166853509808772,
+                      "unorderedMaximumEndpointErrorPixels": 0.378256133988941
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "component": 2,
+              "alternatives": [
+                {
+                  "productSha256": "F4069EF34FA4283DA3FD8E574EE7BAFBF146F25A26AFDD89D161C4845ED1FF71",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.03014697135997902,
+                      "maximumPerpendicularPixels": 0.06497887156360169,
+                      "unorderedMaximumEndpointErrorPixels": 0.8661046209701379
+                    }
+                  ]
+                },
+                {
+                  "productSha256": "D890581E2FEB87F120C45894260BF54668CD5214293D1EFAF9FB61D50E91FD9D",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 54.75677246266474,
+                      "maximumPerpendicularPixels": 59.31437429431719,
+                      "unorderedMaximumEndpointErrorPixels": 102.77832583678156
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "inputKey": "8cab2244a73a3736dccd",
+      "scene": "inactive-labeled-final-0b2eb1a3",
+      "sourceStream": "control",
+      "exploratoryOnly": true,
+      "manifestSha256": "ACEAEF6BDA87570D202927C6FF69A82A4EA401DB6A5D421542EF2A6E3587559E",
+      "evaluationSha256": "BE0E62B2171AD7951DF2EF78C1EBBB2FD838FC357A427284E0C3BDA52BC518C3",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        0,
+        0,
+        0
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "F5641828F0D5F6AD193B6DCA6F3061025C6E17C5B22B5555B9C84835A7720E17",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "A7A25278E39A5726D362BF5303B0BE6FDDA7227F94E72577BB2B06C1F4BF2403",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "9650C7927B092F5736297F3B857F5E7C281BEBD814E642AD6D337740E5332501",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "AFF9DA3721CBA0E286F0FE348EC94BFE77AB30B114AFAD8BA029128CA6B02A17",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "ED24159DD6F77154654F99E229EEE99F81D8F4488D0C8E005E34BC117D5F49D8",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        }
+      ]
+    },
+    {
+      "inputKey": "bab84089a2e6edd9071e",
+      "scene": "inactive-labeled-final-0b2eb1a3",
+      "sourceStream": "injected",
+      "exploratoryOnly": true,
+      "manifestSha256": "CA8ED80D5D8B70D11C0357936914AA97CF61085F8A72B9AC083E9F6315FBEE93",
+      "evaluationSha256": "45DB5FC7AACD220FD99965A160F75F91502E1BCCD6B7FD76F59F8D113F7A7D7C",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        1,
+        1,
+        1
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "456578A5191A2C1D8C4BBB0F5D74A7F3F787F1B5760C451A48D2B929263A7983",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "E35659D3954570E571CFDA9C86F3397F3F0A0B54EC769838256F8B5B029B99DE",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "A535AF0E539A9413CBAC7129172D9D033D869BD85FAB4EC4C4B7AA25F8B2122D",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "DBBC648262070C0913662FB609D3B8D0E3D86B72D1C2FF7BEE3D2C742B7CABF4",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.05386673268856593,
+                      "maximumPerpendicularPixels": 0.10042602758500595,
+                      "unorderedMaximumEndpointErrorPixels": 1.352376903516405
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "D75CD28E9581706A22316772A425F74EECCD499FA26E91DAFE9FB965D3EB8B36",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "4ADCF66B7A3613326EE61AF403CB70CA5EB68B6955E4D9D87AC17AB92C1D1129",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.030157597158245876,
+                      "maximumPerpendicularPixels": 0.04594957208920479,
+                      "unorderedMaximumEndpointErrorPixels": 1.115350848175703
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "0F97CA3FCC0E0AD80E27C5B41CD3941AEEB83A0969191C583A75F0D056177AE4",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "62A5DD30BF15D8A2DBEF723CAB002FCB5E119592D026F3018F8DB27A05E30A87",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 0.02970704123212291,
+                      "maximumPerpendicularPixels": 0.0360273777729988,
+                      "unorderedMaximumEndpointErrorPixels": 1.9510956756531217
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "inputKey": "686ef62ab251556d6776",
+      "scene": "synthetic-fade-labeled-final",
+      "sourceStream": "injected",
+      "exploratoryOnly": true,
+      "manifestSha256": "8980EB53C2205C3904589B2FBC03E5606B2DCE83376C21DE51A9B60D23E83309",
+      "evaluationSha256": "84E1B96E7B884D3A198002EFBD30FD17B9A4FF6DB563104D068D24615DA51EFB",
+      "statuses": [
+        "missing",
+        "missing",
+        "produced",
+        "produced",
+        "produced"
+      ],
+      "componentCounts": [
+        null,
+        null,
+        1,
+        0,
+        0
+      ],
+      "filesReadVerified": true,
+      "deterministicBytes": true,
+      "comparisons": [
+        {
+          "captureSequence": 1,
+          "reportSha256": "98CE84FDCE08035E2D403980D0110F63DAF286436397E7F32862CC5A35C8D173",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 2,
+          "reportSha256": "E05A97A7281A1908159F2CF7E2726B208B198E60437A3C0B792D5A0E58A5EBCB",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 3,
+          "reportSha256": "EBD0064628E5F3484DFA39EBE868473B7582EC33C6C223EDFFE45F1683C30C2D",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 1,
+          "residuals": [
+            {
+              "component": 1,
+              "alternatives": [
+                {
+                  "productSha256": "FFABDD4C757A63583FB699BB064B409E5CC8E3362628FA6AF868DCB94B80472D",
+                  "segments": [
+                    {
+                      "segment": 0,
+                      "rmsPerpendicularPixels": 6.14688376849295,
+                      "maximumPerpendicularPixels": 11.051931194284279,
+                      "unorderedMaximumEndpointErrorPixels": 11.075318207495881
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "captureSequence": 4,
+          "reportSha256": "F7C7AF31CB80FB2A04604BE785D12D09E1C6D222EBBC166E7ECE9D4345EDF38B",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        },
+        {
+          "captureSequence": 5,
+          "reportSha256": "D2FC5C8C3D1BAE658554185A5322E71D3C127903F4AB1F6629279FE65BBC3A94",
+          "eligibleAlternatives": 1,
+          "measuredComponents": 0,
+          "residuals": []
+        }
+      ]
+    }
+  ],
+  "variants": {
+    "commands": 10,
+    "allPass": true,
+    "semantics": "Dropped/restart cases retain actual raw bytes, timestamps and source sequence IDs. Observer/geometry variants deliberately withhold or mismatch only public facts; reported as explicit unavailable comparison tests, not new independent captures or accuracy samples."
+  },
+  "limitations": [
+    "Existing published exploratory/tuning scenes only; derivatives share source groups.",
+    "640x640 RGGB16 native12; explicit empty star/sky/horizon/obstruction/bad-pixel masks and configured aperture.",
+    "Synthetic brightness, configured geometry and estimated logical timing; no accepted measured uncertainty.",
+    "Raw-only evaluator and separate canonical comparison; research residuals retain every measured component and supplied hypothesis.",
+    "No heldout accuracy/sensitivity, full-population completeness, production classification/persistence or five-second cadence claim."
+  ]
+}

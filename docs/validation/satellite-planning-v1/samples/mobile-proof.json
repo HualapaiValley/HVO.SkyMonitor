@@ -1,0 +1,23 @@
+{
+  "viewport": [
+    390,
+    844
+  ],
+  "documentWidth": 390,
+  "overflow": false,
+  "openProvenance": 2,
+  "pathStroke": "1px",
+  "anchors": [
+    "3",
+    "3"
+  ],
+  "consoleErrors": 0,
+  "sourceHead": "0a249abd5eb772709d08ee45a010ac983dce6f92",
+  "screenshot": "starlinks-65283-mobile-provenance.png",
+  "tableOverflow": {
+    "clientWidth": 311,
+    "scrollWidth": 928,
+    "overflowX": "auto",
+    "pageOverflow": false
+  }
+}

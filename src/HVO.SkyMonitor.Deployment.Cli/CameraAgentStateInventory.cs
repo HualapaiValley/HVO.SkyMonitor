@@ -48,7 +48,7 @@ internal static class CameraAgentStateInventory
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return (ConfiguredStores(paths, replayProfile),
-                $"the storage roots in the journal ({Redaction.SafeDiagnostic(exception.Message)})");
+                $"the storage roots in the journal ({CameraAgentStateDiagnostics.Reason(exception.Message)})");
         }
     }
 
@@ -69,7 +69,7 @@ internal static class CameraAgentStateInventory
             if (!IsNormalizedAbsolute(root))
                 throw new InstallerException(fromJournal
                     ? "A CameraAgent capture-schedule revision names a storage root that is not an absolute, normalized path, so its outbox cannot be found for a snapshot."
-                    : $"The CameraAgent storage root '{root}' is not an absolute, normalized path, so its outbox cannot be found for a snapshot; correct the configuration before upgrading.");
+                    : $"The CameraAgent storage root '{CameraAgentStateDiagnostics.Reason(root)}' is not an absolute, normalized path, so its outbox cannot be found for a snapshot; correct the configuration before upgrading.");
             var trimmed = root.TrimEnd('/');
             var mount = mounts.FirstOrDefault(mount => trimmed == mount.Container || trimmed.StartsWith(mount.Container + "/", StringComparison.Ordinal));
             if (mount.Container is null) continue;

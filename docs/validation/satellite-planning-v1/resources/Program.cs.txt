@@ -1,0 +1,102 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
+using HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
+
+if (args.Length != 3 || args[1] is not ("core" or "facade")) throw new ArgumentException("REPO core|facade NEW_JSON");
+var repo = Path.GetFullPath(args[0]); var mode = args[1]; var output = Path.GetFullPath(args[2]);
+if (File.Exists(output)) throw new ArgumentException("Use a new result path.");
+var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+options.Converters.Add(new JsonStringEnumConverter());
+var rows = new List<object>(); var inputs = new List<object>();
+foreach (var (name, site, snapshotName, filter, start, wanted) in new[]
+{
+    ("iss", "seattle", "six-facts", "25544", new DateTimeOffset(2026,10,20,12,55,0,TimeSpan.Zero), new[]{"25544"}),
+    ("starlinks", "hvo", "two-starlinks", "starlink", new DateTimeOffset(2026,10,20,3,55,0,TimeSpan.Zero), new[]{"56838","65283"})
+})
+{
+    var fixture = Path.Combine(repo,"tests","fixtures","orbital-prediction-v1");
+    byte[] Bytes(params string[] path) => File.ReadAllBytes(Path.Combine(new[]{fixture}.Concat(path).ToArray()));
+    var parsed = OrbitalSnapshot.Parse(Bytes("virtual-camera","snapshots",snapshotName,"manifest.json"),
+        Bytes("virtual-camera","snapshots",snapshotName,"records.json"));
+    var snapshot = parsed.Snapshot ?? throw new InvalidOperationException(parsed.Reason);
+    var time = OrbitalTimeData.FromFinals2000A(Bytes("time","predicted-2026.finals2000A"),Bytes("time","leap-seconds.list"));
+    var input = new PlanningTestInputs(realEngine:true); input.Snapshots.Current=snapshot; input.Times.Current=time;
+    input.Engine.Search=null; input.Engine.Arc=null; input.Sky.Transform=null;
+    input.Time.Now = new DateTimeOffset(2026,10,20,3,0,0,TimeSpan.Zero);
+    var config = JsonSerializer.Deserialize<CameraModuleConfig>(Bytes("virtual-camera","settings-"+site+".json"),options)!;
+    var location = config.Observatory;
+    input.Configuration.Value = config with { DeploymentLocation = DeploymentLocationSnapshot.Create(
+        "retained-"+site+"-virtual-site",1,"startup-seed",null,DateTimeOffset.UnixEpoch,null,
+        location.LatitudeDegrees,location.LongitudeDegrees,location.ElevationMeters,location.TimeZoneId) };
+    var scene = await input.Sky.ProjectAsync(start,CancellationToken.None);
+    var request = new CameraAgentSatellitePassSearchRequest(start,start.AddHours(1),filter,0,
+        scene.Observer.CanonicalSha256,scene.Geometry.RigProfileHashSha256);
+    var query = new OrbitalPassQuery(new(OrbitalPredictionUse.Diagnostic,snapshot,
+        new OrbitalSelectionPolicy([new("celestrak:gp:active",0)],false),new(start,start.AddHours(1)),
+        snapshot.ObjectIdentities.Where(x=>wanted.Contains(x.CatalogNumber,StringComparer.Ordinal)).ToArray(),
+        new(scene.Observer.LatitudeDegrees,scene.Observer.LongitudeDegrees,scene.Observer.ElevationMeters),
+        OrbitalPredictionModel.Create(time,assumeEllipsoidalHeight:true),CameraAgentSatellitePlanner.SearchBounds),0);
+    inputs.Add(new{name,snapshot=snapshot.Manifest.ManifestSha256,time.EarthOrientationSha256,time.LeapSecondsSha256,
+        scene.Observer.CanonicalSha256,scene.Geometry.RigProfileHashSha256,query.Request.Interval,wanted});
+    async Task<(string Hash,int Passes,int Samples,long Evaluations)> Run()
+    {
+        var hashes=new List<string>(); int samples=0;long evaluations=0;
+        if(mode=="core")
+        {
+            var engine=new OrbitalPredictionEngine(time,input.Time);
+            var result=await engine.FindPassesAsync(query,CancellationToken.None);
+            if(result.Status!=OrbitalExecutionStatus.Complete || result.Products.Count!=wanted.Length)throw new InvalidOperationException("Core search incomplete.");
+            evaluations+=result.PropagationEvaluations;
+            foreach(var pass in result.Products.OrderBy(x=>x.ProductSha256,StringComparer.Ordinal))
+            {
+                hashes.Add(pass.ProductSha256);
+                var detail=await engine.PredictPassArcAsync(new(query,pass,CameraAgentSatellitePlanner.ArcBounds),CancellationToken.None);
+                if(detail.Status!=OrbitalExecutionStatus.Complete || detail.Products.Count!=1)throw new InvalidOperationException("Core arc incomplete.");
+                var arc=detail.Products.Single();hashes.Add(arc.ProductSha256);samples+=arc.Samples.Count;evaluations+=detail.PropagationEvaluations;
+            }
+        }
+        else
+        {
+            var response=await input.Planner.SearchAsync(request,CancellationToken.None);
+            var view=response.Value ?? throw new InvalidOperationException(response.Message);
+            if(view.Prediction.Status!=OrbitalExecutionStatus.Complete || view.Passes.Count!=wanted.Length)throw new InvalidOperationException("Facade search incomplete.");
+            evaluations+=view.Prediction.PropagationEvaluations;
+            foreach(var row in view.Passes.OrderBy(x=>x.Pass.ProductSha256,StringComparer.Ordinal))
+            {
+                hashes.Add(row.Pass.ProductSha256);
+                var responseArc=await input.Planner.GetArcAsync(view.SearchIdentitySha256,row.Pass.ProductSha256,CancellationToken.None);
+                var detail=responseArc.Value?.Prediction ?? throw new InvalidOperationException(responseArc.Message);
+                if(detail.Status!=OrbitalExecutionStatus.Complete || detail.Products.Count!=1)throw new InvalidOperationException("Facade arc incomplete.");
+                var arc=detail.Products.Single();hashes.Add(arc.ProductSha256);samples+=arc.Samples.Count;evaluations+=detail.PropagationEvaluations;
+            }
+        }
+        return(Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join("|",hashes)))),wanted.Length,samples,evaluations);
+    }
+    for(int warm=0;warm<2;warm++)await Run();
+    for(int iteration=0;iteration<5;iteration++)
+    {
+        using var process=Process.GetCurrentProcess();process.Refresh(); var workingBefore=process.WorkingSet64;
+        var cpuBefore=process.TotalProcessorTime;var allocatedBefore=GC.GetTotalAllocatedBytes(true);var readsBefore=input.Snapshots.Reads;
+        var timer=Stopwatch.StartNew();var value=await Run();timer.Stop();
+        var allocated=GC.GetTotalAllocatedBytes(true)-allocatedBefore;process.Refresh();
+        rows.Add(new{name,mode,iteration,elapsedMilliseconds=timer.Elapsed.TotalMilliseconds,
+            cpuMilliseconds=(process.TotalProcessorTime-cpuBefore).TotalMilliseconds,allocatedBytes=allocated,
+            workingBeforeBytes=workingBefore,workingAfterBytes=process.WorkingSet64,processPeakWorkingSetBytes=process.PeakWorkingSet64,
+            snapshotReadCalls=input.Snapshots.Reads-readsBefore,value.Hash,value.Passes,value.Samples,value.Evaluations});
+    }
+}
+var facts=new{schema="hvo-local-planning-warm-resource-v1",mode,startedMeaning="Two warmups per case, then five paired-policy samples; each process runs one mode.",
+    utc=DateTimeOffset.UtcNow,runtimeVersion=Environment.Version.ToString(),processors=Environment.ProcessorCount,
+    serverGc=System.Runtime.GCSettings.IsServerGC,inputs,rows,
+    limitations=new[]{"Warm immutable in-memory snapshot/time adapters, empty celestial catalog and nominal reduced rig only; no #528 reader I/O or source parsing in the timed boundary.",
+        "Core search plus all selected arcs is the baseline; facade adds authoritative context/source verification, single-flight admission and original-session retention.",
+        "Process-wide allocations include async work. CPU granularity and peak RSS do not establish statistical equivalence or isolate per-query retained memory.",
+        "No Blazor rendering/auth/HTTP/capture pipeline cost, live full-population result or five-second qualification."}};
+Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+File.WriteAllText(output,JsonSerializer.Serialize(facts,new JsonSerializerOptions(options){WriteIndented=true}));
+Console.WriteLine(mode+" "+output);

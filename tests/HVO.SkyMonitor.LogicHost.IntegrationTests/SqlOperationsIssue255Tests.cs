@@ -1182,7 +1182,8 @@ public sealed class SqlOperationsIssue255Tests
         _ => 3
     };
 
-    private static async Task<ScriptResult> ExecuteScriptAsync(SqlConnection connection, string fileName, IReadOnlyDictionary<string, string> variables)
+    internal static async Task<ScriptResult> ExecuteScriptAsync(SqlConnection connection, string fileName,
+        IReadOnlyDictionary<string, string> variables, Func<string, string>? prepareTestScript = null)
     {
         var path = Path.Combine(FindRepositoryRoot(), "deploy", "sql", fileName);
         var script = await File.ReadAllTextAsync(path).ConfigureAwait(false);
@@ -1194,6 +1195,8 @@ public sealed class SqlOperationsIssue255Tests
         }
         if (script.Contains("$(", StringComparison.Ordinal))
             throw new AssertFailedException("A shipped SQL script has an unresolved SQLCMD variable.");
+        if (prepareTestScript is not null)
+            script = prepareTestScript(script);
 
         try
         {
@@ -1555,15 +1558,15 @@ public sealed class SqlOperationsIssue255Tests
         return values;
     }
 
-    private static string FindRepositoryRoot()
+    internal static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
             if (File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx"))) return directory.FullName;
         throw new InvalidOperationException("The repository root could not be found.");
     }
 
-    private sealed record ScriptResult(IReadOnlyList<ScriptResultSet> ResultSets);
-    private sealed record ScriptResultSet(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows);
+    internal sealed record ScriptResult(IReadOnlyList<ScriptResultSet> ResultSets);
+    internal sealed record ScriptResultSet(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows);
     private sealed record PermissionEvidence(string Permission, string Scope, string Result);
     private sealed record XeWrapperResult(long ExitCode, string StandardOutput, string StandardError);
     private sealed record SanitizedEvent(string EventKind, string Attribution, string ParticipantSet, DateTimeOffset ObservedAtUtc);

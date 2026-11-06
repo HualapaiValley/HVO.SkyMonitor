@@ -1,0 +1,529 @@
+{
+  "schema": "issue-1643-resources-v1",
+  "environment": {
+    "framework": ".NET 10.0.13",
+    "architecture": "X64",
+    "ProcessorCount": 12
+  },
+  "bounds": {
+    "rawBytes": 33554432,
+    "readBytes": 46137344,
+    "contextBytes": 2097152,
+    "solutionBytes": 131072,
+    "fitMilliseconds": 20000,
+    "captureStride": 60
+  },
+  "comparisonCeilings": {
+    "producerMilliseconds": 5000,
+    "producerAllocationBytes": 209715200,
+    "readMilliseconds": 500,
+    "readAllocationBytes": 104857600
+  },
+  "limitation": "512-square generated raw, local filesystem and SQLite; process counters include runtime work. No physical/full-resolution/capture-interference qualification.",
+  "rows": [
+    {
+      "enabled": false,
+      "index": 0,
+      "cold": true,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 272.9243,
+        "cpuMilliseconds": 262.836,
+        "allocatedBytes": 30495592,
+        "workingSetBytes": 250126336,
+        "workingSetDeltaBytes": 21893120,
+        "peakWorkingSetBytes": 250126336,
+        "io": {
+          "rchar": 1685582,
+          "wchar": 811578,
+          "syscr": 357,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 2.6573,
+        "cpuMilliseconds": 3.2029999999999745,
+        "allocatedBytes": 53840,
+        "workingSetBytes": 250458112,
+        "workingSetDeltaBytes": 331776,
+        "peakWorkingSetBytes": 250458112,
+        "io": {
+          "rchar": 8561,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 1,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 192.9183,
+        "cpuMilliseconds": 272.6880000000001,
+        "allocatedBytes": 28469408,
+        "workingSetBytes": 245096448,
+        "workingSetDeltaBytes": -5156864,
+        "peakWorkingSetBytes": 255766528,
+        "io": {
+          "rchar": 1685454,
+          "wchar": 811578,
+          "syscr": 337,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.1651,
+        "cpuMilliseconds": 0.3739999999997963,
+        "allocatedBytes": 53448,
+        "workingSetBytes": 245096448,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 255766528,
+        "io": {
+          "rchar": 8564,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 2,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 188.2472,
+        "cpuMilliseconds": 265.94799999999987,
+        "allocatedBytes": 27976992,
+        "workingSetBytes": 267440128,
+        "workingSetDeltaBytes": 11214848,
+        "peakWorkingSetBytes": 267440128,
+        "io": {
+          "rchar": 1691907,
+          "wchar": 811578,
+          "syscr": 349,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.2379,
+        "cpuMilliseconds": 0.6260000000002037,
+        "allocatedBytes": 65832,
+        "workingSetBytes": 267448320,
+        "workingSetDeltaBytes": 8192,
+        "peakWorkingSetBytes": 267448320,
+        "io": {
+          "rchar": 8566,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 3,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 180.494,
+        "cpuMilliseconds": 209.9749999999999,
+        "allocatedBytes": 27961448,
+        "workingSetBytes": 252059648,
+        "workingSetDeltaBytes": -11665408,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 1691909,
+          "wchar": 811578,
+          "syscr": 349,
+          "syscw": 252,
+          "read_bytes": 131072,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.199,
+        "cpuMilliseconds": 0.44399999999996,
+        "allocatedBytes": 53464,
+        "workingSetBytes": 252059648,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 8574,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 4,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 184.8228,
+        "cpuMilliseconds": 190.98200000000043,
+        "allocatedBytes": 27890432,
+        "workingSetBytes": 256798720,
+        "workingSetDeltaBytes": 3014656,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 1684392,
+          "wchar": 811578,
+          "syscr": 335,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.1738,
+        "cpuMilliseconds": 0.7659999999996217,
+        "allocatedBytes": 53472,
+        "workingSetBytes": 256798720,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 8579,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": false,
+      "index": 5,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 148.7485,
+        "cpuMilliseconds": 139.2420000000002,
+        "allocatedBytes": 27898760,
+        "workingSetBytes": 258981888,
+        "workingSetDeltaBytes": 2367488,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 1691920,
+          "wchar": 811578,
+          "syscr": 349,
+          "syscw": 252,
+          "read_bytes": 0,
+          "write_bytes": 831488,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 0.1979,
+        "cpuMilliseconds": 0.44399999999950523,
+        "allocatedBytes": 53896,
+        "workingSetBytes": 258981888,
+        "workingSetDeltaBytes": 0,
+        "peakWorkingSetBytes": 267407360,
+        "io": {
+          "rchar": 8578,
+          "wchar": 0,
+          "syscr": 43,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": null,
+      "solutionBytes": 0,
+      "rootBytes": 2067940
+    },
+    {
+      "enabled": true,
+      "index": 0,
+      "cold": true,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 2067.5373,
+        "cpuMilliseconds": 2617.165,
+        "allocatedBytes": 1313789056,
+        "workingSetBytes": 315330560,
+        "workingSetDeltaBytes": 54272000,
+        "peakWorkingSetBytes": 321392640,
+        "io": {
+          "rchar": 2010737,
+          "wchar": 1050532,
+          "syscr": 699,
+          "syscw": 308,
+          "read_bytes": 0,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 42.8211,
+        "cpuMilliseconds": 50.84900000000016,
+        "allocatedBytes": 22516880,
+        "workingSetBytes": 294809600,
+        "workingSetDeltaBytes": -20520960,
+        "peakWorkingSetBytes": 321392640,
+        "io": {
+          "rchar": 2495089,
+          "wchar": 0,
+          "syscr": 265,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 1,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1570.4994,
+        "cpuMilliseconds": 1914.1850000000013,
+        "allocatedBytes": 1306394784,
+        "workingSetBytes": 321875968,
+        "workingSetDeltaBytes": 29368320,
+        "peakWorkingSetBytes": 331821056,
+        "io": {
+          "rchar": 2007841,
+          "wchar": 1050517,
+          "syscr": 693,
+          "syscw": 306,
+          "read_bytes": 0,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 28.681,
+        "cpuMilliseconds": 33.253999999998996,
+        "allocatedBytes": 22188872,
+        "workingSetBytes": 321888256,
+        "workingSetDeltaBytes": 12288,
+        "peakWorkingSetBytes": 331821056,
+        "io": {
+          "rchar": 2496139,
+          "wchar": 0,
+          "syscr": 266,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 2,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1558.9738,
+        "cpuMilliseconds": 1794.893,
+        "allocatedBytes": 1305646336,
+        "workingSetBytes": 331657216,
+        "workingSetDeltaBytes": 30138368,
+        "peakWorkingSetBytes": 346796032,
+        "io": {
+          "rchar": 2031602,
+          "wchar": 1050517,
+          "syscr": 737,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 37.4565,
+        "cpuMilliseconds": 49.63500000000022,
+        "allocatedBytes": 22164176,
+        "workingSetBytes": 326995968,
+        "workingSetDeltaBytes": -4661248,
+        "peakWorkingSetBytes": 346796032,
+        "io": {
+          "rchar": 2497217,
+          "wchar": 0,
+          "syscr": 268,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 3,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1499.5114,
+        "cpuMilliseconds": 1564.326000000001,
+        "allocatedBytes": 1305634776,
+        "workingSetBytes": 339570688,
+        "workingSetDeltaBytes": 32972800,
+        "peakWorkingSetBytes": 353513472,
+        "io": {
+          "rchar": 2004572,
+          "wchar": 1050517,
+          "syscr": 687,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 26.3191,
+        "cpuMilliseconds": 32.27799999999843,
+        "allocatedBytes": 22169200,
+        "workingSetBytes": 317759488,
+        "workingSetDeltaBytes": -21811200,
+        "peakWorkingSetBytes": 353513472,
+        "io": {
+          "rchar": 2497218,
+          "wchar": 0,
+          "syscr": 268,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 4,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1510.7732,
+        "cpuMilliseconds": 1584.7039999999997,
+        "allocatedBytes": 1305627136,
+        "workingSetBytes": 349560832,
+        "workingSetDeltaBytes": 35536896,
+        "peakWorkingSetBytes": 353513472,
+        "io": {
+          "rchar": 2004573,
+          "wchar": 1050517,
+          "syscr": 687,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 24.1283,
+        "cpuMilliseconds": 27.35200000000077,
+        "allocatedBytes": 22157136,
+        "workingSetBytes": 353312768,
+        "workingSetDeltaBytes": 3751936,
+        "peakWorkingSetBytes": 353513472,
+        "io": {
+          "rchar": 2473568,
+          "wchar": 0,
+          "syscr": 224,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    },
+    {
+      "enabled": true,
+      "index": 5,
+      "cold": false,
+      "producerAndPersistence": {
+        "elapsedMilliseconds": 1500.4616,
+        "cpuMilliseconds": 1585.096999999998,
+        "allocatedBytes": 1305640048,
+        "workingSetBytes": 355745792,
+        "workingSetDeltaBytes": -13881344,
+        "peakWorkingSetBytes": 377585664,
+        "io": {
+          "rchar": 2025065,
+          "wchar": 1050517,
+          "syscr": 725,
+          "syscw": 306,
+          "read_bytes": 4096,
+          "write_bytes": 1085440,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "read": {
+        "elapsedMilliseconds": 27.4503,
+        "cpuMilliseconds": 57.53900000000067,
+        "allocatedBytes": 22168016,
+        "workingSetBytes": 332656640,
+        "workingSetDeltaBytes": -23089152,
+        "peakWorkingSetBytes": 377585664,
+        "io": {
+          "rchar": 2495068,
+          "wchar": 0,
+          "syscr": 264,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "solutionIdentity": "959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9",
+      "solutionBytes": 18306,
+      "rootBytes": 2306879
+    }
+  ]
+}

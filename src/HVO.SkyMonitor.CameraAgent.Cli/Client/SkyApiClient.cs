@@ -48,7 +48,7 @@ internal sealed class SkyApiClient : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         Options = options;
-        _http = new HttpClient(options.CreateHandler?.Invoke() ?? CreateHandler(), disposeHandler: true)
+        _http = new HttpClient(options.CreateHandler?.Invoke() ?? CreateHandler(options.BaseAddress), disposeHandler: true)
         {
             BaseAddress = options.BaseAddress,
             Timeout = Timeout.InfiniteTimeSpan
@@ -63,11 +63,15 @@ internal sealed class SkyApiClient : IDisposable
 
     public SkyConnectionOptions Options { get; }
 
-    // Redirects are not followed, so the key is never sent anywhere but the address given, and no cookie is kept.
-    private static SocketsHttpHandler CreateHandler() => new()
+    // Redirects are not followed, so the key is never sent anywhere but the address given, and no cookie is kept. A
+    // loopback address is reached directly, never through a proxy: an environment proxy (http_proxy) does not bypass
+    // loopback, so the key would reach the proxy in clear, and the request the proxy's own loopback, not this machine
+    // (#1404).
+    public static SocketsHttpHandler CreateHandler(Uri baseAddress) => new()
     {
         AllowAutoRedirect = false,
         UseCookies = false,
+        UseProxy = !baseAddress.IsLoopback,
         ConnectTimeout = TimeSpan.FromSeconds(10)
     };
 

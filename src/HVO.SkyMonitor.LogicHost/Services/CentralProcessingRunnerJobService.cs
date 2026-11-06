@@ -324,7 +324,8 @@ internal sealed partial class CentralProcessingRunnerJobService(
         CentralDerivativeJobLease lease,
         CancellationToken cancellationToken)
     {
-        var projectedAnnotation = lease.ProjectedScene is not null
+        var projectedAnnotation = lease.ProjectedScene is not null &&
+            string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
             ? await (projectedScenes ?? throw new CentralDerivativeJobStateException("Projected scene resolution is unavailable."))
                 .ResolveAsync(lease, jobService, cancellationToken).ConfigureAwait(false)
             : null;

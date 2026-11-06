@@ -12,7 +12,8 @@ set -euo pipefail
 # commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
-# remain the workflow's own unchanged steps, Required CI and review (see the
+# remain accepted gaps requiring workflow review; Required CI alone does not prove
+# supplemental TRX publication, catalog availability or checkout trust (see the
 # Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
 #
 # Each test project declares its cases in tests/<project>/test-categories.json,
@@ -68,6 +69,55 @@ coverage_job="$(job_block coverage)"
 errors=0
 fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
 
+# Split captured output without another input delivery (including a here-string
+# temporary file). Command substitutions already remove trailing newlines.
+split_lines() {
+  local -n result="$1"
+  local text="$2"
+  result=()
+  [[ -n "$text" ]] || return 0
+  while [[ "$text" == *$'\n'* ]]; do
+    result+=("${text%%$'\n'*}")
+    text="${text#*$'\n'}"
+  done
+  result+=("$text")
+}
+
+matches_line() {
+  local pattern="$1" line
+  local -a lines=()
+  split_lines lines "$2"
+  for line in "${lines[@]}"; do
+    [[ "$line" =~ $pattern ]] && return 0
+  done
+  return 1
+}
+
+# Optional grep scans distinguish clean absence (1) from an inspection error.
+# Check both pipeline statuses: failed input delivery is never clean absence.
+# Callers capture the output in an assignment checked by set -e/pipefail; use
+# consuming grep modes, not -q, so an early match cannot SIGPIPE the producer.
+optional_grep() {
+  local text="$1"
+  local -a statuses=()
+  shift
+  if printf '%s\n' "$text" | grep "$@"; then
+    return 0
+  else
+    statuses=("${PIPESTATUS[@]}")
+  fi
+  if ((statuses[0] == 0 && statuses[1] == 1)); then
+    return 0
+  fi
+  printf 'Unit selection: could not inspect input (delivery=%d, grep=%d).\n' "${statuses[@]}" >&2
+  if ((statuses[1] > 1)); then
+    return "${statuses[1]}"
+  fi
+  return 2
+}
+
+declare -a export_lines=() commands=() coverage_slots=() inventories=() projects=()
+
 [[ -n "$unit_job" ]] || { printf 'Unit selection: the unit job is missing from %s\n' "$workflow" >&2; exit 1; }
 [[ -n "$coverage_job" ]] || { printf 'Unit selection: the coverage job is missing from %s\n' "$workflow" >&2; exit 1; }
 
@@ -97,16 +147,26 @@ mapping_keys() { # mapping_keys <env-line-regex> <indent-of-keys>: keys of the m
 # inherited by the selecting steps, and so would a shell key anywhere in the Unit job.
 # shellcheck disable=SC2016
 key_pattern='(^|[^A-Za-z0-9_-])["'"'"']?%s["'"'"']?[[:space:]]*:'
-# The text is captured first: `grep -q` closing a pipe early would otherwise fail the
-# pipeline under pipefail and make a present key look absent.
-workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow" || true)"
-unit_text="$(grep -vE '^[[:space:]]*#' <<<"$unit_job" || true)"
+# Read failures are fatal. Optional-key matching stays in memory: a large
+# here-string can fail to create its temporary file inside an if condition and
+# otherwise be mistaken for a key that is absent (#1265). Match each line with
+# the original grep grammar: [[:space:]] must not consume a newline before `:`.
+if ! workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow")"; then
+  fail 'could not inspect workflow settings'
+  exit 1
+fi
+if ! unit_text="$(job_block unit | grep -vE '^[[:space:]]*#')"; then
+  fail 'could not inspect Unit job settings'
+  exit 1
+fi
 # shellcheck disable=SC2059
-if grep -qE "$(printf "$key_pattern" defaults)" <<<"$workflow_text"; then
+printf -v defaults_pattern "$key_pattern" defaults
+if matches_line "$defaults_pattern" "$workflow_text"; then
   fail 'the workflow must not set defaults (workflow or job scope), which the selecting steps would inherit'
 fi
 # shellcheck disable=SC2059
-if grep -qE "$(printf "$key_pattern" shell)" <<<"$unit_text"; then
+printf -v shell_pattern "$key_pattern" shell
+if matches_line "$shell_pattern" "$unit_text"; then
   fail 'the Unit job must not set a shell, which could stop a selecting command executing'
 fi
 workflow_env="$(mapping_keys '^env:[[:space:]]*$' '  ' < "$workflow" | sort | paste -sd, -)"
@@ -118,22 +178,25 @@ job_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort 
 # The one supported export is the catalog bundle path that the restore step verifies.
 # shellcheck disable=SC2016
 bundle_export='          printf '"'"'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n'"'"' "$bundle_path" >> "$GITHUB_ENV"'
-while IFS= read -r exporting; do
+exports="$(optional_grep "$unit_job" -E 'GITHUB_(ENV|PATH)')"
+split_lines export_lines "$exports"
+for exporting in "${export_lines[@]}"; do
   [[ "$exporting" == "$bundle_export" ]] ||
     fail "the Unit job exports environment through GITHUB_ENV or GITHUB_PATH beyond the catalog bundle, which could change the selection: ${exporting# }"
-done < <(grep -E 'GITHUB_(ENV|PATH)' <<<"$unit_job" || true)
+done
 
 # Evidence is bound and uploaded from TestResults/unit, so a selection that runs after
 # those steps passes while its TRX never reaches the artifact.
-bind_line="$(grep -nxF '      - name: Bind Unit evidence' <<<"$unit_job" | cut -d: -f1 || true)"
-upload_line="$(grep -nxF '      - name: Upload Unit evidence' <<<"$unit_job" | cut -d: -f1 || true)"
+bind_line="$(optional_grep "$unit_job" -nxF '      - name: Bind Unit evidence' | cut -d: -f1)"
+upload_line="$(optional_grep "$unit_job" -nxF '      - name: Upload Unit evidence' | cut -d: -f1)"
 if [[ -z "$bind_line" || -z "$upload_line" ]] || ((bind_line > upload_line)); then
   fail 'the Unit job must bind its evidence and then upload it, as steps named Bind Unit evidence and Upload Unit evidence'
 fi
 grep -qxF '          path: TestResults/unit/' <<<"$unit_job" ||
   fail 'the Unit evidence artifact must upload TestResults/unit/, where every selection writes its TRX'
 
-mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
+command_text="$(optional_grep "$unit_job" -E '^[[:space:]]+dotnet test tests/')"
+split_lines commands "$command_text"
 
 # Tag each line of a step read from stdin: ENV <entry> for its DOCKER_HOST scalar (the
 # only env a selecting step may set, so no step-level UNIT_FILTER or PATH override),
@@ -176,17 +239,27 @@ step_of() {
     END { flush() }
   ' <<<"$unit_job"
 }
-mapfile -t coverage_slots < <(grep -oE "TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml" <<<"$coverage_job" | sed -E 's#TestResults/unit/([a-z0-9-]+)/.*#\1#' || true)
+coverage_text="$(optional_grep "$coverage_job" -oE "TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml" | sed -E 's#TestResults/unit/([a-z0-9-]+)/.*#\1#')"
+split_lines coverage_slots "$coverage_text"
 
 declare -A expected=()
-while IFS= read -r inventory; do
+if ! inventory_text="$(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)"; then
+  fail 'could not inspect inventory paths'
+  exit 1
+fi
+split_lines inventories "$inventory_text"
+for inventory in "${inventories[@]}"; do
   unit="$(jq -r '.Unit' "$inventory")"
   ((unit > 0)) || continue
   dir="$(dirname "$inventory")"
-  mapfile -t projects < <(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')
+  if ! project_text="$(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')"; then
+    fail 'could not inspect project paths'
+    exit 1
+  fi
+  split_lines projects "$project_text"
   ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
   expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
-done < <(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)
+done
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
 
@@ -214,7 +287,7 @@ for project in "${!expected[@]}"; do
   # is rejected rather than interpreted, so a complete list cannot hide a selection
   # that never runs and an env-looking line inside a script is never read as env.
   parsed="$(validate_step <<<"$step")"
-  unsupported="$(grep '^BAD ' <<<"$parsed" | sed -n '1p' || true)"
+  unsupported="$(optional_grep "$parsed" '^BAD ' | sed -n '1p')"
   if [[ -n "$unsupported" ]]; then
     fail "$project command sits in a step outside the supported grammar, so its selection may not run: ${unsupported#BAD }"
   fi
@@ -273,13 +346,13 @@ while IFS='|' read -r job component name slot; do
   # Pin the supplemental command's supported arguments, including its own TRX-only
   # slot. The step grammar rejects conditions, shell operators and env overrides.
   required_command="          dotnet test $project --no-build --configuration Release --filter \"\$UNIT_FILTER\" --results-directory TestResults/unit/$slot --logger \"trx;LogFileName=unit-$slot.trx\""
-  count="$(grep -cxF -- "$required_command" <<<"$unit_job" || true)"
+  count="$(optional_grep "$unit_job" -cxF -- "$required_command")"
   if [[ "$count" != 1 ]]; then
     fail "$job must contain exactly one TRX-only supplemental Unit command for $project (found $count)"
   else
     command_line="$(grep -nxF -- "$required_command" <<<"$unit_job" | cut -d: -f1)"
-    build_line="$(grep -nxF "        run: ./scripts/ci:component-build $component" <<<"$unit_job" | cut -d: -f1 || true)"
-    upload_line="$(grep -nE '^      - name: Upload .* component evidence$' <<<"$unit_job" | cut -d: -f1 || true)"
+    build_line="$(optional_grep "$unit_job" -nxF "        run: ./scripts/ci:component-build $component" | cut -d: -f1)"
+    upload_line="$(optional_grep "$unit_job" -nE '^      - name: Upload .* component evidence$' | cut -d: -f1)"
     if [[ ! "$build_line" =~ ^[0-9]+$ || ! "$upload_line" =~ ^[0-9]+$ ]] ||
         ((command_line < build_line || command_line > upload_line)); then
       fail "$job supplemental command must follow its component build and precede its evidence upload"
@@ -290,7 +363,7 @@ while IFS='|' read -r job component name slot; do
       fail "$job supplemental step must use the supported grammar and exact Docker-disabled endpoint"
   fi
   # A second writer to this directory can overwrite the supplemental report.
-  writers="$(grep -Ec -- "^[[:space:]]+dotnet test .* --results-directory TestResults/unit/$slot( |$)" <<<"$unit_job" || true)"
+  writers="$(optional_grep "$unit_job" -Ec -- "^[[:space:]]+dotnet test .* --results-directory TestResults/unit/$slot( |$)")"
   [[ "$writers" == 1 ]] || fail "$job supplemental result slot $slot must have exactly one writer"
   for covered in "${coverage_slots[@]}"; do
     [[ "$covered" != "$slot" ]] || fail "$job supplemental result slot $slot collides with canonical coverage"

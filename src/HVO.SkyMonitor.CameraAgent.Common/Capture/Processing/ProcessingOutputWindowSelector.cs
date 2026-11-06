@@ -136,7 +136,7 @@ internal static class ProcessingOutputWindowSelector
         var expectedCompatibility = producerCompatibility
             ?? CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
         var selected = candidates
-            .Where(output => output.Compatibility == expectedCompatibility &&
+            .Where(output => IsCompatible(expectedCompatibility, output.Compatibility, output.Artifact.Recipe) &&
                              contracts.Any(contract => Matches(contract, output)))
             .Take(maximumHistory)
             .Select(static output => (output.OutputIdentitySha256, output.CaptureSequence, output.PayloadRelativePath))
@@ -247,10 +247,24 @@ internal static class ProcessingOutputWindowSelector
             ?.Compatibility;
     }
 
+    /// <summary>
+    /// A derived window member must have the producer's exact compatibility. A normalized gain (#1475) hides the
+    /// members' gains, so it is admitted only from an output of the mixed-gain recipe or of the rolling mean that
+    /// averaged such outputs; any other recipe's output claiming one is rejected, and every other window keeps gain as
+    /// a boundary.
+    /// </summary>
+    internal static bool IsCompatible(
+        ProcessingCompatibilityIdentity expected,
+        ProcessingCompatibilityIdentity candidate,
+        RecipeIdentityDescriptor candidateRecipe)
+        => candidate == expected &&
+           (!GainNormalizationCompatibility.IsNormalized(candidate) ||
+            GainNormalizationCompatibility.MayCarryNormalizedGain(candidateRecipe.Name, candidateRecipe.SemanticVersion));
+
     private static bool Matches(ProcessingGraphInputContract contract, DurableProcessingOutput output)
     {
         var productKind = output.ProductKind ??
-            (output.Artifact.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData);
+            (output.Descriptor is null && output.Artifact.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData);
         return (contract.Roles.IsDefaultOrEmpty || contract.Roles.Contains(output.Artifact.Role)) &&
                (contract.ProductKinds.IsDefaultOrEmpty || contract.ProductKinds.Contains(productKind)) &&
                (contract.Variants.IsDefaultOrEmpty || contract.Variants.Contains(output.Artifact.Variant, StringComparer.Ordinal)) &&

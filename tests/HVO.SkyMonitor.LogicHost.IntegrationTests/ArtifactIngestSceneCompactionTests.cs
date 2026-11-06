@@ -154,6 +154,11 @@ public sealed partial class ArtifactIngestTests
                     (item.Status == CentralDerivativeJobStatus.Pending || item.Status == CentralDerivativeJobStatus.RetryableFailure))
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
                     .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+            // The graph annotation waits on its optional measured-association node, terminalized above without output;
+            // convergence omits that auxiliary and re-derives the annotation's identity before it becomes claimable.
+            if (job.GraphExecutionId is { } expandedGraphId)
+                await scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>()
+                    .ConvergeAsync(expandedGraphId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
         }
         await using var workerScope = fixture.Factory.Services.CreateAsyncScope();
         var lease = await workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()

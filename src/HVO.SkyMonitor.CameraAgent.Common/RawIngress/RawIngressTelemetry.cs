@@ -10,7 +10,7 @@ public sealed class RawIngressTelemetry : IDisposable
     public const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.RawIngress";
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
-    private readonly Meter _meter = new(MeterName);
+    private readonly Meter _meter;
     private readonly RawIngressState _state;
     private readonly Counter<long> _committed;
     private readonly Counter<long> _committedBytes;
@@ -33,7 +33,14 @@ public sealed class RawIngressTelemetry : IDisposable
     private long _projectedSceneBacklog;
 
     public RawIngressTelemetry(RawIngressState state)
+        : this(new Meter(MeterName), state)
     {
+    }
+
+    /// <param name="meter">The meter owned and disposed by this instance.</param>
+    internal RawIngressTelemetry(Meter meter, RawIngressState state)
+    {
+        _meter = meter;
         _state = state;
         _committed = _meter.CreateCounter<long>("camera_agent.ingress.committed", "{capture}");
         _committedBytes = _meter.CreateCounter<long>("camera_agent.ingress.committed.bytes", "By");

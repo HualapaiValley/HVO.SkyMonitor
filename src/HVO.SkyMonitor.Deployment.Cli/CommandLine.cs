@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static class CommandLine
 {
-    private const string Executable = "hvo-sky-install";
+    private static string Executable => InstallerProgram.Current;
 
     /// <summary>The option that prints the installer's build identity; it is accepted only on its own.</summary>
     internal const string VersionOption = "--version";
@@ -54,55 +54,136 @@ internal static class CommandLine
 
     private static readonly string[] StateResetFlags = ["--json", "--plan", "--dry-run"];
 
-    private static readonly string[] LifecycleValueOptions =
-    [
-        "--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--operation-id", "--product-root",
-        "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256",
-        "--catalog-bundle", "--catalog-version"
-    ];
+    /// <summary>The options every lifecycle command that addresses one instance takes.</summary>
+    private static readonly string[] InstanceValueOptions = ["--instance-id", "--product-root"];
 
-    private static readonly string[] LifecycleFlags =
-        ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption];
+    /// <summary>The flags of every lifecycle command that changes something.</summary>
+    private static readonly string[] OperationFlags = ["--plan", "--dry-run", "--resume", "--json"];
 
     private static readonly CommandDefinition HostSetProductRoot =
-        new(["host", "set-product-root"], "<absolute-path>", [], ["--json"]);
+        new(["host", "set-product-root"], "<absolute-path>",
+            "Set the folder this host installs instances under, or repair its recorded mount.",
+            [], ["--json", "--repair"],
+            "With --repair, re-record the current mount of the same existing product root under the host-policy lock. Verify the backing filesystem first.");
 
     /// <summary>
-    /// Every command the parser accepts, in the order help lists them. Each parser reads its options from the same
-    /// lists, so help names exactly the options that parser admits.
+    /// Every command the parser accepts, in the order help lists them. Each parser reads its options from its command's
+    /// lists, so help names exactly the options that parser admits (#1384).
     /// </summary>
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
-        Lifecycle("status"),
-        new(["cameraagent", "install"], null, [.. AnswersValueOptions, .. InstallValueOptions], InstallFlags,
-            "--answers reads the install from a JSON answers file with \"schemaVersion\": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. " +
-            "--config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run. " +
+        new(["preflight"], null, "Validate split-host inventory and probe targets without remote mutation.",
+            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root"], ["--json"],
+            "Writes the existing schema-1 preflight manifest and evidence. Rejected inputs preserve prior evidence; accepted failed reruns record failure."),
+        new(["partial-prepare-cleanup"], null, "Inspect or recover an interrupted split-host prepare without creating containers.",
+            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--dry-run", "--json"],
+            "Requires the retained passed preflight and failed prepare. Specify --dry-run or --confirm RUN-ID; interrupted cleanup resumes with the same inputs."),
+        new(["existing-down"], null, "Stop a retained existing-services split-host run after an authenticated drain.",
+            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--preserve-state", "--delete-state", "--json"],
+            "Requires passed preflight, prepare and up. Existing services and runtime data are preserved; --delete-state is refused. Interrupted teardown resumes with the same inputs."),
+        new(["status"], null, "Show the installed instances, or the one --instance-id names.", InstanceValueOptions, ["--json"]),
+        new(["cameraagent", "install"], null,
+            "Install a CameraAgent instance, or change an installed one's container limits.",
+            [.. AnswersValueOptions, .. InstallValueOptions], InstallFlags,
+            "A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, " +
+            "--image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with " +
+            "the other value options. " + PlanScratchNote),
+        new(["cameraagent", "recover-owner"], null,
+            "Give an instance's owner a new temporary password.",
+            OwnerRecoveryValueOptions, OwnerRecoveryFlags),
+        new(["cameraagent", "preflight"], null,
+            "Check, changing nothing, that an instance's state can run its image or --image-ref.",
+            StatePreflightValueOptions, StatePreflightFlags),
+        new(["cameraagent", "reset-state"], null,
+            "Delete an uninstalled instance's local runtime state, keeping its configuration.",
+            StateResetValueOptions, StateResetFlags),
+        new(["cameraagent", "upgrade"], null,
+            "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
+            [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
+            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption],
             PlanScratchNote),
-        new(["cameraagent", "recover-owner"], null, OwnerRecoveryValueOptions, OwnerRecoveryFlags),
-        new(["cameraagent", "preflight"], null, StatePreflightValueOptions, StatePreflightFlags),
-        new(["cameraagent", "reset-state"], null, StateResetValueOptions, StateResetFlags),
-        Lifecycle("cameraagent", "upgrade"),
-        Lifecycle("cameraagent", "rollback"),
-        Lifecycle("cameraagent", "reinstall"),
-        Lifecycle("cameraagent", "uninstall"),
-        Lifecycle("cameraagent", "purge"),
-        new(["cameraagent", "backup"], null, LifecycleValueOptions, LifecycleFlags,
-            "Run it as the instance's service account, not with sudo: it copies the instance, bulk captures included, into one " +
-            "owner-only archive in <product-root>/backups. --plan is --dry-run. " + PlanScratchNote),
-        new(["cameraagent", "restore"], "<archive>", LifecycleValueOptions, LifecycleFlags,
+        Lifecycle("Return an instance to the image it ran before its last upgrade.", "cameraagent", "rollback"),
+        Lifecycle("Start an uninstalled instance again from the state it kept.", "cameraagent", "reinstall"),
+        Lifecycle("Remove an instance's containers, keeping its state for cameraagent reinstall.", "cameraagent", "uninstall"),
+        new(["cameraagent", "purge"], null, "Remove an uninstalled instance and everything it keeps.",
+            ["--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--product-root"], OperationFlags,
+            PlanScratchNote),
+        new(["cameraagent", "backup"], null,
+            "Copy an instance, captures included, into one archive in <product-root>/backups.",
+            InstanceValueOptions, OperationFlags,
+            "Run it as the instance's service account, not with sudo. The archive is readable by its owner alone. " + PlanScratchNote),
+        new(["cameraagent", "restore"], "<archive>",
+            "Put an instance back, uninstalled, from a backup in <product-root>/backups.",
+            InstanceValueOptions, OperationFlags,
             "Run it as the instance's service account, not with sudo. <archive> is a backup's name in <product-root>/backups, or its path there. " +
-            "The instance must be uninstalled or absent; it is restored uninstalled, and cameraagent reinstall starts it. --plan is --dry-run. " + PlanScratchNote),
-        Lifecycle("catalog", "install"),
-        Lifecycle("catalog", "select"),
-        Lifecycle("catalog", "rollback"),
-        Lifecycle("catalog", "gc"),
+            "The instance must be uninstalled or absent; cameraagent reinstall starts it once it is restored. " + PlanScratchNote),
+        new(["catalog", "install"], null, "Install a catalog bundle beside the catalogs already installed.",
+            ["--catalog-bundle", "--product-root"], OperationFlags, PlanScratchNote),
+        new(["catalog", "select"], null, "Switch an instance to another installed catalog version.",
+            ["--instance-id", "--catalog-version", "--product-root"], OperationFlags, PlanScratchNote),
+        Lifecycle("Return an instance to the catalog version it used before.", "catalog", "rollback"),
+        new(["catalog", "gc"], null,
+            "Remove an installed catalog version that no instance uses.",
+            ["--catalog-version", "--product-root"], OperationFlags,
+            "--catalog-version is required unless --plan is given, which lists the versions it could remove. " + PlanScratchNote),
         HostSetProductRoot
     ];
 
-    private static CommandDefinition Lifecycle(params string[] path)
-        => new(path, null, LifecycleValueOptions, LifecycleFlags,
-            "These options are shared with the other lifecycle commands; not every one applies to this command. " +
-            "--plan is --dry-run. " + PlanScratchNote + " --migration-backward-compatible is deprecated and has no effect.");
+    /// <summary>A lifecycle command that addresses one instance and takes nothing else.</summary>
+    private static CommandDefinition Lifecycle(string description, params string[] path)
+        => new(path, null, description, InstanceValueOptions, OperationFlags, PlanScratchNote);
+
+    /// <summary>
+    /// What each option takes and what it does, as every command's help that lists it says. A command lists only the
+    /// options its parser admits (<see cref="Commands"/>).
+    /// </summary>
+    private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
+    {
+        ["--inventory"] = ("<file>", "The immutable split-host inventory (schema 8; partial-prepare also accepts retained schema 7)."),
+        ["--preserve-state"] = (null, "Stop applications while preserving existing services and runtime data."),
+        ["--delete-state"] = (null, "Request deletion; existing-services runs refuse this policy before mutation."),
+        ["--mode"] = ("<isolated|persistent>", "The retained deployment mode."),
+        ["--run-id"] = ("<id>", "The retained run ID."),
+        ["--state-root"] = ("<path>", "The retained owner-only state directory."),
+        ["--evidence-root"] = ("<path>", "The retained owner-only evidence directory."),
+        ["--confirm"] = ("<run-id>", "Confirm the requested run ID; cleanup remains limited to resources authorized by that operation."),
+        [AnswersOption] = ("<file>", "Read the install from a JSON answers file with \"schemaVersion\": 1."),
+        ["--config"] = ("<file>", "Deprecated: read the whole install from a JSON file. Use --answers."),
+        ["--instance-id"] = ("<uuid>", "The instance's ID."),
+        ["--friendly-name"] = ("<name>", "The instance's display name."),
+        ["--owner-email"] = ("<email>", $"The owner's email, also a sign-in name (default {OwnerCredentialDefaults.Email})."),
+        ["--bind-address"] = ("<address>", "The address CameraAgent listens on (default 127.0.0.1)."),
+        ["--port"] = ("<port>", "The port CameraAgent listens on (default 5130)."),
+        ["--product-root"] = ("<path>", "The product root (default: this host's production product root)."),
+        ["--catalog-bundle"] = ("<path>", "The catalog bundle folder."),
+        ["--catalog-version"] = ("<version>", "An installed catalog version."),
+        ["--release"] = ("<folder>", "The release folder, holding the release's release.json and SHA256SUMS."),
+        ["--image-source"] = ("<source>", "With --release: archive (default) loads its offline image archive; registry pulls its image."),
+        ["--image-ref"] = ("<image>", "An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's."),
+        ["--image-archive"] = ("<path>", "With --image-ref: the image archive to load it from."),
+        ["--image-archive-sha256"] = ("<sha256>", "The image archive's SHA-256, required with --image-archive."),
+        ["--password-file"] = ("<path>", "An owner-only file holding the owner's temporary password."),
+        ["--generate-password"] = (null, "Generate the owner's temporary password into an owner-only file."),
+        ["--latitude"] = ("<degrees>", "The camera's latitude (default 0)."),
+        ["--longitude"] = ("<degrees>", "The camera's longitude (default 0)."),
+        ["--elevation"] = ("<metres>", "The camera's elevation (default 0)."),
+        ["--time-zone"] = ("<zone>", "The camera's IANA time zone (default UTC)."),
+        ["--replay-profile"] = ("<profile>", "Where archived replay runs: in-process (default) or local-runner."),
+        ["--cpus"] = ("<count>", "The container's CPU limit."),
+        ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
+        ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
+        ["--confirm-removed-operation-id"] = ("<uuid>", "With --resume: confirm this interrupted purge's tree was removed elsewhere."),
+        ["--operation-id"] = ("<uuid>", "With --resume --restore-only: the interrupted upgrade's operation ID."),
+        [PlanOption] = (null, "Show what the command would change, and change nothing."),
+        ["--dry-run"] = (null, "The older name of --plan."),
+        ["--resume"] = (null, "Finish an interrupted run of the same command."),
+        ["--json"] = (null, "Write the result, or the error, as JSON."),
+        ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
+        ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
+        ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
+        ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
+        [DeprecatedMigrationOption] = (null, "Deprecated, and has no effect.")
+    };
 
     /// <summary>
     /// What a plan leaves on disk (#1315): nothing of the product's. The state preflight reads a database caught with an
@@ -158,7 +239,9 @@ internal static class CommandLine
             // A mistake found here is in the command line itself, so it carries the usage of the command it was made
             // in, or the general usage when the arguments name no command. One raised later, by an operation already
             // under way, carries none and is still reported as that operation's failure.
-            exception.Usage = Find(args) is { } command ? CommandUsage(command) : GeneralUsage();
+            exception.Usage = Find(args) is { } command
+                ? CommandUsage(command)
+                : args is [var group, ..] && IsGroup(group) ? GroupUsage(group) : GeneralUsage();
             throw;
         }
     }
@@ -171,10 +254,13 @@ internal static class CommandLine
     internal static string? HelpFor(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
-        if ((args is [var only] && (IsHelpOption(only) || only == "help")) ||
-            (args is [var group, var option] && IsGroup(group) && IsHelpOption(option)))
+        if (args is [var only] && (IsHelpOption(only) || only == "help"))
         {
             return GeneralUsage();
+        }
+        if (args is [var group, var option] && IsGroup(group) && IsHelpOption(option))
+        {
+            return GroupUsage(group);
         }
         return Find(args) is { } command && RequestsHelp(args, command) ? CommandUsage(command) : null;
     }
@@ -197,28 +283,57 @@ internal static class CommandLine
             .ToString();
     }
 
-    /// <summary>The usage of one command, listing the options its parser admits.</summary>
+    /// <summary>
+    /// The usage of a command group (<c>cameraagent</c>, <c>catalog</c>, <c>host</c>): its own commands and what each does.
+    /// </summary>
+    internal static string GroupUsage(string group)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        var usage = new StringBuilder()
+            .AppendLine(CultureInfo.InvariantCulture, $"Usage: {Executable} {group} <command> [options]")
+            .AppendLine()
+            .AppendLine("Commands:");
+        AppendRows(usage, Commands.Where(command => command.Path[0] == group).Select(static command => (Synopsis(command), command.Description)));
+        return usage
+            .AppendLine()
+            .AppendLine(CultureInfo.InvariantCulture, $"Run '{Executable} {group} <command> --help' to list the options of one command.")
+            .ToString();
+    }
+
+    /// <summary>The usage of one command: what it does, then each option its parser admits and what it does.</summary>
     internal static string CommandUsage(CommandDefinition command)
     {
         ArgumentNullException.ThrowIfNull(command);
         var usage = new StringBuilder()
             .AppendLine(CultureInfo.InvariantCulture, $"Usage: {Executable} {Synopsis(command)} [options]")
             .AppendLine()
+            .AppendLine(command.Description)
+            .AppendLine()
             .AppendLine("Options:");
-        foreach (var option in command.ValueOptions)
-        {
-            usage.AppendLine(CultureInfo.InvariantCulture, $"  {option} <value>");
-        }
-        foreach (var flag in command.Flags)
-        {
-            usage.AppendLine(CultureInfo.InvariantCulture, $"  {flag}");
-        }
-        usage.AppendLine("  -h, --help");
+        AppendRows(usage, [
+            .. command.ValueOptions.Concat(command.Flags).Select(option => (command.Name == "partial-prepare-cleanup" && option == "--dry-run" ? ((string? Value, string Description))(null, "Inspect recovery candidates and write private evidence without changing a target.") : OptionHelp[option]) switch
+            {
+                (null, var description) => (option, description),
+                var (value, description) => ($"{option} {value}", description)
+            }),
+            ("-h, --help", "Show this help.")
+        ]);
         if (command.Note is not null)
         {
             usage.AppendLine().AppendLine(command.Note);
         }
         return usage.ToString();
+    }
+
+    /// <summary>Each name and what it is, with the descriptions aligned in one column.</summary>
+    private static void AppendRows(StringBuilder usage, IEnumerable<(string Name, string Description)> rows)
+    {
+        var listed = rows.ToArray();
+        var width = listed.Max(static row => row.Name.Length);
+        foreach (var (name, description) in listed)
+        {
+            usage.AppendLine(CultureInfo.InvariantCulture, $"  {name.PadRight(width)}  {description}");
+        }
     }
 
     private static string Synopsis(CommandDefinition command)
@@ -268,6 +383,13 @@ internal static class CommandLine
 
     private static DeploymentCommand ParseOperation(string[] args, CommandLineContext context)
     {
+        // Repair must reach the privileged lock before reading stale mount metadata. The requested root is only
+        // an expectation: the helper re-reads the trusted policy under that lock and refuses any different root.
+        if (args.Length >= 3 && args[0] == "host" && args[1] == "set-product-root" &&
+            args.Skip(2).Contains("--repair", StringComparer.Ordinal))
+        {
+            return ParseHost(args, context, args[2]);
+        }
         string production;
         try
         {
@@ -278,6 +400,9 @@ internal static class CommandLine
             // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
             throw InstallerException.Refused(exception.Message, exception);
         }
+        if (args.Length > 0 && args[0] == "preflight") return PreflightRequest.Parse(args);
+        if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
+        if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
@@ -337,7 +462,7 @@ internal static class CommandLine
     {
         if (args.Length < 2 || args[0] != "cameraagent" || args[1] != "install")
         {
-            throw new InstallUsageException("Usage: hvo-sky-install cameraagent install [options]");
+            throw new InstallUsageException($"Usage: {Executable} cameraagent install [options]");
         }
 
         string? configPath = null;
@@ -584,7 +709,8 @@ internal static class CommandLine
         {
             AllowTestProductRoot = context.AllowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
-            PolicyLocation = context.HostPolicy
+            PolicyLocation = context.HostPolicy,
+            RepairMount = flags.Contains("--repair")
         };
         request.Validate();
         return request;
@@ -608,6 +734,7 @@ internal static class CommandLine
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             _ => throw new InstallUsageException(UnknownCommand(args))
         };
+        var command = Find(args)!;
         string? archive = null;
         if (operation == LifecycleOperationKind.Restore && optionOffset < args.Length &&
             !args[optionOffset].StartsWith("--", StringComparison.Ordinal))
@@ -623,7 +750,7 @@ internal static class CommandLine
             {
                 throw new InstallUsageException("Unexpected positional argument.");
             }
-            if (LifecycleFlags.Contains(option, StringComparer.Ordinal))
+            if (command.Flags.Contains(option, StringComparer.Ordinal))
             {
                 if (!flags.Add(option)) throw new InstallUsageException($"Duplicate option '{option}'.");
                 continue;
@@ -634,7 +761,7 @@ internal static class CommandLine
                 throw new InstallUsageException($"Option '{option}' requires one non-duplicate value.");
             }
         }
-        RejectUnknown(values, LifecycleValueOptions);
+        RejectUnknown(values, command.ValueOptions);
         var request = new LifecycleRequest(
             operation,
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
@@ -805,12 +932,13 @@ internal static class CommandLine
 internal sealed record CommandLineContext(bool AllowTestProductRoot, HostPolicyLocation HostPolicy);
 
 /// <summary>
-/// One command: the words that name it, the positional argument it requires if any, the options its parser admits,
-/// and a note help prints after them.
+/// One command: the words that name it, the positional argument it requires if any, what it does, the options its parser
+/// admits, and a note help prints after them.
 /// </summary>
 internal sealed record CommandDefinition(
     IReadOnlyList<string> Path,
     string? Positional,
+    string Description,
     IReadOnlyList<string> ValueOptions,
     IReadOnlyList<string> Flags,
     string? Note = null)

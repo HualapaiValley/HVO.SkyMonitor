@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
     Justification = "Instantiated by the Manual browser suites after browser launch.")]
-internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testContext) : IAsyncDisposable
+internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testContext, string? successfulEvidenceDirectory = null) : IAsyncDisposable
 {
     private readonly List<PlaywrightDiagnosticContext> sessions = [];
     private readonly Dictionary<IBrowserContext, PlaywrightDiagnosticContext> leases = [];
@@ -31,7 +31,7 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             browser,
             options,
             testContext,
-            Interlocked.Increment(ref nextOrdinal)).ConfigureAwait(false);
+            Interlocked.Increment(ref nextOrdinal), successfulEvidenceDirectory).ConfigureAwait(false);
         var lease = BrowserContextLease.Create(session.Context);
         var accepted = false;
         try
@@ -182,17 +182,19 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
     private readonly IBrowserContext context;
     private readonly TestContext testContext;
     private readonly string artifactPrefix;
+    private readonly string? successfulEvidenceDirectory;
     private readonly ConcurrentDictionary<IPage, PageEvidence> pages = new();
     private readonly object lifecycleLock = new();
     private int nextPageOrdinal;
     private bool disposed;
     private Task? completionTask;
 
-    private PlaywrightDiagnosticContext(IBrowserContext context, TestContext testContext, string artifactPrefix)
+    private PlaywrightDiagnosticContext(IBrowserContext context, TestContext testContext, string artifactPrefix, string? successfulEvidenceDirectory)
     {
         this.context = context;
         this.testContext = testContext;
         this.artifactPrefix = artifactPrefix;
+        this.successfulEvidenceDirectory = successfulEvidenceDirectory;
         context.Page += (_, page) => Observe(page);
         foreach (var page in context.Pages)
         {
@@ -206,7 +208,8 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         IBrowser browser,
         BrowserNewContextOptions? options,
         TestContext testContext,
-        int ordinal)
+        int ordinal,
+        string? successfulEvidenceDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(browser);
         ArgumentNullException.ThrowIfNull(testContext);
@@ -214,7 +217,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         var prefix = string.Create(
             CultureInfo.InvariantCulture,
             $"{SafeName(testContext.FullyQualifiedTestClassName)}.{SafeName(testContext.TestName)}.context-{ordinal:D4}");
-        var result = new PlaywrightDiagnosticContext(context, testContext, prefix);
+        var result = new PlaywrightDiagnosticContext(context, testContext, prefix, successfulEvidenceDirectory);
         try
         {
             await context.Tracing.StartAsync(new()
@@ -253,16 +256,23 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Discarding successful-run tracing is best-effort test infrastructure and must not fail a passing product test.")]
+        Justification = "Completing sanitized successful-run diagnostics is best-effort infrastructure; an opt-in acceptance test verifies its retained artifacts.")]
     private async Task CompleteCoreAsync()
     {
         try
         {
-            await context.Tracing.StopAsync().ConfigureAwait(false);
+            if (successfulEvidenceDirectory is not null)
+            {
+                await CaptureEvidenceAsync(successfulEvidenceDirectory, failed: false).ConfigureAwait(false);
+            }
+            else
+            {
+                await context.Tracing.StopAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
-            ReportCaptureFailure("successful trace discard", exception);
+            ReportCaptureFailure("successful trace completion", exception);
         }
     }
 
@@ -329,11 +339,11 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         };
     }
 
-    private async Task CaptureFailureAsync()
+    private Task CaptureFailureAsync() => CaptureEvidenceAsync(
+        Path.Combine(testContext.ResultsDirectory ?? Path.GetTempPath(), "playwright-failures"), failed: true);
+
+    private async Task CaptureEvidenceAsync(string directory, bool failed)
     {
-        var directory = Path.Combine(
-            testContext.ResultsDirectory ?? Path.GetTempPath(),
-            "playwright-failures");
         Directory.CreateDirectory(directory);
         await CaptureAsync(
             Path.Combine(directory, $"{artifactPrefix}.trace.zip"),
@@ -343,7 +353,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 try
                 {
                     await context.Tracing.StopAsync(new() { Path = rawPath }).ConfigureAwait(false);
-                    BuildSafeTrace(path, pages.Values);
+                    BuildSafeTrace(path, pages.Values, failed);
                 }
                 finally
                 {
@@ -469,7 +479,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         return UnixPathRegex().Replace(sanitized, "[PRIVATE-PATH]");
     }
 
-    private static void BuildSafeTrace(string path, IEnumerable<PageEvidence> pages)
+    private static void BuildSafeTrace(string path, IEnumerable<PageEvidence> pages, bool failed)
     {
         var temporaryPath = $"{path}.tmp";
         try
@@ -480,7 +490,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 using var stream = entry.Open();
                 using var writer = new Utf8JsonWriter(stream, new() { Indented = true });
                 writer.WriteStartObject();
-                writer.WriteString("schema", "hvo-playwright-failure-trace-v1");
+                writer.WriteString("schema", failed ? "hvo-playwright-failure-trace-v1" : "hvo-playwright-acceptance-trace-v1");
                 writer.WriteStartArray("pages");
                 foreach (var page in pages.OrderBy(page => page.Ordinal))
                 {

@@ -16,7 +16,7 @@ internal sealed record SkySettingChange(SkySettingField Field, JsonElement Value
         group = Group,
         key = Key,
         title = Field.Setting.Title,
-        from = Field.State?.Value,
+        from = Field.ValueToEdit,
         to = Value,
         application = Field.Setting.Application,
         safety = Field.Setting.Safety,
@@ -244,7 +244,7 @@ internal static partial class SkyCli
                     }
 
                     var value = SkySettingsForm.ParseText(field, assignment[(separator + 1)..]);
-                    if (!SkySettingsForm.SameValue(field.State?.Value, value))
+                    if (!SkySettingsForm.SameValue(field.ValueToEdit, value))
                     {
                         changes.Add(new SkySettingChange(field, value));
                     }
@@ -416,7 +416,7 @@ internal static partial class SkyCli
                 }
 
                 var checkedValue = SkySettingsForm.Check(field, value);
-                if (SkySettingsForm.SameValue(field.State?.Value, checkedValue))
+                if (SkySettingsForm.SameValue(field.ValueToEdit, checkedValue))
                 {
                     unchanged.Add(field.Key);
                 }
@@ -458,7 +458,7 @@ internal static partial class SkyCli
                     }
 
                     context.Out.WriteLine(
-                        $"  {change.Field.Setting.Title} ({change.Key}): {change.Field.DisplayValue} -> {SkySettingText.Describe(change.Value)}"
+                        $"  {change.Field.Setting.Title} ({change.Key}): {SkySettingText.Describe(change.Field.ValueToEdit)} -> {SkySettingText.Describe(change.Value)}"
                         + (notes.Count > 0 ? $"  [{string.Join("; ", notes)}]" : string.Empty));
                 }
             }

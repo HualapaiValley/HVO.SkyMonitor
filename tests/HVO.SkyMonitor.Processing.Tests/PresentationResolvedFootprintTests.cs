@@ -22,7 +22,7 @@ public sealed class PresentationResolvedFootprintTests
 
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
-        // The disc is wider than the 6 px point marker, so its outline replaces the crosshair; the star keeps one.
+        // The disc is wider than the 6 px point marker, so its outline replaces the marker; the star keeps one.
         Assert.IsFalse(groups.StarAnnotations.Markers.Any(marker => marker.Center == sun.Pixel));
         Assert.HasCount(1, groups.StarAnnotations.Markers);
         var segments = groups.StarAnnotations.Segments;
@@ -47,7 +47,7 @@ public sealed class PresentationResolvedFootprintTests
     }
 
     [TestMethod]
-    public async Task DiscWithinThePointMarkerKeepsTheCrosshairAndNoOutline()
+    public async Task DiscWithinThePointMarkerKeepsThePlainMarkerAndNoOutline()
     {
         // At f = 400 the 0.25 degree limb is 1.75 px, so the padded half-extent of 5.75 px fits the 6 px marker.
         var scene = await SceneAsync(400).ConfigureAwait(false);
@@ -55,7 +55,7 @@ public sealed class PresentationResolvedFootprintTests
 
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
-        Assert.IsTrue(groups.StarAnnotations.Markers.Any(marker => marker.Center == sun.Pixel));
+        Assert.IsFalse(groups.StarAnnotations.Markers.Single(marker => marker.Center == sun.Pixel).Crosshair);
         Assert.IsEmpty(groups.StarAnnotations.Segments);
     }
 
@@ -104,11 +104,53 @@ public sealed class PresentationResolvedFootprintTests
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
         Assert.AreEqual(new PixelPoint(100, 100), groups.StarAnnotations.Markers.Single().Center);
+        Assert.IsFalse(groups.StarAnnotations.Markers.Single().Crosshair);
         Assert.IsEmpty(groups.StarAnnotations.Segments);
         var raster = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun], new PreviewTransform(1, 1));
         var marker = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun with { FootprintParts = null }],
             new PreviewTransform(1, 1));
         Assert.IsTrue(raster.Pixels.Span.SequenceEqual(marker.Pixels.Span), "The raster draws the point marker here.");
+    }
+
+    [TestMethod]
+    public async Task MeasuredAssociationsGateStarLabelsAndLeaveTheDiscAndItsLabelUntouched()
+    {
+        // #518 x #526: the resolved Sun disc, an associated star inside it, an associated star below it and an
+        // unassociated star below that. The disc's outline and label are independent of the measured product.
+        var scene = await SceneAsync(4000, ("measured", "MEASURED", 59, 1.5), ("unmeasured", "UNMEASURED", 58.6, 1.8))
+            .ConfigureAwait(false);
+        var product = MeasuredStellarAssociationFixtures.AllEligible(scene);
+        var unmeasured = product.Associations.Single(static item => item.CatalogId == "unmeasured");
+        MeasuredStellarAssociationV1[] kept = [.. product.Associations.Where(static item => item.CatalogId != "unmeasured")
+            .Select(static (item, index) => item with { DetectionIndex = index })];
+        var associations = product with
+        {
+            Measurement = product.Measurement with { CandidateCount = kept.Length, DetectionCount = kept.Length },
+            Associations = kept,
+            UnmatchedPredictions = [new(unmeasured.CatalogId, unmeasured.Magnitude, unmeasured.ExpectedX, unmeasured.ExpectedY,
+                MeasuredStellarAssociationReasonCodes.NoMeasuredSource)]
+        };
+        Assert.IsTrue(MeasuredStellarAssociationJson.Validate(associations).IsValid);
+        string[] associated = ["inside", "measured"];
+        CollectionAssert.AreEquivalent(associated, kept.Select(static item => item.CatalogId).ToArray());
+
+        var measured = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false,
+            associations: associations);
+        var withoutProduct = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+
+        string[] labelled = ["Sun", "MEASURED"];
+        CollectionAssert.AreEquivalent(labelled,
+            measured.StarAnnotations.TextBlocks.Select(static block => block.Lines[0]).ToArray(),
+            "the disc keeps INSIDE unlabeled even though it is associated, and UNMEASURED fails closed");
+        Assert.AreEqual("Sun", withoutProduct.StarAnnotations.TextBlocks.Single().Lines[0]);
+        // The disc's outline, its label placement and every star marker are identical with and without the product.
+        CollectionAssert.AreEqual(withoutProduct.StarAnnotations.Segments.ToArray(), measured.StarAnnotations.Segments.ToArray());
+        Assert.IsNotEmpty(measured.StarAnnotations.Segments);
+        CollectionAssert.AreEqual(withoutProduct.StarAnnotations.Markers.ToArray(), measured.StarAnnotations.Markers.ToArray());
+        Assert.HasCount(3, measured.StarAnnotations.Markers);
+        var sunLabel = measured.StarAnnotations.TextBlocks.Single(static block => block.Lines[0] == "Sun");
+        Assert.AreEqual(withoutProduct.StarAnnotations.TextBlocks.Single().Point, sunLabel.Point);
+        Assert.AreEqual(withoutProduct.StarAnnotations.TextBlocks.Single().Appearance, sunLabel.Appearance);
     }
 
     [TestMethod]
@@ -121,16 +163,22 @@ public sealed class PresentationResolvedFootprintTests
         Assert.IsEmpty(groups.StarAnnotations.Segments);
     }
 
-    private static async Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels)
+    private static async Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels,
+        params (string Id, string Name, double AltitudeDegrees, double Magnitude)[] extraStars)
     {
         // A first-magnitude star 0.24 degrees below the Sun's centre, inside its 0.25 degree limb.
         var inside = EquatorialPrecession.PrecessToJ2000(
             CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(59.76, 0), Utc, 0, 0), Utc);
+        var extras = extraStars.Select(static star => (star, Position: EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(star.AltitudeDegrees, 0), Utc, 0, 0), Utc)))
+            .Select(static item => new CelestialCatalogObject(item.star.Id, item.star.Name,
+                item.Position.RightAscensionHours, item.Position.DeclinationDegrees, item.star.Magnitude));
         var projection = new ProjectionContext(ProjectionModel.Perspective, 200, 150, focalLengthPixels,
             focalLengthPixels, 400, 300, ProjectionAperture.Rectangular,
             BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 0);
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
-            new CelestialCatalogObject("inside", "INSIDE", inside.RightAscensionHours, inside.DeclinationDegrees, 1)
+            new CelestialCatalogObject("inside", "INSIDE", inside.RightAscensionHours, inside.DeclinationDegrees, 1),
+            .. extras
         ]), null, new AstronomyEnginePlanetEphemeris()).BuildAsync(new VisibleSceneRequest(Utc,
             new ObserverLocation(0, 0, 0), projection, new CatalogQuery(6, 10),
             new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),

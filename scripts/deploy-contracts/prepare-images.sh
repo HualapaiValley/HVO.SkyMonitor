@@ -4,11 +4,69 @@
 # inside the fixture it establishes, at the exact point the body used to sit, so
 # every global it reads and writes has the same value and the same scope as
 # before. It runs nothing on its own and refuses direct execution.
+# REVISION and INVENTORY are globals supplied by the sourcing deployment harness.
+# shellcheck disable=SC2153
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     printf '%s is a shard body sourced by scripts/test:deploy-environment; do not run it directly.\n' "${BASH_SOURCE[0]}" >&2
     exit 2
 fi
+
+# F2: a build without attestations has a plain manifest when only one platform is selected.
+test_registry_single_manifest_platform_validation() (
+    export PATH="$BIN:$PATH"
+    . "$REPO_ROOT/scripts/deploy/common.sh"
+    . "$REPO_ROOT/scripts/deploy/images.sh"
+    deploy_fail() { printf '%s\n' "$*" >&2; return 1; }
+    DEPLOY_IMAGES_LEDGER="$TEMP_DIR/registry-contract-ledger.json"
+    local created=2026-10-21T00:00:00Z tree sdk media_type
+    tree="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
+    sdk="$(jq -r '.sdk.version' "$REPO_ROOT/global.json")"
+    printf 'arm64\n' > "$FAKE_IMAGE_STATE/cameraAgent.platforms"
+    printf 'false\n' > "$FAKE_IMAGE_STATE/cameraAgent.attestations"
+    touch "$FAKE_IMAGE_STATE/cameraAgent.pushed"
+    jq -cn --arg created "$created" --arg sdk "$sdk" --arg tree "$tree" \
+      '{created:$created,sdk:$sdk,source:"registry.example/cameraagent:contract",tree:$tree}' > "$FAKE_IMAGE_STATE/cameraAgent.labels"
+    for media_type in application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json; do
+        export FAKE_REGISTRY_MANIFEST_TYPE="$media_type"
+        deploy_images_observe_registry cameraAgent '["arm64"]' registry.example/cameraagent contract "$REVISION" "$tree" "$created" "$sdk" control-builder || return 1
+        jq -e '.platforms | length == 1 and .[0].architecture == "arm64"' <<< "$DEPLOY_REGISTRY_IMAGE_JSON" >/dev/null || return 1
+        if FAKE_REGISTRY_CONFIG_ARCH=amd64 deploy_images_observe_registry cameraAgent '["arm64"]' registry.example/cameraagent contract "$REVISION" "$tree" "$created" "$sdk" control-builder 2>/dev/null; then
+            fail 'Single manifest with the wrong config platform passed.'; return 1
+        fi
+        if FAKE_REGISTRY_CONFIG_OS=windows deploy_images_observe_registry cameraAgent '["arm64"]' registry.example/cameraagent contract "$REVISION" "$tree" "$created" "$sdk" control-builder 2>/dev/null; then
+            fail 'Single manifest with a non-Linux config passed.'; return 1
+        fi
+        if deploy_images_observe_registry cameraAgent '["amd64","arm64"]' registry.example/cameraagent contract "$REVISION" "$tree" "$created" "$sdk" control-builder 2>/dev/null; then
+            fail 'Single manifest satisfied a multiple-platform inventory.'; return 1
+        fi
+    done
+)
+
+test_registry_docker_driver_refused() (
+    . "$REPO_ROOT/scripts/deploy/inventory.sh"
+    deploy_fail() { printf '%s\n' "$*" >&2; return 1; }
+    jq '.images.builder.driver="docker"' "$BASE_INVENTORY" > "$TEMP_DIR/docker-driver.inventory"
+    if deploy_validate_inventory "$TEMP_DIR/docker-driver.inventory" isolated > "$TEMP_DIR/docker-driver.log" 2>&1; then
+        fail 'CameraAgent registry inventory accepted the unpacking docker driver.'; return 1
+    fi
+    grep -Fq 'cameraagent-registry-requires-docker-container' "$TEMP_DIR/docker-driver.log"
+)
+
+test_fake_docker_driver_models_unpack_conflict() (
+    if FAKE_BUILDER_DRIVER=docker "$BIN/docker" buildx build --builder control-builder \
+        --output type=image,push=true,rewrite-timestamp=true > "$TEMP_DIR/unpack-conflict.log" 2>&1; then
+        fail 'Fake docker driver did not model the unpack conflict.'; return 1
+    fi
+    grep -Fq 'exporter option "rewrite-timestamp" conflicts with "unpack"' "$TEMP_DIR/unpack-conflict.log"
+)
+
+registry_contract_failures=0
+for registry_contract in test_registry_single_manifest_platform_validation test_registry_docker_driver_refused test_fake_docker_driver_models_unpack_conflict; do
+    if "$registry_contract"; then printf '%s PASS\n' "$registry_contract"; else printf '%s FAIL\n' "$registry_contract"; registry_contract_failures=$((registry_contract_failures + 1)); fi
+done
+rm -f "$FAKE_IMAGE_STATE"/cameraAgent.{platforms,attestations,pushed,labels}
+[[ "$registry_contract_failures" == 0 ]] || fail 'Registry manifest/driver contracts failed.'
 
 # Prepare requires the exact passed preflight and mutates only declared roots/control metadata.
 mkdir -p "$TEMP_DIR/remote/prepare-skymonitor/logichosts" "$TEMP_DIR/remote/prepare-skymonitor/cameraagents" "$TEMP_DIR/remote/prepare-skymonitor/catalogs"
@@ -26,8 +84,9 @@ docker_count_before_prepare="$(grep -c '^docker' "$LOG")"
 run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare.out"
 docker_count_after_prepare="$(grep -c '^docker' "$LOG")"
 [[ "$docker_count_before_prepare" == "$docker_count_after_prepare" ]] || fail 'Prepare invoked Docker.'
-grep -Fq $'logic@example\tbash\t-s\t--' "$LOG"
-grep -Fq $'east@example\tbash\t-s\t--' "$LOG"
+# Match prepare's quoted remote command, independently of preflight's transport.
+grep -Fq $'logic@example\tbash -s -- ' "$LOG"
+grep -Fq $'east@example\tbash -s -- ' "$LOG"
 while IFS= read -r prepared_target; do
     test -d "$prepared_target/.hvo-deploy"
     test "$(stat -c %a "$prepared_target")" = 700
@@ -55,7 +114,8 @@ jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root ==
 # Every CameraAgent build passes the revision its label names, so the published assemblies carry it too (#1297).
 # The LogicHost Dockerfile declares no build argument and receives none.
 assert_image_build_revision_arguments() {
-    local builds camera_builds logic_builds build
+    local builds camera_builds logic_builds build epoch
+    epoch="$(git -C "$REPO_ROOT" show -s --format=%ct "$REVISION")"
     builds="$(grep $'^docker\tbuildx\tbuild\t' "$LOG")" || fail 'No image build was recorded.'
     camera_builds="$(grep -F $'\tio.hvoskymonitor.component=cameraAgent\t' <<< "$builds")" || fail 'No CameraAgent image build was recorded.'
     logic_builds="$(grep -F $'\tio.hvoskymonitor.component=logicHost\t' <<< "$builds")" || fail 'No LogicHost image build was recorded.'
@@ -64,6 +124,9 @@ assert_image_build_revision_arguments() {
           fail 'A CameraAgent image build did not pass its source revision as HVO_SOURCE_REVISION.'
         [[ "$build" == *$'\t--label\torg.opencontainers.image.revision='"$REVISION"$'\t'* ]] ||
           fail 'A CameraAgent image build lost its revision label.'
+        [[ "$build" == *$'\t--build-arg\tSOURCE_DATE_EPOCH='"$epoch"$'\t'* ]] ||
+          fail 'A CameraAgent image build lost its commit time.'
+        [[ "$build" == *'rewrite-timestamp=true'* ]] || fail 'CameraAgent layer timestamp rewriting is missing.'
     done <<< "$camera_builds"
     [[ "$logic_builds" != *$'\t--build-arg\t'* ]] || fail 'A LogicHost image build received a build argument.'
 }
@@ -142,6 +205,28 @@ run_prepare_preflight images-native-multi-node-builder isolated
 run_deploy_mode prepare images-native-multi-node-builder isolated >/dev/null
 FAKE_BUILDER_MULTI_NODE=true run_deploy_mode images images-native-multi-node-builder isolated >/dev/null
 
+# Build and then adopt immutable single-platform tags for both supported manifest media types.
+for single_manifest_type in application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json; do
+    rm -f "$FAKE_IMAGE_STATE"/{logicHost,cameraAgent}.{pushed,platforms,attestations,labels}
+    single_manifest_case=images-single-oci
+    [[ "$single_manifest_type" != application/vnd.docker.distribution.manifest.v2+json ]] || single_manifest_case=images-single-docker
+    write_prepare_case "$single_manifest_case" isolated
+    jq '.cameraAgents |= map(select(.name == "east")) | .serviceEndpoints[].fromTargets -= ["west"]' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+    run_prepare_preflight "$single_manifest_case" isolated
+    run_deploy_mode prepare "$single_manifest_case" isolated >/dev/null
+    FAKE_REGISTRY_MANIFEST_TYPE="$single_manifest_type" run_deploy_mode images "$single_manifest_case" isolated >/dev/null
+    FAKE_REGISTRY_MANIFEST_TYPE="$single_manifest_type" "$BIN/docker" buildx imagetools inspect --builder control-builder \
+      --raw registry.example/cameraagent:contract | jq -e --arg media "$single_manifest_type" \
+      '.mediaType == $media and (has("manifests") | not) and (.config.digest | startswith("sha256:"))' >/dev/null
+    single_manifest_ledger="$TEMP_DIR/output/$single_manifest_case-state/images-ledger.json"
+    jq -e '.phaseStatus == "passed" and (.targets | length) == 2 and
+      (.images[] | select(.component == "cameraAgent") | .platforms | length == 1 and .[0].architecture == "arm64")' "$single_manifest_ledger" >/dev/null
+    single_builds_before="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+    FAKE_REGISTRY_MANIFEST_TYPE="$single_manifest_type" run_deploy_mode images "$single_manifest_case" isolated >/dev/null
+    [[ "$(grep -c $'^docker\tbuildx\tbuild' "$LOG")" == "$single_builds_before" ]] || fail 'Single manifest resume rebuilt an immutable tag.'
+done
+rm -f "$FAKE_IMAGE_STATE"/{logicHost,cameraAgent}.{pushed,platforms,attestations,labels}
+
 write_prepare_case images-target-wrong-daemon isolated
 run_prepare_preflight images-target-wrong-daemon isolated
 run_deploy_mode prepare images-target-wrong-daemon isolated >/dev/null
@@ -156,8 +241,9 @@ grep -Fq 'prepare-required' "$TEMP_DIR/images-failure.log"
 write_prepare_case images-archive isolated
 archive_root="$TEMP_DIR/artifacts/images-archive"
 mkdir -m 700 "$TEMP_DIR/artifacts"
-jq --arg root "$archive_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"
+jq --arg root "$archive_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root | .images.builder.driver="docker"' "$INVENTORY" > "$INVENTORY.changed"
 mv "$INVENTORY.changed" "$INVENTORY"
+export FAKE_BUILDER_DRIVER=docker
 run_prepare_preflight images-archive isolated
 run_deploy_mode prepare images-archive isolated >/dev/null
 : > "$LOG"
@@ -195,6 +281,7 @@ grep -Fq $'docker\t--context\teast-context\timage\tload\t--input' "$LOG"
 if grep -Eq $'docker\tbuildx\tbuild.*--push' "$LOG"; then fail 'Archive mode pushed to a registry.'; fi
 assert_image_build_revision_arguments
 
+unset FAKE_BUILDER_DRIVER
 write_prepare_case images-source-drift isolated
 source_drift_root="$TEMP_DIR/artifacts/images-source-drift"
 jq --arg root "$source_drift_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"

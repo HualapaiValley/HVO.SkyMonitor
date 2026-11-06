@@ -1,0 +1,158 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s01-duplicate-refetch",
+  "title": "Identical body under a churned ETag, then a body that repeats one record",
+  "covers": [
+    "duplicate",
+    "etag-churn",
+    "duplicate-record-in-body"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-18T17:30:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s01-a\"",
+        "lastModified": "Sun, 18 Oct 2026 17:29:41 GMT",
+        "body": "[{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-10-18 17:24:58.920\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 1131\\r\\nIssue Time: 2026 Oct 18 1724 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 19:  G1 (Minor)   Oct 20:  G1 (Minor)   Oct 21:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nSpacecraft - Minor impact on satellite operations possible.\\r\\nAurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.\"}]"
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": null,
+          "ifModifiedSince": null
+        },
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WATA20/1131",
+            "reason": "new",
+            "level": "G1"
+          }
+        ],
+        "diagnostics": [],
+        "notices": {
+          "WATA20/1131": {
+            "family": "watch",
+            "level": "G1",
+            "state": "active",
+            "fromUtc": "2026-10-18T17:24:00Z",
+            "untilUtc": "2026-10-21T00:00:00Z",
+            "latest": "WATA20/1131/2026-10-18T17:24:00Z",
+            "versions": 1,
+            "relevance": {
+              "hvo": "NotExpected"
+            },
+            "days": [
+              {
+                "dateUtc": "2026-10-19",
+                "level": "G1"
+              },
+              {
+                "dateUtc": "2026-10-20",
+                "level": "G1"
+              },
+              {
+                "dateUtc": "2026-10-21",
+                "level": "None"
+              }
+            ]
+          }
+        },
+        "product": {
+          "freshness": "fresh",
+          "nextAttemptNotBeforeUtc": "2026-10-18T17:32:00Z"
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-18T17:32:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s01-b\"",
+        "lastModified": "Sun, 18 Oct 2026 17:31:40 GMT",
+        "body": "[{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-10-18 17:24:58.920\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 1131\\r\\nIssue Time: 2026 Oct 18 1724 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 19:  G1 (Minor)   Oct 20:  G1 (Minor)   Oct 21:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nSpacecraft - Minor impact on satellite operations possible.\\r\\nAurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.\"}]"
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": "W/\"fixture-s01-a\"",
+          "ifModifiedSince": "Sun, 18 Oct 2026 17:29:41 GMT"
+        },
+        "outcome": "unchanged",
+        "attention": [],
+        "diagnostics": [],
+        "notices": {
+          "WATA20/1131": {
+            "versions": 1,
+            "state": "active"
+          }
+        },
+        "product": {
+          "lkgSha256": "1E1C7C234FE15940BA825AA9B1DD2D742B454CAEDE1C033C752E6054FB7EFD95",
+          "validators": {
+            "etag": "W/\"fixture-s01-b\"",
+            "lastModified": "Sun, 18 Oct 2026 17:31:40 GMT"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-18T17:34:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s01-c\"",
+        "lastModified": "Sun, 18 Oct 2026 17:33:40 GMT",
+        "body": "[{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-10-18 17:24:58.920\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 1131\\r\\nIssue Time: 2026 Oct 18 1724 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 19:  G1 (Minor)   Oct 20:  G1 (Minor)   Oct 21:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nSpacecraft - Minor impact on satellite operations possible.\\r\\nAurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.\"},{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-10-18 17:24:58.920\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 1131\\r\\nIssue Time: 2026 Oct 18 1724 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 19:  G1 (Minor)   Oct 20:  G1 (Minor)   Oct 21:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nSpacecraft - Minor impact on satellite operations possible.\\r\\nAurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [
+          "duplicate-record-in-body:WATA20/1131/2026-10-18T17:24:00Z"
+        ],
+        "notices": {
+          "WATA20/1131": {
+            "versions": 1
+          }
+        },
+        "product": {
+          "lkgSha256": "57C9204DF8514DF278519418B9F57D9AC4DB747EC452526A2C6FFAB9F171B74B",
+          "facts": {
+            "records": 2,
+            "acceptedRecords": 2
+          }
+        }
+      }
+    }
+  ]
+}

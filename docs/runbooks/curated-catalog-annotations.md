@@ -54,6 +54,13 @@ preview scaling. VirtualSky uses the same producer before readout and excludes
 annotation options from its raw renderer's seed. Annotation changes derivatives,
 not borrowed raw or base image bytes.
 
+Physical staging and durable execution use one selected immutable graph revision.
+The [Projected scene query panel](projected-scene-query-options.md) edits only its
+existing magnitude, result limit and constellation endpoint scalars through an
+explicit new revision. It preserves curated selections (including absent or null
+`CuratedAnnotations`), algorithm/output identities and other JSON. VirtualSky's
+separate module settings and authoritative rendered scene remain authoritative.
+
 The minimal `projected-scene-v3` extension carries a separately typed curated
 section, preserving nullable facts without turning objects into magnitude-zero
 stars. Its contract is `projected-deep-sky-curated-v1`; source contours are

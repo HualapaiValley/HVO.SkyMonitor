@@ -287,8 +287,10 @@ internal static class HostProductRootPolicy
     /// Writes the policy so it names <paramref name="requestedRoot"/>. Refuses to move a production root that already
     /// holds CameraAgent or LogicHost instances, creates only the final product-root directory when its validated
     /// parent exists, and publishes the file atomically. The caller must already hold the policy owner's authority.
+    /// With <paramref name="repairMount"/>, only the root already named by a trusted policy is accepted, it must
+    /// already exist, and stale mount metadata is replaced by the mount currently holding that same root.
     /// </summary>
-    public static HostPolicyChange Apply(HostPolicyLocation location, string requestedRoot)
+    public static HostPolicyChange Apply(HostPolicyLocation location, string requestedRoot, bool repairMount = false)
     {
         ArgumentNullException.ThrowIfNull(location);
         if (ProductRootTextError(requestedRoot) is { } error)
@@ -299,7 +301,7 @@ internal static class HostProductRootPolicy
         // while it resolves the policy and creates an instance, so no instance can appear under the old root between
         // the check and the moment the policy stops naming it.
         using var policyLock = AcquireLock(location);
-        var current = Resolve(location);
+        var current = repairMount ? ResolveForMountRepair(location, requestedRoot) : Resolve(location);
         if (!string.Equals(current.Path, requestedRoot, StringComparison.Ordinal))
         {
             EnsureHoldsNoInstances(current.Path);
@@ -324,6 +326,29 @@ internal static class HostProductRootPolicy
             throw new InstallerException("The written host policy does not resolve the requested product root.");
         }
         return new HostPolicyChange(HostPolicyChange.Updated, current.Path, requestedRoot);
+    }
+
+    /// <summary>
+    /// Reads the trusted policy under the caller's policy lock, keeps its root exactly, and authenticates the root
+    /// without trusting the old mount field. Repair never guesses a missing policy's root or creates a missing root.
+    /// </summary>
+    private static ProductionProductRoot ResolveForMountRepair(HostPolicyLocation location, string requestedRoot)
+    {
+        try
+        {
+            var document = TryReadPolicy(location)
+                ?? throw new InstallerException("Host policy repair requires an existing policy; use host set-product-root without --repair to set one.");
+            if (ProductRootTextError(document.ProductRoot) is { } error)
+                throw new InstallerException($"Host policy '{location.PolicyPath}' is invalid: {error}");
+            if (!string.Equals(document.ProductRoot, requestedRoot, StringComparison.Ordinal))
+                throw new InstallerException($"Host policy repair must keep the existing product root '{document.ProductRoot}'.");
+            ValidateProductRoot(location, requestedRoot);
+            return new ProductionProductRoot(requestedRoot, FromPolicy: true);
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            throw InstallerException.Refused(exception.Message, exception);
+        }
     }
 
     /// <summary>

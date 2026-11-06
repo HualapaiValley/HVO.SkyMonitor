@@ -1,4 +1,6 @@
+using System.Drawing;
 using HVO.SkyMonitor.TerminalUi;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -41,8 +43,9 @@ internal sealed class SkyUiPrompt : IDisposable
     private readonly Label _error;
     private readonly Button _action;
     private readonly Button _cancel;
+    private readonly View _content;
 
-    public SkyUiPrompt(HvoTheme theme, SkyUiPromptSpec spec, int screenWidth, Action<SkyUiPrompt> close)
+    public SkyUiPrompt(HvoTheme theme, SkyUiPromptSpec spec, int screenWidth, int screenHeight, Action<SkyUiPrompt> close)
     {
         Panel = new HvoPanel(theme, spec.Title);
         _spec = spec;
@@ -50,10 +53,21 @@ internal sealed class SkyUiPrompt : IDisposable
         // As the terminal prototype's review: at most 66 cells, and eight fewer than the screen.
         var width = Math.Clamp(screenWidth - 8, 30, 66);
         var inner = width - 4;
+        _content = new View { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill(4), CanFocus = true };
+        _content.KeyDown += (_, key) =>
+        {
+            if (key == Key.PageUp || key == Key.PageDown)
+            {
+                _content.ScrollVertical((key == Key.PageUp ? -1 : 1) * Math.Max(1, _content.Viewport.Height));
+                key.Handled = true;
+            }
+        };
+        Panel.Body.Add(_content);
         var lines = spec.Lines.SelectMany(line => HvoTextLines.Wrap(line.Text, inner).Select(text => line with { Text = text })).ToArray();
-        var text = new HvoTextLines(theme) { X = 0, Y = 0, Width = Dim.Fill(), Height = lines.Length, CanFocus = false };
+        var text = new HvoTextLines(theme) { X = 0, Y = 0, Width = Dim.Fill(), Height = lines.Length, CanFocus = true };
+        text.HasFocusChanged += (_, _) => { if (text.HasFocus) Reveal(0); };
         text.Show(lines);
-        Panel.Body.Add(text);
+        _content.Add(text);
         var y = lines.Length;
         if (spec.Fields.Count > 0)
         {
@@ -69,7 +83,9 @@ internal sealed class SkyUiPrompt : IDisposable
                     e.Handled = true;
                     Choose();
                 };
-                Panel.Body.Add(caption, input);
+                var row = y;
+                input.HasFocusChanged += (_, _) => { if (input.HasFocus) Reveal(row); };
+                _content.Add(caption, input);
                 _fields.Add(input);
                 y++;
             }
@@ -79,7 +95,10 @@ internal sealed class SkyUiPrompt : IDisposable
         {
             y++;
             _choices = new HvoChoiceList(theme, spec.Choices, spec.Choice) { X = 0, Y = y };
-            Panel.Body.Add(_choices);
+            var row = y;
+            _choices.ValueChanged += (_, _) => Reveal(row + _choices.Value);
+            _choices.HasFocusChanged += (_, _) => { if (_choices.HasFocus) Reveal(row + _choices.Value); };
+            _content.Add(_choices);
             y += spec.Choices.Count;
         }
 
@@ -88,16 +107,18 @@ internal sealed class SkyUiPrompt : IDisposable
             y++;
             _acknowledge = new HvoToggle(theme, acknowledge) { X = 0, Y = y };
             _acknowledge.CheckedChanged += (_, _) => _action!.Enabled = _acknowledge.Checked;
-            Panel.Body.Add(_acknowledge);
+            var row = y;
+            _acknowledge.HasFocusChanged += (_, _) => { if (_acknowledge.HasFocus) Reveal(row); };
+            _content.Add(_acknowledge);
             y++;
         }
 
-        _error = new Label { X = 0, Y = y + 1, Width = Dim.Fill(), Height = 2 };
+        _error = new Label { X = 0, Y = Pos.AnchorEnd(3), Width = Dim.Fill(), Height = 2 };
         _error.TextFormatter.WordWrap = true;
         _error.SetScheme(theme.Label(HvoTone.Danger, HvoGround.Surface, bold: true));
         _action = theme.CreateButton(spec.Action, primary: true);
         _action.X = 0;
-        _action.Y = y + 3;
+        _action.Y = Pos.AnchorEnd(1);
         _action.Enabled = _acknowledge is null;
         _action.Accepting += (_, e) =>
         {
@@ -106,17 +127,34 @@ internal sealed class SkyUiPrompt : IDisposable
         };
         _cancel = theme.CreateButton("Cancel");
         _cancel.X = Pos.Right(_action) + 2;
-        _cancel.Y = y + 3;
+        _cancel.Y = Pos.AnchorEnd(1);
         _cancel.Accepting += (_, e) =>
         {
             e.Handled = true;
             _close(this);
         };
-        Panel.Body.Add(_error, _action, _cancel);
+        var scrollHint = new Label
+        {
+            X = 0,
+            Y = Pos.AnchorEnd(4),
+            Width = Dim.Fill(),
+            Height = 1,
+            Text = y + 6 > screenHeight - 6 ? "PgUp/PgDn scroll; Tab moves" : string.Empty
+        };
+        scrollHint.SetScheme(theme.Label(HvoTone.Muted, HvoGround.Surface));
+        Panel.Body.Add(scrollHint, _error, _action, _cancel);
         Panel.X = Pos.Center();
         Panel.Y = Pos.Center();
         Panel.Width = width;
-        Panel.Height = y + 4 + 2;
+        Panel.Height = Dim.Func(_ => Math.Min(y + 4 + 2, Math.Max(10, (Panel.SuperView?.Viewport.Height ?? screenHeight) - 6)));
+        _content.SetContentSize(new Size(inner, y));
+    }
+
+    private void Reveal(int row)
+    {
+        var viewport = _content.Viewport;
+        var top = row < viewport.Y ? row : row >= viewport.Bottom ? row - viewport.Height + 1 : viewport.Y;
+        _content.ScrollVertical(top - viewport.Y);
     }
 
     /// <summary>The panel the prompt is drawn in, which the interface puts over the page.</summary>

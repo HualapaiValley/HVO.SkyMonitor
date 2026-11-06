@@ -86,12 +86,11 @@
 <text x="37.20" y="181.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">From</text>
 <text x="96.00" y="181.50" fill="#58a6ff" textLength="134.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">RESTART / REVIEW</text>
 <text x="37.20" y="199.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">File</text>
-<text x="87.60" y="199.50" fill="#f7f9fc" textLength="504.00" lengthAdjust="spacingAndGlyphs">Restart CameraAgent at http://127.0.0.1:5130/? Capture stops</text>
-<text x="87.60" y="217.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs">until it is back.</text>
+<text x="87.60" y="199.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs">until it is back.</text>
+<text x="87.60" y="217.50" fill="#98a7bb" textLength="495.60" lengthAdjust="spacingAndGlyphs">Settings and a staged rig that apply at its next start take</text>
 <text x="45.60" y="235.50" fill="#58a6ff" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAM</text>
-<text x="87.60" y="235.50" fill="#98a7bb" textLength="495.60" lengthAdjust="spacingAndGlyphs">Settings and a staged rig that apply at its next start take</text>
+<text x="87.60" y="235.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">effect. The interface waits for the new process.</text>
 <text x="37.20" y="253.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Vers</text>
-<text x="87.60" y="253.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">effect. The interface waits for the new process.</text>
 <text x="37.20" y="271.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Runt</text>
 <text x="37.20" y="289.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Star</text>
 <text x="37.20" y="307.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Upti</text>

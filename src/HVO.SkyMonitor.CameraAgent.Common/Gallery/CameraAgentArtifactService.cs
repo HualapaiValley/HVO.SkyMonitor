@@ -97,6 +97,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 {
     private const long MaximumEvidenceBytes = 4L * 1024 * 1024;
     private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
+    private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -119,8 +120,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     public CameraAgentArtifactService(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
-        ICameraAgentPreviewEncoder previewEncoder)
+        ICameraAgentPreviewEncoder previewEncoder,
+        Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null)
     {
+        _logger = logger;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _previewEncoder = previewEncoder ?? throw new ArgumentNullException(nameof(previewEncoder));
@@ -160,7 +163,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_root);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "artifact-read", _logger, cancellationToken).ConfigureAwait(false);
         FileStream? payload = null;
         try
         {

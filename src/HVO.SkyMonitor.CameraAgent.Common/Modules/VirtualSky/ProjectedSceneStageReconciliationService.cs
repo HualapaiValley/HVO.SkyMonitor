@@ -56,13 +56,23 @@ internal sealed class ProjectedSceneStageReconciliationService(
             logger.MaintenanceHeld("Projected-scene stage reconciliation", heldBy);
             return new(0, 0, 0);
         }
-        using var lease = await lifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
-        var owned = await ownerProvider.GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
-        var protectedKeys = new HashSet<string>(owned, StringComparer.Ordinal);
-        protectedKeys.UnionWith(lease.PendingStageKeys);
-        var result = await reconciler.ReconcileAsync(protectedKeys, cancellationToken).ConfigureAwait(false);
-        telemetry.RecordProjectedSceneReconciliation(result);
-        state.SetProjectedSceneBacklog(result.BacklogCount);
-        return result;
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, maintenance.InterruptionToken);
+        var passToken = interruption.Token;
+        try
+        {
+            using var lease = await lifecycle.AcquireReconciliationLeaseAsync(passToken).ConfigureAwait(false);
+            var owned = await ownerProvider.GetOwnedStageKeysAsync(passToken).ConfigureAwait(false);
+            var protectedKeys = new HashSet<string>(owned, StringComparer.Ordinal);
+            protectedKeys.UnionWith(lease.PendingStageKeys);
+            var result = await reconciler.ReconcileAsync(protectedKeys, cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
+            telemetry.RecordProjectedSceneReconciliation(result);
+            state.SetProjectedSceneBacklog(result.BacklogCount);
+            return result;
+        }
+        catch (OperationCanceledException) when (maintenance.InterruptionToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Keep the existing backlog and cursor; the next pass rediscovers uninspected stages.
+            return new(0, 0, 1);
+        }
     }
 }

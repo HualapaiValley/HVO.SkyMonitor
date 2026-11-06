@@ -26,6 +26,9 @@ public sealed class LogicalCameraArchivePerformanceTests
     [Timeout(600_000)]
     public async Task SqlServer_W3MArchiveAndCurrentSelectionRecordIndexedBounds()
     {
+        var pageSize = int.Parse(Environment.GetEnvironmentVariable("HVO_ARCHIVE_PERFORMANCE_PAGE_SIZE") ?? "50",
+            System.Globalization.CultureInfo.InvariantCulture);
+        pageSize.Should().BeInRange(1, 50);
         var evidence = new List<object>();
         foreach (var size in new[] { 1_000, 10_000 })
         {
@@ -47,18 +50,18 @@ public sealed class LogicalCameraArchivePerformanceTests
             // Obtain an authentic filtered continuation in the older half of retained history.
             var olderFilter = new CameraArchiveFilter(UntilUtc: dataset.Frames[size / 2].CapturedAtUtc);
             var olderPage = await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
-                olderFilter, 50, null).ConfigureAwait(false);
+                olderFilter, pageSize, null).ConfigureAwait(false);
             olderPage.NextCursor.Should().NotBeNull();
             string? siblingCursor = null;
             var requests = new Dictionary<string, Func<Task<object>>>
             {
-                ["nearest-baseline-unfiltered"] = async () => await old.ListCapturesAsync(dataset.Owner, dataset.Observatory, dataset.Camera, 50, null).ConfigureAwait(false),
-                ["archive-unfiltered"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(), 50, null).ConfigureAwait(false),
+                ["nearest-baseline-unfiltered"] = async () => await old.ListCapturesAsync(dataset.Owner, dataset.Observatory, dataset.Camera, pageSize, null).ConfigureAwait(false),
+                ["archive-unfiltered"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(), pageSize, null).ConfigureAwait(false),
                 ["archive-older-keyset"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
-                    olderFilter, 50, olderPage.NextCursor).ConfigureAwait(false),
+                    olderFilter, pageSize, olderPage.NextCursor).ConfigureAwait(false),
                 ["archive-product-state"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
-                    new(Product: FrameArtifactRole.Preview, ObjectState: CentralArtifactObjectState.Expired), 50, null).ConfigureAwait(false),
-                ["archive-exact-missing"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(Text: "999999999"), 50, null).ConfigureAwait(false),
+                    new(Product: FrameArtifactRole.Preview, ObjectState: CentralArtifactObjectState.Expired), pageSize, null).ConfigureAwait(false),
+                ["archive-exact-missing"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(Text: "999999999"), pageSize, null).ConfigureAwait(false),
                 ["current-verified"] = async () => (await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, null).ConfigureAwait(false))!,
                 ["current-siblings-continuation"] = async () => (await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, siblingCursor).ConfigureAwait(false))!
             };
@@ -109,14 +112,14 @@ public sealed class LogicalCameraArchivePerformanceTests
                 });
                 var plans = new List<Plan>();
                 foreach (var command in capture.Commands) plans.Add(await ExplainAsync(connectionString, command).ConfigureAwait(false));
-                plans.Max(item => item.ResultRows).Should().BeLessThanOrEqualTo(name.StartsWith("current-", StringComparison.Ordinal) ? 6 : 51);
+                plans.Max(item => item.ResultRows).Should().BeLessThanOrEqualTo(name.StartsWith("current-", StringComparison.Ordinal) ? 6 : pageSize + 1);
                 plans.SelectMany(item => item.Indexes).Should().Contain("IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id");
                 if (observed is CameraArchivePage page)
                 {
-                    page.Items.Count.Should().BeLessThanOrEqualTo(50);
+                    page.Items.Count.Should().BeLessThanOrEqualTo(pageSize);
                     if (name == "archive-older-keyset")
                     {
-                        page.Items.Should().HaveCount(50);
+                        page.Items.Should().HaveCount(pageSize);
                         page.Items.Select(item => item.CaptureId).Should().NotIntersectWith(olderPage.Items.Select(item => item.CaptureId));
                         var boundary = olderPage.Items[^1].CapturedAtUtc;
                         page.Items.Should().OnlyContain(item => item.CapturedAtUtc < boundary);
@@ -134,6 +137,7 @@ public sealed class LogicalCameraArchivePerformanceTests
                 {
                     Name = name,
                     HistoryRows = size,
+                    PageSize = pageSize,
                     Warmup = 5,
                     Operations = 30,
                     Concurrency = 1,

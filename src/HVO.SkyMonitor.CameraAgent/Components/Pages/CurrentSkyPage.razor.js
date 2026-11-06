@@ -16,6 +16,25 @@ export async function openTechnicalEvidence(root) {
     (evidence.querySelector('.evidence-tabs [aria-selected="true"]') ?? evidence).focus({ preventScroll: true });
 }
 
+// The operator's remembered layer choices. Storage can be disabled or full; the page then keeps its own choices
+// for this visit and the profile defaults for the next.
+export function readLayerVisibility(key) {
+    try {
+        return window.localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+export function writeLayerVisibility(key, value) {
+    try {
+        if (value === null) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, value);
+    } catch {
+        // The choice still applies on this page.
+    }
+}
+
 // Starts a same-origin attachment download without leaving the page.
 export function downloadUrl(url) {
     const link = document.createElement('a');

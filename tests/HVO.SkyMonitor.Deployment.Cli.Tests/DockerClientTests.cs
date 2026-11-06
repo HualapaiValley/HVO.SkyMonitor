@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -7,6 +8,23 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class DockerClientTests
 {
+    /// <summary>
+    /// The image store a plan names a release's image for (#1384): <c>docker info</c> reports the containerd image store
+    /// as a containerd snapshotter driver type, and the classic store reports none.
+    /// </summary>
+    [TestMethod]
+    [DataRow("""{"Driver":"overlayfs","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}""", true)]
+    [DataRow("""{"Driver":"overlay2","DriverStatus":[["Backing Filesystem","extfs"],["Supports d_type","true"]]}""", false)]
+    [DataRow("""{"Driver":"overlay2","DriverStatus":null}""", false)]
+    [DataRow("""{"Driver":"overlay2"}""", false)]
+    [DataRow("""{"DriverStatus":[["driver-type"],"io.containerd.snapshotter.v1",[1,2]]}""", false)]
+    public void UsesContainerdImageStore_ReadsTheDriverTypeDockerInfoReports(string info, bool expected)
+    {
+        using var document = JsonDocument.Parse(info);
+
+        Assert.AreEqual(expected, DockerClient.UsesContainerdImageStore(document.RootElement));
+    }
+
     /// <summary>
     /// The image listing that proves an imported image gone (#1315 PR-1355-R5 R5-1), in the form a real daemon prints it:
     /// the first line was captured from Docker 29.8 with the containerd image store, the second is the classic store's.
@@ -28,6 +46,108 @@ public sealed class DockerClientTests
         Assert.IsFalse(images.Any(image => image.Shows($"ghcr.io/example/other@sha256:{new string('4', 64)}")));
         Assert.IsFalse(images.Any(image => image.Shows("moby/buildkit:latest")));
         Assert.IsEmpty(DockerClient.ParseImageListing(string.Empty), "a successful listing of no images shows nothing");
+    }
+
+    [TestMethod]
+    [DataRow("x", "docker.io/library/x")]
+    [DataRow("x", "docker.io/x")]
+    [DataRow("x", "library/x")]
+    [DataRow("org/x", "docker.io/org/x")]
+    [DataRow("x", "index.docker.io/library/x")]
+    [DataRow("org/x", "index.docker.io/org/x")]
+    [DataRow("ghcr.io/org/x", "ghcr.io/org/x")]
+    [DataRow("localhost:5000/org/x", "localhost:5000/org/x")]
+    [DataRow("localhost/x", "localhost/x")]
+    [DataRow("[::1]:5000/org/x", "[::1]:5000/org/x")]
+    [DataRow("Registry/x", "Registry/x")]
+    public void ParseImageListing_EquivalentRepositories_MatchTagsAndDigestsInBothDirections(string shortName, string fullName)
+    {
+        var digest = $"sha256:{new string('4', 64)}";
+        foreach (var (listed, recorded) in new[] { (shortName, fullName), (fullName, shortName) })
+        {
+            foreach (var suffix in new[] { string.Empty, ":stable", $"@{digest}", $":stable@{digest}" })
+            {
+                var image = DockerClient.ParseImageListing(JsonSerializer.Serialize(new
+                {
+                    ID = $"sha256:{new string('5', 64)}",
+                    Repository = listed,
+                    Tag = suffix.Length == 0 ? "latest" : "stable",
+                    Digest = digest
+                })).Single();
+
+                Assert.IsTrue(image.Shows(recorded + suffix), $"{listed} must show {recorded + suffix}");
+                Assert.IsFalse(image.Shows(recorded + ":other"), "repository normalization must preserve tag identity");
+                Assert.IsFalse(image.Shows($"{recorded}@sha256:{new string('6', 64)}"), "digest identity must remain exact");
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("x", "docker.io.evil/library/x")]
+    [DataRow("x", "registry-1.docker.io/library/x")]
+    [DataRow("x", "docker.io:5000/library/x")]
+    [DataRow("x", "ghcr.io/library/x")]
+    [DataRow("org/x", "ghcr.io/org/x")]
+    [DataRow("org/x", "other/x")]
+    [DataRow("x", "docker.io/library/xx")]
+    [DataRow("x", "docker.io/library/x/child")]
+    [DataRow("nested/x", "docker.io/library/nested/x")]
+    [DataRow("localhost/x", "docker.io/localhost/x")]
+    [DataRow("Registry/x", "docker.io/registry/x")]
+    [DataRow("<none>", "x")]
+    public void ParseImageListing_UnrelatedRepositories_NeverMatchEvenWithTheSameTagAndDigest(string first, string second)
+    {
+        var digest = $"sha256:{new string('4', 64)}";
+        foreach (var (listed, recorded) in new[] { (first, second), (second, first) })
+        {
+            var image = new ListedImage($"sha256:{new string('5', 64)}", listed, "latest", digest);
+
+            Assert.IsFalse(image.Shows(recorded));
+            Assert.IsFalse(image.Shows(recorded + ":latest"));
+            Assert.IsFalse(image.Shows(recorded + "@" + digest));
+            Assert.IsFalse(image.Shows(recorded + ":latest@" + digest));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("docker.io/library/x", "x", true)]
+    [DataRow("docker.io/org/x", "org/x", true)]
+    [DataRow("docker.io/library/x", "ghcr.io/library/x", false)]
+    [DataRow("docker.io/org/x", "other/x", false)]
+    public async Task UndoImportAsync_ReadBackRecognizesHubNames_AndRemovesOnlyRecordedNames(
+        string recorded, string listed, bool stillHeld)
+    {
+        var digest = $"sha256:{new string('4', 64)}";
+        var reference = recorded + "@" + digest;
+        var listing = JsonSerializer.Serialize(new
+        {
+            ID = $"sha256:{new string('5', 64)}",
+            Repository = listed,
+            Tag = "<none>",
+            Digest = digest
+        });
+        var runner = new FakeProcessRunner(string.Empty, listing);
+        var docker = new DockerClient(runner);
+        var cause = InstallerException.Refused("The import was refused.");
+
+        if (stillHeld)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => docker.UndoImportAsync([reference], cause));
+            Assert.IsFalse(failure.IsRefusal, "a retained import cannot claim nothing changed");
+            Assert.AreSame(cause, failure.InnerException);
+            StringAssert.Contains(failure.Message, reference, StringComparison.Ordinal);
+        }
+        else
+        {
+            await docker.UndoImportAsync([reference], cause);
+        }
+
+        CollectionAssert.AreEqual(new[]
+        {
+            "docker context inspect --format {{.Endpoints.docker.Host}}",
+            $"docker --host unix:///var/run/docker.sock image rm {reference}",
+            "docker --host unix:///var/run/docker.sock image ls --all --digests --no-trunc --format {{json .}}"
+        }, runner.Commands, "cleanup must preserve the original names, order, pinned endpoint and non-force removal");
     }
 
     /// <summary>A listing with any line that is not an image this installer reads proves nothing.</summary>

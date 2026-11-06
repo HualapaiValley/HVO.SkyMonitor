@@ -1,0 +1,11 @@
+{
+  "schema": "historical-status-context-v1",
+  "contextOnly": true,
+  "elementSourceAssertedStatus": null,
+  "elementSourceAssertedType": null,
+  "parentProvidedHistoryClaim": "NASA history and NRL history report that Vanguard1 contact/last signal ended1964.",
+  "primarySourceUri": "https://www.nasa.gov/history/60-years-ago-vanguard-fails-to-reach-orbit/",
+  "verifiedByThisHelper": false,
+  "verificationLimitation": "Parent explicitly supplied this already browsed primary-source context. This helper performed no network requests and has not independently rechecked the historical page.",
+  "interpretation": "Historical numerically propagated scenario near a retained2000 verification-element epoch for a historically noncommunicating object; not a current prediction or a physical-status field inferred from TLE, name, GP group, illumination or brightness."
+}

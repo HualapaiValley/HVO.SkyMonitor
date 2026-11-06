@@ -346,7 +346,7 @@ internal static class SkyStatusText
         }
 
         parts.Add($"{SkyCliFormat.Count(SkyJson.Integer(value, "quarantineCount"))} quarantined");
-        if (SkyJson.Text(value, "availability") is { } availability && availability != "Available")
+        if (SkyJson.Text(value, "availability") is { } availability && availability is not ("Available" or "Healthy" or "Accepting"))
         {
             parts.Add(availability);
         }

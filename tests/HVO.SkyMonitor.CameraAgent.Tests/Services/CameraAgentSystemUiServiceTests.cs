@@ -126,6 +126,49 @@ public sealed class CameraAgentSystemUiServiceTests
     }
 
     [TestMethod]
+    public async Task Health_PresentsOrbitalElementsAsALocalCatalogCheckThatCanBeSwitchedOff()
+    {
+        using var fixture = new Fixture();
+        fixture.Report(
+            ("orbital-elements", Entry(HealthStatus.Healthy, availability: "Disabled")),
+            ("catalog", Entry(HealthStatus.Degraded)));
+
+        var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var check = Check(view, "orbital-elements");
+        Assert.AreEqual("Orbital elements", check.Label);
+        Assert.AreEqual("Local", check.Scope);
+        Assert.AreEqual("/operations/software", check.Href);
+        Assert.AreEqual(SystemCheckState.Disabled, check.State);
+        Assert.AreEqual(Check(view, "catalog").Href, check.Href, "Both catalogs are reported on the software page.");
+
+        fixture.Report(("orbital-elements", Entry(HealthStatus.Degraded)));
+        var degraded = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(SystemCheckState.Degraded, Check(degraded, "orbital-elements").State);
+    }
+
+    [TestMethod]
+    public async Task Health_PresentsSpaceWeatherAsALocalCheckThatCanBeSwitchedOff()
+    {
+        using var fixture = new Fixture();
+        fixture.Report(("space-weather", Entry(HealthStatus.Healthy, availability: "Disabled")));
+
+        var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var check = Check(view, "space-weather");
+        Assert.AreEqual("Space weather", check.Label);
+        Assert.AreEqual("Local", check.Scope);
+        Assert.AreEqual("/operations/space-weather", check.Href);
+        Assert.AreEqual(SystemCheckState.Disabled, check.State);
+
+        fixture.Report(("space-weather", Entry(HealthStatus.Degraded)));
+        var degraded = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(SystemCheckState.Degraded, Check(degraded, "space-weather").State);
+    }
+
+    [TestMethod]
     public async Task Health_WithOnlySwitchedOffChecks_IsHealthy()
     {
         using var fixture = new Fixture();

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ $# == 0 ]]; then
+  output_root="$(hvo scratch HVO.SkyMonitor 1188 controls-implementation)"
+elif [[ $# == 2 && $1 == --output-root && -d $2 ]]; then
+  output_root="$2"
+else
+  printf 'Usage: %s [--output-root existing-registered-scratch]\n' "$0" >&2
+  exit 2
+fi
+
+printf 'F7 private fake-control evidence: %s/regression\n' "$output_root"
+exec flock -o /tmp/hvo-heavy-gate.lock timeout --kill-after=5s 180s \
+  python3 -B "$repo_root/scripts/catalog/f7/controls/regression.py" --output-root "$output_root"

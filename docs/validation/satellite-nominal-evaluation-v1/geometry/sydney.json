@@ -1,0 +1,67 @@
+{
+  "schema": "root-public-capture-geometry-v1",
+  "observer": {
+    "latitudeDegrees": -33.8688,
+    "longitudeDegrees": 151.2093,
+    "elevationMeters": 50
+  },
+  "geometryIdentitySha256": "CA43347B9D5FECED0FB44216B3331EBBA284F48C1EA6945B19B5D66E7F8C4D22",
+  "geometry": {
+    "basis": "ConfiguredRig",
+    "rigIdentitySha256": "DD223E200CD1C936F6345A56F72358E1B6F1809E44BD679F40988096E8E33E9E",
+    "readoutIdentitySha256": "01C760131F5B44DA868C659206B31EBC5F03CC1A18D88BAB469C60F43282F830",
+    "readout": {
+      "nativeWidth": 640,
+      "nativeHeight": 640,
+      "roiX": 0,
+      "roiY": 0,
+      "roiWidth": 640,
+      "roiHeight": 640,
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "cfaOriginX": 0,
+      "cfaOriginY": 0
+    },
+    "calibrationIdentitySha256": "16B9F88368DE965804C0EA646B17CDB795EC4FEC11A9AEA54CC0399ECAE62FA2",
+    "assessmentIdentitySha256": null,
+    "uncertaintyIdentitySha256": null,
+    "projectionCoordinates": "ReadoutView",
+    "projection": {
+      "model": "EquidistantFisheye",
+      "principalPointX": 320,
+      "principalPointY": 320,
+      "focalLengthXPixels": 199.64396061447354,
+      "focalLengthYPixels": 199.64396061447354,
+      "widthPixels": 640,
+      "heightPixels": 640,
+      "aperture": "Circular",
+      "imageCircleRadiusPixels": 313.6,
+      "boresightAltitudeDegrees": 90,
+      "boresightAzimuthDegrees": 0,
+      "rollDegrees": 0,
+      "horizontalFlip": true,
+      "enforceSensorBounds": true
+    },
+    "imageTransform": {
+      "schemaVersion": "projected-scene-image-transform-v1",
+      "sourceWidthPixels": 640,
+      "sourceHeightPixels": 640,
+      "cropX": 0,
+      "cropY": 0,
+      "cropWidth": 640,
+      "cropHeight": 640,
+      "binX": 1,
+      "binY": 1,
+      "horizontalMirror": false,
+      "verticalMirror": false,
+      "rotation": "Degrees0",
+      "outputWidthPixels": 640,
+      "outputHeightPixels": 640
+    },
+    "horizonPolicy": "GeometricHorizon"
+  },
+  "settingsFileSha256": "3253C2A08FEE9067C09B6018AD741A36EF799A97CFA9172619210F5BA7F9B0BF",
+  "rawLayoutFileSha256": "536B9E1FA243C69483AA0629A92D3243ED6F9F9FD053537D6F891175A29C4868",
+  "limitation": "Configured nominal capture-time facts only. No prediction/truth inputs, measured calibration or physical uncertainty."
+}

@@ -29,4 +29,11 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
+  <!-- The release-bundled Earth-orientation and leap-second pair (#1474). Original bytes; scripts/time-data:update
+       rewrites them before a release tag. Hosts and tests read them from <output>/time-data. -->
+  <ItemGroup>
+    <None Update="OrbitalPlanning/TimeData/*" Link="time-data/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

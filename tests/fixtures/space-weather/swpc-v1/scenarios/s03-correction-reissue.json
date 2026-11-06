@@ -1,0 +1,104 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s03-correction-reissue",
+  "title": "A CORRECTED reissue reuses the serial with a later issue time and moves the begin time",
+  "covers": [
+    "revised",
+    "correction",
+    "expired"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T16:44:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s03-a\"",
+        "lastModified": "Thu, 08 Oct 2026 16:43:55 GMT",
+        "body": "[{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTTP2/1531",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "notices": {
+          "ALTTP2/1531": {
+            "family": "radio-sweep",
+            "state": "active",
+            "fromUtc": "2026-10-08T16:42:00Z",
+            "untilUtc": "2026-10-08T17:42:00Z",
+            "versions": 1,
+            "corrected": false
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T16:47:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s03-b\"",
+        "lastModified": "Thu, 08 Oct 2026 16:46:55 GMT",
+        "body": "[{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:46:44.923\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1646 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1542 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: ** Corrected for begin time.              Type II speed recorded by Sagamore Hill RSTN site.\\n\\nCORRECTED\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [],
+        "notices": {
+          "ALTTP2/1531": {
+            "state": "recent",
+            "endReason": "expired",
+            "fromUtc": "2026-10-08T15:42:00Z",
+            "untilUtc": "2026-10-08T16:42:00Z",
+            "latest": "ALTTP2/1531/2026-10-08T16:46:00Z",
+            "versions": 2,
+            "corrected": true
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "evaluate",
+      "atUtc": "2026-10-09T16:42:00Z",
+      "expect": {
+        "notices": {
+          "ALTTP2/1531": {
+            "state": "history"
+          }
+        }
+      }
+    }
+  ]
+}

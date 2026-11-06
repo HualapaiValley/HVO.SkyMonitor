@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s07-watch-supersession-and-cancel",
+  "title": "A same-level replacement watch, then a CANCEL WATCH that lists only remaining days",
+  "covers": [
+    "retracted",
+    "cancel",
+    "watch-supersession"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-09T08:15:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s07-a\"",
+        "lastModified": "Fri, 09 Oct 2026 08:14:50 GMT",
+        "body": "[{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-09 08:12:52.153\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 284\\r\\nIssue Time: 2026 Oct 09 0812 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G2 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 10:  None (Below G1)   Oct 11:  G2 (Moderate)   Oct 12:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WATA30/284",
+            "reason": "new",
+            "level": "G2"
+          }
+        ],
+        "notices": {
+          "WATA30/284": {
+            "state": "active",
+            "fromUtc": "2026-10-09T08:12:00Z",
+            "untilUtc": "2026-10-12T00:00:00Z",
+            "relevance": {
+              "hvo": "NotExpected"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-09T16:40:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s07-b\"",
+        "lastModified": "Fri, 09 Oct 2026 16:39:50 GMT",
+        "body": "[{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-09 16:36:26.313\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 285\\r\\nIssue Time: 2026 Oct 09 1636 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G2 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 09:  G1 (Minor)   Oct 10:  G1 (Minor)   Oct 11:  G2 (Moderate)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: Downgraded the G2 to a G1 watch for 09 Oct and added a G1 watch for 10 Oct 2026.\\n\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"},{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-09 08:12:52.153\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 284\\r\\nIssue Time: 2026 Oct 09 0812 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G2 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 10:  None (Below G1)   Oct 11:  G2 (Moderate)   Oct 12:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "notices": {
+          "WATA30/284": {
+            "state": "recent",
+            "endReason": "superseded",
+            "untilUtc": "2026-10-09T16:36:00Z"
+          },
+          "WATA30/285": {
+            "state": "active",
+            "fromUtc": "2026-10-09T16:36:00Z",
+            "untilUtc": "2026-10-12T00:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "evaluate",
+      "atUtc": "2026-10-11T16:00:00Z",
+      "expect": {
+        "notices": {
+          "WATA30/284": {
+            "state": "history"
+          },
+          "WATA30/285": {
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-11T17:05:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s07-c\"",
+        "lastModified": "Sun, 11 Oct 2026 17:04:50 GMT",
+        "body": "[{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-11 17:02:59.390\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 286\\r\\nIssue Time: 2026 Oct 11 1702 UTC\\r\\n\\r\\nCANCEL WATCH: Geomagnetic Storm Category G2 Predicted \\nCancel Serial Number: 285\\nOriginal Issue Time: 2026 Oct 09 1636 UTC\\nCancelled Level Predicted:\\nOct 11  : None (Below G1)  \\nConditions no longer warrant a G2 Watch.\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"},{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-09 16:36:26.313\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 285\\r\\nIssue Time: 2026 Oct 09 1636 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G2 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 09:  G1 (Minor)   Oct 10:  G1 (Minor)   Oct 11:  G2 (Moderate)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: Downgraded the G2 to a G1 watch for 09 Oct and added a G1 watch for 10 Oct 2026.\\n\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"},{\"product_id\":\"A30F\",\"issue_datetime\":\"2026-10-09 08:12:52.153\",\"message\":\"Space Weather Message Code: WATA30\\r\\nSerial Number: 284\\r\\nIssue Time: 2026 Oct 09 0812 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G2 Predicted \\nHighest Storm Level Predicted by Day:\\nOct 10:  None (Below G1)   Oct 11:  G2 (Moderate)   Oct 12:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 55 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Power grid fluctuations can occur. High-latitude power systems may experience voltage alarms.\\r\\nSpacecraft - Satellite orientation irregularities may occur; increased drag on low Earth-orbit satellites is possible.\\r\\nRadio - HF (high frequency) radio propagation can fade at higher latitudes.\\r\\nAurora - Aurora may be seen as low as New York to Wisconsin to Washington state.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [],
+        "notices": {
+          "WATA30/284": {
+            "state": "history"
+          },
+          "WATA30/285": {
+            "state": "recent",
+            "endReason": "cancelled",
+            "untilUtc": "2026-10-11T17:02:00Z",
+            "latest": "WATA30/286/2026-10-11T17:02:00Z",
+            "versions": 2
+          }
+        }
+      }
+    }
+  ]
+}

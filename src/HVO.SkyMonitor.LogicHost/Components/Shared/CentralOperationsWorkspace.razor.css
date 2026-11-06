@@ -1,0 +1,17 @@
+.central-workspace { min-width: 0; overflow-wrap: anywhere; }
+.central-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.central-toolbar button { flex-shrink: 0; }
+.central-tabs, .central-actions, .central-pagination, nav[aria-label="Assignment target"] { display: flex; gap: .75rem; flex-wrap: wrap; margin-block: 1rem; }
+.central-tabs a { padding: .5rem; border-bottom: 2px solid transparent; }
+.central-tabs a[aria-current="page"] { border-color: var(--hvo-accent, #67d9f1); font-weight: bold; }
+.central-list { list-style: none; padding: 0; }
+.central-list > li { padding: .8rem; margin-block: .5rem; border: 1px solid #40505f; border-radius: .4rem; }
+.central-list span { display: block; }
+.central-exact { margin-block: 1rem; border-block: 1px solid #56616f; padding-block: 1rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28rem; overflow-y: auto; }
+code { overflow-wrap: anywhere; }
+input, select { max-width: 32rem; margin-block: .5rem 1rem; }
+button, a, summary { min-height: 2.75rem; }
+a { display: inline-block; }
+:focus-visible { outline: 3px solid #67d9f1; outline-offset: 3px; }
+@media (max-width: 600px) { .central-toolbar { flex-direction: column; } .central-actions { flex-direction: column; } }

@@ -31,7 +31,8 @@ public sealed partial class RawCaptureIngressTests
         }
         SqliteConnection.ClearAllPools();
         var payload = accepted.StoredFrame.AbsolutePath;
-        await File.WriteAllBytesAsync(payload, [6, 6, 6, 6]).ConfigureAwait(false);
+        // Startup checks committed evidence by length, so the mismatch is a truncation.
+        await File.WriteAllBytesAsync(payload, [6, 6, 6]).ConfigureAwait(false);
         using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
         var state = new RawIngressState(TimeProvider.System);
         using var restarted = CreateIngress(root, state, maintenanceGate: hold.Gate);

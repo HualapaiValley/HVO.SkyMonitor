@@ -1,0 +1,7 @@
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}/central"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Central operations | HVO SkyMonitor</PageTitle>
+<OperationsScopeShell ObservatoryId="ObservatoryId" CameraId="CameraId" ActiveSection="central">
+    <CentralOperationsWorkspace ObservatoryId="ObservatoryId" CameraId="CameraId" Query="Selection" />
+</OperationsScopeShell>

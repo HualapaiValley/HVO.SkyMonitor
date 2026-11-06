@@ -37,6 +37,12 @@ public sealed class CentralProcessingRunnerOptionsTests
         StringAssert.Contains(error, "runner-capable", StringComparison.Ordinal);
         Assert.IsFalse(CentralProcessingRunnerOptions.IsRunnerCapableRecipe("central-transient-validation"));
         Assert.IsTrue(CentralProcessingRunnerOptions.IsRunnerCapableRecipe(BuiltInProcessingRecipes.EncodedPreview));
+        var measured = new CentralProcessingRunnerOptions
+        {
+            Enabled = true,
+            Placement = { [BuiltInProcessingRecipes.MeasuredStellarAssociations] = CentralProcessingRunnerPlacement.Runner }
+        };
+        Assert.IsTrue(measured.Validate(out error), error);
     }
 
     [TestMethod]

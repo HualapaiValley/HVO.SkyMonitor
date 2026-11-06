@@ -1,0 +1,35 @@
+{
+  "schema": "hvo-bundled-time-data-v1",
+  "earthOrientation": {
+    "file": "finals2000A.daily.extended",
+    "product": "IERS Rapid Service/Prediction Center finals2000A daily extended (IAU2000A, since 1973, one year of predictions)",
+    "sourceUrl": "https://maia.usno.navy.mil/ser7/finals2000A.daily.extended",
+    "retrievedUtc": "2026-10-21T17:30:12Z",
+    "lastModifiedUtc": "2026-10-21T17:11:48Z",
+    "lengthBytes": 3769212,
+    "sha256": "199456C16B426C00C1B809E75210EB470A2593427A51FC7605D341F0D4A94E3D",
+    "providerChecksum": {
+      "algorithm": "SHA-512",
+      "value": "f0789adce2581985a347f2f38ceeb6d5c62c0529b36ae69b0ba2a8445aa974f95fb3a4539a08fb80e19652a397ab0e0283b7d84d02a503c622281e9037675e04",
+      "sourceUrl": "https://maia.usno.navy.mil/ser7/checksums.sha512"
+    },
+    "terms": "Distribution Statement A. Approved for public release: distribution unlimited.",
+    "termsUrl": "https://maia.usno.navy.mil/products/daily.htm"
+  },
+  "leapSeconds": {
+    "file": "leap-seconds.list",
+    "product": "IERS Earth Orientation Center leap-seconds.list (NTP format)",
+    "sourceUrl": "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list",
+    "retrievedUtc": "2026-10-21T17:30:12Z",
+    "lastModifiedUtc": "2026-07-06T07:54:11Z",
+    "lengthBytes": 5065,
+    "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433",
+    "providerChecksum": {
+      "algorithm": "SHA-1 (#h)",
+      "value": "a9bad14584c31c70758402aab37bfd545923836a",
+      "sourceUrl": "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list"
+    },
+    "terms": "This file is in the public domain.",
+    "termsUrl": "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list"
+  }
+}

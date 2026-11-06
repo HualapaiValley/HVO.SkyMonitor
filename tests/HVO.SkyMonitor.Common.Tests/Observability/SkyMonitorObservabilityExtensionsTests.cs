@@ -1,12 +1,15 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using Google.Protobuf;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.Enterprise.Telemetry.Configuration;
 using HVO.Enterprise.Telemetry.OpenTelemetry;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -149,6 +152,50 @@ public sealed class SkyMonitorObservabilityExtensionsTests
         Assert.AreEqual("site", resource["deployment.environment"]);
         Assert.AreEqual("hvo-camera", resource["service.name"]);
         Assert.AreEqual("site", header);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task WriteDetailedHealthResponse_ProjectsOnlyTheAllowedDataOfAKnownCheck()
+    {
+        // The space-weather evaluator emits only the two allowed keys, so the extra key shows that the writer filters
+        // rather than passes data through, and the unregistered check shows that unknown data is withheld.
+        var report = new HealthReport(
+            new Dictionary<string, HealthReportEntry>(StringComparer.Ordinal)
+            {
+                ["space-weather"] = new(
+                    HealthStatus.Healthy,
+                    "Space weather refresh is disabled.",
+                    TimeSpan.Zero,
+                    null,
+                    new Dictionary<string, object>(StringComparer.Ordinal)
+                    {
+                        ["Availability"] = "Disabled",
+                        ["Reason"] = "space-weather.disabled",
+                        ["Unlisted"] = "withheld"
+                    }),
+                ["unregistered"] = new(
+                    HealthStatus.Healthy,
+                    null,
+                    TimeSpan.Zero,
+                    null,
+                    new Dictionary<string, object>(StringComparer.Ordinal) { ["Availability"] = "Disabled" })
+            },
+            TimeSpan.Zero);
+        var context = new DefaultHttpContext();
+        using var body = new MemoryStream();
+        context.Response.Body = body;
+
+        await SkyMonitorObservabilityExtensions.WriteDetailedHealthResponse(context, report);
+
+        using var document = JsonDocument.Parse(body.ToArray());
+        var checks = document.RootElement.GetProperty("checks").EnumerateArray()
+            .ToDictionary(static check => check.GetProperty("name").GetString()!, StringComparer.Ordinal);
+        var data = checks["space-weather"].GetProperty("data");
+        Assert.AreEqual("Disabled", data.GetProperty("Availability").GetString());
+        Assert.AreEqual("space-weather.disabled", data.GetProperty("Reason").GetString());
+        Assert.AreEqual(2, data.EnumerateObject().Count());
+        Assert.AreEqual(JsonValueKind.Null, checks["unregistered"].GetProperty("data").ValueKind);
     }
 
     private static IHost BuildHost(string? buildVersion, string? configuredServiceVersion)

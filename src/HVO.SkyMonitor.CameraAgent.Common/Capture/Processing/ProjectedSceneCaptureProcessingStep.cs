@@ -232,7 +232,7 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [Required, MinLength(1), MaxLength(128)]
     public string OutputVariant { get; init; } = "projected-scene-v1";
 
-    [Range(-30, 30)]
+    [Range(-30d, 30d)]
     public double MaximumMagnitude { get; init; } = 6.5;
 
     [Range(1, ProjectedSceneJson.MaximumObjectCount)]

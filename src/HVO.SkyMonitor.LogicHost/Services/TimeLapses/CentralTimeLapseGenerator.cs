@@ -58,11 +58,12 @@ internal sealed class CentralTimeLapseGenerator(CentralTimeLapseStore store, Cen
         var byId = admitted.ToDictionary(static source => source.Descriptor.Artifact.ArtifactId);
         var sequence = new TimeLapseFrameSequence(admitted.Select(source => LogicHostRecipeExecutionAdapter.CreateArtifact(source.Descriptor)).ToArray(),
             request.Preset.Rig, request.Preset.Frames, size.Width, size.Height, (id, cancellationToken) => sources.RestoreAsync(byId[id], cancellationToken),
-            utc => SolarAltitudeClassifier.DirectionAt(ephemeris, utc, request.Period.Site.LatitudeDegrees, request.Period.Site.LongitudeDegrees).AltitudeDegrees >= -6);
+            utc => SolarAltitudeClassifier.DirectionAt(ephemeris, utc, request.Period.Site.LatitudeDegrees, request.Period.Site.LongitudeDegrees).AltitudeDegrees >= -6,
+            request.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion);
         var frames = new List<CentralTimeLapseFrameLineage>();
         async ValueTask<ReadOnlyMemory<byte>> Render(int? ordinal, CancellationToken cancellationToken)
         {
-            if (ordinal is null) return TimeLapseFrameRenderer.GapImage(size.Width, size.Height);
+            if (ordinal is null) return TimeLapseFrameRenderer.GapImage(size.Width, size.Height, request.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion);
             var id = timeline.Sources[ordinal.Value].ArtifactId;
             var rendered = await sequence.RenderAsync(id, cancellationToken).ConfigureAwait(false);
             frames.Add(new(id, rendered.RenderingIdentitySha256, rendered.StackSourceIds, rendered.StackPayloadSha256, rendered.TotalIntegration));
@@ -105,7 +106,7 @@ internal sealed class CentralTimeLapseGenerator(CentralTimeLapseStore store, Cen
                 var childRequest = CentralTimeLapseStore.ReadRequest(child);
                 var timeline = TimeLapseTimelinePlanner.Create(child.StartUtc, child.EndUtc, [], request.Preset.Timing);
                 var gap = await encoder.EncodeAsync(timeline, size.Width, size.Height, request.Preset.EncoderProfile,
-                    (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(TimeLapseFrameRenderer.GapImage(size.Width, size.Height)), token).ConfigureAwait(false);
+                    (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(TimeLapseFrameRenderer.GapImage(size.Width, size.Height, childRequest.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion)), token).ConfigureAwait(false);
                 await using var gapLifetime = gap.ConfigureAwait(false);
                 product = await PublishAsync(lease, childRequest, gap, timeline, [], [], CentralTimeLapseStore.ReadExclusions(child), true, token).ConfigureAwait(false);
             }

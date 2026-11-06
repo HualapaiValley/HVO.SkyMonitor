@@ -1,0 +1,51 @@
+/* The full space-weather panel. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css; this file lays out the facts, sources, notice rows, pager and the resume dialog. */
+
+dl.ops-facts.space-weather-facts { margin-top: .7rem; }
+.space-weather-facts dd { overflow-wrap: anywhere; }
+.space-weather-facts dd small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; font-weight: 500; }
+.space-weather-panel a { color: var(--blue); }
+
+.space-weather-actions { margin-top: .8rem; }
+.space-weather-actions .ops-action-icon.warning, .space-weather-halt .ops-action-icon.warning { color: #e6bd62; background: var(--amber-soft); }
+.space-weather-blocked { display: block; margin-top: .2rem; color: #e6bd62; font-size: .55rem; }
+.space-weather-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .7rem; font-size: .6rem; font-weight: 700; }
+.space-weather-links a { display: inline-flex; min-height: 2.75rem; align-items: center; }
+
+.space-weather-subsection { margin-top: 1rem; padding-top: .7rem; border-top: 1px solid var(--border); }
+.space-weather-subsection h3 { margin: 0 0 .45rem; font-size: .72rem; }
+.space-weather-subsection p { margin: 0 0 .4rem; color: var(--muted-strong); font-size: .6rem; line-height: 1.45; }
+.space-weather-list-intro { color: var(--muted); }
+.space-weather-drift-list { margin: 0; padding-left: 1rem; font-size: .6rem; }
+
+.ops-table-wrap .ops-table.space-weather-sources td { white-space: normal; font-size: .56rem; }
+
+.space-weather-notice { display: grid; gap: .3rem; margin-top: .55rem; padding: .6rem .7rem; border: 1px solid var(--border); border-radius: .42rem; background: var(--surface-raised); font-size: .62rem; }
+.space-weather-notice-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
+.space-weather-tag { padding: .1rem .4rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-strong); font-size: .52rem; }
+.space-weather-tag.warning { border-color: rgba(210, 153, 34, .45); color: #e6bd62; }
+.space-weather-line { margin: 0; overflow-wrap: anywhere; }
+.space-weather-line span { display: inline-block; min-width: 5.5rem; margin-right: .4rem; color: var(--muted); font-size: .5rem; letter-spacing: .05em; text-transform: uppercase; }
+.space-weather-line.site { color: var(--muted-strong); }
+.space-weather-times { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .35rem .8rem; margin: .2rem 0 0; }
+.space-weather-times dt { color: var(--muted); font-size: .5rem; letter-spacing: .05em; text-transform: uppercase; }
+.space-weather-times dd { margin: .1rem 0 0; overflow-wrap: anywhere; }
+.space-weather-times dd small { display: block; color: var(--muted); font-size: .55rem; }
+.space-weather-notice-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.space-weather-acknowledgement { color: var(--muted-strong); }
+.space-weather-more { color: var(--muted); }
+.space-weather-pager { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-top: .6rem; font-size: .6rem; }
+.space-weather-credit { margin: 1rem 0 0; color: var(--muted); font-size: .55rem; line-height: 1.45; }
+
+dialog.action-dialog.space-weather-resume-dialog { width: min(calc(100% - 2rem), 34rem); }
+.space-weather-resume-facts { display: grid; gap: .45rem; margin: 0 1.1rem .9rem; padding: .7rem; border: 1px solid var(--border); border-radius: .42rem; background: var(--surface-raised); font-size: .65rem; }
+.space-weather-resume-facts dt { color: var(--muted); font-size: .5rem; letter-spacing: .05em; text-transform: uppercase; }
+.space-weather-resume-facts dd { margin: .12rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.space-weather-resume-facts dd small { display: block; margin-top: .1rem; color: var(--muted); font-size: .55rem; font-weight: 500; }
+.space-weather-dialog-message { padding: 0 1.1rem; }
+.space-weather-dialog-message .ops-note-banner { margin-top: .8rem; margin-bottom: 0; }
+
+@media (max-width: 760px) {
+    dialog.action-dialog.space-weather-resume-dialog { width: calc(100% - 1rem); }
+    .space-weather-links { justify-content: flex-start; }
+}

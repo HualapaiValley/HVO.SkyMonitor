@@ -1,6 +1,9 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -86,6 +89,60 @@ public sealed class LogicHostRecipeExecutionAdapterTests
 
         Assert.IsNull(executor.Requests.Single().InputArtifactId);
         Assert.IsTrue(executor.Requests.Single().AuxiliaryInputs is null or { Count: 0 });
+    }
+
+    /// <summary>
+    /// The capture and descriptor identity the central primary artifact now carries (#526) are execution facts only:
+    /// a central preview and a central annotation bind the same execution inputs, recipe identity, output identity
+    /// and bytes with both fields set as with both cleared, so no existing central pin moves with them.
+    /// </summary>
+    [TestMethod]
+    [DataRow(BuiltInProcessingRecipes.EncodedPreview)]
+    [DataRow(BuiltInProcessingRecipes.Annotation)]
+    public async Task CaptureAndDescriptorIdentityDoNotEnterCentralIdentities(string recipeName)
+    {
+        var descriptor = ProcessingConformanceFixture.CreateDescriptor();
+        var annotation = recipeName == BuiltInProcessingRecipes.Annotation
+            ? new ProcessingAnnotationInput(
+                [new ProjectedAnnotationObject("fixture", "Fixture", new PixelPoint(1, 1), true, true)],
+                [],
+                new PreviewTransform(1, 1),
+                null,
+                new string('A', 64))
+            : null;
+        var options = recipeName == BuiltInProcessingRecipes.Annotation
+            ? CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions(OutputEncoding: "Packed"))
+            : CaptureContractJson.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed"));
+        var selector = ProcessingInputSelector.Raw("source");
+        var (request, failure) = LogicHostRecipeExecutionAdapter.CreateRequest(
+            [new LogicHostProcessingInput(descriptor, ProcessingConformanceFixture.Payload)],
+            recipeName, options, selector, "neutral", annotation, null, reconstructPayloads: true);
+        Assert.IsNull(failure);
+        var bound = request!.Inputs.Single();
+        Assert.AreEqual(descriptor.Capture.CaptureId, bound.CaptureId);
+        Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), bound.DescriptorIdentitySha256);
+        var cleared = request with
+        {
+            Inputs = [.. request.Inputs.Select(static input => input with { CaptureId = null, DescriptorIdentitySha256 = null })]
+        };
+
+        var executor = new ProcessingRecipeExecutor();
+        var withFields = await executor.ExecuteAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var withoutFields = await executor.ExecuteAsync(cleared, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withFields.Status);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withoutFields.Status);
+        var expected = withoutFields.Products.Single();
+        var actual = withFields.Products.Single();
+        // The bound execution inputs enter only the recipe identity, and both match the request-free expectation.
+        var expectedIdentity = BuiltInProcessingRecipes.CreateExecutionIdentity(recipeName, options, selector, annotation);
+        Assert.AreEqual(expectedIdentity.IdentitySha256, actual.Recipe.IdentitySha256);
+        Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
+        Assert.AreEqual(expected.Recipe.Descriptor.OptionsSha256, actual.Recipe.Descriptor.OptionsSha256);
+        Assert.AreEqual(expected.OutputIdentitySha256, actual.OutputIdentitySha256);
+        Assert.AreEqual(expected.ChecksumSha256, actual.ChecksumSha256);
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+        CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
     }
 
     private static ProcessingArtifact CreateArtifact(FrameArtifactRole role, string variant)

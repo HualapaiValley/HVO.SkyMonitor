@@ -91,17 +91,29 @@ public static class AstrometricResidualAnalyzer
         IReadOnlyList<AstrometricMeasurementExclusion>? exclusions = null, IReadOnlyList<AstrometricPixelCovariance>? covariances = null,
         AstrometricDiagnosticsOptions? options = null, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(result);
+        return Analyze(calibration, catalog, solverOptions, result.Assessment, result.Associations, detections,
+            exclusions, covariances, options, cancellationToken);
+    }
+
+    /// <summary>Reconstructs the same diagnostics from retained native evidence; no solver execution or synthetic metrics.</summary>
+    public static AstrometricResidualDiagnostics Analyze(AstrometricCalibration calibration, AstrometricCatalogData catalog,
+        AstrometricSolverOptions solverOptions, AstrometricFrameAssessment assessment, IReadOnlyList<AstrometricAssociation> nativeAssociations,
+        IReadOnlyList<AstrometricDetection> detections, IReadOnlyList<AstrometricMeasurementExclusion>? exclusions = null,
+        IReadOnlyList<AstrometricPixelCovariance>? covariances = null, AstrometricDiagnosticsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(calibration); ArgumentNullException.ThrowIfNull(catalog); ArgumentNullException.ThrowIfNull(solverOptions);
-        ArgumentNullException.ThrowIfNull(result); ArgumentNullException.ThrowIfNull(detections);
+        ArgumentNullException.ThrowIfNull(assessment); ArgumentNullException.ThrowIfNull(nativeAssociations); ArgumentNullException.ThrowIfNull(detections);
         options ??= new(); options.Validate(); solverOptions.Validate(); cancellationToken.ThrowIfCancellationRequested();
-        var assessment = result.Assessment; AstrometricEvidenceJson.Validate(assessment);
+        AstrometricEvidenceJson.Validate(assessment);
         if (assessment.CalibrationIdentitySha256 != calibration.IdentitySha256 || assessment.CatalogIdentitySha256 != catalog.IdentitySha256 ||
             assessment.CatalogSelectionIdentitySha256 != catalog.SelectionIdentitySha256 || assessment.SettingsIdentitySha256 != solverOptions.IdentitySha256)
-            throw new ArgumentException("Diagnostics require the exact calibration, catalog selection and solver settings of the assessment.", nameof(result));
-        var associations = result.Associations.ToArray();
+            throw new ArgumentException("Diagnostics require the exact calibration, catalog selection and solver settings of the assessment.", nameof(assessment));
+        var associations = nativeAssociations.ToArray();
         var associationIdentity = associations.Length > 0 ? AstrometricIdentity.Hash(associations) : null;
         if (!string.Equals(associationIdentity, assessment.AssociationIdentitySha256, StringComparison.Ordinal))
-            throw new ArgumentException("Associations do not match the assessment's association identity.", nameof(result));
+            throw new ArgumentException("Associations do not match the assessment's association identity.", nameof(assessment));
 
         if (detections.Count > 10000) throw new ArgumentException("Detection count exceeds10000.", nameof(detections));
         var measured = detections.ToArray();
@@ -174,7 +186,7 @@ public static class AstrometricResidualAnalyzer
             var star = stars[association.CatalogId]; var detection = byIndex[association.DetectionIndex];
             var horizontal = AstrometricMath.Horizontal(star, utc, site);
             if (!predictionById.TryGetValue(star.Id, out var prediction))
-                throw new ArgumentException("An association references a star the accepted mapping does not project.", nameof(result));
+                throw new ArgumentException("An association references a star the accepted mapping does not project.", nameof(assessment));
             var dx = detection.Pixel.X - prediction.Pixel.X; var dy = detection.Pixel.Y - prediction.Pixel.Y; var distance = Math.Sqrt(dx * dx + dy * dy);
             discrepancy = Math.Max(discrepancy ?? 0, Math.Abs(distance - association.ResidualPixels));
             double? chi = covarianceByIndex.TryGetValue(detection.Index, out var c) ? (c.Yy * dx * dx - 2 * c.Xy * dx * dy + c.Xx * dy * dy) / (c.Xx * c.Yy - c.Xy * c.Xy) : null;

@@ -1,0 +1,116 @@
+{
+  "HeavyWrapper": "flock -o /tmp/hvo-heavy-gate.lock timeout <seconds> ...",
+  "Build": "dotnet build tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+  "BeforeRevision": "267c8974586a6822f7d39e048d8e3162d0041ad2",
+  "AfterRevision": "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30",
+  "Commands": {
+    "failing-before": {
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "FullyQualifiedName~BoundedLineage",
+        "--logger",
+        "trx;LogFileName=failing-before.trx",
+        "--results-directory",
+        "/tmp/hvo-skymonitor-1558-lineage-validation.EGzt8C/failing-before-results",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {},
+      "environmentUnset": [
+        "HVO_PRODUCTION_CATALOG_BUNDLE",
+        "HVO_EVIDENCE_REVISION"
+      ],
+      "startedAtUtc": "2026-10-23T09:58:56.799704+00:00",
+      "exitCode": 1
+    },
+    "passing-after": {
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "FullyQualifiedName~BoundedLineage",
+        "--logger",
+        "trx;LogFileName=passing-after.trx",
+        "--results-directory",
+        "/tmp/hvo-skymonitor-1558-lineage-validation.EGzt8C/passing-after-results",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {},
+      "environmentUnset": [
+        "HVO_PRODUCTION_CATALOG_BUNDLE",
+        "HVO_EVIDENCE_REVISION"
+      ],
+      "startedAtUtc": "2026-10-23T10:19:02.144434+00:00",
+      "exitCode": 0
+    },
+    "complete-before": {
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "FullyQualifiedName~Issue1557_MaximumLineage_RecordsProductionBaseline",
+        "--logger",
+        "trx;LogFileName=complete-before.trx",
+        "--results-directory",
+        "/tmp/hvo-skymonitor-1558-lineage-validation.EGzt8C/complete-before-results",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {
+        "DOTNET_gcServer": "1",
+        "HVO_ISSUE_1557_EVIDENCE": "1",
+        "HVO_EVIDENCE_REVISION": "267c8974586a6822f7d39e048d8e3162d0041ad2"
+      },
+      "environmentUnset": [
+        "HVO_PRODUCTION_CATALOG_BUNDLE",
+        "HVO_EVIDENCE_REVISION"
+      ],
+      "startedAtUtc": "2026-10-23T09:59:28.406053+00:00",
+      "exitCode": 0
+    },
+    "complete-after": {
+      "command": [
+        "dotnet",
+        "test",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+        "--no-build",
+        "--configuration",
+        "Release",
+        "--filter",
+        "FullyQualifiedName~Issue1558_MaximumLineage_RecordsBoundedValidation",
+        "--logger",
+        "trx;LogFileName=complete-after.trx",
+        "--results-directory",
+        "/tmp/hvo-skymonitor-1558-lineage-validation.EGzt8C/complete-after-results",
+        "-nodeReuse:false",
+        "-p:UseSharedCompilation=false"
+      ],
+      "environmentOverrides": {
+        "DOTNET_gcServer": "1",
+        "HVO_ISSUE_1558_EVIDENCE": "1",
+        "HVO_EVIDENCE_REVISION": "924b34b8d60d878de5ca206ee88ea3ef3ba4cb30"
+      },
+      "environmentUnset": [
+        "HVO_PRODUCTION_CATALOG_BUNDLE",
+        "HVO_EVIDENCE_REVISION"
+      ],
+      "startedAtUtc": "2026-10-23T10:19:33.551461+00:00",
+      "exitCode": 0
+    }
+  }
+}

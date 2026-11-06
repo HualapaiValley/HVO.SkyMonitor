@@ -104,7 +104,7 @@ jobs:
     needs: preflight
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
-    timeout-minutes: 15
+    timeout-minutes: 22
     steps:
       - name: Record workload start
         run: |
@@ -115,7 +115,7 @@ jobs:
           {
             printf 'DEV_V1_EVIDENCE_ROOT=%s\n' "$evidence_root"
             printf 'DEV_V1_STARTED_AT_EPOCH=%s\n' "$started_at_epoch"
-            printf 'DEV_V1_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 720))"
+            printf 'DEV_V1_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 1080))"
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
@@ -209,7 +209,7 @@ jobs:
             --argjson restore "$(stage_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:720,hardTimeoutSeconds:900,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

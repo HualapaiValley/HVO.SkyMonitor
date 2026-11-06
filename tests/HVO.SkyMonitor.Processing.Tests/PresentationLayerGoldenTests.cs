@@ -9,12 +9,19 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class PresentationLayerGoldenTests
 {
-    // Captured from development/v1 b13f0d0e (projected-scene-presentation-v9). A scene without resolved footprints
-    // must keep producing these payload bytes; only the producer version in the recipe identity moves.
-    private const string ExpectedPayloadsSha256 = "426DBD4E39B71893874CE6504D408E74A4ED52D317BAE64DFA549BB3A95F43B1";
+    // Captured for projected-scene-presentation-v12-plain-circle-markers (#1415), which draws star markers as the
+    // plain circle outline again, after #1383 restored the overlay colours #1035 replaced, and moved once by the #1187
+    // base sync (projected-scene-presentation-v13), whose label policy suppresses every star label that has no measured
+    // association. A scene without resolved footprints keeps producing these payload bytes; a change to them must also
+    // bump PresentationLayerProducers.SceneProducerVersion, so retained layers stay distinguishable.
+    private const string ExpectedPayloadsSha256 = "3A7AAE8D9AF21B3EF8ED25D7E608D20C81196EFC0B731D1206333FC417D9D43D";
+
+    // With every star measured the label policy keeps every label, so the bytes are exactly the v12 plain-circle
+    // payloads: the #526 gate removes star labels and changes nothing else.
+    private const string AllMeasuredPayloadsSha256 = "BD810160A4B84168CF445D4B86DFCC74630B443BD11A7491606CA7A3E258265E";
 
     [TestMethod]
-    public async Task FootprintFreeScenesProduceTheV9PayloadBytes()
+    public async Task FootprintFreeScenesProduceThePinnedPayloadBytes()
     {
         const int width = 1936, height = 1216;
         var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
@@ -41,17 +48,23 @@ public sealed class PresentationLayerGoldenTests
                 Guid.Parse("22222222-2222-2222-2222-222222222222"), new string('A', 64)),
             "calibration-v1", visible.Request.ProjectionVersion);
 
-        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene);
-        var legacy = PresentationLayerProducers.FromProjectedSceneGroups(scene);
+        Assert.AreEqual(ExpectedPayloadsSha256, PayloadsSha256(scene, null));
+        Assert.AreEqual(AllMeasuredPayloadsSha256, PayloadsSha256(scene, MeasuredStellarAssociationFixtures.AllEligible(scene)));
+    }
+
+    private static string PayloadsSha256(ProjectedSceneV1 scene, MeasuredStellarAssociationsV1? associations)
+    {
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, associations: associations);
+        var legacy = PresentationLayerProducers.FromProjectedSceneGroups(scene, associations: associations);
         var payloads = new[]
         {
-            PresentationLayerProducers.FromProjectedScene(scene),
+            PresentationLayerProducers.FromProjectedScene(scene, associations: associations),
             legacy.AnnotationAndGeometry, legacy.Constellations,
             groups.StarAnnotations, groups.CardinalDirections, groups.ImageCircle, groups.Constellations
         };
 
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var payload in payloads) hash.AppendData(PresentationLayerPayloadJson.Serialize(payload));
-        Assert.AreEqual(ExpectedPayloadsSha256, Convert.ToHexString(hash.GetHashAndReset()));
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 }

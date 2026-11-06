@@ -1,0 +1,254 @@
+@inherits SiteTimeComponent
+@using HVO.SkyMonitor.CameraAgent.Components.Pages
+@using HVO.SkyMonitor.CameraAgent.Services
+@* Software & Catalog's orbital-element snapshot: the installed snapshot's verified manifest, the refresh read model and
+   the reserved refresh schedule, with the bounded Refresh and Resume commands of OrbitalElementsOperations. It reads
+   only the small manifest, never the payload, and shows no path, HTTP header value or provider body. *@
+<section class="ops-panel orbital-snapshot-panel" aria-labelledby="software-orbital-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="software-orbital-heading">Orbital-element snapshot</h2><p>Time-varying evidence is refreshed and assessed independently from HYG/OpenNGC packages.</p></div>
+        @if (_view is { } heading)
+        {
+            <span id="orbital-state" class="state-chip @OrbitalOperatorText.StateTone(heading.State)">@OrbitalOperatorText.StateLabel(heading.State)</span>
+        }
+        else if (_error is not null)
+        {
+            <span id="orbital-state" class="state-chip failure">Unavailable</span>
+        }
+    </header>
+
+    @if (_view is null)
+    {
+        @if (_loading)
+        {
+            <div class="ops-note-banner compact" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Reading the orbital data status.</span></div>
+        }
+        else
+        {
+            <div id="orbital-error" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Orbital data status unavailable.</strong> @_error</span></div>
+            <div class="ops-action-list orbital-actions">
+                <article class="ops-action-row">
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"></path><path d="M16.2 3.8v3.4h-3.4"></path></svg></span>
+                    <span><strong>Reload status</strong><small>Read the orbital data status again. This page does not poll.</small></span>
+                    <button type="button" id="orbital-reload" class="button secondary" disabled="@Busy" @onclick="ReloadAsync">@(_reloading ? "Reloading…" : "Reload status")</button>
+                </article>
+            </div>
+        }
+    }
+    else
+    {
+        var view = _view;
+        var status = view.Status;
+        var known = !view.StoreUnavailable;
+        var manifest = known ? view.Manifest : null;
+        var source = manifest?.Sources.Count > 0 ? manifest.Sources[0] : null;
+
+        <OrbitalDataStatusNotice View="view" />
+
+        @if (manifest is not null && view.NewestElementAge is { } newestAge)
+        {
+            <div id="orbital-freshness" class="orbital-freshness">
+                <span><strong>@HealthPage.FormatDuration(newestAge) old</strong><small>@FreshnessDetail(view)</small></span>
+                <span class="orbital-freshness-track" aria-hidden="true"><i style="left: @MarkerPercent(newestAge)%"></i></span>
+                <span id="orbital-next-attempt">@NextAttemptText(view)</span>
+            </div>
+        }
+
+        @if (_message is not null)
+        {
+            <div id="orbital-message" class="ops-note-banner compact orbital-message" role="@(_message.IsError ? "alert" : "status")"><span class="status-icon @_message.Tone" aria-hidden="true"></span><span>@_message.Text</span></div>
+        }
+
+        <div id="orbital-reason" class="ops-note-banner compact" role="status">
+            <span class="status-icon @ReasonTone(view)" aria-hidden="true"></span>
+            <span class="orbital-reason-body">
+                <strong id="orbital-reason-text">@ReasonHeadline(view)</strong>
+                <span id="orbital-recovery">@OrbitalOperatorText.Recovery(RecoveryAction(view))</span>
+                @if (HealthNote(view) is { } healthNote)
+                {
+                    <span id="orbital-health-note">@healthNote</span>
+                }
+            </span>
+        </div>
+
+        <dl class="ops-facts software-orbital-facts">
+            @if (known)
+            {
+                @if (source is not null)
+                {
+                    <div><dt>Provider and dataset</dt><dd id="orbital-provider">@source.Provider / @source.DatasetKey<small>@source.UnderlyingLineage</small></dd></div>
+                }
+                @if (manifest is not null)
+                {
+                    <div><dt>Coverage</dt><dd id="orbital-coverage">@manifest.Coverage.RequestedPopulation<small>@OrbitalOperatorText.Completeness(manifest.Coverage.Completeness); @ExclusionsText(manifest.Coverage.KnownExclusions)</small></dd></div>
+                    <div><dt>Records and objects</dt><dd id="orbital-counts">@Number(manifest.RecordCount) records / @Number(manifest.ObjectCount) objects</dd></div>
+                    <div><dt>Element epochs</dt><dd id="orbital-epochs">@EpochRange(manifest)<small>@EpochAges(view)</small></dd></div>
+                }
+                @if (view.HasData && status.CurrentManifestSha256 is { } manifestSha && status.CurrentPayloadSha256 is { } payloadSha)
+                {
+                    <div class="full"><dt>Snapshot identity</dt><dd id="orbital-identity"><code id="orbital-manifest-sha" title="sha256:@manifestSha">@SoftwarePage.ShortChecksum(manifestSha)</code><small>Payload <code id="orbital-payload-sha" title="sha256:@payloadSha">@SoftwarePage.ShortChecksum(payloadSha)</code></small></dd></div>
+                }
+                @if (source is not null)
+                {
+                    <div><dt>Terms</dt><dd id="orbital-terms">@if (TermsLink(source.TermsUri) is { } termsLink)
+                        {
+                            <a href="@termsLink" target="_blank" rel="noopener noreferrer">@source.TermsReference</a>
+                        }
+                        else
+                        {
+                            @source.TermsReference
+                        }</dd></div>
+                    <div><dt>Fetched</dt><dd id="orbital-fetched">@SiteTime.Format(source.RetrievedUtc)</dd></div>
+                }
+                <div><dt>Activated</dt><dd id="orbital-activated">@TimeWithAge(status.LastActivationUtc, view.ActivationAge, "Never")</dd></div>
+                <div><dt>Validity</dt><dd id="orbital-validity">@OrbitalOperatorText.ValidityText</dd></div>
+            }
+            <div><dt>Refresh</dt><dd><span id="orbital-enabled">@(status.Enabled ? "On" : "Off")</span> <a href="/operations/site#orbitalElements-switch">Change orbital refresh switch</a></dd></div>
+            @if (known)
+            {
+                <div><dt>Schedule</dt><dd id="orbital-schedule">@ScheduleText(view.Schedule)<small>@ScheduleDetail(view.Schedule) <a href="@AutomationsDefinitionLink">Open in Automations</a></small></dd></div>
+                <div><dt>Last attempt</dt><dd id="orbital-last-attempt">@SiteTime.Format(status.LastAttemptUtc, unavailable: "None recorded")</dd></div>
+                <div><dt>Last successful retrieval</dt><dd id="orbital-last-retrieval">@TimeWithAge(status.LastRetrievalSuccessUtc, view.RetrievalAge, "None recorded")</dd></div>
+                <div><dt>Next permitted attempt</dt><dd id="orbital-next-permitted">@NextPermittedText(view)</dd></div>
+                <div><dt>Next due</dt><dd id="orbital-next-due">@SiteTime.Format(status.NextDueUtc, unavailable: "Not scheduled")</dd></div>
+                @if (status.ProviderHalt is { } halt)
+                {
+                    <div class="full"><dt>Provider halt</dt><dd id="orbital-halt">Since @SiteTime.Format(halt.SinceUtc) / <span id="orbital-halt-status">@OrbitalOperatorText.HaltStatus(halt.HttpStatusCode)</span><small id="orbital-halt-reason">@OrbitalOperatorText.ReasonText(halt.Reason)</small></dd></div>
+                }
+                @if (status.CandidateQuarantine is { } quarantine)
+                {
+                    <div class="full"><dt>Quarantined response</dt><dd id="orbital-quarantine">Observed @SiteTime.Format(quarantine.ObservedUtc)@if (quarantine.RawSha256 is { } rawSha)
+                        {
+                            <text> / raw </text><code title="sha256:@rawSha">@SoftwarePage.ShortChecksum(rawSha)</code>
+                        }<small id="orbital-quarantine-reason">@OrbitalOperatorText.ReasonText(quarantine.Reason)</small></dd></div>
+                }
+            }
+            <div class="full"><dt>Use boundary</dt><dd>Predicted geometry only; ordinary orbital data does not establish optical visibility.</dd></div>
+        </dl>
+
+        @if (status.Enabled && view.Schedule is { Exists: false })
+        {
+            <div id="orbital-setup" class="ops-note-banner compact" role="status">
+                <span>Refresh is on. <a href="/operations/automations?setup=orbital">Create the refresh automation</a> with a six-hour default (21,600 seconds; minimum 7,200). After saving, optionally return here for the first Refresh now.</span>
+            </div>
+        }
+        <p class="orbital-policy">Provider policy: one attempt per two hours, single flight, no retries; every non-200 response halts refresh until an operator resumes. Resuming never moves the floor. CameraAgents behind shared NAT or a proxy share one egress budget: enable as few as needed, keep intervals well above two hours, and check all of them before resuming after a 403 or 429. Provider bytes and backups must not be redistributed. <a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/orbital-elements-refresh.md#provider-policy">Provider-policy and shared-egress runbook</a></p>
+
+        <div class="ops-action-list orbital-actions">
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 3v9"></path><path d="m6.5 8.5 3.5 3.5 3.5-3.5"></path><path d="M4 16h12"></path></svg></span>
+                <span><strong>Refresh now</strong><small>Queues one run of the orbital-elements-refresh schedule. The provider allows at most one attempt every two hours, and a halt blocks every request.</small></span>
+                <button type="button" id="@RefreshTriggerId" class="button primary" disabled="@(Busy || RefreshUnavailableReason is not null)"
+                        title="@RefreshUnavailableReason" aria-describedby="@(RefreshUnavailableReason is null ? null : "orbital-refresh-unavailable")"
+                        @onclick="RefreshAsync">@(_refreshing ? "Requesting…" : _refreshKey is null ? "Refresh now" : "Retry refresh")</button>
+                @if (RefreshUnavailableReason is { } refreshUnavailable)
+                {
+                    <span id="orbital-refresh-unavailable" class="visually-hidden">@refreshUnavailable</span>
+                }
+            </article>
+            @if (view.IsHalted)
+            {
+                <article class="ops-action-row">
+                    <span class="ops-action-icon warning" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10"></path><path d="M13 5v10"></path></svg></span>
+                    <span><strong>Resume provider</strong><small>Clears only the halt shown above, after you record why. The two-hour floor never moves.</small></span>
+                    <button type="button" id="@ResumeTriggerId" class="button secondary" disabled="@(Busy || ResumeUnavailableReason is not null)"
+                            title="@ResumeUnavailableReason" aria-describedby="@(ResumeUnavailableReason is null ? null : "orbital-resume-unavailable")"
+                            @onclick="OpenResumeDialog">Resume provider</button>
+                    @if (ResumeUnavailableReason is { } resumeUnavailable)
+                    {
+                        <span id="orbital-resume-unavailable" class="visually-hidden">@resumeUnavailable</span>
+                    }
+                </article>
+            }
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"></circle><path d="M10 6v4l3 2"></path></svg></span>
+                <span><strong>Schedule and run history</strong><small>The refresh schedule is the orbital-elements-refresh automation, edited with its revision and audit in Automations.</small></span>
+                <span class="orbital-links"><a id="orbital-schedule-link" href="@AutomationsDefinitionLink">Schedule</a><a id="orbital-runs-link" href="@AutomationsRunsLink">Run history</a></span>
+            </article>
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"></path><path d="M16.2 3.8v3.4h-3.4"></path></svg></span>
+                <span><strong>Reload status</strong><small>Read the orbital data status again. This page does not poll.</small></span>
+                <button type="button" id="orbital-reload" class="button secondary" disabled="@Busy" @onclick="ReloadAsync">@(_reloading ? "Reloading…" : "Reload status")</button>
+            </article>
+        </div>
+
+        <details id="orbital-diagnostics" class="orbital-diagnostics">
+            <summary>Exact diagnostics</summary>
+            <dl>
+                <div><dt>Status reason code</dt><dd><code>@CodeText(status.Reason)</code></dd></div>
+                <div><dt>Recovery action</dt><dd><code>@status.RecoveryAction</code></dd></div>
+                <div><dt>Health</dt><dd><code>@view.HealthState</code> <code>@CodeText(view.HealthReason)</code></dd></div>
+                <div><dt>Read-model revision</dt><dd><code>@status.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture)</code></dd></div>
+                <div><dt>Observed</dt><dd><code>@Utc(status.ObservedUtc)</code></dd></div>
+                @if (known)
+                {
+                    <div><dt>Automation definition</dt><dd><code>@(status.Automation?.DefinitionId ?? (view.Schedule is { Exists: true } ? OrbitalScheduleDefinitionId : "None"))</code></dd></div>
+                    <div><dt>Automation revision</dt><dd><code>@(status.Automation?.RevisionSha256 ?? view.Schedule?.RevisionSha256 ?? "None")</code></dd></div>
+                    <div><dt>Schedule version</dt><dd><code>@(view.Schedule?.Version?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "None")</code></dd></div>
+                    <div><dt>Last run</dt><dd><code>@(status.Automation?.RunKey ?? view.Schedule?.LastRunKey ?? "None")</code> <code>@(view.Schedule?.LastRunOutcome?.ToString() ?? "None")</code> <code>@(view.Schedule?.LastRunReasonCode ?? "—")</code></dd></div>
+                    <div><dt>Manifest</dt><dd><code>@(status.CurrentManifestSha256 ?? "None")</code></dd></div>
+                    <div><dt>Payload</dt><dd><code>@(status.CurrentPayloadSha256 ?? "None")</code></dd></div>
+                    @if (view.ManifestUnavailableReason is { } manifestUnavailable)
+                    {
+                        <div><dt>Manifest read</dt><dd><code>@CodeText(manifestUnavailable)</code></dd></div>
+                    }
+                    @if (manifest is not null)
+                    {
+                        <div><dt>Contract</dt><dd><code>@manifest.SchemaVersion</code> <code>@manifest.ProfileVersion</code></dd></div>
+                    }
+                    @if (source is not null)
+                    {
+                        <div><dt>Raw response</dt><dd><code>@source.RawSha256</code> <code>@Number(source.RawLengthBytes) bytes</code></dd></div>
+                        <div><dt>Parser</dt><dd><code>@source.Parser.Name @source.Parser.Version</code> <code>@source.Parser.ImplementationSha256</code></dd></div>
+                        <div><dt>Normalizer</dt><dd><code>@source.Normalizer.Name @source.Normalizer.Version</code> <code>@source.Normalizer.ImplementationSha256</code></dd></div>
+                        <div><dt>Provider generated</dt><dd><code>@(source.ProviderGeneratedUtc is { } generated ? Utc(generated) : "Not supplied")</code></dd></div>
+                        <div><dt>ETag</dt><dd id="orbital-etag">@RecordedText(source.EntityTag)</dd></div>
+                        <div><dt>Last-Modified</dt><dd id="orbital-last-modified">@RecordedText(source.LastModified)</dd></div>
+                    }
+                    @if (status.CandidateQuarantine?.RawSha256 is { } quarantinedRaw)
+                    {
+                        <div><dt>Quarantined raw response</dt><dd><code>@quarantinedRaw</code></dd></div>
+                    }
+                }
+            </dl>
+        </details>
+    }
+</section>
+
+@if (_dialogOpen && _resumeHalt is { } resumeHalt)
+{
+    <dialog class="action-dialog operations-dialog orbital-resume-dialog" aria-labelledby="orbital-resume-heading" aria-describedby="orbital-resume-description" @ref="_dialogElement" @oncancel="CancelDialog">
+        <form @onsubmit="SubmitResumeAsync" @onsubmit:preventDefault>
+            <div class="dialog-header">
+                <div><p class="eyebrow">Operator command</p><h2 id="orbital-resume-heading">Resume the orbital provider</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_resuming" @onclick="CancelDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="orbital-resume-description" class="dialog-intro">Resuming clears only the halt shown here; if the halt changed after this page read it, nothing is cleared. It never moves the provider's two-hour floor, so the next request still waits for the next permitted attempt.</p>
+            <dl class="orbital-resume-facts">
+                <div><dt>Halted since</dt><dd id="orbital-resume-since">@SiteTime.Format(resumeHalt.SinceUtc)<small>@Utc(resumeHalt.SinceUtc)</small></dd></div>
+                <div><dt>HTTP status</dt><dd id="orbital-resume-status">@OrbitalOperatorText.HaltStatus(resumeHalt.HttpStatusCode)</dd></div>
+                <div><dt>Reason</dt><dd id="orbital-resume-halt-reason">@OrbitalOperatorText.ReasonText(resumeHalt.Reason)</dd></div>
+            </dl>
+            @if (_resumePinned)
+            {
+                <div class="dialog-note"><strong>Retry the same request.</strong><span>The first attempt's result is unknown, so the reason is locked. Retrying sends the identical request with the same durable key, so it is never applied twice.</span></div>
+            }
+            <fieldset disabled="@(_resuming || _resumePinned)">
+                <legend class="visually-hidden">Resume request</legend>
+                <label class="ops-field" for="@ResumeReasonId">Reason
+                    <input id="@ResumeReasonId" maxlength="@MaximumResumeReasonLength" required autocomplete="off" placeholder="Why the provider may be asked again" @bind="_resumeReason" />
+                </label>
+            </fieldset>
+            @if (_dialogMessage is not null)
+            {
+                <div class="orbital-dialog-message"><div id="orbital-resume-message" class="ops-note-banner compact" role="@(_dialogMessageIsError ? "alert" : "status")"><span class="status-icon @(_dialogMessageIsError ? "failure" : "running")" aria-hidden="true"></span><span>@_dialogMessage</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_resuming" @onclick="CancelDialog">Cancel</button>
+                <button type="submit" id="orbital-resume-confirm" class="button primary" disabled="@_resuming">@(_resuming ? "Resuming…" : _resumePinned ? "Retry resume" : "Resume provider")</button>
+            </footer>
+        </form>
+    </dialog>
+}

@@ -32,6 +32,10 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == PrivilegedPathInstaller.CommandName)
+        {
+            return PrivilegedPathInstaller.RunInternal(args);
+        }
         if (args.Length > 0 && args[0] == "internal-prepare")
         {
             return PrivilegedPreparation.RunInternal(args);
@@ -102,10 +106,38 @@ internal static class Program
                 // Without --json an advisory is said before anything runs; with --json it is in the result instead.
                 foreach (var warning in command.ParseWarnings)
                 {
-                    await Console.Error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
+                    await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
-            if (command is InstallDeploymentCommand install)
+            if (command is PreflightRequest splitPreflight)
+            {
+                try
+                {
+                    var result = await services.SplitHostPreflight(splitPreflight, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(splitPreflight.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=preflight check=complete status=passed reason=read-only").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is ExistingDownRequest down)
+            {
+                try
+                {
+                    var result = await services.ExistingDown(down, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(down.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=down check=complete status=passed reason=preserve").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is PartialPrepareRequest partial)
+            {
+                try
+                {
+                    var result = await services.PartialPrepare(partial, cancellationToken).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(partial.Json ? result.ToJsonString(SplitHostJson.Options) :
+                        $"partial-prepare-cleanup complete passed {(partial.DryRun ? "inspected" : "cleaned")}").ConfigureAwait(false);
+                }
+                catch (PartialPrepareCrashException) { return 75; }
+            }
+            else if (command is InstallDeploymentCommand install)
             {
                 var result = await services.Install(install.Request, cancellationToken).ConfigureAwait(false);
                 if (install.ParseWarnings.Count > 0)
@@ -126,7 +158,7 @@ internal static class Program
             {
                 var report = await services.Preflight(preflight, cancellationToken).ConfigureAwait(false);
                 await Console.Out.WriteLineAsync(preflight.Json
-                    ? JsonSerializer.Serialize(report, DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
+                    ? JsonSerializer.Serialize(CameraAgentStatePreflight.ForOutput(report), DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
                     : CameraAgentStatePreflight.Render(report)).ConfigureAwait(false);
                 if (report.Compatible)
                 {
@@ -233,7 +265,7 @@ internal static class Program
         catch (InstallUsageException exception) when (exception.Usage is not null && !jsonErrors)
         {
             // A command-line mistake is not an installation attempt: say what was wrong, then how to use the command.
-            await Console.Error.WriteLineAsync(Redaction.SafeDiagnostic(exception.Message)).ConfigureAwait(false);
+            await Console.Error.WriteLineAsync(CameraAgentStateDiagnostics.Message(exception.Message)).ConfigureAwait(false);
             await Console.Error.WriteAsync(exception.Usage).ConfigureAwait(false);
             return (int)InstallerExitCode.Usage;
         }
@@ -257,7 +289,7 @@ internal static class Program
                 if (jsonErrors)
                 {
                     await Console.Out.WriteLineAsync(
-                        JsonSerializer.Serialize(report, DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
+                        JsonSerializer.Serialize(HostPrerequisites.ForOutput(report), DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
                 }
                 else
                 {
@@ -286,12 +318,14 @@ internal static class Program
         }
         catch (InstallerException exception) when (exception.IsRefusal)
         {
-            await WriteErrorAsync(jsonErrors, "refused", exception.Message, refused: true).ConfigureAwait(false);
+            await WriteErrorAsync(jsonErrors, "refused", exception.Message, refused: true, formatted: exception.IsFormattedDiagnostic)
+                .ConfigureAwait(false);
             return (int)InstallerExitCode.Refused;
         }
         catch (InstallerException exception)
         {
-            await WriteErrorAsync(jsonErrors, "installation-failed", exception.Message).ConfigureAwait(false);
+            await WriteErrorAsync(jsonErrors, "installation-failed", exception.Message, formatted: exception.IsFormattedDiagnostic)
+                .ConfigureAwait(false);
             return (int)InstallerExitCode.Failed;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -302,12 +336,20 @@ internal static class Program
         }
     }
 
-    private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false)
-        => Console.Error.WriteLineAsync(json
-            ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = Redaction.SafeDiagnostic(message) })
+    /// <summary>
+    /// Writes the error line. A message the shared formatter composed (<see cref="InstallerException.IsFormattedDiagnostic"/>)
+    /// is already redacted and escaped, so it is written as it is: scanning it again could redact the fixed wording after a
+    /// hostile name in it (#1491). Every other message is redacted and its remaining controls escaped here (#1499).
+    /// </summary>
+    private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false, bool formatted = false)
+    {
+        var safe = formatted ? message : CameraAgentStateDiagnostics.Message(message);
+        return Console.Error.WriteLineAsync(json
+            ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = safe })
             : refused
-                ? $"Installation refused: {Redaction.SafeDiagnostic(message)} Nothing was changed."
-                : $"Installation failed: {Redaction.SafeDiagnostic(message)}");
+                ? $"Installation refused: {safe} Nothing was changed."
+                : $"Installation failed: {safe}");
+    }
 
     private static async Task WriteHumanResultAsync(InstallationResult result)
     {
@@ -409,6 +451,9 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    public Func<PreflightRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> SplitHostPreflight { get; init; } = global::HVO.SkyMonitor.Deployment.SplitHostPreflight.ExecuteAsync;
+    public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
+    public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;
     /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>
     public InstallTerminal Terminal { get; init; } = InstallTerminal.Current();
 

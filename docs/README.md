@@ -45,6 +45,7 @@ documents link back without maintaining competing status.
 | Releases | `docs/runbooks/releases.md` | The product version, cutting a final `vX.Y.Z` release or `vX.Y.Z-rc.<n>` candidate from `main`, the CI qualification, the install tests on both platforms, the owner's approval, when `latest` moves, and the owner settings it relies on. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 | CameraAgent local automation | `docs/runbooks/cameraagent-local-automation.md` | Versioned local automation definitions, the closed task and trigger registry, storage and bounded retention, runner behaviour, restart recovery, and owner-only endpoints. |
+| CameraAgent orbital-elements refresh | `docs/runbooks/orbital-elements-refresh.md` | CelesTrak GP active-group provider policy, enabling and the reserved automation definition, status/refresh/resume endpoints and reason codes, health and metrics, storage, retention and quarantine, crash and disk-full recovery, rollback, and the snapshot-reader handoff for consumers. |
 
 ## Documentation Rules
 

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 public enum CaptureProcessingAvailability { Healthy, Degraded, Unhealthy }
@@ -60,6 +62,22 @@ public sealed class CaptureProcessingState
     private string? _supersededActiveRevision;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
+
+    /// <summary>Attempts to capture processing state without waiting beyond the lock-acquisition timeout.</summary>
+    public bool TrySnapshot(TimeSpan timeout, [NotNullWhen(true)] out CaptureProcessingSnapshot? snapshot)
+    {
+        if (!Monitor.TryEnter(_gate, timeout))
+        {
+            snapshot = null;
+            return false;
+        }
+        try
+        {
+            snapshot = Compose();
+            return true;
+        }
+        finally { Monitor.Exit(_gate); }
+    }
 
     internal void GraphStarted()
     {

@@ -1,0 +1,563 @@
+{
+  "provenance": "Derived current case/source literals from reconstructed v7; not an original serialized dated inventory or seal. Original128 remain externally retained.",
+  "recoveredHarnessSHA256": "ab794cf711c7cffe29e87794f81c34256bf55724343c6a2948323c6fe14f0554",
+  "count": 90,
+  "cases": [
+    {
+      "id": "v5-execute-signal-after-state-snapshot",
+      "route": "execute",
+      "inject": "snapshot",
+      "expected": 143
+    },
+    {
+      "id": "v5-execute-signal-before-first-seal",
+      "route": "execute",
+      "inject": "result",
+      "expected": 143
+    },
+    {
+      "id": "v5-execute-signal-during-terminal-print",
+      "route": "execute",
+      "inject": "terminal-print",
+      "expected": 143
+    },
+    {
+      "id": "v5-execute-signal-after-finalizer-at-outer-exit",
+      "route": "execute",
+      "inject": "outer-exit",
+      "expected": 143
+    },
+    {
+      "id": "v5-execute-late-signal-write-failure",
+      "route": "execute",
+      "inject": "snapshot",
+      "failure": "signal-write",
+      "expected": 143
+    },
+    {
+      "id": "v5-normal-complete-owned-barrier-and-retention",
+      "route": "afterseal",
+      "checker": "normal",
+      "expected": 0
+    },
+    {
+      "id": "v5-mode-EIO-after-complete-capture",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "mode-EIO",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-JSON-MemoryError",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-JSON-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-base64-MemoryError",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-base64-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-checker-terminal-JSON-MemoryError",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "terminal-JSON-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-output-JSON-MemoryError",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "output-JSON-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-print-failure-after-full-raw",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "print",
+      "expected": 1
+    },
+    {
+      "id": "v5-print-flush-failure-after-full-raw",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "print-flush",
+      "expected": 1
+    },
+    {
+      "id": "v5-raw-stdout-write-MemoryError",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "stdout-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-raw-stderr-FSIZE-partial",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "stderr-FSIZE",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-EIO-existing-partial-no-zero",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-EIO",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-EACCES-existing-partial-no-zero",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-EACCES",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-ENOTDIR-unknown-no-zero",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-ENOTDIR",
+      "expected": 1
+    },
+    {
+      "id": "v5-fallback-ENOENT-with-verified-parent",
+      "route": "afterseal",
+      "checker": "timeout",
+      "failure": "fallback-ENOENT",
+      "expected": 1
+    },
+    {
+      "id": "v5-journal-fsync-failure-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "journal-fsync",
+      "expected": 1
+    },
+    {
+      "id": "v5-journal-short-write-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "journal-short",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-UID-mismatch",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-UID",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-PGID-mismatch",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-PGID",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-cmdline-mismatch",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-argv",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-exe-mismatch",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-exe",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-root-EACCES",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-root-read",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-stat-EIO",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-stat-read",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-status-EIO",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-status-read",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-cmdline-EIO",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-cmdline-read",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-exe-read-EIO",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "identity-exe-read",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-pidfd-open-failure",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "pidfd-open",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-pidfd-open-metadata-race",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "pidfd-race",
+      "expected": 1
+    },
+    {
+      "id": "v5-private-Popen-setup-failure",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "Popen",
+      "expected": 1
+    },
+    {
+      "id": "v5-selector-register-failure",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "selector-register",
+      "expected": 1
+    },
+    {
+      "id": "v5-selector-select-drain-failure",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "selector-select",
+      "expected": 1
+    },
+    {
+      "id": "v5-stream-read-MemoryError",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "read-memory",
+      "expected": 1
+    },
+    {
+      "id": "v5-stream-bound-crossing-full-obtained",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "stream-overflow",
+      "expected": 1
+    },
+    {
+      "id": "v5-owned-stream-close-failure",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "stream-close",
+      "expected": 1
+    },
+    {
+      "id": "v5-actual-wait-failure-and-journal",
+      "route": "afterseal",
+      "checker": "wait-error",
+      "expected": 1
+    },
+    {
+      "id": "v5-wait-UNKNOWN-no-release-credit",
+      "route": "afterseal",
+      "checker": "wait-unknown",
+      "expected": 1
+    },
+    {
+      "id": "v5-partial-EOF-retained-red",
+      "route": "afterseal",
+      "checker": "partial",
+      "expected": 1
+    },
+    {
+      "id": "v5-native-disk-reserve-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "disk",
+      "expected": 1
+    },
+    {
+      "id": "v5-native-RSS-cap-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "RSS",
+      "expected": 1
+    },
+    {
+      "id": "v5-common-retention-component-cap-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "component",
+      "expected": 1
+    },
+    {
+      "id": "v6-parent-open-EACCES-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "parent-open",
+      "expected": 1
+    },
+    {
+      "id": "v6-parent-link-rejected-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "parent-link",
+      "expected": 1
+    },
+    {
+      "id": "v6-parent-UID-rejected-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "parent-UID",
+      "expected": 1
+    },
+    {
+      "id": "v6-parent-identity-after-create-checker-UNRUN",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "parent-identity",
+      "expected": 1
+    },
+    {
+      "id": "v6-journal-directory-EIO-before-checker",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "journal-directory",
+      "expected": 1
+    },
+    {
+      "id": "v6-stdout-directory-EIO-raw-kept-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "stdout-directory",
+      "expected": 1
+    },
+    {
+      "id": "v6-stderr-directory-EIO-raw-kept-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "stderr-directory",
+      "expected": 1
+    },
+    {
+      "id": "v6-terminal-directory-EIO-wait-kept-red",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "terminal-directory",
+      "expected": 1
+    },
+    {
+      "id": "v6-parent-close-EIO-printed-zero-provisional",
+      "route": "afterseal",
+      "checker": "normal",
+      "failure": "parent-close",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-open-ENOSPC-preserve-once",
+      "route": "execute",
+      "failure": "late-open",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-open-EACCES-preserve-once",
+      "route": "execute",
+      "failure": "late-EACCES",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-initial-fsync-EIO-partial-preserved",
+      "route": "execute",
+      "failure": "late-fsync",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-directory-EIO-partial-preserved",
+      "route": "execute",
+      "failure": "late-directory",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-fsync-secondary-preservation-EIO-outer-red",
+      "route": "execute",
+      "failure": "late-fsync",
+      "secondary": "preserve-STOP-write",
+      "expected": 1
+    },
+    {
+      "id": "v6-execute-late-fsync-live-TERM-remains-red",
+      "route": "execute",
+      "failure": "late-fsync",
+      "signal_at": "late-fsync",
+      "expected": 143
+    },
+    {
+      "id": "v6-oracle-reject-unrelated-early-MemoryError",
+      "discriminator": "unrelated",
+      "reject": "NAMED_TRIGGER"
+    },
+    {
+      "id": "v6-oracle-reject-wrong-phase",
+      "discriminator": "wrong-phase",
+      "reject": "NAMED_PHASE"
+    },
+    {
+      "id": "v6-oracle-reject-missing-trigger",
+      "discriminator": "missing-trigger",
+      "reject": "NAMED_TRIGGER"
+    },
+    {
+      "id": "v6-oracle-reject-missing-stdout",
+      "discriminator": "missing-raw",
+      "reject": "RAW_REQUIRED"
+    },
+    {
+      "id": "v6-oracle-reject-missing-wait",
+      "discriminator": "missing-wait",
+      "reject": "WAIT_REQUIRED"
+    },
+    {
+      "id": "v6-oracle-reject-unrelated-outer-error",
+      "discriminator": "unrelated-error",
+      "reject": "UNEXPECTED_EXCEPTION"
+    },
+    {
+      "id": "v6-oracle-reject-missing-output",
+      "discriminator": "missing-output",
+      "reject": "OUTPUT_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-wait",
+      "wholeDiscriminator": "missing-wait",
+      "reject": "EXEC_WAIT_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-empty-wait",
+      "wholeDiscriminator": "empty-wait",
+      "reject": "EXEC_WAIT_SHAPE"
+    },
+    {
+      "id": "v7-execute-oracle-reject-corrupt-wait",
+      "wholeDiscriminator": "corrupt-wait",
+      "reject": "EXEC_WAIT_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-raw-status",
+      "wholeDiscriminator": "raw-status",
+      "reject": "EXEC_WAIT_STATUS"
+    },
+    {
+      "id": "v7-execute-oracle-reject-return-code",
+      "wholeDiscriminator": "return-code",
+      "reject": "EXEC_WAIT_STATUS"
+    },
+    {
+      "id": "v7-execute-oracle-reject-bool-status",
+      "wholeDiscriminator": "bool-status",
+      "reject": "EXEC_WAIT_STATUS"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-usage",
+      "wholeDiscriminator": "missing-usage",
+      "reject": "EXEC_USAGE"
+    },
+    {
+      "id": "v7-execute-oracle-reject-mismatched-usage",
+      "wholeDiscriminator": "usage",
+      "reject": "EXEC_USAGE"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-identity",
+      "wholeDiscriminator": "missing-identity",
+      "reject": "EXEC_IDENTITY_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-mismatched-identity",
+      "wholeDiscriminator": "identity",
+      "reject": "EXEC_IDENTITY"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-stdout",
+      "wholeDiscriminator": "missing-stdout",
+      "reject": "EXEC_RAW_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-stderr",
+      "wholeDiscriminator": "missing-stderr",
+      "reject": "EXEC_RAW_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-mismatched-stdout",
+      "wholeDiscriminator": "stdout",
+      "reject": "EXEC_RAW_AGREEMENT"
+    },
+    {
+      "id": "v7-execute-oracle-reject-mismatched-stderr",
+      "wholeDiscriminator": "stderr",
+      "reject": "EXEC_RAW_AGREEMENT"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-wait-observation",
+      "wholeDiscriminator": "wait-observation",
+      "reject": "EXEC_OBSERVATIONS"
+    },
+    {
+      "id": "v7-execute-oracle-reject-unrelated-error",
+      "wholeDiscriminator": "unrelated-error",
+      "reject": "UNEXPECTED_EXCEPTION"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-named-trigger",
+      "wholeDiscriminator": "missing-trigger",
+      "reject": "NAMED_TRIGGER"
+    },
+    {
+      "id": "v7-execute-oracle-reject-wrong-named-phase",
+      "wholeDiscriminator": "wrong-phase",
+      "reject": "NAMED_PHASE"
+    },
+    {
+      "id": "v7-execute-oracle-reject-corrupt-identity",
+      "wholeDiscriminator": "corrupt-identity",
+      "reject": "EXEC_IDENTITY_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-bool-usage",
+      "wholeDiscriminator": "bool-usage",
+      "reject": "EXEC_USAGE"
+    },
+    {
+      "id": "v7-execute-oracle-reject-wrong-wait-pid",
+      "wholeDiscriminator": "wait-pid",
+      "reject": "EXEC_WAIT_STATUS"
+    },
+    {
+      "id": "v7-execute-oracle-reject-missing-terminal-print",
+      "wholeDiscriminator": "missing-terminal",
+      "reject": "EXEC_PRINT_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-corrupt-terminal-print",
+      "wholeDiscriminator": "corrupt-terminal",
+      "reject": "EXEC_PRINT_REQUIRED"
+    },
+    {
+      "id": "v7-execute-oracle-reject-mismatched-terminal-print",
+      "wholeDiscriminator": "terminal",
+      "reject": "EXEC_PRINT_AGREEMENT"
+    }
+  ]
+}

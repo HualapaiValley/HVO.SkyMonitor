@@ -1,0 +1,187 @@
+{
+  "schema": "hvo-orbital-virtual-camera-fixtures-v1",
+  "scope": "frozen research-only canonical products and source snapshots, explicit synthetic optical profile, no current historical orbit/physical visibility/adopted acquisition assertion",
+  "files": [
+    {
+      "path": "constellation-source-facts.json",
+      "bytes": 1060,
+      "sha256": "1767674B58E5BA937933DEBDB2B5FBD0AC0EBED382AC8E62AD64957BD38FAF17"
+    },
+    {
+      "path": "final-2000.finals2000A",
+      "bytes": 930,
+      "sha256": "F13535B5EC4F6B4013C610AB7C6B41ED2C4A03B5B030C08FD171D975B6C47FA2"
+    },
+    {
+      "path": "fixture-source-provenance.json",
+      "bytes": 1641,
+      "sha256": "124CE988902CCA8775D0E0EF5BEE7CC8BBA217C34B189F6BCA03AAD8189F1918"
+    },
+    {
+      "path": "historical-status-context.json",
+      "bytes": 868,
+      "sha256": "FD47C8528C25C963AA35C0FC7A3BA17FD4397F3619CD98C68DE2612A6BDF93BA"
+    },
+    {
+      "path": "optical-5s.json",
+      "bytes": 244,
+      "sha256": "3029370E6017D14BE4C6678AC0AAD29A6E876EE99748CAFBC65DAAA2490ABBCF"
+    },
+    {
+      "path": "optical-synthetic-fade.json",
+      "bytes": 514,
+      "sha256": "2F506875F2050F57DA2F8C20498242B85A687AB507334DB41BAB9CFA9AC13F3E"
+    },
+    {
+      "path": "settings-hvo.json",
+      "bytes": 2743,
+      "sha256": "7F8F6E1F4CD52F7DFB69BE832911EBB125EDFB97F34C530720747C9E102238F9"
+    },
+    {
+      "path": "settings-seattle.json",
+      "bytes": 2750,
+      "sha256": "5E0A65F70E4D6C7B5A72F08D48DA73E5DE03FB12876B236D811D81AA002ECC13"
+    },
+    {
+      "path": "settings-sydney.json",
+      "bytes": 2748,
+      "sha256": "3253C2A08FEE9067C09B6018AD741A36EF799A97CFA9172619210F5BA7F9B0BF"
+    },
+    {
+      "path": "snapshots/inactive/manifest.json",
+      "bytes": 2079,
+      "sha256": "8E64CBA61F27BFBFC9D64A8907226DD9454EC8F337495B16B0B0AA887909A3F6"
+    },
+    {
+      "path": "snapshots/inactive/records.json",
+      "bytes": 1328,
+      "sha256": "842F13BF97ECD38FFCE738D4F0A1C22815C845180115EDDA2180FDFFB58845E6"
+    },
+    {
+      "path": "snapshots/six-facts/manifest.json",
+      "bytes": 1964,
+      "sha256": "D31AE9DABE8F3FCEDD2BA6CFC3894B760CC8ADC484771EE2DEFD2AB5CDC000EC"
+    },
+    {
+      "path": "snapshots/six-facts/records.json",
+      "bytes": 7962,
+      "sha256": "C77AED1EA73B3BADCCB3E8112339A6F7CD21B3BFC19FA2C60432E993556979C9"
+    },
+    {
+      "path": "snapshots/two-starlinks/manifest.json",
+      "bytes": 1840,
+      "sha256": "2A392F699C1172ECD59EAEB99192D5275A4FEC3EE903470F5DEED4F041FFFEE7"
+    },
+    {
+      "path": "snapshots/two-starlinks/records.json",
+      "bytes": 2654,
+      "sha256": "732013C27045BA6F1F896A888CF200D84F2212C9F12450D7B7C9C94CE18091AA"
+    },
+    {
+      "path": "tracks/inactive/track-01.json",
+      "bytes": 8707,
+      "sha256": "8A70E342DB57D78FA9272710A2D28663AD1BE35D2F9DFAADF33A617CCCBB04C3"
+    },
+    {
+      "path": "tracks/inactive/track-02.json",
+      "bytes": 8702,
+      "sha256": "6A0D1EFAF9FD9E64DD5729E6A51F681834F70D473F8F62A21AB05F985719F9C4"
+    },
+    {
+      "path": "tracks/inactive/track-03.json",
+      "bytes": 8709,
+      "sha256": "5AFFE1523D6FB99C66F19498CEB845E625FC1D266D0C714622426BC6431A49C8"
+    },
+    {
+      "path": "tracks/inactive/track-04.json",
+      "bytes": 8708,
+      "sha256": "0BCD1467E69289D6D5639EE926BC77B185A9C58D2823F13145D44F701FC5F968"
+    },
+    {
+      "path": "tracks/inactive/track-05.json",
+      "bytes": 8714,
+      "sha256": "776B8C15E0204FB857CD304622399A0F0FA07F805EF5B2F6FE6539712C1F7543"
+    },
+    {
+      "path": "tracks/iss/track-01.json",
+      "bytes": 8847,
+      "sha256": "0E1925E49C0A2E9DC4CCC9B206B430FCA9F2995ED5634BB25D02FA4FC53206DB"
+    },
+    {
+      "path": "tracks/iss/track-02.json",
+      "bytes": 8851,
+      "sha256": "4E5C96A1A08375F6C56E544BD3EC589E49FABEBFA6F27110620B9C06A06253D9"
+    },
+    {
+      "path": "tracks/iss/track-03.json",
+      "bytes": 8856,
+      "sha256": "FD44F43B3D992A9355DA87840B7974F8C9C43755372DC18422454B4A95F3E659"
+    },
+    {
+      "path": "tracks/iss/track-04.json",
+      "bytes": 8857,
+      "sha256": "8E8BCC8B1429239913567BE81E72E82C5A4B45A7EF76463ED21380630F06CD4C"
+    },
+    {
+      "path": "tracks/iss/track-05.json",
+      "bytes": 8853,
+      "sha256": "77CA9EA12C8D932412DEDFE4275E34E5DCB6444F11B8ECE0FCA3248441B6B9E2"
+    },
+    {
+      "path": "tracks/starlink-56838/track-01.json",
+      "bytes": 8628,
+      "sha256": "FDC7D0E5077BC29739FBD21A5DB0E3EE7A2A743129C4D9A5C1E649AEED52F679"
+    },
+    {
+      "path": "tracks/starlink-56838/track-02.json",
+      "bytes": 8629,
+      "sha256": "7F537ACA1678D6D09B3671B27082004FC39738A6899C213B15E04EB8F918DB37"
+    },
+    {
+      "path": "tracks/starlink-56838/track-03.json",
+      "bytes": 8616,
+      "sha256": "6F7598DC9B4593E57EE5429E8C28486466FA409F8A9B4D6F8DF2943E17417DFB"
+    },
+    {
+      "path": "tracks/starlink-56838/track-04.json",
+      "bytes": 8613,
+      "sha256": "57F6BFC4D24FCC48C314688195A4A30B555EE621BDFCEB86E82472B614BA66DB"
+    },
+    {
+      "path": "tracks/starlink-56838/track-05.json",
+      "bytes": 8609,
+      "sha256": "794A419CE7D1FC28B57DF384DB26E69E5CF28341C966CB17EC7826EA9A6F3E67"
+    },
+    {
+      "path": "tracks/starlink-65283/track-01.json",
+      "bytes": 8603,
+      "sha256": "29956C1396E94EC0E3B1FA9556DA7CFF5B372262B5EBC574872D95B40F4A359C"
+    },
+    {
+      "path": "tracks/starlink-65283/track-02.json",
+      "bytes": 8617,
+      "sha256": "B97268552E44C1E632F4A741D4381CB2B369E56F17824879A2DC00C5696CF017"
+    },
+    {
+      "path": "tracks/starlink-65283/track-03.json",
+      "bytes": 8616,
+      "sha256": "082AEA48F1DC663353C1B8B43A44E826196B027A6055F114926E6524DEA1B87F"
+    },
+    {
+      "path": "tracks/starlink-65283/track-04.json",
+      "bytes": 8611,
+      "sha256": "DE9170675BBA8D452A337735F8E5B56D9E696C219D18EEC2C52E33B13A545DFF"
+    },
+    {
+      "path": "tracks/starlink-65283/track-05.json",
+      "bytes": 8614,
+      "sha256": "963609FB12338DC0333DA00FC69D871C7F1C5BBB007CD176CAFFACD3D5C2BD16"
+    }
+  ],
+  "sourceContexts": {
+    "modern": "retained GP raw DFEE7C9E5D9D58E1889200A4610F278D3E9809A8A3FA0A5E392040D52C96B62A; small source facts and original normalization mapper hash retained",
+    "inactive": "pinned approved Vallado verification input, near its2000epoch; separate NASA contact-loss context, source type/status remain null",
+    "time": "modern EOP/leap bytes in parent time directory; historical final EOP subset exact bytes here; original full USNO SHA BFA2066AAB0400B075357F573AF6081E0068A518993609EEE0C5CA991BAB0845"
+  },
+  "sourceCode": "docs/validation/orbital-prediction-v1/{research-fixture-mapper.cs.txt,historical-fixture-mapper.cs.txt}; research input preparation, not #528 production normalization"
+}

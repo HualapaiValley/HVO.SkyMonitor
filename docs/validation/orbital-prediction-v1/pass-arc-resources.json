@@ -1,0 +1,156 @@
+{
+  "workload": "selected-full-pass-arc-resource-v1",
+  "runtime": ".NET 10.0.13",
+  "architecture": "X64",
+  "operatingSystem": "Ubuntu 24.04.4 LTS",
+  "processors": 8,
+  "astronomyBinary": "0.9.1-dev+bc03d43192407cadba26b3202a0363e922185c89",
+  "bounds": {
+    "maximumEvaluations": 100000,
+    "maximumSamples": 100000,
+    "maximumElapsedMilliseconds": 1500,
+    "maximumStepSeconds": 1,
+    "maximumAngularErrorDegrees": 0.001
+  },
+  "caveats": "First/repeat diagnostic observations, not isolated cold/warm trials or an improvement claim. Query/time/snapshot loading and parent pass search are outside observation. The public method includes result validation/freezing/hashing; wire serialization, artifact I/O and assertion/reporting are outside. Process CPU/global allocations may include instrumentation; process peak includes fixture/JIT/prior cases. No full-population completeness, physical visibility or integrated five-second frame claim.",
+  "observations": [
+    {
+      "name": "ISS-Seattle-predicted-EOP-full-pass",
+      "trial": 0,
+      "ProductSha256": "B4F47AF19544FFCEDBEAC62EEC2A16A3FD8779CF92912E3B7521640AC47E1B0A",
+      "parentPassSha256": "6A4FB7B0D47DD5EB3EF79D47588ADEBF48A03E3BB37B4A19B66145A196B3A6B9",
+      "boundaryMilliseconds": 95.1166,
+      "ElapsedMilliseconds": 66.5188,
+      "cpuMilliseconds": 95.828,
+      "allocationBytes": 36811280,
+      "workingSetBeforeBytes": 113635328,
+      "workingSetAfterBytes": 138661888,
+      "peakProcessWorkingSetBytes": 138661888,
+      "collections": [
+        4,
+        1,
+        0
+      ],
+      "PropagationEvaluations": 6707,
+      "samples": 839,
+      "serializedBytes": 263329,
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "name": "ISS-Seattle-predicted-EOP-full-pass",
+      "trial": 1,
+      "ProductSha256": "B4F47AF19544FFCEDBEAC62EEC2A16A3FD8779CF92912E3B7521640AC47E1B0A",
+      "parentPassSha256": "6A4FB7B0D47DD5EB3EF79D47588ADEBF48A03E3BB37B4A19B66145A196B3A6B9",
+      "boundaryMilliseconds": 66.4728,
+      "ElapsedMilliseconds": 43.2045,
+      "cpuMilliseconds": 66.781,
+      "allocationBytes": 36078864,
+      "workingSetBeforeBytes": 138670080,
+      "workingSetAfterBytes": 141074432,
+      "peakProcessWorkingSetBytes": 141074432,
+      "collections": [
+        4,
+        2,
+        1
+      ],
+      "PropagationEvaluations": 6707,
+      "samples": 839,
+      "serializedBytes": 263329,
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "name": "Vanguard1-Sydney-final-EOP-full-pass",
+      "trial": 0,
+      "ProductSha256": "91FFB1C1514FD8879FA0ADCD96D9BB14AB09E9FED7992B699BA6E763407AEE23",
+      "parentPassSha256": "525AE1AD8F3A0C7DEF6B9D3D5999C976C2399DBCFBB9B915B982B8CE865E67E9",
+      "boundaryMilliseconds": 138.4803,
+      "ElapsedMilliseconds": 78.0835,
+      "cpuMilliseconds": 150.703,
+      "allocationBytes": 68431344,
+      "workingSetBeforeBytes": 142704640,
+      "workingSetAfterBytes": 160059392,
+      "peakProcessWorkingSetBytes": 165163008,
+      "collections": [
+        7,
+        2,
+        1
+      ],
+      "PropagationEvaluations": 13003,
+      "samples": 1626,
+      "serializedBytes": 508920,
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "name": "Vanguard1-Sydney-final-EOP-full-pass",
+      "trial": 1,
+      "ProductSha256": "91FFB1C1514FD8879FA0ADCD96D9BB14AB09E9FED7992B699BA6E763407AEE23",
+      "parentPassSha256": "525AE1AD8F3A0C7DEF6B9D3D5999C976C2399DBCFBB9B915B982B8CE865E67E9",
+      "boundaryMilliseconds": 114.6621,
+      "ElapsedMilliseconds": 69.4848,
+      "cpuMilliseconds": 115.33,
+      "allocationBytes": 67900072,
+      "workingSetBeforeBytes": 160092160,
+      "workingSetAfterBytes": 179793920,
+      "peakProcessWorkingSetBytes": 188514304,
+      "collections": [
+        8,
+        3,
+        1
+      ],
+      "PropagationEvaluations": 13003,
+      "samples": 1626,
+      "serializedBytes": 508920,
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "name": "Molniya08195-HVO-final-EOP-full-pass",
+      "trial": 0,
+      "ProductSha256": "D80E9306F0B5ADFAB819EF3279B16DDDDC5817715269322A66E51BA44E2C4C69",
+      "parentPassSha256": "D8D66E4FD784E0238325EA4427BF85B6250E8AF36177C6032C7954AF28E6F8AD",
+      "boundaryMilliseconds": 502.1503,
+      "ElapsedMilliseconds": 335.2421,
+      "cpuMilliseconds": 670.113,
+      "allocationBytes": 343450720,
+      "workingSetBeforeBytes": 179838976,
+      "workingSetAfterBytes": 198385664,
+      "peakProcessWorkingSetBytes": 223379456,
+      "collections": [
+        34,
+        10,
+        5
+      ],
+      "PropagationEvaluations": 58411,
+      "samples": 7302,
+      "serializedBytes": 2299960,
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "name": "Molniya08195-HVO-final-EOP-full-pass",
+      "trial": 1,
+      "ProductSha256": "D80E9306F0B5ADFAB819EF3279B16DDDDC5817715269322A66E51BA44E2C4C69",
+      "parentPassSha256": "D8D66E4FD784E0238325EA4427BF85B6250E8AF36177C6032C7954AF28E6F8AD",
+      "boundaryMilliseconds": 380.3238,
+      "ElapsedMilliseconds": 292.4668,
+      "cpuMilliseconds": 481.594,
+      "allocationBytes": 334357376,
+      "workingSetBeforeBytes": 198389760,
+      "workingSetAfterBytes": 242909184,
+      "peakProcessWorkingSetBytes": 261189632,
+      "collections": [
+        34,
+        10,
+        5
+      ],
+      "PropagationEvaluations": 58411,
+      "samples": 7302,
+      "serializedBytes": 2299960,
+      "status": "Complete",
+      "reason": "None"
+    }
+  ]
+}

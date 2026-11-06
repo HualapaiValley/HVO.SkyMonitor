@@ -181,7 +181,10 @@ public sealed partial class LifecycleContractTests
         }
         RestoreCrashImage(fixture, images.First(static image => image.Step == "journal:CandidateValidated"));
         // Just less than staging the whole archive again would need.
-        var staging = archive.TotalBytes + (long)archive.Entries.Count * 4096 + 256L * 1024 * 1024;
+        var snapshotBytes = archive.Entries.Where(static entry => entry.Path.StartsWith(BackupArchive.SnapshotPrefix, StringComparison.Ordinal))
+            .Sum(static entry => entry.Size);
+        var staging = archive.TotalBytes + (long)archive.Entries.Count * 4096 +
+                      3 * snapshotBytes + CameraAgentStateCounters.JournalRecordBytes(snapshotBytes) + 256L * 1024 * 1024;
         var original = CameraAgentLifecycleManager.BackupHost;
         CameraAgentLifecycleManager.BackupHost = new SmallDisk(staging - 1);
         try

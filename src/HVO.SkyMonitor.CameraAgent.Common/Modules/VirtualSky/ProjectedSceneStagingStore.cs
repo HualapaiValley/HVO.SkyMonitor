@@ -91,7 +91,8 @@ internal interface IProjectedSceneStagingReconciler
 {
     ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
         IReadOnlySet<string> ownedStageKeys,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default);
 }
 
 internal sealed record ProjectedSceneStageReconciliationResult(int Inspected, int Deleted, int BacklogCount);
@@ -463,10 +464,13 @@ internal sealed class ProjectedSceneStagingStore :
 
     public async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
         IReadOnlySet<string> ownedStageKeys,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
     {
         ArgumentNullException.ThrowIfNull(ownedStageKeys);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var passToken = interruption.Token;
+        await _gate.WaitAsync(passToken).ConfigureAwait(false);
         try
         {
             if (!Directory.Exists(_root)) return new(0, 0, 0);
@@ -492,12 +496,13 @@ internal sealed class ProjectedSceneStagingStore :
             if (start < 0) start = 0;
             var inspected = 0;
             var deleted = 0;
-            string? lastName = null;
+            var lastName = cursor?.LastName;
             var passLimit = Math.Min(_options.MaximumReconciliationEntries, remaining);
             for (var offset = 0; offset < entries.Length && inspected < passLimit; offset++)
             {
                 var index = (start + offset) % entries.Length;
                 cancellationToken.ThrowIfCancellationRequested();
+                if (interruptionToken.IsCancellationRequested) break;
                 var name = Path.GetFileName(entries[index]);
                 lastName = name;
                 inspected++;

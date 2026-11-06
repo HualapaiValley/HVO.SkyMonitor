@@ -14,7 +14,7 @@ public sealed record LocalAutomationRunPreparation(
     [property: JsonRequired] DateTimeOffset RequestedAtUtc,
     [property: JsonRequired] string IdentitySha256)
 {
-    public bool IsValid() => Operation is "backfill" or "retry" &&
+    public bool IsValid() => Operation is "backfill" or "retry" or "run-now" &&
         LocalAutomationDefinitionValidator.IsText(Actor, 256) &&
         LocalAutomationDefinitionValidator.IsText(IdempotencyKey, 128) &&
         LocalAutomationDefinitionValidator.IsText(Reason, 512) &&

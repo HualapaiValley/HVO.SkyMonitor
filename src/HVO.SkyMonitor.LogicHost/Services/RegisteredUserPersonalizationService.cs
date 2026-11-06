@@ -116,6 +116,7 @@ internal sealed class RegisteredUserPersonalizationService(
         var eventId = await dbContext.PublicRecordPublicationDecisions.AsNoTracking().Where(decision => decision.PublicId == publicEventId
                 && decision.SubjectKind == PublicRecordSubjectKind.TransientEvent && decision.State == PublicationDecisionState.Released
                 && !dbContext.PublicRecordPublicationDecisions.Any(successor => successor.SupersedesDecisionId == decision.Id))
+            .OrderByDescending(decision => decision.OccurredAtUtc).ThenByDescending(decision => decision.Id)
             .Select(decision => decision.CentralTransientEventId).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (eventId is null) return PersonalizationMutationOutcome.NotFoundOrDenied;
         if (await dbContext.RegisteredUserTransientEventBookmarks.AnyAsync(item => item.UserId == userId && item.CentralTransientEventId == eventId, cancellationToken).ConfigureAwait(false)) return PersonalizationMutationOutcome.Unchanged;
@@ -132,6 +133,7 @@ internal sealed class RegisteredUserPersonalizationService(
         var eventId = await dbContext.PublicRecordPublicationDecisions.AsNoTracking()
             .Where(decision => decision.PublicId == publicEventId
                 && decision.SubjectKind == PublicRecordSubjectKind.TransientEvent)
+            .OrderByDescending(decision => decision.OccurredAtUtc).ThenByDescending(decision => decision.Id)
             .Select(decision => decision.CentralTransientEventId)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (eventId is null) return PersonalizationMutationOutcome.Unchanged;

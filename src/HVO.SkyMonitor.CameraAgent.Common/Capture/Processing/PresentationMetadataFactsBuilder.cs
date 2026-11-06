@@ -21,22 +21,23 @@ internal sealed class PresentationMetadataFactsBuilder(
         ProcessingProduct? stackProduct,
         IReadOnlyList<Guid> sourceArtifactIds,
         IReadOnlyList<EnvironmentalObservationKind> kinds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retainFrameFacts = false)
     {
         var descriptor = context.ReconstructionDescriptor;
         if (descriptor is null) return null;
         var fromUtc = descriptor.Timing.ExposureStartedUtc.ToUniversalTime();
         var throughUtc = descriptor.Timing.ExposureEndedUtc.ToUniversalTime();
         if (throughUtc <= fromUtc) throughUtc = fromUtc.AddMilliseconds(1);
+        var expectedKinds = kinds.Distinct().Order().ToArray();
         IReadOnlyList<LocalEnvironmentalCaptureAssociation>? associated = null;
-        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && kinds.Count > 0)
+        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && expectedKinds.Length > 0)
         {
             associated = await associations.ReadCompletedAsync(
                 descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, fromUtc, throughUtc,
-                descriptor.Capture.RigId, kinds, cancellationToken).ConfigureAwait(false);
+                descriptor.Capture.RigId, expectedKinds, cancellationToken).ConfigureAwait(false);
             if (associated is null) return null;
         }
-        var expectedKinds = kinds.Distinct().Order().ToArray();
         var configuredPolicyIdentity = EnvironmentalAssociationService.CreatePolicyIdentity(expectedKinds);
         associated ??= expectedKinds.Select(kind => new LocalEnvironmentalCaptureAssociation(
             descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, kind, descriptor.Capture.RigId,
@@ -58,6 +59,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             throughUtc)).ToArray();
 
         var environment = new List<PresentationEnvironmentalFactV1>(associated.Count);
+        var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Count) : null;
         foreach (var association in associated)
         {
             LocalEnvironmentalObservationRecord? observation = null;
@@ -91,6 +93,14 @@ internal sealed class PresentationMetadataFactsBuilder(
                 observation?.Fact.ObservedAtUtc, observation?.Fact.StaleAfterUtc,
                 observation?.Fact.Value.Quality.ToString(), conflicts,
                 FormatEnvironmentLine(association, observation, throughUtc)));
+            retainedEnvironment?.Add(new(descriptor.Capture.CaptureId, association.Kind, association.Status switch
+            {
+                LocalEnvironmentalAssociationStatus.Fresh => FrameFactsAvailability.Available,
+                LocalEnvironmentalAssociationStatus.Stale => FrameFactsAvailability.Stale,
+                LocalEnvironmentalAssociationStatus.Missing => FrameFactsAvailability.Missing,
+                LocalEnvironmentalAssociationStatus.Contradictory => FrameFactsAvailability.Conflicting,
+                _ => FrameFactsAvailability.Unsupported
+            }, association.AssociationIdentitySha256, association.ExposureFromUtc, association.ExposureThroughUtc, observation?.Fact));
             context.RecordCanonicalInput($"environment-association-{association.Kind}",
                 "local-environment-association-v1", association.AssociationIdentitySha256);
             if (observation is not null)
@@ -145,6 +155,22 @@ internal sealed class PresentationMetadataFactsBuilder(
             PresentationMetadataFactsProductV1.CurrentSchemaVersion, string.Empty, descriptor.Capture.CaptureId,
             descriptor.Capture.CaptureSequence, capture, environment, catalog, calibration, stack,
             processing, corners, sourceArtifactIds);
+        if (retainFrameFacts)
+        {
+            var descriptorIdentity = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+            // Only captured evidence is projected. No current location, time-zone database or processing clock
+            // supplies optional facts absent from the retained source. Source time is read only from raw evidence.
+            var retained = new FrameFactsRetainedInputV1(descriptor,
+                new(descriptorIdentity, context.Artifacts?.Raw.Frame.TimestampUtc, context.Submission.EffectiveInterval.TotalSeconds),
+                stackProduct is null ? null : new(descriptorIdentity, stackProduct.OutputIdentitySha256,
+                    stackProduct.SourceArtifactIds, stackProduct.TotalIntegration),
+                Astronomy: scene, Environment: retainedEnvironment);
+            facts = facts with
+            {
+                SchemaVersion = PresentationMetadataFactsProductV1.RichTextSchemaVersion,
+                FrameFacts = FrameFactsSnapshotV1.Create(FrameFactsRetainedContext.Create(retained))
+            };
+        }
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(
             CaptureContractJson.SerializeToElement(facts with
             {

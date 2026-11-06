@@ -81,7 +81,7 @@ internal static partial class CanonicalCentralGraphSeedDiagnostics
         return new(mismatched, supersededExecutions, stale);
     }
 
-    private static async Task<int> CountFrozenIdentityMismatchesAsync(ApplicationDbContext dbContext)
+    internal static async Task<int> CountFrozenIdentityMismatchesAsync(ApplicationDbContext dbContext)
     {
         // A requested identity hashes recipe, options and selector, so one representative per distinct identity
         // decides the whole group; the query is bounded by distinct identities, not by backlog size.
@@ -100,6 +100,7 @@ internal static partial class CanonicalCentralGraphSeedDiagnostics
             var sample = await dbContext.CentralDerivativeJobs.AsNoTracking()
                 .Where(item => NonTerminalStatuses.Contains(item.Status) && item.RecipeName == group.RecipeName &&
                     item.RequestedRecipeIdentitySha256 == group.RequestedRecipeIdentitySha256)
+                .OrderBy(item => item.Id)
                 .Select(item => new { item.RecipeOptionsJson, item.InputSelectorJson })
                 .FirstAsync();
             bool matches;

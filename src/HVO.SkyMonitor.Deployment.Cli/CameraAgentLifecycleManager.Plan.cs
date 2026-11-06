@@ -13,18 +13,22 @@ internal sealed partial class CameraAgentLifecycleManager
     /// Each caller does so before it records completion, so an interruption or a record that cannot be written leaves the
     /// operation resumable and <c>--resume</c> finishes it.
     /// </summary>
-    private static Task<DeploymentPlanAction> SettleInstallRecordAsync(
+    private static async Task<DeploymentPlanAction> SettleInstallRecordAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
         LifecycleOperationKind kind,
         CancellationToken cancellationToken)
-        => InstallRecordStore.SettleInstanceAsync(
-            InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot),
-            paths,
-            manifest,
-            RecordEvent(kind),
-            cancellationToken);
+    {
+        if (kind is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall)
+            await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
+                cancellationToken).ConfigureAwait(false);
+        else if (kind == LifecycleOperationKind.Uninstall)
+            await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: false, cancellationToken).ConfigureAwait(false);
+        return await InstallRecordStore.SettleInstanceAsync(
+            InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot), paths, manifest, RecordEvent(kind),
+            cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Removes a purged instance from the install record before the purge records completion.</summary>
     private static Task<DeploymentPlanAction> RemoveFromInstallRecordAsync(

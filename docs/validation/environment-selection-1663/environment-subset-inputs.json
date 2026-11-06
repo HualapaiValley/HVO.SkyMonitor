@@ -1,0 +1,26 @@
+[
+  {
+    "Ordinal": 0,
+    "Kind": "CanonicalContext",
+    "Name": "environment-association-AirTemperature",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "local-environment-association-v1",
+    "IdentitySha256": "E29ACA4D4DE52D452AD3DB4E7230FA8815515FA321441730B4878B4F396A1A74",
+    "Selected": false
+  },
+  {
+    "Ordinal": 1,
+    "Kind": "CanonicalContext",
+    "Name": "environment-observation-AirTemperature",
+    "ArtifactId": null,
+    "Role": null,
+    "Variant": null,
+    "RecipeIdentitySha256": null,
+    "SchemaVersion": "environmental-observation-v1",
+    "IdentitySha256": "C1F46CA3E7277B9D4FAC4CBACC5D8827CB68FC14FD1F506756C66286079ED27F",
+    "Selected": false
+  }
+]

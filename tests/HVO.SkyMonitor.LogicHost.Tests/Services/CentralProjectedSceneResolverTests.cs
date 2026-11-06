@@ -130,6 +130,19 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selected);
+        Assert.AreEqual(scene.SchemaVersion, selected.Reference.SchemaVersion);
+        // A frozen selector/input round trip carries the actual schema; the lease service reads this reference.
+        var job = new CentralDerivativeJob { SourceArtifact = rawArtifact };
+        CentralProjectedSceneResolver.AddRequirement(job, selected, utc);
+        Assert.IsNotNull(CentralProjectedSceneResolver.MaterializeReference(job, utc));
+        Assert.AreEqual(selected.Reference, CentralProjectedSceneResolver.ReadReference(job));
+        var requirement = job.InputRequirements.Single();
+        var originalSelector = requirement.SelectorJson;
+        requirement.SelectorJson = JsonSerializer.Serialize(selected.Reference with { SchemaVersion = "projected-scene-v99" },
+            JsonSerializerOptions.Web);
+        var unsupported = Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralProjectedSceneResolver.ReadReference(job));
+        Assert.AreEqual("The frozen projected-scene schema is unsupported.", unsupported.Message);
+        requirement.SelectorJson = originalSelector;
         if (schema == 3)
         {
             Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, selected.Reference.PayloadSchemaVersion);
@@ -189,6 +202,17 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var resolved = await resolver.ResolveAsync(selected.Reference, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(selected.Annotation.ProvenanceSha256, resolved.ProvenanceSha256);
+        var legacy = selected.Reference with { SchemaVersion = null };
+        var legacyJson = JsonSerializer.Serialize(legacy, JsonSerializerOptions.Web);
+        Assert.IsFalse(legacyJson.Contains("schemaVersion", StringComparison.Ordinal));
+        var legacyResolved = await resolver.ResolveAsync(
+            JsonSerializer.Deserialize<CentralProjectedSceneReference>(legacyJson, JsonSerializerOptions.Web)!,
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(selected.Annotation.ProvenanceSha256, legacyResolved.ProvenanceSha256,
+            "legacy annotation references remain compatible with both authenticated schemas");
+        await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.ResolveAsync(
+            selected.Reference with { SchemaVersion = resolvedSun ? ProjectedSceneV1.CurrentSchemaVersion : ProjectedSceneV1.ResolvedFootprintSchemaVersion },
+            CancellationToken.None)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.ResolveAsync(
             selected.Reference with { ContentIdentitySha256 = new string('F', 64) }, CancellationToken.None)).ConfigureAwait(false);
         rawArtifact.ObjectState = CentralArtifactObjectState.Available;
@@ -324,6 +348,76 @@ public sealed class CentralProjectedSceneResolverTests
             return;
         }
         Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(0, false)]
+    [DataRow(1, false)]
+    [DataRow(3, false)]
+    [DataRow(0, true)]
+    [DataRow(1, true)]
+    [DataRow(3, true)]
+    public async Task SqliteSceneProbesRemainBoundedAndRejectAmbiguity(int count, bool validateInline)
+    {
+        await using var fixture = new SqliteRowLimitFixture();
+        var db = fixture.Db;
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
+        var scene = await CreateSceneAsync(raw, "perspective-v1", "calibration-v1", resolvedSun: false);
+        var inline = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
+            scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
+            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: scene.EffectiveUtc,
+            EphemerisModelVersion: scene.EphemerisModelVersion);
+        var frame = await SeedAsync(db, raw, scene, inline.WithoutProjectedGeometry());
+        var first = await db.CentralArtifacts.SingleAsync(item => item.Role == FrameArtifactRole.Metadata);
+        if (count == 0)
+        {
+            db.Remove(first.StructuredProduct!);
+            db.Remove(first);
+            await db.SaveChangesAsync();
+        }
+        for (var index = 1; index < count; index++)
+            fixture.Insert(new CentralArtifact
+            {
+                CentralFrameId = frame.Id,
+                ArtifactId = Guid.NewGuid(),
+                Role = FrameArtifactRole.Metadata,
+                MediaType = first.MediaType,
+                ObjectState = CentralArtifactObjectState.Available,
+                ReconstructionState = CentralReconstructionState.Complete
+            });
+        var reader = new SceneReader(ProjectedSceneJson.Serialize(scene));
+        var resolver = new CentralProjectedSceneResolver(db, reader);
+        fixture.Queries.Commands.Clear();
+        if (validateInline)
+        {
+            if (count > 1)
+                await Assert.ThrowsExactlyAsync<ArtifactIngestConflictException>(
+                    () => resolver.ValidateInlineGeometryAsync(frame, inline, CancellationToken.None));
+            else if (count == 0)
+                await Assert.ThrowsExactlyAsync<ArtifactSceneReferencePendingException>(
+                    () => resolver.ValidateInlineGeometryAsync(frame, inline, CancellationToken.None));
+            else
+                await resolver.ValidateInlineGeometryAsync(frame, inline with
+                {
+                    Objects = scene.Objects.Select(item => new ProjectedObjectProvenance(item.Id, item.DisplayName,
+                        item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray()
+                }, CancellationToken.None);
+        }
+        else if (count > 1)
+        {
+            var error = await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(
+                () => resolver.SelectAsync(frame, CancellationToken.None));
+            Assert.AreEqual("projected-scene.ambiguous", error.ReasonCode);
+        }
+        else if (count == 0)
+            Assert.IsNull(await resolver.SelectAsync(frame, CancellationToken.None));
+        else
+            Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None));
+        if (count != 1) Assert.AreEqual(0, reader.ReadCount);
+        var probes = fixture.Queries.Commands.Where(sql => sql.Contains("LIMIT", StringComparison.Ordinal)).ToArray();
+        Assert.HasCount(1, probes);
+        foreach (var sql in probes)
+            StringAssert.Contains(sql, "ORDER BY");
     }
 
     private static async Task<ProjectedSceneV1> CreateSceneAsync(

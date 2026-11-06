@@ -1,0 +1,248 @@
+{
+  "schemaVersion": 8,
+  "environment": "test-observatory",
+  "installationId": "test-installation",
+  "productRoot": "/tmp/hvo-deploy-test.typed/remote/skymonitor",
+  "source": {
+    "revision": "0000000000000000000000000000000000000000",
+    "dirtyDisposition": "allow-dirty"
+  },
+  "secretSource": {
+    "path": "/private/deploy.env",
+    "requiredReferences": [
+      "SQL_PASSWORD",
+      "OWNER_API_KEY",
+      "EAST_PASSWORD",
+      "WEST_PASSWORD",
+      "OAUTH_SECRET"
+    ]
+  },
+  "observatory": {
+    "name": "Test Observatory",
+    "latitudeDegrees": 19.5,
+    "longitudeDegrees": -155.5,
+    "elevationMeters": 1000,
+    "timeZoneId": "Pacific/Honolulu"
+  },
+  "logicHost": {
+    "name": "logic",
+    "friendlyName": "Test LogicHost",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "applicationIdentity": "test-logic",
+    "catalogId": "test-production",
+    "cookieName": "hvo.skymonitor.11111111111141118111111111111111",
+    "sshHost": "logic@example",
+    "dockerContext": "logic-context",
+    "expectedArchitecture": "amd64",
+    "expectedHostName": "logic-node",
+    "expectedHostIdentity": "logic-machine",
+    "expectedDockerDaemonIdentity": "logic-daemon",
+    "runtimeRoot": "/tmp/hvo-deploy-test.typed/remote/skymonitor/logichosts/11111111-1111-4111-8111-111111111111",
+    "runtimeOwner": "operator",
+    "internalEndpoint": "http://127.0.0.1:5174",
+    "publicEndpoint": "https://public.example.test:5174",
+    "trustedProxyAddresses": [],
+    "ports": [
+      5174
+    ]
+  },
+  "cameraAgents": [
+    {
+      "name": "east",
+      "friendlyName": "East Camera",
+      "instanceId": "22222222-2222-4222-8222-222222222222",
+      "applicationIdentity": "east-agent",
+      "catalogId": "test-production",
+      "cookieName": "hvo.skymonitor.22222222222242228222222222222222",
+      "ownerEmail": "east-owner@cameraagent.local",
+      "sshHost": "east@example",
+      "dockerContext": "east-context",
+      "expectedArchitecture": "arm64",
+      "expectedHostName": "east-node",
+      "expectedHostIdentity": "east-machine",
+      "expectedDockerDaemonIdentity": "east-daemon",
+      "runtimeRoot": "/tmp/hvo-deploy-test.typed/remote/skymonitor/cameraagents/22222222-2222-4222-8222-222222222222",
+      "runtimeOwner": "operator",
+      "internalEndpoint": "http://127.0.0.1:5130",
+      "publicEndpoint": "http://127.0.0.1:5130",
+      "trustedProxyAddresses": [],
+      "ports": [
+        5130
+      ],
+      "moduleConfigPath": "/private/east.json",
+      "ownerPasswordSecretReference": "EAST_PASSWORD"
+    },
+    {
+      "name": "west",
+      "friendlyName": "West Camera",
+      "instanceId": "33333333-3333-4333-8333-333333333333",
+      "applicationIdentity": "west-agent",
+      "catalogId": "test-production",
+      "cookieName": "hvo.skymonitor.33333333333343338333333333333333",
+      "ownerEmail": "west-owner@cameraagent.local",
+      "sshHost": "west@example",
+      "dockerContext": "west-context",
+      "expectedArchitecture": "amd64",
+      "expectedHostName": "west-node",
+      "expectedHostIdentity": "west-machine",
+      "expectedDockerDaemonIdentity": "west-daemon",
+      "runtimeRoot": "/tmp/hvo-deploy-test.typed/remote/skymonitor/cameraagents/33333333-3333-4333-8333-333333333333",
+      "runtimeOwner": "operator",
+      "internalEndpoint": "http://127.0.0.1:5131",
+      "publicEndpoint": "http://127.0.0.1:5131",
+      "trustedProxyAddresses": [],
+      "ports": [
+        5131
+      ],
+      "moduleConfigPath": "/private/west.json",
+      "ownerPasswordSecretReference": "WEST_PASSWORD"
+    }
+  ],
+  "sharedServices": null,
+  "serviceEndpoints": [
+    {
+      "name": "test-service",
+      "host": "127.0.0.1",
+      "port": 5174,
+      "fromTargets": [
+        "logic",
+        "east",
+        "west"
+      ]
+    }
+  ],
+  "catalogs": [
+    {
+      "catalogId": "test-production",
+      "displayName": "Test production catalog",
+      "kind": "production",
+      "version": "catalog-v1",
+      "schemaVersion": "2",
+      "preprocessingVersion": "3",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "length": 1,
+      "rowCount": 1,
+      "bundlePath": "/tmp/hvo-deploy-test.typed/remote/catalog-bundle",
+      "installRoot": "/tmp/hvo-deploy-test.typed/remote/skymonitor/catalogs/test-production",
+      "allowFixture": false
+    }
+  ],
+  "images": {
+    "distributionMode": "registry",
+    "artifactRoot": null,
+    "tag": "rev-0000000000000000000000000000000000000000",
+    "registryImmutableTags": true,
+    "builder": {
+      "name": "control-builder",
+      "driver": "docker-container",
+      "endpoint": "default",
+      "expectedDaemonIdentity": "control-daemon",
+      "expectedDaemonName": "control-node",
+      "expectedArchitecture": "amd64"
+    },
+    "logicHost": {
+      "repository": "registry.example/logichost"
+    },
+    "cameraAgent": {
+      "repository": "registry.example/cameraagent"
+    }
+  },
+  "deployment": {
+    "services": {
+      "mode": "existing",
+      "sql": {
+        "host": "127.0.0.1",
+        "port": 1433,
+        "database": "hvo-test",
+        "adminUser": "sa",
+        "adminSecretReference": "SQL_PASSWORD",
+        "initializerUser": "hvo-init",
+        "initializerSecretReference": "SQL_PASSWORD",
+        "initializerConnectionReference": "SQL_PASSWORD",
+        "runtimeUser": "hvo-runtime",
+        "runtimeSecretReference": "SQL_PASSWORD",
+        "runtimeConnectionReference": "SQL_PASSWORD"
+      },
+      "redis": {
+        "host": "127.0.0.1",
+        "port": 6379,
+        "prefix": "hvo-test:",
+        "adminSecretReference": "SQL_PASSWORD",
+        "user": "hvo-runtime",
+        "secretReference": "SQL_PASSWORD"
+      },
+      "objectStore": {
+        "root": "/var/lib/hvo/object-store",
+        "uid": 4242,
+        "gid": 4343,
+        "filesystemUuid": "fa678c86-1c12-4eba-8f04-c84256772089",
+        "minimumFreeBytes": 10737418240,
+        "minimumFreeInodes": 1048576,
+        "artifactBucket": "hvo-test-artifacts",
+        "diagnosticsBucket": "hvo-test-diagnostics"
+      },
+      "smtp": {
+        "kind": "production",
+        "host": "127.0.0.1",
+        "ports": [
+          2525,
+          null
+        ],
+        "usernameReference": null,
+        "passwordReference": null
+      },
+      "images": {
+        "sqlServer": null,
+        "redis": null,
+        "mailpit": null
+      }
+    },
+    "resources": {
+      "project": "hvo-test",
+      "sqlDatabase": "hvo-test",
+      "redisPrefix": "hvo-test:",
+      "artifactBucket": "hvo-test-artifacts",
+      "diagnosticsBucket": "hvo-test-diagnostics"
+    },
+    "certificates": {
+      "signingPath": "/tmp/hvo-deploy-test.typed/remote/signing.pfx",
+      "encryptionPath": "/tmp/hvo-deploy-test.typed/remote/encryption.pfx",
+      "signingPasswordReference": null,
+      "encryptionPasswordReference": null
+    },
+    "automation": {
+      "ownerApiKeySecretReference": "OWNER_API_KEY"
+    },
+    "deviceBootstrap": {
+      "clientId": "system-camera-agent",
+      "clientSecretReference": "SQL_PASSWORD",
+      "scopes": [
+        "api.camera"
+      ]
+    },
+    "transient": {
+      "mode": "Off"
+    },
+    "workload": {
+      "kind": "W0",
+      "durationSeconds": 120,
+      "sustainedArmOptIn": true
+    },
+    "secretMappings": [
+      {
+        "reference": "SQL_PASSWORD",
+        "key": "ConnectionStrings__skymonitordb"
+      },
+      {
+        "reference": "SQL_PASSWORD",
+        "key": "ConnectionStrings__skymonitordb-migrations"
+      }
+    ],
+    "limits": {
+      "cpus": null,
+      "memory": null,
+      "sqlMemory": null,
+      "sqlMemoryLimitMb": null
+    }
+  }
+}

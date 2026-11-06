@@ -273,8 +273,8 @@ internal sealed class SkyCliContext
     /// What to say when requests to <paramref name="url"/> carry the key across a network unencrypted (plain HTTP to
     /// another machine); null when they do not. The commands write it once; the terminal interface shows it.
     /// </summary>
-    public static string? ClearTextWarning(Uri url)
-        => SkyAddress.SendsKeyInClear(url)
+    public string? ClearTextWarning(Uri url)
+        => SkyAddress.SendsKeyInClear(url, Host.LocalAddresses, Host.Proxy)
             ? $"{url} is plain HTTP to another machine, so the API key crosses the network unencrypted. Use HTTPS, an SSH tunnel, or run {SkyCli.CommandName} on the CameraAgent host."
             : null;
 

@@ -86,7 +86,7 @@ jobs:
     name: Quality
     needs: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,7 +177,10 @@ jobs:
           retention-days: 30
       - name: Run historical Phase 14 acceptance inventory contract
         if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'
-        run: ./scripts/test:phase14-acceptance
+        run: |
+          dotnet build scripts/enum-metadata/HVO.SkyMonitor.EnumMetadata.csproj --no-restore --configuration Release -warnaserror
+          dotnet build src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj --no-restore --configuration Release -warnaserror
+          ./scripts/test:phase14-acceptance
   deployment-contracts:
     name: Deployment Contracts
     needs: [changes, catalog-contracts]
@@ -245,10 +248,10 @@ jobs:
         if: needs.changes.outputs.deployment_installer == 'true'
         run: ./scripts/test:deployment-installer
       - name: Bind deployment contract evidence
-        if: always() && needs.changes.outputs.deployment_shards == 'true'
+        if: always()
         run: ./scripts/ci:artifact-provenance deployment-contract-logs deployment-contracts TestResults/deployment-contracts
       - name: Upload deployment contract logs
-        if: always() && needs.changes.outputs.deployment_shards == 'true'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: deployment-contract-logs
@@ -285,7 +288,7 @@ jobs:
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware

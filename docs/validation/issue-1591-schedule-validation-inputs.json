@@ -1,0 +1,62 @@
+{
+  "schema": "issue-1591-source-inputs-v1",
+  "environment": {
+    "osRelease": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+    "kernel": "6.8.0-142-generic",
+    "architecture": "x86_64",
+    "cpuModel": "Intel(R) Core(TM) i9-14900K",
+    "hostMemory": "15707108 kB",
+    "filesystemType": "ext4",
+    "sdk": "10.0.402",
+    "baseline": "4da83429",
+    "candidate": "f904018368c05194f5eb088a26fd73bef294b845",
+    "dirtyDisposition": "Only the unfinished Markdown evidence document is untracked; measured executable sources match the candidate commit. Baseline checkout is clean."
+  },
+  "primary": {
+    "baseline": {
+      "revision": "4da834295aa37be242dac6ae9b6e3ab69ef6dc63",
+      "sourceSha256": {
+        "global.json": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+        "Directory.Packages.props": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+        "Directory.Build.props": "6b675b178c3db9f2ce38249cf6bbd7f044c0a8790c7ee9cb765451bca6642d33",
+        "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs": "ed7c6dae8793cab8a3e40e22c759c30a611fdddb923f5393026d475a80d4e545",
+        "src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/CaptureScheduleEngine.cs": "58ad79b9e2480d450a91d066e6c225574d13984473f75a9a41eeb43052ec8559",
+        "src/HVO.SkyMonitor.Astronomy/SolarEvents.cs": "1865ba14e75ff047a13a8d7a44fbe337f033241ff7c8349032b8ed1b47429627",
+        "src/HVO.SkyMonitor.AgentCore/CaptureScheduleContracts.cs": "309d3b5b53ac918774e8ecf4d701f8574304cbd10947ed39845a7f67cde53b84",
+        "src/HVO.SkyMonitor.AgentCore/AgentRigConfig.cs": "f2abf2c21d16601fe39bafb434b8991b4e7b3651bb80436bf0287a48dcb30e6e",
+        "src/HVO.SkyMonitor.AgentCore/DeploymentLocationContracts.cs": "451a3861a668570a523c655ea0daebab18f6edf6781616a8aca9099f49123951",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/InstallationReadAttributionFixture.cs": "56f007895494fee869ba7b5142054a9d75ea2928207d0d50e58a53bde13d43e8",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/CameraAgentKestrelFixture.cs": "b67a8159d9c8db5999b79ce31982da289b73484de7cfdb3a71c8cb397e46230b",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.cs": "305f066266c620fc0336d05bbb7c9fcd30316ddc8b7459c9bcc27c6b66d30df6"
+      },
+      "manualHarnessTailSha256": "e9d7461f1e6b9d79795bee21ebf6ff23a023f2618700c80e1d5c46ccbabad031"
+    },
+    "candidate": {
+      "revision": "f904018368c05194f5eb088a26fd73bef294b845",
+      "sourceSha256": {
+        "global.json": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1",
+        "Directory.Packages.props": "22db107c5ab07eb76ea3c34eb15ee3d62def21870c01c98545110afe607818d5",
+        "Directory.Build.props": "6b675b178c3db9f2ce38249cf6bbd7f044c0a8790c7ee9cb765451bca6642d33",
+        "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs": "e7072eac09cd75c2e4683497e826d2228c9898ad922b32a5440f20c061cae74e",
+        "src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/CaptureScheduleEngine.cs": "58ad79b9e2480d450a91d066e6c225574d13984473f75a9a41eeb43052ec8559",
+        "src/HVO.SkyMonitor.Astronomy/SolarEvents.cs": "1865ba14e75ff047a13a8d7a44fbe337f033241ff7c8349032b8ed1b47429627",
+        "src/HVO.SkyMonitor.AgentCore/CaptureScheduleContracts.cs": "309d3b5b53ac918774e8ecf4d701f8574304cbd10947ed39845a7f67cde53b84",
+        "src/HVO.SkyMonitor.AgentCore/AgentRigConfig.cs": "f2abf2c21d16601fe39bafb434b8991b4e7b3651bb80436bf0287a48dcb30e6e",
+        "src/HVO.SkyMonitor.AgentCore/DeploymentLocationContracts.cs": "451a3861a668570a523c655ea0daebab18f6edf6781616a8aca9099f49123951",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/InstallationReadAttributionFixture.cs": "56f007895494fee869ba7b5142054a9d75ea2928207d0d50e58a53bde13d43e8",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/CameraAgentKestrelFixture.cs": "b67a8159d9c8db5999b79ce31982da289b73484de7cfdb3a71c8cb397e46230b",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.cs": "da8f593f93ce6caffb64fafb20098d63b1ab99b3c613320d38e5c83e571f3035"
+      },
+      "manualHarnessTailSha256": "e9d7461f1e6b9d79795bee21ebf6ff23a023f2618700c80e1d5c46ccbabad031"
+    }
+  },
+  "supplemental": {
+    "baseline": "2d341fcbf726eb31761e5961c9c4762a5a814aab",
+    "candidate": "190f7db1e6cc681887ec7e424b341821d3ea9b31",
+    "manualHarnessTailSha256": "660395fb1913cbfe05238167adeaaba3145435a6d47dc27df68000dc3794b649",
+    "settlingReadCount": 120,
+    "measuredReadCount": 30,
+    "gcDiagnostics": true,
+    "productionAndFixtureInputsMatchPrimary": true
+  }
+}

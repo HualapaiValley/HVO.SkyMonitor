@@ -1,0 +1,42 @@
+[
+  {
+    "Phase": "unit",
+    "Project": "HVO.SkyMonitor.LogicHost.Tests",
+    "SourceRelativePath": "tests/HVO.SkyMonitor.LogicHost.Tests/TestResults/29b1400e-f238-4de6-858d-19c220b790ca/coverage.cobertura.xml",
+    "CanonicalSlot": "TestResults/unit/logichost",
+    "ConsoleLogSha256": "28c43cf2abd926dcdf438c7f6021cb20e403bdf9a90e4af19f742a6f91d9aaf2",
+    "TrxSha256": "b6953e23a57e6648298cf152b1c1c8ec282b96b55ef8352bb11b99efd7a2c13b",
+    "CoverageSha256": "f28faaae1a78454547add9f721461d8cf77e18168dce31b391604664e377e9c2",
+    "Method": "Exact unique per-project attachment in the matching solution-phase console output; TRX collector href omits its GUID directory."
+  },
+  {
+    "Phase": "integration",
+    "Project": "HVO.SkyMonitor.LogicHost.IntegrationTests",
+    "SourceRelativePath": "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/TestResults/c118b9ab-6f93-48e0-8a25-cf38c5e5b371/coverage.cobertura.xml",
+    "CanonicalSlot": "TestResults/integration/logichost",
+    "ConsoleLogSha256": "8eb30b249bd6fa6cf8872c614cd6f0a5e0ea9d24873d902706e82ff7bc71463d",
+    "TrxSha256": "589a8248fadd6746ad2a34c0f268dfb29049dc714c60f6c8ccc36bb074f14aec",
+    "CoverageSha256": "dc99a5d1647f33572c382b47cfd67c2433dcc49fdb062fc7c5ad951af20e27e6",
+    "Method": "Exact unique per-project attachment in the matching solution-phase console output; TRX collector href omits its GUID directory."
+  },
+  {
+    "Phase": "unit",
+    "Project": "HVO.SkyMonitor.CameraAgent.LogicHost.Tests",
+    "SourceRelativePath": "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/TestResults/33534344-b491-48d3-9304-cc033fe6b5eb/coverage.cobertura.xml",
+    "CanonicalSlot": "TestResults/unit/cameraagent-logichost",
+    "ConsoleLogSha256": "28c43cf2abd926dcdf438c7f6021cb20e403bdf9a90e4af19f742a6f91d9aaf2",
+    "TrxSha256": "a4e032164f2032f159b4721584872da6d36c908fbc71ba528589b4b518fdb684",
+    "CoverageSha256": "85964459152c87443fe32149a73bc90be4977aa8853c2b482e4dcae4da8cd298",
+    "Method": "Exact unique per-project attachment in the matching solution-phase console output; TRX collector href omits its GUID directory."
+  },
+  {
+    "Phase": "integration",
+    "Project": "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
+    "SourceRelativePath": "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/TestResults/f7ee12f1-d3a5-4cf0-8b17-098b7e1696ad/coverage.cobertura.xml",
+    "CanonicalSlot": "TestResults/integration/cameraagent-logichost",
+    "ConsoleLogSha256": "8eb30b249bd6fa6cf8872c614cd6f0a5e0ea9d24873d902706e82ff7bc71463d",
+    "TrxSha256": "d191458d5408fe4443bd9e772594fb33ed5c1931ef9af50092947c7d8830b0ef",
+    "CoverageSha256": "2b012c53d209c059baf074bd17b919722e1b9801d8e4055822a84ec890a8dc15",
+    "Method": "Exact unique per-project attachment in the matching solution-phase console output; TRX collector href omits its GUID directory."
+  }
+]

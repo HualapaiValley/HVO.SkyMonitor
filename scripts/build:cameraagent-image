@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Reproducible CameraAgent build from this checkout. Other arguments are buildx options.
+# --output is optional (defaults to a rewritten archive followed by docker load).
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+commit="$(git -C "$root" rev-parse HEAD)"
+output='type=docker'
+arguments=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --commit) commit="${2:?--commit requires a commit}"; shift 2 ;;
+        --output) output="${2:?--output requires an exporter}"; shift 2 ;;
+        --load | --push | --file | -f | --output=* | -o*)
+            echo 'Use --output type=docker, type=image,push=true or type=oci; the CameraAgent Dockerfile is fixed.' >&2
+            exit 64 ;;
+        *) arguments+=("$1"); shift ;;
+    esac
+done
+commit="$(git -C "$root" rev-parse --verify "${commit}^{commit}")"
+[[ "$commit" == "$(git -C "$root" rev-parse HEAD)" ]] || {
+    echo 'Check out --commit before building its image.' >&2; exit 64;
+}
+epoch="$(git -C "$root" show -s --format=%ct "$commit")"
+temporary=''
+trap '[[ -z "$temporary" ]] || rm -rf -- "$temporary"' EXIT
+load_archive=''
+[[ ",$output," != *,unpack=* ]] || { echo 'Unpacking is incompatible with timestamp rewriting.' >&2; exit 64; }
+case "$output" in
+    type=local,*) ;; # BuildKit applies SOURCE_DATE_EPOCH to local exports itself.
+    type=docker | type=docker,*)
+        if [[ ",$output," != *,dest=* ]]; then
+            temporary="$(mktemp -d)"
+            load_archive="$temporary/image.tar"
+            output+=",dest=$load_archive"
+        fi
+        output+=',rewrite-timestamp=true' ;;
+    type=oci,*) output+=',rewrite-timestamp=true' ;;
+    type=image | type=image,*) output+=',unpack=false,rewrite-timestamp=true' ;;
+    *) echo 'Unsupported image exporter.' >&2; exit 64 ;;
+esac
+docker buildx build "${arguments[@]}" --file "$root/src/HVO.SkyMonitor.CameraAgent/Dockerfile" \
+    --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "HVO_SOURCE_REVISION=$commit" \
+    --provenance=false --sbom=false --output "$output" "$root"
+if [[ -n "$load_archive" ]]; then
+    config="$(tar -xOf "$load_archive" manifest.json | jq -er 'if length == 1 then .[0].Config else empty end')"
+    config_digest="$(tar -xOf "$load_archive" "$config" | sha256sum)"
+    config_digest="sha256:${config_digest%% *}"
+    load_output="$(docker load --input "$load_archive")"
+    printf '%s\n' "$load_output"
+    loaded_reference="$(printf '%s\n' "$load_output" | sed -nE '/^Loaded image( ID)?: / { s/^Loaded image( ID)?: //; p; q; }')"
+    [[ -n "$loaded_reference" ]] || { echo 'Docker load did not report a loaded image reference.' >&2; exit 1; }
+    # Classic stores use the config digest; containerd stores use the manifest digest.
+    image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
+    printf 'image-id: %s\nconfig-digest: %s\n' "$image_id" "$config_digest"
+fi

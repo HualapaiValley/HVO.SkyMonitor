@@ -26,7 +26,14 @@ exit "${FAKE_EXIT:-0}"
 """
 
 FAKE_MV = """#!/usr/bin/env bash
-# With FAKE_MV_FAILS_STAGING set, fails to move the staging folder, as a full or read-only disk would; else moves.
+# Fail selected source moves, as a full or read-only disk would, and record recovery attempts.
+source="$1"
+if [[ "$source" == -- ]]; then source="$2"; fi
+if [[ -n "${FAKE_MV_LOG:-}" ]]; then printf '%s\\n' "$source" >> "$FAKE_MV_LOG"; fi
+if [[ -n "${FAKE_MV_FAILS_RESTORE:-}" && "$source" == *.old.* ]]; then
+  printf 'mv: cannot restore %s: stand-in failure\\n' "$source" >&2
+  exit 1
+fi
 if [[ -n "${FAKE_MV_FAILS_STAGING:-}" ]]; then
   for argument in "$@"; do
     case "$argument" in
@@ -59,10 +66,13 @@ class TerminalScreenshotsTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def run_script(self, *arguments, renders="", exit_code=0, staging_move_fails=False):
+    def run_script(self, *arguments, renders="", exit_code=0, staging_move_fails=False, restore_moves_fail=False):
         environment = dict(self.environment, FAKE_RENDERS=renders, FAKE_EXIT=str(exit_code))
         if staging_move_fails:
             environment["FAKE_MV_FAILS_STAGING"] = "1"
+        if restore_moves_fail:
+            environment["FAKE_MV_FAILS_RESTORE"] = "1"
+            environment["FAKE_MV_LOG"] = str(self.root / "moves.log")
         return subprocess.run(
             [str(self.root / "scripts" / "docs:terminal-screenshots"), *arguments],
             env=environment, capture_output=True, text=True, check=False)
@@ -97,6 +107,20 @@ class TerminalScreenshotsTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertEqual([], [path.name for path in self.target.parent.iterdir() if path.name != "terminal"],
                          "nothing is left beside the screenshots")
+
+    def test_failed_promotion_and_both_failed_restores_keep_the_retired_screenshots(self):
+        result = self.run_script(renders="install-80x24-1-camera", staging_move_fails=True, restore_moves_fail=True)
+        self.assertNotEqual(0, result.returncode)
+        moves = (self.root / "moves.log").read_text().splitlines()
+        self.assertEqual(1, sum(".staging." in source for source in moves))
+        self.assertEqual(2, sum(".old." in source for source in moves),
+                         "both the immediate and EXIT-trap restorations must have been attempted")
+        retired = list(self.target.parent.glob("terminal.old.*"))
+        self.assertEqual(1, len(retired), "the retired set must survive both failed restorations")
+        self.assertEqual("<svg>old</svg>\n", (retired[0] / "install-old.svg").read_text())
+        self.assertFalse(self.target.exists())
+        self.assertEqual([], list(self.target.parent.glob("terminal.staging.*")))
+        self.assertIn(f"The previous screenshots are retained at {retired[0]}.", result.stderr)
 
     def test_draw_draws_a_folder_in_place(self):
         folder = self.root / "renders"

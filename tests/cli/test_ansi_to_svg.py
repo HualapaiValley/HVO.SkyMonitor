@@ -39,6 +39,28 @@ class AnsiToSvgTests(unittest.TestCase):
         svg = draw("東́ x\n")
         self.assertIn("東́", texts(svg))
 
+    def test_wide_combining_marks_do_not_widen_narrow_clusters(self):
+        for cluster in ("a゙", "ｶ゙"):
+            with self.subTest(cluster=cluster):
+                rows = ansi_to_svg.parse(cluster + "!")
+                self.assertEqual([cluster, "!"], [cell and cell[0] for cell in rows[0]])
+                svg = draw(cluster + "\x1b[31m!")
+                following = next(element for element in svg.iter(f"{SVG}text") if element.text == "!")
+                self.assertEqual(ansi_to_svg.PADDING + ansi_to_svg.CELL_WIDTH, float(following.get("x")))
+
+    def test_class_zero_extenders_do_not_advance_the_column(self):
+        # Mn (including a wide mark), Me and Mc can have combining class zero. Supplementary variation selectors
+        # and emoji skin tones are also zero-width extenders in Terminal.Gui's Wcwidth 4.0.1 tables.
+        for mark in ("\u034f", "\u20dd", "\u0903", "\U00016fe4", "\U000e0100", "\U0001f3fd"):
+            with self.subTest(mark=f"U+{ord(mark):04X}"):
+                cluster = "a" + mark
+                self.assertFalse(ansi_to_svg.is_wide(cluster))
+                rows = ansi_to_svg.parse(cluster + "!")
+                self.assertEqual([cluster, "!"], [cell and cell[0] for cell in rows[0]])
+                svg = draw(cluster + "\x1b[31m!")
+                following = next(element for element in svg.iter(f"{SVG}text") if element.text == "!")
+                self.assertEqual(ansi_to_svg.PADDING + ansi_to_svg.CELL_WIDTH, float(following.get("x")))
+
     def test_escapes_that_draw_nothing_are_left_out(self):
         screen = "\x1b=\x1b>a\x1b7b\x1b8\x1b(Bc\x1b[?25l\x1b[2Jd\x07\x01\x7fe\x1b[12\n"
         svg = draw(screen)

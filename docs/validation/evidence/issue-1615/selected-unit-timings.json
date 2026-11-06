@@ -1,0 +1,195 @@
+{
+  "run_id": 40004104603,
+  "artifact": "development-v1-40004104603-1",
+  "tested_merge_sha": "c002bff2207cd08052d01961b244843be7b962a1",
+  "merge_parents": [
+    "758208bc412bc3f8abaa4badc92b2641d8e2b35d",
+    "7ed6a4796944179a2bd65e9be3fcd6c6a301497b"
+  ],
+  "tests": [
+    {
+      "testName": "PreviousReleaseStores_OpenedByThisRelease_StayReadableByThePreviousRelease",
+      "duration": "00:00:01.6517980",
+      "startTime": "2026-10-23T18:38:48.1501975+00:00",
+      "endTime": "2026-10-23T18:38:49.8020164+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"raw/journal/raw-ingress.db\",\"ALTER TABLE processing_nodes ADD COLUMN added_by_next_release TEXT;\")",
+      "duration": "00:00:01.3914954",
+      "startTime": "2026-10-23T18:38:49.8021414+00:00",
+      "endTime": "2026-10-23T18:38:51.1936666+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"identity/cameraagent_identity.db\",\"INSERT INTO \\\"__EFMigrationsHistory\\\" VALUES('29990101000000_AddedByNextRelease', '10.0.13');\")",
+      "duration": "00:00:01.2417151",
+      "startTime": "2026-10-23T18:38:59.9445619+00:00",
+      "endTime": "2026-10-23T18:39:01.1863051+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"archive/outbox/artifact-outbox.db\",\"CREATE INDEX ix_added_by_next_release ON artifact_outbox_records(record_id);\")",
+      "duration": "00:00:01.3636699",
+      "startTime": "2026-10-23T18:38:56.3340864+00:00",
+      "endTime": "2026-10-23T18:38:57.6977868+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"raw/journal/raw-ingress.db\",\"PRAGMA user_version = 99;\")",
+      "duration": "00:00:01.5660119",
+      "startTime": "2026-10-23T18:38:52.6351375+00:00",
+      "endTime": "2026-10-23T18:38:54.2011824+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"raw/.fleet/fleet-status.db\",\"UPDATE fleet_status_metadata SET schema_version = schema_version + 1;\")",
+      "duration": "00:00:01.1048231",
+      "startTime": "2026-10-23T18:38:58.8397056+00:00",
+      "endTime": "2026-10-23T18:38:59.9445544+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"raw/.fleet/fleet-status.db\",\"ALTER TABLE fleet_status_records ADD COLUMN added_by_next_release TEXT;\")",
+      "duration": "00:00:02.1326773",
+      "startTime": "2026-10-23T18:38:54.2011896+00:00",
+      "endTime": "2026-10-23T18:38:56.3338947+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "CurrentStores_AreThePreviousReleaseStoresPlusTheStoresThisReleaseAdds",
+      "duration": "00:00:00.9227066",
+      "startTime": "2026-10-23T18:38:47.2274523+00:00",
+      "endTime": "2026-10-23T18:38:48.1501883+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"identity/cameraagent_identity.db\",\"ALTER TABLE AspNetUsers ADD COLUMN added_by_next_release TEXT;\")",
+      "duration": "00:00:01.1418713",
+      "startTime": "2026-10-23T18:38:57.6977968+00:00",
+      "endTime": "2026-10-23T18:38:58.8396978+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "TheRuleRefusesAStoreThePreviousReleaseWouldReject (\"raw/journal/raw-ingress.db\",\"CREATE TABLE added_by_next_release(id INTEGER PRIMARY KEY);\")",
+      "duration": "00:00:01.4414237",
+      "startTime": "2026-10-23T18:38:51.1936750+00:00",
+      "endTime": "2026-10-23T18:38:52.6351275+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.CameraAgent.Tests.State.PreviousReleaseStoreReadabilityTests"
+    },
+    {
+      "testName": "a previous value the frozen release does not declare",
+      "duration": "00:00:00.0002901",
+      "startTime": "2026-10-23T18:36:46.7525894+00:00",
+      "endTime": "2026-10-23T18:36:46.7529075+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "SqliteStores_LeaveOutTheOrbitalElementsStore",
+      "duration": "00:00:00.0002959",
+      "startTime": "2026-10-23T18:36:49.4415400+00:00",
+      "endTime": "2026-10-23T18:36:49.4418631+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "VerifyAsync_RejectsASnapshotRecordedForAnotherOperationOrInstance",
+      "duration": "00:00:00.0425967",
+      "startTime": "2026-10-23T18:36:49.6644501+00:00",
+      "endTime": "2026-10-23T18:36:49.7070936+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "a label the installer does not compare",
+      "duration": "00:00:00.0057176",
+      "startTime": "2026-10-23T18:36:46.7468115+00:00",
+      "endTime": "2026-10-23T18:36:46.7525693+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "RestoreAsync_LeavesTheCalibrationFamiliesStoreUntouched",
+      "duration": "00:00:00.0692682",
+      "startTime": "2026-10-23T18:36:49.5951277+00:00",
+      "endTime": "2026-10-23T18:36:49.6644316+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "CreateAsync_CorruptStore_IsRefusedRatherThanSnapshotted",
+      "duration": "00:00:01.9305567",
+      "startTime": "2026-10-23T18:36:47.2429414+00:00",
+      "endTime": "2026-10-23T18:36:49.1736098+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "RestoreAsync_PutsEveryStoreBackExactlyAndIsRepeatable",
+      "duration": "00:00:00.2668312",
+      "startTime": "2026-10-23T18:36:49.1736397+00:00",
+      "endTime": "2026-10-23T18:36:49.4405136+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "an unchanged label",
+      "duration": "00:00:00.0013259",
+      "startTime": "2026-10-23T18:36:46.7453808+00:00",
+      "endTime": "2026-10-23T18:36:46.7467877+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "VerifyAsync_AcceptsASnapshotAnEarlierInstallerTookWithoutTheCalibrationFamiliesStore",
+      "duration": "00:00:00.0373270",
+      "startTime": "2026-10-23T18:36:49.5577513+00:00",
+      "endTime": "2026-10-23T18:36:49.5951116+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    },
+    {
+      "testName": "EveryDeclaredException_IsALabelChangeTheInstallerSnapshotsFor",
+      "duration": "00:00:00.0276050",
+      "startTime": "2026-10-23T18:36:46.7175750+00:00",
+      "endTime": "2026-10-23T18:36:46.7453373+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "a candidate value this release does not declare",
+      "duration": "00:00:00.0001349",
+      "startTime": "2026-10-23T18:36:46.7529224+00:00",
+      "endTime": "2026-10-23T18:36:46.7530787+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "AnExceptionWhoseLabelReallyChanges_IsAccepted",
+      "duration": "00:00:00.0002103",
+      "startTime": "2026-10-23T18:36:46.7530910+00:00",
+      "endTime": "2026-10-23T18:36:46.7533234+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentSnapshotRollbackExceptionTests"
+    },
+    {
+      "testName": "RestoreAsync_LeavesTheOrbitalElementsStoreUntouched",
+      "duration": "00:00:00.1158336",
+      "startTime": "2026-10-23T18:36:49.4418755+00:00",
+      "endTime": "2026-10-23T18:36:49.5577362+00:00",
+      "outcome": "Passed",
+      "class": "HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentStateSnapshotTests"
+    }
+  ]
+}

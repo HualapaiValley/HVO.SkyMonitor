@@ -386,6 +386,9 @@ internal sealed record LifecycleRequest : DeploymentCommand
 /// </summary>
 internal sealed record HostProductRootRequest(string ProductRoot, bool Json) : DeploymentCommand(Json)
 {
+    /// <summary>Re-records the current mount only if the trusted policy already names this exact, existing root.</summary>
+    public bool RepairMount { get; init; }
+
     /// <summary>
     /// The policy this command writes. Production always writes <see cref="HostPolicyLocation.Production"/> through
     /// <c>sudo</c>; an isolated test carries its own location on the request instead of redirecting process state.

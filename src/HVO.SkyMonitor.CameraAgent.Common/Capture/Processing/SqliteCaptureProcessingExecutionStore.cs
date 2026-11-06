@@ -1010,6 +1010,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                     reader.GetString(8), reader.GetString(9)));
             }
         }
+        var frozenPlans = ReadNormalizationPlans(await ReadExecutionFrozenPlanJsonAsync(
+            connection, null, executionId, cancellationToken).ConfigureAwait(false), nodeId: null)
+            .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
         foreach (var row in rows)
         {
             var attempts = new List<ProcessingGraphNodeAttemptState>();
@@ -1059,10 +1062,19 @@ internal sealed partial class SqliteCaptureProcessingStore
                 output.AvailabilityState,
                 output.AvailabilityReason,
                 published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)).ToArray();
+            frozenPlans.TryGetValue(row.NodeId, out var normalization);
+            var diagnostics = await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken)
+                .ConfigureAwait(false);
             nodes.Add(new ProcessingGraphExecutionNodeState(
                 row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
                 row.Started, row.Completed, inputs, attempts, outputs)
             {
+                NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
+                NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
+                    input.WindowPosition, input.CaptureId, input.ArtifactId, input.Gain, input.Disposition,
+                    input.ExclusionReason)).ToArray() ?? [],
+                MixedGainDiagnostics = diagnostics.Value,
+                MixedGainDiagnosticsUnavailableReason = diagnostics.Reason,
                 Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
                     row.DependenciesJson, ExecutionSerializerOptions)
                     ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),

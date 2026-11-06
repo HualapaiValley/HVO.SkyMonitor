@@ -20,6 +20,9 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
+          preflight
+          partial-prepare-cleanup
+          existing-down
           status
           cameraagent install
           cameraagent recover-owner
@@ -45,47 +48,85 @@ public sealed class ProgramOutputTests
     private const string InstallUsage = """
         Usage: hvo-sky-install cameraagent install [options]
 
-        Options:
-          --answers <value>
-          --config <value>
-          --instance-id <value>
-          --friendly-name <value>
-          --owner-email <value>
-          --bind-address <value>
-          --port <value>
-          --product-root <value>
-          --catalog-bundle <value>
-          --release <value>
-          --image-source <value>
-          --image-ref <value>
-          --image-archive <value>
-          --image-archive-sha256 <value>
-          --password-file <value>
-          --latitude <value>
-          --longitude <value>
-          --elevation <value>
-          --time-zone <value>
-          --replay-profile <value>
-          --cpus <value>
-          --memory <value>
-          --plan
-          --dry-run
-          --resume
-          --json
-          --generate-password
-          --acknowledge-plaintext-http
-          --no-download
-          -h, --help
+        Install a CameraAgent instance, or change an installed one's container limits.
 
-        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run. A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.
+        Options:
+          --answers <file>                 Read the install from a JSON answers file with "schemaVersion": 1.
+          --config <file>                  Deprecated: read the whole install from a JSON file. Use --answers.
+          --instance-id <uuid>             The instance's ID.
+          --friendly-name <name>           The instance's display name.
+          --owner-email <email>            The owner's email, also a sign-in name (default owner@cameraagent.local).
+          --bind-address <address>         The address CameraAgent listens on (default 127.0.0.1).
+          --port <port>                    The port CameraAgent listens on (default 5130).
+          --product-root <path>            The product root (default: this host's production product root).
+          --catalog-bundle <path>          The catalog bundle folder.
+          --release <folder>               The release folder, holding the release's release.json and SHA256SUMS.
+          --image-source <source>          With --release: archive (default) loads its offline image archive; registry pulls its image.
+          --image-ref <image>              An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's.
+          --image-archive <path>           With --image-ref: the image archive to load it from.
+          --image-archive-sha256 <sha256>  The image archive's SHA-256, required with --image-archive.
+          --password-file <path>           An owner-only file holding the owner's temporary password.
+          --latitude <degrees>             The camera's latitude (default 0).
+          --longitude <degrees>            The camera's longitude (default 0).
+          --elevation <metres>             The camera's elevation (default 0).
+          --time-zone <zone>               The camera's IANA time zone (default UTC).
+          --replay-profile <profile>       Where archived replay runs: in-process (default) or local-runner.
+          --cpus <count>                   The container's CPU limit.
+          --memory <size>                  The container's memory limit, such as 4g.
+          --plan                           Show what the command would change, and change nothing.
+          --dry-run                        The older name of --plan.
+          --resume                         Finish an interrupted run of the same command.
+          --json                           Write the result, or the error, as JSON.
+          --generate-password              Generate the owner's temporary password into an owner-only file.
+          --acknowledge-plaintext-http     Accept plain HTTP on a --bind-address other than loopback.
+          --no-download                    Pull nothing: the image must already be on this host or in an offline archive.
+          -h, --help                       Show this help.
+
+        A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with the other value options. A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.
         """;
 
     private const string HostSetProductRootUsage = """
         Usage: hvo-sky-install host set-product-root <absolute-path> [options]
 
+        Set the folder this host installs instances under, or repair its recorded mount.
+
         Options:
-          --json
-          -h, --help
+          --json      Write the result, or the error, as JSON.
+          --repair    Re-record the current mount, keeping the product root already named by the host policy.
+          -h, --help  Show this help.
+
+        With --repair, re-record the current mount of the same existing product root under the host-policy lock. Verify the backing filesystem first.
+        """;
+
+    private const string CameraAgentUsage = """
+        Usage: hvo-sky-install cameraagent <command> [options]
+
+        Commands:
+          cameraagent install            Install a CameraAgent instance, or change an installed one's container limits.
+          cameraagent recover-owner      Give an instance's owner a new temporary password.
+          cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
+          cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
+          cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
+          cameraagent rollback           Return an instance to the image it ran before its last upgrade.
+          cameraagent reinstall          Start an uninstalled instance again from the state it kept.
+          cameraagent uninstall          Remove an instance's containers, keeping its state for cameraagent reinstall.
+          cameraagent purge              Remove an uninstalled instance and everything it keeps.
+          cameraagent backup             Copy an instance, captures included, into one archive in <product-root>/backups.
+          cameraagent restore <archive>  Put an instance back, uninstalled, from a backup in <product-root>/backups.
+
+        Run 'hvo-sky-install cameraagent <command> --help' to list the options of one command.
+        """;
+
+    private const string CatalogUsage = """
+        Usage: hvo-sky-install catalog <command> [options]
+
+        Commands:
+          catalog install   Install a catalog bundle beside the catalogs already installed.
+          catalog select    Switch an instance to another installed catalog version.
+          catalog rollback  Return an instance to the catalog version it used before.
+          catalog gc        Remove an installed catalog version that no instance uses.
+
+        Run 'hvo-sky-install catalog <command> --help' to list the options of one command.
         """;
 
     [TestMethod]
@@ -173,8 +214,6 @@ public sealed class ProgramOutputTests
     [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
     [DataRow("", "Missing command.")]
-    [DataRow("cameraagent", "Missing command after 'cameraagent'.")]
-    [DataRow("catalog bogus", "Unknown command 'catalog bogus'.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
     [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]
     public async Task Main_NoKnownCommand_ReportsTheReasonAndTheGeneralUsageOnStandardError(string arguments, string reason)
@@ -185,6 +224,31 @@ public sealed class ProgramOutputTests
         Assert.AreEqual(2, exitCode);
         Assert.AreEqual(string.Empty, output);
         Assert.AreEqual(reason + Environment.NewLine + Text(GeneralUsage), error);
+    }
+
+    /// <summary>A group's help, and a mistake after a group's name, show the group's own commands (#1384).</summary>
+    [TestMethod]
+    [DataRow("cameraagent --help", 0, null, CameraAgentUsage)]
+    [DataRow("catalog -h", 0, null, CatalogUsage)]
+    [DataRow("cameraagent", 2, "Missing command after 'cameraagent'.", CameraAgentUsage)]
+    [DataRow("catalog bogus", 2, "Unknown command 'catalog bogus'.", CatalogUsage)]
+    public async Task Main_Group_PrintsItsOwnCommands(string arguments, int expected, string? reason, string usage)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(usage);
+        var (exitCode, output, error) = await RunCommandLineAsync(arguments);
+
+        Assert.AreEqual(expected, exitCode);
+        if (reason is null)
+        {
+            Assert.AreEqual(Text(usage), output);
+            Assert.AreEqual(string.Empty, error);
+        }
+        else
+        {
+            Assert.AreEqual(string.Empty, output);
+            Assert.AreEqual(reason + Environment.NewLine + Text(usage), error);
+        }
     }
 
     [TestMethod]
@@ -250,8 +314,8 @@ public sealed class ProgramOutputTests
         var (exitCode, output, _) = await RunCommandLineAsync("cameraagent upgrade --help");
 
         Assert.AreEqual(0, exitCode);
-        StringAssert.Contains(output, "  --plan" + Environment.NewLine, StringComparison.Ordinal);
-        StringAssert.Contains(output, "--migration-backward-compatible is deprecated and has no effect.", StringComparison.Ordinal);
+        StringAssert.Contains(output, "  --plan                           Show what the command would change, and change nothing." + Environment.NewLine, StringComparison.Ordinal);
+        StringAssert.Contains(output, "  --migration-backward-compatible  Deprecated, and has no effect." + Environment.NewLine, StringComparison.Ordinal);
         StringAssert.Contains(output, "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.", StringComparison.Ordinal);
     }
 

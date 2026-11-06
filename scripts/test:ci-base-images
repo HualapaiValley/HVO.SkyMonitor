@@ -102,6 +102,223 @@ FROM build AS final
         self.dockerfile("Dockerfile", "# no build stages\n")
         self.check("no FROM instructions")
 
+    def test_control_characters_are_escaped_and_sdk_is_strict(self):
+        self.dockerfile("bad\n::error title=forged/Dockerfile", "FROM unpinned\x1b]0;title\x07\n")
+        result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(line.startswith("::") for line in result.stderr.splitlines()))
+        self.assertNotIn("\x1b", result.stderr)
+        (self.root / "global.json").write_text(json.dumps({"sdk": {"version": SDK + "\n::error forged"}}))
+        self.check("invalid stable SDK version")
+
+    def test_registry_spelling_cannot_hide_sdk_mismatch(self):
+        self.dockerfile("Dockerfile", f"FROM MCR.MICROSOFT.COM:443/dotnet/sdk:wrong@sha256:{A}\n")
+        self.check("SDK tag must equal global.json")
+
+    def test_docker_hub_spelling_cannot_hide_digest_conflict(self):
+        for first, second in (("ubuntu:24.04", "docker.io/library/ubuntu:24.04"),
+                              ("org/image:1", "DOCKER.IO:443/org/image:1")):
+            with self.subTest(first=first):
+                self.dockerfile("Dockerfile", f"FROM {first}@sha256:{A}\nFROM {second}@sha256:{B}\n")
+                self.check("conflicting digests")
+
+    def test_scratch_and_digest_only_references(self):
+        self.dockerfile("Dockerfile", f"FROM scratch AS empty\nFROM ubuntu@sha256:{A}\nFROM ubuntu@sha256:{B}\n")
+        self.check()
+
+    def test_conflict_names_first_location(self):
+        self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\nFROM ubuntu:24.04@sha256:{A}\nFROM ubuntu:24.04@sha256:{B}\n")
+        self.check("first seen at Dockerfile:1")
+
+    def test_buildkit_continuation_grammar(self):
+        for suffix in ("\\\u00a0", "\\\f", "\\\\"):
+            with self.subTest(suffix=repr(suffix)):
+                self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A} AS base\nRUN echo hello {suffix}\nFROM unpinned\n")
+                self.check("FROM must be pinned")
+        self.dockerfile("Dockerfile", f"FROM \\ \t\r\n ubuntu:24.04@sha256:{A}\r\n")
+        self.check()
+
+    def test_heredoc_payload_is_not_an_instruction(self):
+        for instruction in ("RUN", "COPY", "ADD", "ONBUILD RUN"):
+            for marker in ("EOF", "'EOF'", '"EOF"', 'E"O"F', r"E\OF"):
+                with self.subTest(instruction=instruction, marker=marker):
+                    destination = " /payload" if instruction in ("COPY", "ADD") else ""
+                    self.dockerfile("Dockerfile", "FROM scratch\n"
+                                    f"{instruction} <<{marker}{destination}\n"
+                                    "FROM unpinned\n# escape=`\nFR0M payload\\\n\nEOF\n")
+                    self.check()
+
+    def test_multiple_heredocs_tabs_crlf_and_later_from_location(self):
+        self.dockerfile("Dockerfile", "FROM scratch\r\nRUN cat 3<<'FIRST' <<-SECOND\r\n"
+                        "FROM payload-one\r\nFIRST\r\n\tFROM payload-two\r\n\tSECOND\r\n"
+                        "FROM unpinned\r\n")
+        self.check("Dockerfile:7: FROM must be pinned")
+
+    def test_heredoc_continuation_and_empty_body(self):
+        self.dockerfile("Dockerfile", "FROM scratch\nRUN <<E\\\nOF\nEOF\n"
+                        "COPY \\\n <<-END /payload\n\tFROM payload\n\tEND\n")
+        self.check()
+
+    def test_payload_stage_alias_cannot_exempt_a_real_from(self):
+        self.dockerfile("Dockerfile", "FROM scratch\nRUN <<EOF\n"
+                        "FROM scratch AS imaginary\nEOF\nFROM imaginary\n")
+        self.check("Dockerfile:5: FROM must be pinned")
+
+    def test_heredoc_terminators_are_exact(self):
+        for near_miss in (" EOF", "EOF ", "\tEOF", "EOF\\", "# EOF"):
+            with self.subTest(near_miss=repr(near_miss)):
+                self.dockerfile("Dockerfile", "FROM scratch\nRUN <<EOF\n"
+                                f"{near_miss}\nFROM payload\nEOF\nFROM unpinned\n")
+                self.check("Dockerfile:6: FROM must be pinned")
+
+    def test_unterminated_heredoc_fails_at_opener(self):
+        for opener in ("RUN <<EOF", "COPY <<'EOF' /payload", "RUN <<A <<B"):
+            with self.subTest(opener=opener):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{opener}\nFROM payload\nA\n")
+                self.check("Dockerfile:2: unterminated heredoc")
+
+    def test_quoted_json_and_ineligible_heredoc_text_cannot_hide_from(self):
+        for line in ('RUN echo "<<EOF"', r"RUN echo \<<EOF", 'RUN ["echo", "<<EOF"]',
+                     'COPY ["<<EOF", "/payload"]', "ENV TEXT=<<EOF", "RUN cat<<EOF"):
+            with self.subTest(line=line):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\n")
+                self.check("Dockerfile:3: FROM must be pinned")
+
+    def test_malformed_or_unsupported_heredoc_fails_safely(self):
+        for line in ("RUN <<'EOF", "RUN <<", "RUN <<<EOF", "RUN <<${END:-EOF}",
+                     "RUN echo ${X:- <<EOF}", "ONBUILD onbuild RUN <<EOF"):
+            with self.subTest(line=line):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{line}\nFROM unpinned\nEOF\n")
+                self.check("Dockerfile:2:")
+
+    def test_rejected_literal_headers_keep_opener_and_safe_diagnostics(self):
+        for header in ("RUN <<'$sensitive-marker\x1b\x07'",
+                       r"RUN <<\`sensitive-marker" + "\x1b\x07",
+                       "RUN echo '${sensitive-marker\x1b\x07}' <<EOF"):
+            with self.subTest(header=repr(header)):
+                self.dockerfile("bad\n::error title=forged/Dockerfile",
+                                f"FROM scratch\n\\\n{header}\nFROM unpinned\n")
+                result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Dockerfile:2: unsupported", result.stderr)
+                self.assertNotIn("sensitive-marker", result.stderr)
+                self.assertNotIn("\x1b", result.stderr)
+                self.assertNotIn("\x07", result.stderr)
+                self.assertFalse(any(line.startswith("::") for line in result.stderr.splitlines()))
+
+    def test_F1_bare_chomp_operator_cannot_hide_real_from(self):
+        for opener in ("RUN cat <<- EOF", "RUN cat <<-", "RUN cat 3<<- EOF"):
+            with self.subTest(opener=opener):
+                self.dockerfile("Dockerfile", f"FROM scratch\n{opener}\n"
+                                "FROM unpinned\n-\nFROM scratch\n")
+                self.check("Dockerfile:2: unsupported heredoc syntax")
+
+    def test_continuation_retains_first_physical_source_line(self):
+        self.dockerfile("Dockerfile", "FROM scratch\n\\\nRUN <<EOF\nFROM payload\n")
+        self.check("Dockerfile:2: unterminated heredoc")
+        self.dockerfile("Dockerfile", "FROM scratch\n\\\n")
+        self.check("Dockerfile:2: unfinished continuation")
+
+    def test_independent_buildkit_parser_fixtures(self):
+        guard = runpy.run_path(str(CHECK))
+        parse = guard["logical_lines"]
+        cases = json.loads((ROOT / "tests/fixtures/ci-base-images-buildkit/cases.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                self.dockerfile("Dockerfile", case["dockerfile"])
+                if "guard_error" in case:
+                    with self.assertRaises(guard["DockerfileSyntaxError"]) as caught:
+                        list(parse(self.root / "Dockerfile"))
+                    self.assertEqual(caught.exception.line, 2)
+                    self.assertEqual(str(caught.exception), case["guard_error"])
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                    # Both a real later FROM and a missing terminator must fail
+                    # at the unsupported opener, before consuming any body.
+                    prefix, separator, _ = case["dockerfile"].rpartition("FROM scratch\n")
+                    self.assertTrue(separator)
+                    self.dockerfile("Dockerfile", prefix + "FROM unpinned\n")
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                    self.dockerfile("Dockerfile", "\n".join(case["dockerfile"].splitlines()[:2])
+                                    + "\nFROM unpinned\n")
+                    self.check(f"Dockerfile:2: {case['guard_error']}")
+                elif case["instructions"] is None:
+                    with self.assertRaisesRegex(ValueError, "unterminated heredoc"):
+                        list(parse(self.root / "Dockerfile"))
+                else:
+                    actual = [[number, line.split()[0].upper()]
+                              for number, line in parse(self.root / "Dockerfile")]
+                    self.assertEqual(actual, case["instructions"])
+
+    def test_runtime_deps_major_upgrade_is_ignored(self):
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        self.assertRegex(config, r'dependency-name: "dotnet/runtime-deps"\n        update-types:\n          - "version-update:semver-major"')
+
+    def test_devcontainer_patch_minor_and_digest_updates_are_allowed(self):
+        for tag in ("3.0.10-ubuntu24.04", "3.0.11-ubuntu24.04", "3.1.0-ubuntu24.04"):
+            for digest in (A, B):
+                with self.subTest(tag=tag, digest=digest):
+                    self.dockerfile(".devcontainer/Dockerfile",
+                                    f"FROM mcr.microsoft.com/devcontainers/base:{tag}@sha256:{digest}\n")
+                    self.check()
+
+    def test_devcontainer_major_distribution_and_unversioned_tags_are_rejected(self):
+        for tag in ("4.0.0-ubuntu24.04", "2.0.0-ubuntu24.04", "3.0.11-ubuntu22.04",
+                    "3.0.11-ubuntu26.04", "3.0.11-ubuntu24.10", "3.0.11-debian12",
+                    "3.0.11-preview-ubuntu24.04", "3-ubuntu24.04", "ubuntu24.04", "latest"):
+            with self.subTest(tag=tag):
+                self.dockerfile(".devcontainer/Dockerfile",
+                                f"FROM mcr.microsoft.com/devcontainers/base:{tag}@sha256:{A}\n")
+                self.check("devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag")
+
+    def test_devcontainer_normalized_registry_and_arg_cannot_bypass_policy(self):
+        self.dockerfile("Dockerfile", "ARG BASE=MCR.MICROSOFT.COM:443/devcontainers/base:3.1.0-ubuntu26.04"
+                        f"@sha256:{A}\nFROM $BASE\n")
+        self.check("devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag")
+
+    def test_devcontainer_digest_only_cannot_hide_distribution(self):
+        self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com/devcontainers/base@sha256:{A}\n")
+        self.check("devcontainers/base must use a stable 3.x.y-ubuntu24.04 tag")
+
+    def test_devcontainer_quoted_and_escaped_args_fail_closed(self):
+        self.dockerfile("Dockerfile", f'ARG DESCRIPTION="ordinary non-image text"\n'
+                        f'FROM mcr.microsoft.com/devcontainers/base:3.1.0-ubuntu24.04@sha256:{A}\n')
+        self.check()
+        for default in ('"mcr.microsoft.com/devcontainers/base"', "'mcr.microsoft.com/devcontainers/base'",
+                        r'mcr\.microsoft.com/devcontainers/base'):
+            for tag in ("3.0.10-ubuntu22.04", "4.0.0-ubuntu24.04", "3.1.0-ubuntu24.04"):
+                with self.subTest(default=default, tag=tag):
+                    self.dockerfile("Dockerfile", f"ARG IMAGE={default}\nFROM ${{IMAGE}}:{tag}@sha256:{A}\n")
+                    self.check("unsupported quoted or escaped ARG default")
+
+    def test_devcontainer_zero_padded_default_port_cannot_bypass_policy(self):
+        for port in ("0443", "000443"):
+            for tag, error in (("3.0.11-ubuntu24.04", None), ("3.1.0-ubuntu24.04", None),
+                               ("3.0.11-ubuntu22.04", "devcontainers/base must use"),
+                               ("4.0.0-ubuntu24.04", "devcontainers/base must use")):
+                with self.subTest(port=port, tag=tag):
+                    self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com:{port}/devcontainers/base:{tag}@sha256:{A}\n")
+                    self.check(error)
+
+    def test_private_registries_do_not_become_docker_hub_namespaces(self):
+        for host in ("registry", "registry.example", "localhost"):
+            with self.subTest(host=host):
+                self.dockerfile("Dockerfile", f"FROM {host}:0443/image:1@sha256:{A}\n"
+                                f"FROM docker.io/{host}/image:1@sha256:{B}\n")
+                self.check()
+
+    def test_equivalent_private_registry_ports_still_share_digest_identity(self):
+        self.dockerfile("Dockerfile", f"FROM registry:0443/image:1@sha256:{A}\n"
+                        f"FROM registry:443/image:1@sha256:{B}\n")
+        self.check("conflicting digests")
+
+    def test_devcontainer_dependabot_ignores_major_but_keeps_minor_patch(self):
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        rule = re.search(r'      - dependency-name: "devcontainers/base"\n((?:        [^\n]*\n)+)', config)
+        self.assertIsNotNone(rule, "devcontainer major upgrades must be ignored")
+        self.assertIn('"version-update:semver-major"', rule[1])
+        self.assertNotIn('"version-update:semver-minor"', rule[1])
+        self.assertNotIn('"version-update:semver-patch"', rule[1])
+
     def test_real_repository_and_dependabot_coverage(self):
         result = subprocess.run([CHECK], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

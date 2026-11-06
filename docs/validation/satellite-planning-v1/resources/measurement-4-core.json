@@ -1,0 +1,210 @@
+{
+  "schema": "hvo-local-planning-warm-resource-v1",
+  "mode": "core",
+  "startedMeaning": "Two warmups per case, then five paired-policy samples; each process runs one mode.",
+  "utc": "2026-10-20T04:13:46.6469023+00:00",
+  "runtimeVersion": "10.0.13",
+  "processors": 8,
+  "serverGc": false,
+  "inputs": [
+    {
+      "name": "iss",
+      "snapshot": "93394726FB5E5320162A97AE5AC2BC16EACBE683624C348D243C25E0E96E711F",
+      "earthOrientationSha256": "A11AD9627063DC10FA59FE25B9F9C07F0BACF81EA65F9405F40E4055DAA42E8B",
+      "leapSecondsSha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433",
+      "canonicalSha256": "616D7F542DB1FCA1734597E1CFB58366E7E2711B73EB99F59E6FDFA5EB4AE471",
+      "rigProfileHashSha256": "DD223E200CD1C936F6345A56F72358E1B6F1809E44BD679F40988096E8E33E9E",
+      "interval": {
+        "startUtc": "2026-10-20T12:55:00+00:00",
+        "endUtc": "2026-10-20T13:55:00+00:00"
+      },
+      "wanted": [
+        "25544"
+      ]
+    },
+    {
+      "name": "starlinks",
+      "snapshot": "4EA272750551B4B67427DFDD0519BC0E2FA4A0ED6D6392BADF88ACDE762374DB",
+      "earthOrientationSha256": "A11AD9627063DC10FA59FE25B9F9C07F0BACF81EA65F9405F40E4055DAA42E8B",
+      "leapSecondsSha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433",
+      "canonicalSha256": "645BC1161B6424D3550BC11F3C50B8E73830365AED90B0BC57EA9C6D8CF9C6DB",
+      "rigProfileHashSha256": "DD223E200CD1C936F6345A56F72358E1B6F1809E44BD679F40988096E8E33E9E",
+      "interval": {
+        "startUtc": "2026-10-20T03:55:00+00:00",
+        "endUtc": "2026-10-20T04:55:00+00:00"
+      },
+      "wanted": [
+        "56838",
+        "65283"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "name": "iss",
+      "mode": "core",
+      "iteration": 0,
+      "elapsedMilliseconds": 40.2842,
+      "cpuMilliseconds": 48.966,
+      "allocatedBytes": 31686808,
+      "workingBeforeBytes": 84643840,
+      "workingAfterBytes": 85180416,
+      "processPeakWorkingSetBytes": 85295104,
+      "snapshotReadCalls": 0,
+      "hash": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "samples": 663,
+      "evaluations": 6310
+    },
+    {
+      "name": "iss",
+      "mode": "core",
+      "iteration": 1,
+      "elapsedMilliseconds": 42.264,
+      "cpuMilliseconds": 49.518,
+      "allocatedBytes": 31682144,
+      "workingBeforeBytes": 85184512,
+      "workingAfterBytes": 85839872,
+      "processPeakWorkingSetBytes": 85839872,
+      "snapshotReadCalls": 0,
+      "hash": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "samples": 663,
+      "evaluations": 6310
+    },
+    {
+      "name": "iss",
+      "mode": "core",
+      "iteration": 2,
+      "elapsedMilliseconds": 39.3987,
+      "cpuMilliseconds": 48.759,
+      "allocatedBytes": 31685176,
+      "workingBeforeBytes": 85839872,
+      "workingAfterBytes": 85315584,
+      "processPeakWorkingSetBytes": 85737472,
+      "snapshotReadCalls": 0,
+      "hash": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "samples": 663,
+      "evaluations": 6310
+    },
+    {
+      "name": "iss",
+      "mode": "core",
+      "iteration": 3,
+      "elapsedMilliseconds": 33.4967,
+      "cpuMilliseconds": 42.737,
+      "allocatedBytes": 31686584,
+      "workingBeforeBytes": 85315584,
+      "workingAfterBytes": 84541440,
+      "processPeakWorkingSetBytes": 85737472,
+      "snapshotReadCalls": 0,
+      "hash": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "samples": 663,
+      "evaluations": 6310
+    },
+    {
+      "name": "iss",
+      "mode": "core",
+      "iteration": 4,
+      "elapsedMilliseconds": 39.3292,
+      "cpuMilliseconds": 46.567,
+      "allocatedBytes": 31688696,
+      "workingBeforeBytes": 84541440,
+      "workingAfterBytes": 84529152,
+      "processPeakWorkingSetBytes": 85737472,
+      "snapshotReadCalls": 0,
+      "hash": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "samples": 663,
+      "evaluations": 6310
+    },
+    {
+      "name": "starlinks",
+      "mode": "core",
+      "iteration": 0,
+      "elapsedMilliseconds": 55.6888,
+      "cpuMilliseconds": 59.81,
+      "allocatedBytes": 61222672,
+      "workingBeforeBytes": 85204992,
+      "workingAfterBytes": 85069824,
+      "processPeakWorkingSetBytes": 85823488,
+      "snapshotReadCalls": 0,
+      "hash": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "samples": 1288,
+      "evaluations": 12102
+    },
+    {
+      "name": "starlinks",
+      "mode": "core",
+      "iteration": 1,
+      "elapsedMilliseconds": 60.6129,
+      "cpuMilliseconds": 67.044,
+      "allocatedBytes": 61230560,
+      "workingBeforeBytes": 85069824,
+      "workingAfterBytes": 85200896,
+      "processPeakWorkingSetBytes": 85823488,
+      "snapshotReadCalls": 0,
+      "hash": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "samples": 1288,
+      "evaluations": 12102
+    },
+    {
+      "name": "starlinks",
+      "mode": "core",
+      "iteration": 2,
+      "elapsedMilliseconds": 58.4299,
+      "cpuMilliseconds": 65.528,
+      "allocatedBytes": 61230984,
+      "workingBeforeBytes": 85200896,
+      "workingAfterBytes": 86368256,
+      "processPeakWorkingSetBytes": 86368256,
+      "snapshotReadCalls": 0,
+      "hash": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "samples": 1288,
+      "evaluations": 12102
+    },
+    {
+      "name": "starlinks",
+      "mode": "core",
+      "iteration": 3,
+      "elapsedMilliseconds": 54.618,
+      "cpuMilliseconds": 64.521,
+      "allocatedBytes": 61223480,
+      "workingBeforeBytes": 86368256,
+      "workingAfterBytes": 86028288,
+      "processPeakWorkingSetBytes": 86028288,
+      "snapshotReadCalls": 0,
+      "hash": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "samples": 1288,
+      "evaluations": 12102
+    },
+    {
+      "name": "starlinks",
+      "mode": "core",
+      "iteration": 4,
+      "elapsedMilliseconds": 55.3127,
+      "cpuMilliseconds": 65.07,
+      "allocatedBytes": 61217640,
+      "workingBeforeBytes": 86028288,
+      "workingAfterBytes": 86233088,
+      "processPeakWorkingSetBytes": 86233088,
+      "snapshotReadCalls": 0,
+      "hash": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "samples": 1288,
+      "evaluations": 12102
+    }
+  ],
+  "limitations": [
+    "Warm immutable in-memory snapshot/time adapters, empty celestial catalog and nominal reduced rig only; no #528 reader I/O or source parsing in the timed boundary.",
+    "Core search plus all selected arcs is the baseline; facade adds authoritative context/source verification, single-flight admission and original-session retention.",
+    "Process-wide allocations include async work. CPU granularity and peak RSS do not establish statistical equivalence or isolate per-query retained memory.",
+    "No Blazor rendering/auth/HTTP/capture pipeline cost, live full-population result or five-second qualification."
+  ]
+}

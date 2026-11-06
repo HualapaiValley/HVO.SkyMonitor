@@ -1,0 +1,95 @@
+@using HVO.SkyMonitor.AgentCore
+@using HVO.SkyMonitor.LogicHost.Data
+<section class="camera-archive" @ref="root" aria-labelledby="archive-heading" aria-busy="@(loading ? "true" : "false")" data-generation="@generation">
+    <div class="archive-toolbar">
+        <h2 id="archive-heading" tabindex="-1">Camera archive</h2>
+        <button type="button" class="btn btn-outline-info" @onclick="RefreshAsync">Refresh archive</button>
+    </div>
+    <p role="status">@message</p>
+    @if (CaptureId is not null)
+    {
+        <a class="archive-back" href="@BackUrl">Back to archive page</a>
+    }
+    else
+    {
+        <form action="@ArchivePath" method="get" class="archive-filters" data-enhance>
+            <label>Captured from (UTC)<input name="from" value="@From" type="datetime-local" /></label>
+            <label>Captured until (UTC, exclusive)<input name="until" value="@Until" type="datetime-local" /></label>
+            <label>Product<select name="product" value="@Product"><option value="">Any product</option>@foreach (var value in Enum.GetValues<FrameArtifactRole>()) { <option value="@value">@value</option> }</select></label>
+            <label>Recorded object state<select name="objectState" value="@ObjectState"><option value="">Any object state</option>@foreach (var value in Enum.GetValues<CentralArtifactObjectState>()) { <option value="@value">@value</option> }</select></label>
+            <label>Reconstruction state<select name="reconstruction" value="@Reconstruction"><option value="">Any reconstruction state</option>@foreach (var value in Enum.GetValues<CentralReconstructionState>()) { <option value="@value">@value</option> }</select></label>
+            <label>Exact capture / frame UUID or sequence<input name="identity" value="@Identity" maxlength="100" /></label>
+            <button class="btn btn-info" type="submit">Apply archive filters</button>
+            <a href="@ArchivePath">Clear filters</a>
+        </form>
+        <p class="small">Times use capture time, independently of receipt and fleet health. Product and state filters match the same artifact. Identity is an exact lookup.</p>
+        @if (!loading && page is not null)
+        {
+            <ol class="archive-items" aria-label="Retained captures">
+                @foreach (var item in page.Items)
+                {
+                    <li @key="item.CaptureId">
+                        <a id="@($"archive-capture-{item.CaptureId:D}")" data-capture="@item.CaptureId" href="@PageUrl(Cursor, item.CaptureId, item.CaptureId.ToString("D"))">
+                            <strong>@item.CapturedAtUtc.ToString("u")</strong> · sequence @(item.CaptureSequence?.ToString() ?? "unknown")
+                            <span>Capture @item.CaptureId</span>
+                            <span>Installation @item.InstallationId</span>
+                            <span>First received @item.FirstReceivedAtUtc.ToString("u")</span>
+                        </a>
+                    </li>
+                }
+            </ol>
+            <nav class="archive-pagination" aria-label="Archive pages">
+                @if (Cursor is not null) { <a href="@PageUrl(null)">First archive page</a> }
+                @if (page.NextCursor is not null) { <a href="@PageUrl(page.NextCursor)">Next archive page</a> }
+            </nav>
+        }
+        else if (!loading)
+        {
+            <a href="@PageUrl(null)">Start from the first page</a>
+        }
+    }
+    @if (detail is { } exact)
+    {
+        <p class="archive-exact">Central capture @exact.Capture.CaptureId · captured @exact.Capture.CapturedAtUtc.ToString("u") · first received @exact.Capture.FirstReceivedAtUtc.ToString("u")</p>
+        <CascadingValue Value="detail">
+            <ExactCaptureViewer @key="generation" CaptureId="exact.Capture.CaptureId" ReadOnly="true" AllowExactPreviewFallback="true" HeadingLevel="3" />
+        </CascadingValue>
+        <details class="archive-artifacts">
+            <summary>Retained artifact metadata and downloads</summary>
+            @if (exact.ArtifactsNextCursor is not null) { <p role="status">Only the first 50 artifact records are shown. More artifact metadata is retained; this view does not load every artifact.</p> }
+            @foreach (var artifact in exact.Artifacts)
+            {
+                <article>
+                    <h3>@artifact.Role · @(artifact.Variant ?? "default")</h3>
+                    <p>@artifact.ObjectState / @artifact.ReconstructionState · @artifact.StateReasonCode</p>
+                    <p>@artifact.ByteLength bytes · @artifact.MediaType · checksum @artifact.ChecksumSha256</p>
+                    @if (artifact.ObjectState == CentralArtifactObjectState.Available && artifact.ReconstructionState == CentralReconstructionState.Complete)
+                    {
+                        @if (artifact.Role == FrameArtifactRole.Raw)
+                        {
+                            <button type="button" class="btn btn-outline-light" @onclick="() => DownloadRawAsync(artifact.ContentPath)">Authorize raw download</button>
+                        }
+                        else { <a href="@artifact.ContentPath">Download artifact</a> }
+                    }
+                    else { <p>Content unavailable; retained metadata does not imply available bytes.</p> }
+                </article>
+            }
+        </details>
+        @if (trace is null)
+        {
+            <button type="button" class="btn btn-outline-info" disabled="@traceLoading" @onclick="LoadTraceAsync">Load bounded capture trace</button>
+        }
+        else
+        {
+            <section class="archive-trace" aria-label="Bounded capture trace">
+                <h3>Capture trace</h3>
+                @if (trace.TraceIsTruncated) { <p role="status">Trace truncated: more evidence is retained than this bounded view can display.</p> }
+                <h4>Ordered artifact lineage</h4>
+                <ul>@foreach (var source in trace.ArtifactLineage) { <li>Output @source.ArtifactId · order @source.Ordinal · source @(source.SourceArtifactId?.ToString() ?? "Private or unresolved reference") · checksum @source.ResolvedChecksumSha256</li> }</ul>
+                <h4>Central processing</h4>
+                <ul>@foreach (var job in trace.Jobs) { <li>@job.JobId · @job.Status · @job.RecipeName @job.TargetRecipeVersion · @job.StateReasonCode · @job.Inputs.Count bounded inputs · @job.Attempts.Count bounded attempts</li> }</ul>
+                <p>@trace.EnvironmentalEvidence.Count bounded environmental records; @trace.Events.Count bounded events.</p>
+            </section>
+        }
+    }
+</section>

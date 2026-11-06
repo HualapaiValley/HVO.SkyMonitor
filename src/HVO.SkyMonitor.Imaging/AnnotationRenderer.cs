@@ -65,7 +65,9 @@ public sealed record ProjectedAnnotationObject(
     bool DrawMark = true,
     bool DrawLabel = true,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<ResolvedFootprintPart>? FootprintParts = null);
+    IReadOnlyList<ResolvedFootprintPart>? FootprintParts = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool ExpectedPosition = false);
 
 /// <summary>An immutable line segment whose endpoints were resolved from the same projected scene.</summary>
 public sealed record ProjectedAnnotationSegment(string ConstellationId, PixelPoint FromPixel, PixelPoint ToPixel);
@@ -101,6 +103,7 @@ public sealed record AnnotationResult(
 public static class AnnotationRenderer
 {
     public const string AlgorithmVersion = "projected-annotation-raster-v4-resolved-footprints";
+    public const string ExpectedPositionAlgorithmVersion = "projected-annotation-raster-v5-bounded-expected-labels";
 
     /// <summary>
     /// The version recorded for inputs that carry no resolved footprint or elliptical image circle. The v4 raster
@@ -112,9 +115,12 @@ public static class AnnotationRenderer
     /// <summary>Selects the version describing how the given inputs are drawn.</summary>
     public static string AlgorithmVersionFor(
         IReadOnlyList<ProjectedAnnotationObject> objects,
-        ProjectedAnnotationOverlay? projectionOverlay)
+        ProjectedAnnotationOverlay? projectionOverlay,
+        bool expectedPositionDiagnostics = false)
     {
         ArgumentNullException.ThrowIfNull(objects);
+        if (expectedPositionDiagnostics || objects.Any(static item => item.ExpectedPosition))
+            return ExpectedPositionAlgorithmVersion;
         return projectionOverlay?.ImageCircleRadiusY is not null ||
             objects.Any(static item => item.FootprintParts is not null)
             ? AlgorithmVersion
@@ -366,9 +372,19 @@ public static class AnnotationRenderer
 
             if (options.DrawLabels && item.DrawLabel && options.MaximumLabelCharacters > 0)
             {
-                DrawLabel(pixels, width, height, x + clearance + 2, y - 3 * options.LabelScale,
-                    item.DisplayName.AsSpan(0, Math.Min(item.DisplayName.Length, options.MaximumLabelCharacters)),
-                    options.MarkValue, options.LabelScale);
+                var label = item.ExpectedPosition
+                    ? AnnotationLabelFormatter.Format(item, options.MaximumLabelCharacters)
+                    : item.DisplayName;
+                if (label is null) continue;
+                var labelX = x + clearance + 2;
+                var labelY = y - 3 * options.LabelScale;
+                // A clipped diagnostic suffix could leave an ordinary-looking name. Require its entire bitmap
+                // cell extent; ordinary labels retain their existing clipping and allocation-free span path.
+                if (item.ExpectedPosition && (labelX < 0 || labelY < 0 ||
+                    labelX + ((label.Length - 1) * 6 + 5) * options.LabelScale > width ||
+                    labelY + 7 * options.LabelScale > height)) continue;
+                DrawLabel(pixels, width, height, labelX, labelY,
+                    label.AsSpan(0, Math.Min(label.Length, options.MaximumLabelCharacters)), options.MarkValue, options.LabelScale);
             }
         }
 

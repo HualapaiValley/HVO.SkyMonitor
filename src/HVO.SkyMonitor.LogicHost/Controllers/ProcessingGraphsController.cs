@@ -30,6 +30,27 @@ internal sealed class ProcessingGraphsController(
         return Ok(await catalog.ListRevisionsAsync(take, cancellationToken).ConfigureAwait(false));
     }
 
+    [HttpGet("revision-summaries")]
+    [Authorize(Policy = AuthorizationPolicyNames.ApiKeyRead)]
+    public async Task<ActionResult<CentralProcessingGraphRevisionPage>> ListRevisionSummariesAsync(
+        [FromQuery] int take = 50,
+        [FromQuery] string? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (take is < 1 or > 50)
+        {
+            return BadRequest(new ProblemDetails { Title = "take must be between 1 and 50." });
+        }
+        try
+        {
+            return Ok(await catalog.ListRevisionSummariesAsync(take, cursor, cancellationToken).ConfigureAwait(false));
+        }
+        catch (ArgumentException)
+        {
+            return BadRequest(new ProblemDetails { Title = "The revision continuation is invalid." });
+        }
+    }
+
     [HttpGet("revisions/{revisionId:guid}")]
     [Authorize(Policy = AuthorizationPolicyNames.ApiKeyRead)]
     public async Task<ActionResult<CentralProcessingGraphRevisionView>> GetRevisionAsync(

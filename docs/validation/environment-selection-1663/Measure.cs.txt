@@ -1,0 +1,101 @@
+using System.Diagnostics;
+using System.Text.Json;
+using SkiaSharp;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
+
+var directory = args[0];
+if (args.Length > 1 && args[1] == "--images")
+{
+    CheckImages(directory);
+    return;
+}
+var names = new[] { "default", "explicit-default" };
+var layers = names.Select(name => PresentationLayerPayloadJson.Parse(
+    File.ReadAllBytes(Path.Combine(directory, $"environment-{name}.json"))).Payload!).ToArray();
+var layout = new ImageLayout(1936, 1216, CameraPixelFormat.Mono8, 1936);
+var pixels = Enumerable.Repeat((byte)12, layout.RequiredByteLength).ToArray();
+var outputHashes = new string[2];
+for (var warmup = 0; warmup < 10; warmup++)
+    for (var index = 0; index < layers.Length; index++)
+        outputHashes[index] = ProcessingIdentity.ComputePayloadSha256(Render(index).Pixels);
+if (outputHashes[0] != outputHashes[1]) throw new InvalidOperationException("Default outputs differ.");
+using var process = Process.GetCurrentProcess();
+var receipts = new List<object>();
+for (var trial = 0; trial < 3; trial++)
+{
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+    GC.Collect();
+    var latency = new[] { new List<double>(), new List<double>() };
+    var allocated = new long[2];
+    var cpuTicks = new long[2];
+    var collections = new[] { new int[3], new int[3] };
+    for (var iteration = 0; iteration < 30; iteration++)
+        for (var position = 0; position < 2; position++)
+        {
+            var index = (position + iteration + trial) % 2;
+            var beforeGc = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray();
+            var beforeAllocation = GC.GetAllocatedBytesForCurrentThread();
+            var beforeCpu = process.TotalProcessorTime;
+            var start = Stopwatch.GetTimestamp();
+            var result = Render(index);
+            latency[index].Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+            cpuTicks[index] += (process.TotalProcessorTime - beforeCpu).Ticks;
+            allocated[index] += GC.GetAllocatedBytesForCurrentThread() - beforeAllocation;
+            for (var generation = 0; generation < 3; generation++)
+                collections[index][generation] += GC.CollectionCount(generation) - beforeGc[generation];
+            // Check outside the measured CPU/latency interval.
+            if (ProcessingIdentity.ComputePayloadSha256(result.Pixels) != outputHashes[index])
+                throw new InvalidOperationException("Output changed.");
+        }
+    for (var index = 0; index < 2; index++)
+        receipts.Add(new
+        {
+            Trial = trial, State = names[index], Iterations = 30, MedianMs = latency[index].Order().ElementAt(15),
+            P95Ms = latency[index].Order().ElementAt(28), CpuMs = TimeSpan.FromTicks(cpuTicks[index]).TotalMilliseconds,
+            AllocatedBytesPerOperation = allocated[index] / 30, GcCollections = collections[index],
+            OutputSha256 = outputHashes[index], TimesMs = latency[index]
+        });
+}
+process.Refresh();
+Console.WriteLine(JsonSerializer.Serialize(new
+{
+    WarmupsPerState = 10, Trials = receipts, WorkingSetBytes = process.WorkingSet64,
+    SourceSha256 = ProcessingIdentity.ComputePayloadSha256(pixels), Width = layout.Width, Height = layout.Height,
+    IsServerGc = System.Runtime.GCSettings.IsServerGC, ProcessorCount = Environment.ProcessorCount
+}, new JsonSerializerOptions { WriteIndented = true }));
+
+(ImageLayout Layout, byte[] Pixels) Render(int index) => PresentationLayerCompositor.CompositeDisplay(layout, pixels,
+    [new(layers[index], true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+
+static void CheckImages(string directory)
+{
+    using var baseline = SKBitmap.Decode(Path.Combine(directory, "environment-default.png")) ?? throw new InvalidDataException("Missing default PNG.");
+    var original = baseline.Pixels;
+    var checks = new List<object>();
+    foreach (var state in new[] { "explicit-default", "subset", "empty", "rollback", "unavailable", "all-kinds" })
+    {
+        using var image = SKBitmap.Decode(Path.Combine(directory, $"environment-{state}.png")) ?? throw new InvalidDataException("Missing state PNG.");
+        if (image.Width != baseline.Width || image.Height != baseline.Height) throw new InvalidDataException("Image dimensions changed.");
+        var pixels = image.Pixels;
+        var count = 0;
+        var minX = image.Width;
+        var minY = image.Height;
+        var maxX = -1;
+        var maxY = -1;
+        for (var index = 0; index < pixels.Length; index++)
+            if (pixels[index] != original[index])
+            {
+                count++;
+                minX = Math.Min(minX, index % image.Width);
+                maxX = Math.Max(maxX, index % image.Width);
+                minY = Math.Min(minY, index / image.Width);
+                maxY = Math.Max(maxY, index / image.Width);
+            }
+        if (state is "explicit-default" or "rollback" && count != 0) throw new InvalidDataException("Default or rollback pixels changed.");
+        checks.Add(new { State = state, ChangedPixels = count, ChangedBoundingBox = count == 0 ? null : new[] { minX, minY, maxX + 1, maxY + 1 } });
+    }
+    Console.WriteLine(JsonSerializer.Serialize(checks, new JsonSerializerOptions { WriteIndented = true }));
+}

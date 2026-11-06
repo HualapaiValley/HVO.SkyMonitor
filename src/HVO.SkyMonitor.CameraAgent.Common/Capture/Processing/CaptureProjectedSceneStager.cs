@@ -17,7 +17,8 @@ public sealed class CaptureProjectedSceneStager(
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
     };
     private static readonly ProjectedSceneSource IdentitySource = new(
         new Guid("11111111-1111-1111-1111-111111111111"),

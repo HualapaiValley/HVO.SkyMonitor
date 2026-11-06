@@ -1,0 +1,44 @@
+{
+  "CaptureId": "00000000-0000-0000-0000-000000000001",
+  "Artifact": {
+    "ArtifactId": "20fa3577-1db6-881c-bfb2-f209eb4797dc",
+    "Role": 4,
+    "SourceId": "gallery-materialization",
+    "Variant": "operator-stack-v1",
+    "CreatedUtc": "2026-08-25T00:00:01.1+00:00",
+    "SourceArtifactIds": [
+      "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "3f15fb8a-8b72-8644-81f8-481be7bd214a",
+      "588eabf2-666c-8691-8994-bfe11cde63cb"
+    ],
+    "Recipe": {
+      "Name": "presentation-materialization",
+      "SemanticVersion": "1.0.0",
+      "ImplementationVersion": "typed-presentation-materialization-v1",
+      "Options": {
+        "MaterializationIdentitySha256": "E185727D14C80C70A5EDB40AD7CD89991BC4970235C597DAAAACFD7E6CF6242F"
+      },
+      "OptionsSha256": "716CCA1C53DAE8E2F84B6AFCDC7F8961BA234A0E572346D8AF4553B6F07B0CC1"
+    },
+    "MediaType": "application/x-hvo-packed-image",
+    "ChecksumSha256": "D2E38F8E7DD5FA461EFDF9288F4A1C4001375B9AD689DCAFFE65514FB3DA49E7"
+  },
+  "Layout": {
+    "Width": 512,
+    "Height": 512,
+    "StrideBytes": 1536,
+    "PixelFormat": 2,
+    "ByteOrder": 0,
+    "SampleDepthBits": 8,
+    "ContainerDepthBits": 8,
+    "Packing": 0,
+    "CfaPattern": 0,
+    "BlackLevel": null,
+    "WhiteLevel": 255,
+    "ByteLength": 786432
+  },
+  "PayloadRelativePath": "frames/2026/08/25/AnnotatedPreview/2026-08-25_00-00-00.000Z-20fa35771db6881cbfb2f209eb4797dc.bin",
+  "ManifestIdentitySha256": "D38718AB090726B165CC6C38B3A7EA0A4B99675F27E346D7B3154BB1785784C2",
+  "IdentitySha256": "7EA6CB14915398A4656235C9B37A9253FDAAB1390515E8CFB9CDF22A9999B4A1",
+  "residualArtifact": "588eabf2-666c-8691-8994-bfe11cde63cb"
+}

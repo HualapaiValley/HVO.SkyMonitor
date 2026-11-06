@@ -1,0 +1,86 @@
+{
+  "schema": "issue-1644-evidence-provenance-v1",
+  "packagedUtc": "2026-10-24T21:40:30.203800+00:00",
+  "productionRevision": "d579532bf553129cd994fb4f22838f8daede5f0a",
+  "productionSourceUnchanged": true,
+  "testSourcesSha256": {
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/RetainedAstrometryBrowserAcceptanceTests.cs": "ACAA883F694F2B40238DA99554AD9B652413C36F245C6383E946D77C82393FFC",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/RetainedAstrometryBrowserAcceptanceTests.Reads.cs": "BEC1CF7BFF1676AADA6FD5FE990BBE38EDD49254DC35A66E7ACE99691D5BAAC8",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/RetainedAstrometryBrowserFixture.cs": "9FC34AFD641B1896D4DE4B2CF38FB00F3037A997662B13E0E40E31A7D57FA807",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/CameraAgentKestrelFixture.cs": "57B2868622DBDDC0F85FD9F4268BC3B050B073E30F6D1CFBABD5F2CA4334A244",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/PlaywrightDiagnosticContext.cs": "3AA9AEDD560793F12351D44C3C97A646B8B920366BD696CB2A3CC7ABE2C774E4",
+    "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/PlaywrightDiagnosticContextTests.cs": "6F5DCDF02BE06A508F14F210D2C51FBF9C5485A0B5E89248B1C48E598AFEC97E",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryDurabilityTests.cs": "FE3638C4A13ABA894B30C0EA36C30958949B5E35B9D55B528F0D974D396DB186",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/RetainedAstrometryViewerTests.cs": "6B3FF35DBA941F011A08D1E38980A5666CE7C04BCBF92E9C8A4D672414ECCE8C"
+  },
+  "fixtureMetadata": [
+    {
+      "Scenario": "accepted",
+      "CaptureId": "00000000-0000-0000-0000-000000000001",
+      "RawArtifactId": "00000000-0000-0000-0000-000000000002",
+      "BaseArtifactId": "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "ManifestIdentitySha256": "D38718AB090726B165CC6C38B3A7EA0A4B99675F27E346D7B3154BB1785784C2",
+      "BaseChecksum": "945466805E6A50E9D2A74CC1F042F2C2D5E686B1E95568457FAF1629FA0703DF",
+      "RawChecksum": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "RawRelativePath": "frames/2026/08/25/Raw/2026-08-25_00-00-00.000Z-00000000000000000000000000000002.bin",
+      "DescriptorSha256": "EEDAC5C7E987065E352FC0EFA8B471240252183FFCC4B70E004AC271175C714A",
+      "HostCompatible": true,
+      "Root": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/accepted"
+    },
+    {
+      "Scenario": "budget",
+      "CaptureId": "00000000-0000-0000-0000-000000000001",
+      "RawArtifactId": "00000000-0000-0000-0000-000000000002",
+      "BaseArtifactId": "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "ManifestIdentitySha256": "3F7F306391D0FC1DFFDD44602BC2FDB1A699615D1325A497CDDACAC9DC6ED50B",
+      "BaseChecksum": "945466805E6A50E9D2A74CC1F042F2C2D5E686B1E95568457FAF1629FA0703DF",
+      "RawChecksum": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "RawRelativePath": "frames/2026/08/25/Raw/2026-08-25_00-00-00.000Z-00000000000000000000000000000002.bin",
+      "DescriptorSha256": "EEDAC5C7E987065E352FC0EFA8B471240252183FFCC4B70E004AC271175C714A",
+      "HostCompatible": true,
+      "Root": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/budget"
+    },
+    {
+      "Scenario": "no-data",
+      "CaptureId": "00000000-0000-0000-0000-000000000001",
+      "RawArtifactId": "00000000-0000-0000-0000-000000000002",
+      "BaseArtifactId": "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "ManifestIdentitySha256": "3F7F306391D0FC1DFFDD44602BC2FDB1A699615D1325A497CDDACAC9DC6ED50B",
+      "BaseChecksum": "945466805E6A50E9D2A74CC1F042F2C2D5E686B1E95568457FAF1629FA0703DF",
+      "RawChecksum": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "RawRelativePath": "frames/2026/08/25/Raw/2026-08-25_00-00-00.000Z-00000000000000000000000000000002.bin",
+      "DescriptorSha256": "EEDAC5C7E987065E352FC0EFA8B471240252183FFCC4B70E004AC271175C714A",
+      "HostCompatible": true,
+      "Root": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/no-data"
+    },
+    {
+      "Scenario": "rejected",
+      "CaptureId": "00000000-0000-0000-0000-000000000001",
+      "RawArtifactId": "00000000-0000-0000-0000-000000000002",
+      "BaseArtifactId": "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "ManifestIdentitySha256": "B4D8324CB9FD13FCA49AB665017928333E55D7BB56C71FAE90DA80FDB60BB6E4",
+      "BaseChecksum": "B29841F2840267B61F982E6ADD011B8B1342A6C87921FEED1B6B76216B433738",
+      "RawChecksum": "8478F8DE763C3D09DEBF040CC49577B881876018F4DD0D32CCCC080ABC79ACD9",
+      "RawRelativePath": "frames/2026/08/25/Raw/2026-08-25_00-00-00.000Z-00000000000000000000000000000002.bin",
+      "DescriptorSha256": "A4F4A5AB3D2572A28D8753604E913C3E64E59906BC5E48125E7644EEFA995919",
+      "HostCompatible": true,
+      "Root": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/rejected"
+    },
+    {
+      "Scenario": "unavailable",
+      "CaptureId": "00000000-0000-0000-0000-000000000001",
+      "RawArtifactId": "00000000-0000-0000-0000-000000000002",
+      "BaseArtifactId": "9ef49e85-684c-8f07-9e21-c1230ea4b50d",
+      "ManifestIdentitySha256": "3F7F306391D0FC1DFFDD44602BC2FDB1A699615D1325A497CDDACAC9DC6ED50B",
+      "BaseChecksum": "945466805E6A50E9D2A74CC1F042F2C2D5E686B1E95568457FAF1629FA0703DF",
+      "RawChecksum": "37EF395A697A4ABA0D0FB4868443C3B04323FDDB77739C657DDF34600D0E610D",
+      "RawRelativePath": "frames/2026/08/25/Raw/2026-08-25_00-00-00.000Z-00000000000000000000000000000002.bin",
+      "DescriptorSha256": "EEDAC5C7E987065E352FC0EFA8B471240252183FFCC4B70E004AC271175C714A",
+      "HostCompatible": true,
+      "Root": "/tmp/hvo-skymonitor-1644-canonical-viewer.hLz32w/unavailable"
+    }
+  ],
+  "functionalEvidenceRoot": "/tmp/hvo-skymonitor-1644-browser-final.QoEN5t",
+  "correctedMeasurementRoot": "/tmp/hvo-skymonitor-1644-browser-final2.EWOLfw",
+  "frozenExportBytes": "/tmp/hvo-skymonitor-1644-browser-final2.EWOLfw/accepted/frozen-export.bin"
+}

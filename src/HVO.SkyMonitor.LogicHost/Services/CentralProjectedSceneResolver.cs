@@ -17,7 +17,9 @@ internal sealed record CentralProjectedSceneReference(
     string ContentIdentitySha256,
     ProjectedSceneSource Source,
     string SceneId,
-    string AnnotationIdentitySha256)
+    string AnnotationIdentitySha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SchemaVersion = null)
 {
     // Released v1/v2 selectors retain their original bytes and legacy annotation mapping.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -78,6 +80,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState == CentralReconstructionState.Complete)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0) return null;
         if (candidates.Length != 1) throw new CentralArtifactIntegrityException("projected-scene.ambiguous");
@@ -93,7 +96,8 @@ internal sealed class CentralProjectedSceneResolver(
         var descriptor = curated
             ? StructuredProcessingProductManifestJson.ParseDescriptor(artifact.StructuredProduct!.DescriptorJson) : null;
         return new(artifact, new(artifact.Id, artifact.ArtifactId, frame.FrameId, artifact.ChecksumSha256,
-            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256)
+            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256,
+            scene.SchemaVersion)
         { PayloadSchemaVersion = curated ? scene.SchemaVersion : null }, annotation)
         {
             PayloadInput = descriptor is null ? null : new ProcessingAuxiliaryInput(BindingName,
@@ -114,6 +118,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState != CentralReconstructionState.Quarantined)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0)
             throw new ArtifactSceneReferencePendingException("Mixed scene provenance awaits its canonical projected scene.");
@@ -169,7 +174,10 @@ internal sealed class CentralProjectedSceneResolver(
         if (reference.PayloadSchemaVersion != (scene.SchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion
                 ? scene.SchemaVersion : null))
             throw new CentralDerivativeJobStateException("The frozen projected-scene payload schema is not bound to this execution.");
-        if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256)
+        // Historical annotation references omitted schema, including resolved-footprint scenes. Their existing
+        // checksum/content identity still authenticates the payload; new references also freeze its actual schema.
+        if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256 ||
+            reference.SchemaVersion is not null && !string.Equals(scene.SchemaVersion, reference.SchemaVersion, StringComparison.Ordinal))
             throw new CentralArtifactIntegrityException("projected-scene.identity-mismatch");
         var annotation = CreateAnnotation(scene, reference.SceneId);
         if (annotation.ProvenanceSha256 != reference.AnnotationIdentitySha256)
@@ -222,7 +230,8 @@ internal sealed class CentralProjectedSceneResolver(
             ?? throw new CentralArtifactIntegrityException("projected-scene.descriptor-missing");
         var descriptor = StructuredProcessingProductManifestJson.ParseDescriptor(product.DescriptorJson);
         var raw = descriptor.SourceCapture;
-        if (scene.Source.CaptureId != captureId || raw.Capture.CaptureId != captureId ||
+        if (!string.Equals(scene.SchemaVersion, descriptor.ProductSchemaVersion, StringComparison.Ordinal) ||
+            scene.Source.CaptureId != captureId || raw.Capture.CaptureId != captureId ||
             scene.Source.ArtifactId != raw.Artifact.ArtifactId ||
             scene.Source.ArtifactIdentitySha256 != CaptureContractJson.ComputeDescriptorSha256(raw) ||
             scene.SceneIdentitySha256 != product.ContentIdentitySha256 ||
@@ -309,6 +318,8 @@ internal sealed class CentralProjectedSceneResolver(
         if (requirement is null) return null;
         var reference = JsonSerializer.Deserialize<CentralProjectedSceneReference>(requirement.SelectorJson, JsonOptions)
             ?? throw new CentralDerivativeJobStateException("The frozen projected-scene reference is invalid.");
+        if (reference.SchemaVersion is not null && !ProjectedSceneV1.IsSupportedSchemaVersion(reference.SchemaVersion))
+            throw new CentralDerivativeJobStateException("The frozen projected-scene schema is unsupported.");
         if (reference.CentralArtifactId != requirement.ExpectedCentralArtifactId)
             throw new CentralDerivativeJobStateException("The frozen projected-scene source is inconsistent.");
         var input = job.Inputs.SingleOrDefault(item => item.CentralDerivativeJobInputRequirementId == requirement.Id);

@@ -1,0 +1,90 @@
+@using HVO.SkyMonitor.Processing
+@using Microsoft.AspNetCore.Components.Forms
+
+<div class="frame-facts-editor">
+    <p>Each corner accepts any token below. Use **bold**, *italic*, __underline__, backslash escapes and actual newlines. Empty templates hide a corner. Dark panels remain.</p>
+    <p id="@(IdPrefix + "-limits")">Limits per corner: 4,096 source characters, 8 lines and 64 rendered characters per line. No wrapping or truncation. Plex regular has no bold face.</p>
+    <div class="corner-grid">
+        @for (var index = 0; index < Corners.Length; index++)
+        {
+            var corner = Corners[index];
+            var templateKey = corner.Key + "Template";
+            <fieldset class="corner" data-corner="@corner.Key">
+                <legend>@corner.Label</legend>
+                <label for="@(IdPrefix + "-" + templateKey)">@corner.Label template</label>
+                <textarea id="@(IdPrefix + "-" + templateKey)" class="form-control" rows="5" aria-describedby="@(IdPrefix + "-limits")" value="@(Form.Get(templateKey))" @onchange="args => ChangeAsync(templateKey, args.Value?.ToString() ?? string.Empty)"></textarea>
+                <div class="corner-style">
+                    @foreach (var suffix in StyleSuffixes)
+                    {
+                        var key = corner.Key + suffix;
+                        var option = Form.Descriptor.Options.Single(option => option.Key == key);
+                        var id = IdPrefix + "-" + key;
+                        <label for="@id">@(suffix switch { "SizeMilliPixels" => "Size (1,000 = 1 image pixel)", "MissingPolicy" => "Missing facts", _ => suffix })</label>
+                        @if (suffix is "Font" or "MissingPolicy")
+                        {
+                            <select id="@id" class="form-select" value="@Form.Get(key)" @onchange="args => ChangeAsync(key, args.Value?.ToString() ?? string.Empty)">
+                                @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
+                            </select>
+                        }
+                        else if (suffix == "Color")
+                        {
+                            <div class="colour-inputs">
+                                <input type="color" aria-label="@(corner.Label + " colour picker")" value="@Form.Get(key)" @onchange="args => ChangeAsync(key, args.Value?.ToString() ?? string.Empty)" />
+                                <input id="@id" class="form-control" aria-label="@(corner.Label + " colour hex")" value="@Form.Get(key)" @onchange="args => ChangeAsync(key, args.Value?.ToString() ?? string.Empty)" />
+                            </div>
+                        }
+                        else
+                        {
+                            <input id="@id" class="form-control" inputmode="numeric" value="@Form.Get(key)" @onchange="args => ChangeAsync(key, args.Value?.ToString() ?? string.Empty)" />
+                        }
+                    }
+                </div>
+            </fieldset>
+        }
+    </div>
+    <fieldset class="layout-options">
+        <legend>Image and spacing</legend>
+        @foreach (var key in LayoutKeys)
+        {
+            var option = Form.Descriptor.Options.Single(option => option.Key == key);
+            <label>@option.Label (@option.MinimumWholeNumber–@option.MaximumWholeNumber @option.Unit)<input id="@(IdPrefix + "-" + key)" class="form-control" inputmode="numeric" value="@Form.Get(key)" @onchange="args => ChangeAsync(key, args.Value?.ToString() ?? string.Empty)" /></label>
+        }
+    </fieldset>
+    <details class="token-catalogue">
+        <summary>Supported tokens and formats (@FrameFactsRetainedCatalog.Entries.Length scalars, each with .status)</summary>
+        <p>Copy a token into any corner. Scalar status tokens always show AVAILABLE, MISSING, STALE, CONFLICTING or UNSUPPORTED. DropLine keeps a line with a status token so its reason remains visible. spaceWeather.* is reserved.</p>
+        <ul>
+            @foreach (var entry in FrameFactsRetainedCatalog.Entries)
+            {
+                <li><code>@("{{" + entry.Definition.Key + "}}")</code> / <code>@("{{" + entry.Definition.Key + ".status}}")</code><br />Formats: @string.Join(", ", entry.Definition.Formats). Default: @entry.Definition.DefaultFormat. @entry.Unit — @entry.Provenance. Source: @entry.Source</li>
+            }
+        </ul>
+    </details>
+    @if (Form.Diagnostics.Count > 0)
+    {
+        <ul class="option-errors" role="alert">
+            @foreach (var diagnostic in Form.Diagnostics)
+            {
+                <li data-reason-code="@diagnostic.Code"><code>@diagnostic.Code</code> @diagnostic.Path: @diagnostic.Message</li>
+            }
+        </ul>
+    }
+    <section class="frozen-preview" aria-label="Frozen Frame Facts preview">
+        <h4>Frozen-fact preview</h4>
+        <p>@(_loadingFacts ? "Loading retained facts. Preview is available after validation finishes." : _loaded ? "Using the loaded retained snapshot. It stays fixed while you edit." : "No retained facts loaded: every scalar is MISSING. This is not a live capture preview.")</p>
+        <p class="snapshot-identity">Snapshot: <code>@_snapshot.IdentitySha256</code></p>
+        <label>Retained facts JSON (optional, at most 1 MiB)<InputFile OnChange="LoadFactsAsync" accept=".json,application/json" disabled="@_loadingFacts" /></label>
+        <button type="button" class="btn btn-outline-light" disabled="@_loadingFacts" @onclick="Preview">Render frozen preview</button>
+        @if (_error is not null) { <p class="option-errors" role="alert">@_error</p> }
+        @if (_image is not null && _payload is not null)
+        {
+            <img class="preview-image" src="@_image" alt="Four corner templates rendered from the frozen facts on a plain background" />
+            <div class="preview-text" aria-label="Preview text alternative">
+                @foreach (var corner in _payload.RichText!.Corners)
+                {
+                    <div><strong>@corner.Anchor</strong><pre>@string.Join('\n', corner.Lines.Select(line => string.Concat(line.Runs.Select(run => run.Text))))</pre></div>
+                }
+            </div>
+        }
+    </section>
+</div>

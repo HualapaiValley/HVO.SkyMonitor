@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Docker-free contracts for CameraAgent's reproducible image inputs and diagnostics."""
+import importlib.util
+import hashlib
+import io
+import json
+import os
+import re
+from pathlib import Path
+import subprocess
+import tempfile
+import tarfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def fake_image_store(directory):
+    """A loaded containerd image is addressable by manifest ID/tag, never by config digest."""
+    docker = directory / 'docker'
+    docker.write_text('''#!/usr/bin/env python3
+import hashlib, io, json, os, pathlib, sys, tarfile
+args = sys.argv[1:]
+with open(os.environ['CALL_LOG'], 'a') as log:
+    log.write(json.dumps(args) + '\\n')
+state = pathlib.Path(os.environ['CALL_LOG'] + '.store')
+if args[:2] == ['buildx', 'build'] or args[0] == 'build':
+    output = args[args.index('--output') + 1]
+    options = dict(item.split('=', 1) for item in output.split(','))
+    if options.get('type') != 'docker' or 'dest' not in options or options.get('unpack') == 'true':
+        sys.exit('exporter option "rewrite-timestamp" conflicts with "unpack"')
+    assert options['rewrite-timestamp'] == 'true'
+    config = b'{"architecture":"amd64","os":"linux"}'
+    digest = hashlib.sha256(config).hexdigest()
+    name = 'blobs/sha256/' + digest
+    tags = [args[i + 1] for i, arg in enumerate(args) if arg == '--tag']
+    with tarfile.open(options['dest'], 'w') as archive:
+        for member, data in {'manifest.json': json.dumps([{'Config': name, 'RepoTags': tags}]).encode(), name: config}.items():
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+elif args[0] == 'load':
+    with tarfile.open(args[args.index('--input') + 1]) as archive:
+        manifest = archive.extractfile('manifest.json').read()
+        image = json.loads(manifest)[0]
+        config_id = 'sha256:' + hashlib.sha256(archive.extractfile(image['Config']).read()).hexdigest()
+    image_id = ('sha256:' + hashlib.sha256(manifest).hexdigest()) if os.environ['FAKE_STORE'] == 'containerd' else config_id
+    state.write_text(json.dumps({'id': image_id, 'tags': image['RepoTags'], 'config': config_id}))
+    print('Loaded image: ' + image['RepoTags'][0] if image['RepoTags'] else 'Loaded image ID: ' + image_id)
+elif args[:2] == ['image', 'inspect'] or args[0] in ('run', 'history'):
+    image = json.loads(state.read_text())
+    if not any(reference in args for reference in [image['id'], *image['tags']]):
+        sys.exit('Error response from daemon: No such image: ' + args[-1])
+    if args[:2] == ['image', 'inspect']:
+        print(image['id'] if '--format' in args else json.dumps([{'Id': image['id']}]))
+    elif args[0] == 'run':
+        print('{"protocolVersion":1,"status":"Completed"}')
+else:
+    sys.exit('unexpected Docker call: ' + repr(args))
+''')
+    docker.chmod(0o755)
+    return dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}', CALL_LOG=str(directory / 'calls'))
+
+
+def checker():
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader('image_check', str(ROOT / 'scripts/release:check-cameraagent-image'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class ImageReproducibility(unittest.TestCase):
+    def test_builder_uses_commit_time_not_environment_or_checkout_time(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            docker = directory / 'docker'
+            docker.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            docker.chmod(0o755)
+            revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+            epoch = subprocess.check_output(['git', 'show', '-s', '--format=%ct', revision], cwd=ROOT, text=True).strip()
+            env = dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}', SOURCE_DATE_EPOCH='123')
+            result = subprocess.run(['bash', str(ROOT / 'scripts/build:cameraagent-image'),
+                                     '--commit', revision, '--platform', 'linux/amd64',
+                                     '--output', 'type=oci,dest=/tmp/contract.oci.tar'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads(result.stdout)
+            self.assertIn(f'SOURCE_DATE_EPOCH={epoch}', args)
+            self.assertIn(f'HVO_SOURCE_REVISION={revision}', args)
+            self.assertIn('type=oci,dest=/tmp/contract.oci.tar,rewrite-timestamp=true', args)
+            self.assertIn('--provenance=false', args)
+            self.assertIn('--sbom=false', args)
+
+    def test_loading_export_prints_usable_image_id_and_separate_config_digest(self):
+        for store, tagged in (('classic', True), ('classic', False), ('containerd', True), ('containerd', False)):
+            with self.subTest(store=store, tagged=tagged), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                env = dict(fake_image_store(directory), FAKE_STORE=store)
+                command = ['bash', str(ROOT / 'scripts/build:cameraagent-image'), '--platform', 'linux/amd64']
+                if tagged:
+                    command += ['--tag', 'hvo1299r2-fake:a']
+                result = subprocess.run(command, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Fall back to the old unlabelled output so the pre-fix script fails with Docker's real error.
+                image_id = next((line.removeprefix('image-id: ') for line in result.stdout.splitlines()
+                                 if line.startswith('image-id: ')), result.stdout.splitlines()[-1])
+                inspected = subprocess.run(['docker', 'image', 'inspect', image_id], env=env, text=True, capture_output=True)
+                self.assertEqual(inspected.returncode, 0, inspected.stderr)
+                image = json.loads((directory / 'calls.store').read_text())
+                self.assertIn(f'image-id: {image["id"]}', result.stdout)
+                self.assertIn(f'config-digest: {image["config"]}', result.stdout)
+                if store == 'containerd':
+                    self.assertNotEqual(image['id'], image['config'])
+                    missing = subprocess.run(['docker', 'image', 'inspect', image['config']], env=env, text=True, capture_output=True)
+                    self.assertNotEqual(missing.returncode, 0)
+                    self.assertIn('No such image', missing.stderr)
+                calls = [json.loads(line) for line in (directory / 'calls').read_text().splitlines()]
+                self.assertEqual(calls[1][0], 'load')
+                self.assertFalse(Path(calls[1][calls[1].index('--input') + 1]).exists(), 'temporary archive was not removed')
+
+    def test_arm64_advisory_uses_loaded_image_id_for_inspect_smoke_and_history(self):
+        script = (ROOT / 'scripts/test:cameraagent-arm64-ci').read_text()
+        build = script[script.index('docker build --pull --platform linux/arm64'):script.index('readonly IMAGE_ID')]
+        self.assertRegex(build, r'--output [^\n]*type=docker,dest=')
+        self.assertIn('rewrite-timestamp=true', build)
+        self.assertNotIn('--iidfile', build)
+        inspect = next(line for line in script.splitlines() if line.startswith('docker image inspect "$IMAGE_ID"'))
+        smoke = script[script.index('docker run --rm --network none'):script.index("printf 'image-build,")]
+        for store in ('classic', 'containerd'):
+            with self.subTest(store=store), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+                (directory / 'source-revision.txt').write_text(revision)
+                env = dict(fake_image_store(directory), FAKE_STORE=store, RESULTS=temporary, TEMP_ROOT=temporary,
+                           REPO_ROOT=str(ROOT), SDK_IMAGE_DIGEST='sdk@sha256:fake', ASPNET_IMAGE_DIGEST='aspnet@sha256:fake',
+                           OWNERSHIP_LABEL='hvo1299r2-fake=true', IMAGE_TAG='hvo1299r2-fake:advisory')
+                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', build + inspect + '\n' + smoke],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                image = json.loads((directory / 'calls.store').read_text())
+                self.assertEqual((directory / 'image-id.txt').read_text().strip(), image['id'])
+                self.assertTrue((directory / 'image-config-digest.txt').is_file())
+                self.assertEqual((directory / 'image-config-digest.txt').read_text().strip(), image['config'])
+                calls = [json.loads(line) for line in (directory / 'calls').read_text().splitlines()]
+                self.assertEqual(sum(call[0] == 'run' for call in calls), 2)
+                self.assertEqual(calls[-1], ['history', '--no-trunc', image['id']])
+
+    def test_builder_rejects_short_output_overrides(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            docker = Path(temporary) / 'docker'
+            docker.write_text('#!/bin/sh\nexit 0\n')
+            docker.chmod(0o755)
+            for option in ('-o', '-otype=docker', '-o=type=docker'):
+                with self.subTest(option=option):
+                    result = subprocess.run(['bash', str(ROOT / 'scripts/build:cameraagent-image'), option, 'type=local,dest=/tmp'],
+                                            text=True, capture_output=True,
+                                            env=dict(os.environ, PATH=f'{temporary}:{os.environ["PATH"]}'))
+                    self.assertEqual(result.returncode, 64, result.stderr)
+
+    def test_source_epoch_is_declared_after_all_restores_before_publish(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        build = dockerfile.split('AS build\n', 1)[1].split('FROM scratch', 1)[0]
+        restores = [match.start() for match in re.finditer(r'^RUN .*restore', build, re.M)]
+        epoch = build.index('ARG SOURCE_DATE_EPOCH')
+        self.assertGreater(epoch, max(restores))
+        self.assertLess(epoch, build.index('RUN case "${HVO_SOURCE_REVISION}"'))
+
+    def test_restore_avoids_epoch_sensitive_workdir_creation(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        build = dockerfile.split('AS build\n', 1)[1].split('FROM scratch', 1)[0]
+        last_restore = max(match.start() for match in re.finditer(r'^RUN .*restore', build, re.M))
+        workdirs = re.findall(r'^WORKDIR (.+)$', build[:last_restore], re.M)
+        self.assertTrue(all(path == '/' for path in workdirs), workdirs)
+
+    def test_snapshot_rewrite_fails_closed_before_apt(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        command = dockerfile.split('RUN sed ', 1)[1].split('&& apt-get', 1)[0]
+        command = ('sed ' + command).replace('\\\n', '').strip().removesuffix('&&').strip()
+        for uris, success in (
+                ('http://archive.ubuntu.com/ubuntu/\nhttp://security.ubuntu.com/ubuntu/', True),
+                ('http://ports.ubuntu.com/ubuntu-ports/', True),
+                ('http://mirrors.example.net/ubuntu/', False),
+                ('http://archive.ubuntu.com/ubuntu/\nhttp://mirrors.example.net/ubuntu/', False),
+                ('https://snapshot.ubuntu.com.evil.test/ubuntu/', False),
+                ('https://snapshot.ubuntu.com/ubuntu/20261021T000000Z http://mirrors.example.net/ubuntu/', False),
+                ('', False)):
+            with self.subTest(uris=uris), tempfile.TemporaryDirectory() as temporary:
+                sources = Path(temporary) / 'ubuntu.sources'
+                sources.write_text(''.join(f'Types: deb\nURIs: {uri}\nSuites: noble\n\n' for uri in uris.splitlines()))
+                result = subprocess.run(['sh', '-c', command.replace('/etc/apt/sources.list.d/ubuntu.sources', str(sources))],
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+
+    def test_snapshot_has_release_owner_and_monthly_update_cadence(self):
+        runbook = (ROOT / 'docs/runbooks/releases.md').read_text()
+        self.assertIn('CameraAgent release owner', runbook)
+        self.assertIn('every base-image digest update', runbook)
+        self.assertIn('at least monthly', runbook)
+
+    def test_changelog_issue_reference_is_parenthesized(self):
+        line = next(line for line in (ROOT / 'CHANGELOG.md').read_text().splitlines() if '#1299' in line)
+        self.assertTrue(line.endswith('(#1299)'), line)
+
+    def test_il_publish_normalizes_generated_dates_without_changing_created_label(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            dotnet = directory / 'dotnet'
+            dotnet.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            dotnet.chmod(0o755)
+            env = dict(os.environ, PATH=f'{directory}:{os.environ["PATH"]}',
+                       SOURCE_DATE_EPOCH='1792576456', HVO_READY_TO_RUN='false', HVO_CREATED='')
+            result = subprocess.run(['bash', str(ROOT / 'scripts/release:cameraagent-publish'), 'publish'],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads(result.stdout)
+            self.assertIn('-p:HvoReleaseCreatedUtc=2026-10-21T09:54:16Z', args)
+            self.assertTrue(any(a.startswith('-p:CustomAfterMicrosoftCommonTargets=') for a in args))
+            self.assertFalse(any('PublishReadyToRun' in a for a in args))
+
+    def test_every_release_export_rewrites_layer_timestamps(self):
+        for name in ('scripts/release:assets', '.github/workflows/release-image.yml', 'scripts/deploy/images.sh',
+                     'scripts/test:cameraagent-arm64-ci'):
+            with self.subTest(path=name):
+                content = (ROOT / name).read_text()
+                self.assertIn('--format=%ct', content)
+                self.assertIn('SOURCE_DATE_EPOCH=', content)
+                self.assertIn('rewrite-timestamp=true', content)
+
+    def test_runtime_package_repository_and_transient_files_are_frozen(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        self.assertIn('snapshot.ubuntu.com', dockerfile)
+        for path in ('/var/log', '/var/cache/ldconfig/aux-cache', '/var/lib/apt/lists', '/var/lib/dpkg/status-old'):
+            self.assertIn(path, dockerfile)
+
+    def test_published_copy_times_are_set_even_when_older_than_commit(self):
+        # rewrite-timestamp only clamps newer mtimes. Files copied by publish from a reused checkout can be older.
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        self.assertIn('find /app/publish /app/replay-runner -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +', dockerfile)
+
+    def test_checker_reports_config_layers_and_archive_layout_independently(self):
+        check = checker()
+        first = {'configDigest': 'sha256:a', 'manifestDigest': 'sha256:m1', 'config': {'created': 'first'},
+                 'layers': ['a'], 'archiveSha256': 'a', 'entries': {'index.json': ['a', 1]}}
+        second = {'configDigest': 'sha256:b', 'manifestDigest': 'sha256:m2', 'config': {'created': 'second'},
+                  'layers': ['b'], 'archiveSha256': 'b', 'entries': {'index.json': ['b', 2]}}
+        messages = '\n'.join(check.differences(first, second))
+        for category in ('config', 'layers', 'archive', 'index.json'):
+            self.assertIn(category, messages)
+        self.assertEqual(check.differences(first, first), [])
+
+    def test_checker_rejects_archive_only_drift_with_equal_image_id(self):
+        check = checker()
+        config = b'{"created":"2026-10-21T00:00:00Z","rootfs":{"type":"layers","diff_ids":[]}}'
+        digest = hashlib.sha256(config).hexdigest()
+        manifest = json.dumps({'config': {'digest': f'sha256:{digest}'}, 'layers': []}).encode()
+        manifest_digest = hashlib.sha256(manifest).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            reports = []
+            for trial in (1, 2):
+                path = Path(temporary) / f'{trial}.tar'
+                with tarfile.open(path, 'w') as archive:
+                    for name, content in {
+                            'index.json': json.dumps({'manifests': [{'digest': f'sha256:{manifest_digest}'}]}).encode(),
+                            f'blobs/sha256/{digest}': config,
+                            f'blobs/sha256/{manifest_digest}': manifest}.items():
+                        info = tarfile.TarInfo(name)
+                        info.size, info.mtime = len(content), trial
+                        archive.addfile(info, io.BytesIO(content))
+                reports.append(check.inspect(path))
+            self.assertEqual(reports[0]['configDigest'], f'sha256:{digest}')
+            self.assertEqual(reports[0]['configDigest'], reports[1]['configDigest'])
+            messages = check.differences(*reports)
+            self.assertEqual(len(messages), 1)
+            self.assertIn('archive bytes/layout differ', messages[0])
+
+    def test_checker_uses_two_uncached_builds_and_retains_both_reports(self):
+        check = checker()
+        report = {'configDigest': 'sha256:a', 'manifestDigest': 'sha256:m1', 'config': {}, 'layers': [], 'archiveSha256': 'b', 'entries': {}}
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary) / 'evidence'
+            builds = []
+
+            def build(command, **kwargs):
+                builds.append(command)
+                output = command[command.index('--output') + 1].split('dest=')[1]
+                Path(output).write_bytes(b'archive')
+
+            with patch.object(check.sys, 'argv', ['check', '--platform', 'linux/amd64', '--evidence', str(evidence)]), \
+                    patch.object(check.subprocess, 'check_output', side_effect=['x86_64', 'a' * 40, '123']), \
+                    patch.object(check.subprocess, 'run', side_effect=build), \
+                    patch.object(check, 'inspect', return_value=report), \
+                    patch.object(check.sys, 'stdout', io.StringIO()):
+                self.assertEqual(check.main(), 0)
+            self.assertEqual(len(builds), 2)
+            self.assertEqual(builds[0], builds[1])
+            self.assertIn('--no-cache', builds[0])
+            for trial in (1, 2):
+                self.assertTrue((evidence / f'trial-{trial}.oci.tar').is_file())
+                self.assertEqual(json.loads((evidence / f'trial-{trial}.json').read_text()), report)
+
+
+if __name__ == '__main__':
+    unittest.main()

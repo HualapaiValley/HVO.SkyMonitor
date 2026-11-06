@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
@@ -12,6 +13,67 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 [TestCategory("Unit")]
 public sealed class CentralDerivativeJobInputReaderTests
 {
+    [TestMethod]
+    [DataRow(MeasuredStellarAssociationsV1.CurrentSchemaVersion, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType)]
+    [DataRow(MeasuredAstrometryContextV1.CurrentSchemaVersion, MeasuredAstrometryJson.ContextMediaType)]
+    [DataRow(MeasuredAstrometrySolutionV1.CurrentSchemaVersion, MeasuredAstrometryJson.MediaType)]
+    public async Task IngestedAstrometryInputsUseTheirImmutableDescriptorWithoutCentralProducerEvidence(string schema, string mediaType)
+    {
+        await using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var artifact = fixture.Artifact;
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 1, 4, fixture.Payload).Descriptor;
+        raw = raw with
+        {
+            Capture = raw.Capture with { CaptureId = artifact.Frame!.FrameId },
+            Artifact = raw.Artifact with { ArtifactId = fixture.SourceId }
+        };
+        var recipe = RecipeIdentityDescriptor.Create("immutable-input", "1.0.0", "fixture-v1", JsonSerializer.SerializeToElement(new { }));
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe);
+        var output = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "retained", recipeIdentity.IdentitySha256, [fixture.SourceId]);
+        var descriptor = new StructuredProcessingProductDescriptorV1(raw, new(ProcessingIdentity.CreateArtifactId(output),
+            FrameArtifactRole.Metadata, "processing", "retained", raw.Artifact.CreatedUtc, [fixture.SourceId], recipe,
+            mediaType, artifact.ChecksumSha256), output, [new("fixture", "v1")], fixture.Compatibility,
+            TimeSpan.FromSeconds(1).Ticks, fixture.Payload.Length, ProcessingProductKind.Metadata, schema, new string('C', 64));
+        artifact.ArtifactId = descriptor.Artifact.ArtifactId;
+        artifact.SourceId = descriptor.Artifact.SourceId;
+        artifact.Variant = descriptor.Artifact.Variant;
+        artifact.CreatedUtc = descriptor.Artifact.CreatedUtc;
+        artifact.MediaType = mediaType;
+        artifact.Recipe = new()
+        {
+            Name = recipe.Name,
+            SemanticVersion = recipe.SemanticVersion,
+            ImplementationVersion = recipe.ImplementationVersion,
+            OptionsSha256 = recipe.OptionsSha256,
+            OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(recipe.Options))
+        };
+        artifact.StructuredProduct = new()
+        {
+            OutputIdentitySha256 = output,
+            ProductKind = descriptor.Kind.ToString(),
+            ProductSchemaVersion = schema,
+            ContentIdentitySha256 = descriptor.ContentIdentitySha256,
+            AlgorithmsJson = JsonSerializer.Serialize(descriptor.Algorithms),
+            CompatibilityJson = JsonSerializer.Serialize(descriptor.Compatibility),
+            TotalIntegrationTicks = descriptor.TotalIntegrationTicks,
+            DescriptorJson = System.Text.Encoding.UTF8.GetString(StructuredProcessingProductManifestJson.SerializeDescriptor(descriptor))
+        };
+        fixture.Db.CentralArtifactProcessingEvidence.Remove(fixture.Evidence);
+        await fixture.Db.SaveChangesAsync().ConfigureAwait(false);
+        var lease = fixture.Lease with
+        {
+            Inputs = fixture.Lease.Inputs!.Select(i => i with
+            { ArtifactId = artifact.ArtifactId, MediaType = mediaType }).ToArray()
+        };
+        var input = (await fixture.Reader.ReadAsync(lease, CancellationToken.None).ConfigureAwait(false)).ProcessingInputs.Single();
+        Assert.IsNotNull(input.Artifact);
+        Assert.AreEqual(recipeIdentity.IdentitySha256, input.Artifact.RecipeIdentitySha256);
+        Assert.AreEqual(recipe.Name, input.Artifact.RecipeDescriptor!.Name);
+        Assert.AreEqual(recipe.OptionsSha256, input.Artifact.RecipeDescriptor.OptionsSha256);
+        Assert.AreEqual(schema, input.Artifact.SchemaVersion);
+        CollectionAssert.AreEqual(fixture.Payload, input.Payload.ToArray());
+    }
+
     [TestMethod]
     public async Task LegacyLeaseRetainsLayoutlessSourceIdentityWithoutInlineGeometry()
     {
@@ -29,6 +91,62 @@ public sealed class CentralDerivativeJobInputReaderTests
         CollectionAssert.AreEqual(new[] { fixture.SourceId }, input.Artifact.SourceArtifactIds!.ToArray());
         Assert.AreEqual(fixture.Payload.Length, inputs.ByteLength);
         Assert.AreEqual(0, fixture.Jobs.MarkCount);
+        // An input with no recorded product facts resolves its kind from its role, exactly as the output writer does,
+        // and carries no schema or content identity, so every existing consumer sees the values it saw before.
+        Assert.AreEqual(ProcessingProductKind.Metadata, input.Artifact.ProductKind);
+        Assert.IsNull(input.Artifact.SchemaVersion);
+        Assert.IsNull(input.Artifact.ContentIdentitySha256);
+    }
+
+    [TestMethod]
+    public async Task LayoutlessInputCarriesDurableProductFactsWithoutMovingAnyIdentity()
+    {
+        await using var legacy = await Fixture.CreateAsync().ConfigureAwait(false);
+        await using var fixture = await Fixture.CreateAsync(
+            evidenceKind: ProcessingProductKind.Metadata,
+            evidenceSchemaVersion: MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+            structuredKind: nameof(ProcessingProductKind.PixelData),
+            structuredSchemaVersion: "ignored-schema",
+            structuredContentIdentity: new string('C', 64)).ConfigureAwait(false);
+
+        var input = (await fixture.Reader.ReadAsync(fixture.Lease, CancellationToken.None).ConfigureAwait(false))
+            .ProcessingInputs.Single();
+        var baseline = (await legacy.Reader.ReadAsync(legacy.Lease, CancellationToken.None).ConfigureAwait(false))
+            .ProcessingInputs.Single();
+
+        Assert.AreEqual(ProcessingProductKind.Metadata, input.Artifact!.ProductKind, "graph evidence takes precedence");
+        Assert.AreEqual(MeasuredStellarAssociationsV1.CurrentSchemaVersion, input.Artifact.SchemaVersion);
+        Assert.AreEqual(new string('C', 64), input.Artifact.ContentIdentitySha256);
+        // The facts are descriptive only: the bytes, the frozen recipe identity and the compatibility are those of the
+        // same input without them.
+        CollectionAssert.AreEqual(baseline.Payload.ToArray(), input.Payload.ToArray());
+        Assert.AreEqual(baseline.Artifact!.RecipeIdentitySha256, input.Artifact.RecipeIdentitySha256);
+        Assert.AreEqual(baseline.Artifact.Compatibility, input.Artifact.Compatibility);
+    }
+
+    [TestMethod]
+    public async Task LayoutlessInputFallsBackToTheIngestedStructuredProductFacts()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            structuredKind: nameof(ProcessingProductKind.Metadata),
+            structuredSchemaVersion: MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+            structuredContentIdentity: new string('D', 64)).ConfigureAwait(false);
+
+        var input = (await fixture.Reader.ReadAsync(fixture.Lease, CancellationToken.None).ConfigureAwait(false))
+            .ProcessingInputs.Single();
+
+        Assert.AreEqual(ProcessingProductKind.Metadata, input.Artifact!.ProductKind);
+        Assert.AreEqual(MeasuredStellarAssociationsV1.CurrentSchemaVersion, input.Artifact.SchemaVersion);
+        Assert.AreEqual(new string('D', 64), input.Artifact.ContentIdentitySha256);
+    }
+
+    [TestMethod]
+    public async Task LayoutlessInputWithAnInvalidStructuredProductKindIsRejected()
+    {
+        await using var fixture = await Fixture.CreateAsync(structuredKind: "NotAKind").ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<CentralDerivativeInputRejectedException>(() => fixture.Reader.ReadAsync(
+            fixture.Lease, CancellationToken.None)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -139,7 +257,12 @@ public sealed class CentralDerivativeJobInputReaderTests
         internal CentralDerivativeWorkerTelemetry Telemetry { get; } = new();
         internal CentralDerivativeJobInputReader Reader { get; private set; } = null!;
 
-        internal static async Task<Fixture> CreateAsync()
+        internal static async Task<Fixture> CreateAsync(
+            ProcessingProductKind? evidenceKind = null,
+            string? evidenceSchemaVersion = null,
+            string? structuredKind = null,
+            string? structuredSchemaVersion = null,
+            string? structuredContentIdentity = null)
         {
             var fixture = new Fixture();
             var utc = DateTimeOffset.UtcNow;
@@ -186,8 +309,22 @@ public sealed class CentralDerivativeJobInputReaderTests
                 CentralDerivativeJobId = fixture.Job.Id,
                 RecipeIdentitySha256 = new string('A', 64),
                 TotalIntegrationTicks = TimeSpan.FromSeconds(3).Ticks,
-                CompatibilityJson = JsonSerializer.Serialize(fixture.Compatibility, JsonSerializerOptions.Web)
+                CompatibilityJson = JsonSerializer.Serialize(fixture.Compatibility, JsonSerializerOptions.Web),
+                ProductKind = evidenceKind,
+                ProductSchemaVersion = evidenceSchemaVersion
             };
+            if (structuredKind is not null)
+            {
+                fixture.Artifact.StructuredProduct = new CentralStructuredProcessingProduct
+                {
+                    Artifact = fixture.Artifact,
+                    CentralArtifactId = fixture.Artifact.Id,
+                    OutputIdentitySha256 = new string('E', 64),
+                    ProductKind = structuredKind,
+                    ProductSchemaVersion = structuredSchemaVersion ?? string.Empty,
+                    ContentIdentitySha256 = structuredContentIdentity ?? new string('F', 64)
+                };
+            }
             fixture.Db.AddRange(fixture.Job, fixture.Evidence);
             await fixture.Db.SaveChangesAsync().ConfigureAwait(false);
             var input = new CentralDerivativeJobLeaseInput(0, fixture.Artifact.Id, frame.DevicePublicId,

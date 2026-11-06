@@ -22,7 +22,7 @@ internal static class CredentialFile
             await using var source = SafeFileSystem.OpenOwnerFileRead(suppliedPath, allowReadOnly: true);
             if (source.Length is < OwnerCredentialDefaults.MinimumPasswordLength or > OwnerCredentialDefaults.MaximumPasswordLength)
             {
-                throw new InstallerException("The supplied password file length is invalid.");
+                throw new InstallerException("The supplied password-file length is invalid.");
             }
             await ValidateSuppliedPasswordAsync(source, cancellationToken).ConfigureAwait(false);
             source.Position = 0;
@@ -63,7 +63,7 @@ internal static class CredentialFile
         }
         catch (DecoderFallbackException exception)
         {
-            throw new InstallerException("The supplied password file is not valid UTF-8.", exception);
+            throw new InstallerException("The supplied password-file is not valid UTF-8.", exception);
         }
         finally
         {
@@ -72,7 +72,7 @@ internal static class CredentialFile
 
         if (password.Length < OwnerCredentialDefaults.MinimumPasswordLength || password.Any(char.IsControl))
         {
-            throw new InstallerException("The supplied password file content is invalid.");
+            throw new InstallerException("The supplied password-file content is invalid.");
         }
     }
 

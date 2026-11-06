@@ -83,6 +83,65 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    /// <summary>
+    /// <c>docker info</c> of a daemon backed by the containerd image store, which names an image by its index digest
+    /// rather than by its configuration digest.
+    /// </summary>
+    private const string ContainerdDockerInfo =
+        "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"," +
+        "\"Driver\":\"overlayfs\",\"DriverStatus\":[[\"driver-type\",\"io.containerd.snapshotter.v1\"]]," +
+        "\"MemoryLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/var/lib/docker\"," +
+        "\"NCPU\":4,\"MemTotal\":8442572800,\"Warnings\":null}";
+
+    /// <summary>
+    /// The plan names the image the install will report (#1384). Under Docker's containerd image store the install, its
+    /// status and the install record name a release's image by the release's image digest, which is the ID Docker gives
+    /// it; a plan, which imports nothing, used to name it by its configuration digest instead. From the archive or the
+    /// registry alike.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InstallAsync_PlanUnderTheContainerdImageStore_NamesTheImageTheInstallReports(bool registry)
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-containerd-plan-{Guid.NewGuid():N}");
+        using var release = ReleaseFixture.Create(root);
+        var instanceId = Guid.Parse("e7f8091a-2b3c-44d5-96e7-f8091a2b3c4d");
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with
+        {
+            ImageSource = registry ? ReleaseImageSource.Registry : ReleaseImageSource.Archive
+        };
+        var runner = new InstallerProcessRunner(release.Digest, root, instanceId)
+        {
+            DockerInfo = ContainerdDockerInfo,
+            Labels = release.Labels(),
+            RepoDigests = [release.DigestReference],
+            Held = [],
+            Registry = new FakeRegistry(release.RegistryContent)
+        };
+        try
+        {
+            var planned = await CameraAgentInstaller.InstallAsync(
+                request with { DryRun = true }, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+            Assert.AreEqual(0, runner.LoadCount + runner.PullCount, "a plan imports nothing");
+            var installed = await CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+
+            Assert.AreEqual(InstallationOutcome.Planned, planned.Outcome);
+            Assert.AreEqual(InstallationOutcome.Installed, installed.Outcome);
+            Assert.AreEqual(release.Digest, installed.Image.ImageId);
+            Assert.AreEqual(installed.Image.ImageId, planned.Image.ImageId);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_PlanOfAReRun_CreatesNoFileDirectoryLockOrTemporaryFile()

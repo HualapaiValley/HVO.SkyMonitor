@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -30,6 +31,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private const string FocusFallbackId = "automation-refresh";
     private const string DefaultPeriodicInterval = "3600";
     private const string DefaultCaptureInterval = "10";
+
+    /// <summary>The orbital refresh schedule's suggested interval: four attempts a day, well above the provider floor.</summary>
+    internal const string DefaultOrbitalInterval = ReservedAutomationTasks.OrbitalDefaultInterval;
+
+    internal const string OrbitalIntervalHint = ReservedAutomationTasks.OrbitalIntervalHint;
+
+    internal const string OrbitalIdentifierHint = ReservedAutomationTasks.OrbitalIdentifierHint;
 
     private enum PendingCommandKind
     {
@@ -62,6 +70,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private bool _loading = true;
     private AutomationView _view;
     private string? _appliedView;
+    private string? _appliedDefinition;
+    private bool _scrollToDefinitionPending;
 
     private string _idInput = string.Empty;
     private string _nameInput = string.Empty;
@@ -70,6 +80,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private string _reasonInput = string.Empty;
     private string _commandReasonInput = string.Empty;
     private LocalAutomationTaskKind _taskKindInput = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition;
+    // The reserved task whose defaults the form last applied, so only its own default counts as untouched.
+    private ReservedAutomationTask? _defaultsTask;
     private LocalAutomationTriggerKind _triggerKindInput = LocalAutomationTriggerKind.Periodic;
     private LocalAutomationSourceWindowPolicy? _sourceWindowInput;
     private bool _enabledInput = true;
@@ -104,7 +116,30 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     [SupplyParameterFromQuery(Name = "view")]
     public string? View { get; set; }
 
+    /// <summary>
+    /// A definition to bring into view, such as <c>?definition=orbital-elements-refresh</c> from Software &amp; Catalog.
+    /// It selects the Definitions view, marks the card, and scrolls to it once after the definitions are read.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "definition")]
+    public string? Definition { get; set; }
+
+    [SupplyParameterFromQuery(Name = "setup")]
+    public string? Setup { get; set; }
+
+    private bool _guidedSetupOpened;
+    /// <summary>The reserved task a <c>?setup=</c> token asks to set up, or null.</summary>
+    private ReservedAutomationTask? GuidedSetup => ReservedAutomationTasks.ForSetup(Setup);
+
     private bool Editing => _editingVersion != 0;
+
+    /// <summary>A reserved task accepts one reserved identifier, its one target and its one trigger only.</summary>
+    private ReservedAutomationTask? SelectedReservedTask => ReservedAutomationTasks.ForKind(_taskKindInput);
+
+    private bool ReservedTaskSelected => SelectedReservedTask is not null;
+
+    /// <summary>The requested definition, when it is a well-formed identifier; anything else is ignored.</summary>
+    private string? FocusedDefinitionId => LocalAutomationDefinitionValidator.IsIdentifier(
+        Definition?.Trim(), LocalAutomationContract.MaximumDefinitionIdLength) ? Definition!.Trim() : null;
 
     /// <summary>Why a new definition cannot be created right now, or null when it can.</summary>
     private string? CreateUnavailableReason
@@ -143,16 +178,41 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     protected override void OnParametersSet()
     {
-        if (string.Equals(_appliedView, View, StringComparison.Ordinal))
+        if (!string.Equals(_appliedView, View, StringComparison.Ordinal))
         {
-            return;
+            _appliedView = View;
+            _view = ParseView(View);
         }
-        _appliedView = View;
-        _view = ParseView(View);
+        if (!string.Equals(_appliedDefinition, Definition, StringComparison.Ordinal))
+        {
+            _appliedDefinition = Definition;
+            if (FocusedDefinitionId is not null)
+            {
+                // A focused definition is a card, and cards live in the Definitions view.
+                _view = AutomationView.Definitions;
+                _scrollToDefinitionPending = true;
+            }
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (GuidedSetup is { } setup && !_guidedSetupOpened && !_loading && _automation is not null)
+        {
+            _guidedSetupOpened = true;
+            if (!_automation.Definitions.Any(item => item.Definition.DefinitionId == setup.DefinitionId) &&
+                EditorTasks.Any(item => item.TaskKind == setup.Kind && item.Available) &&
+                CreateUnavailableReason is null)
+            {
+                ResetForm();
+                _taskKindInput = setup.Kind;
+                _nameInput = setup.SetupName;
+                TaskChanged();
+                OpenDialog(DialogMode.Editor, "automation-name");
+                StateHasChanged();
+                return; // Render the dialog before the next callback invokes showModal with its element reference.
+            }
+        }
         if (_showDialog)
         {
             _showDialog = false;
@@ -164,7 +224,25 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _focusTargetId = null;
             await InvokeModuleAsync("focusById", target, FocusFallbackId);
         }
+        if (_scrollToDefinitionPending && !_loading && _automation is not null)
+        {
+            // Scroll once, after the cards exist; a definition that is not there leaves the page where it is.
+            _scrollToDefinitionPending = false;
+            if (FocusedDefinitionId is { } id && _view == AutomationView.Definitions &&
+                _automation.Definitions.Any(item => string.Equals(item.Definition.DefinitionId, id, StringComparison.Ordinal)))
+            {
+                await InvokeModuleAsync("scrollIntoViewById", CardId(id));
+            }
+        }
     }
+
+    internal static string CardId(string definitionId) => $"automation-definition-{definitionId}";
+
+    private bool IsFocusedCard(LocalAutomationDefinition definition)
+        => FocusedDefinitionId is { } id && string.Equals(definition.DefinitionId, id, StringComparison.Ordinal);
+
+    private static string IconClass(LocalAutomationTaskKind kind)
+        => ReservedAutomationTasks.ForKind(kind)?.IconClass ?? "environment";
 
     internal static AutomationView ParseView(string? value) => value switch
     {
@@ -283,6 +361,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             ? LocalAutomationTriggerKind.Periodic
             : descriptor.CompatibleTriggers[0];
         _targetInput = descriptor.Targets.Count == 0 ? string.Empty : descriptor.Targets[0];
+        ApplyTaskDefaults();
     }
 
     private void FormChanged()
@@ -304,6 +383,42 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (!triggers.Contains(_triggerKindInput) && triggers.Count > 0)
         {
             _triggerKindInput = triggers[0];
+        }
+        ApplyTaskDefaults();
+    }
+
+    /// <summary>
+    /// A reserved task fixes its identifier and suggests its own interval. An untouched default follows the task it
+    /// belongs to, and leaving a reserved task releases the reserved identifier. An edit keeps its identity. A
+    /// reserved task's default counts as untouched only when that task was the previous selection.
+    /// </summary>
+    private void ApplyTaskDefaults()
+    {
+        var previous = _defaultsTask;
+        _defaultsTask = SelectedReservedTask;
+        if (SelectedReservedTask is { } reserved)
+        {
+            if (!Editing)
+            {
+                _idInput = reserved.DefinitionId;
+            }
+            if (_intervalInput is DefaultPeriodicInterval or DefaultCaptureInterval ||
+                string.Equals(_intervalInput, previous?.DefaultInterval, StringComparison.Ordinal))
+            {
+                _intervalInput = reserved.DefaultInterval;
+            }
+            return;
+        }
+        if (!Editing && ReservedAutomationTasks.IsReservedIdentifier(_idInput.Trim()))
+        {
+            _idInput = string.Empty;
+        }
+        if (_intervalInput == DefaultOrbitalInterval ||
+            string.Equals(_intervalInput, previous?.DefaultInterval, StringComparison.Ordinal))
+        {
+            _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.CaptureRelative
+                ? DefaultCaptureInterval
+                : DefaultPeriodicInterval;
         }
     }
 
@@ -357,6 +472,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _idInput = definition.Definition.DefinitionId;
         _nameInput = definition.Definition.Name;
         _taskKindInput = definition.Definition.TaskKind;
+        _defaultsTask = SelectedReservedTask;
         _targetInput = definition.Definition.TaskTarget;
         _triggerKindInput = definition.Definition.TriggerKind;
         _sourceWindowInput = definition.Definition.SourceWindow;
@@ -707,6 +823,16 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return "One run when the retained source window closes and its settle allowance has elapsed. Source-window configuration is supplied by the task definition.";
         }
         var (minimum, maximum) = IntervalBounds(_triggerKindInput);
+        if (SelectedReservedTask is { } reserved && _triggerKindInput == reserved.TriggerKind)
+        {
+            // The adapter, not this page, enforces the task's own bounds, so a value outside them is still sent and
+            // its reason is shown exactly as the server returns it.
+            return int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out var reservedInterval) &&
+                   reservedInterval >= reserved.MinimumIntervalSeconds &&
+                   reservedInterval <= reserved.MaximumIntervalSeconds
+                ? $"{DescribeTrigger(_triggerKindInput, reservedInterval)}. {reserved.IntervalHint}."
+                : $"{reserved.IntervalHint}.";
+        }
         var bounds = _triggerKindInput == LocalAutomationTriggerKind.Periodic
             ? string.Create(Invariant, $"{minimum} to {maximum} seconds")
             : string.Create(Invariant, $"{minimum} to {maximum} durable captures");

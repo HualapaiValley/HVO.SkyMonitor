@@ -68,7 +68,9 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralTransientReprocessingExecutor transientReprocessingExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    CentralProjectedSceneResolver? projectedScenes = null) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
+    CentralProjectedSceneResolver? projectedScenes = null,
+    CentralMeasuredAssociationSceneReader? measuredAssociationScenes = null)
+    : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
 {
     private const double MaximumLabelMagnitude = 2.5;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -199,6 +201,23 @@ internal sealed class CentralDerivativeJobExecutor(
                     .ResolveAsync(lease, jobService, cancellationToken).ConfigureAwait(false)
                 : CreateAnnotation(lease.SceneProvenanceJson)
             : null;
+        if (CentralMeasuredAssociationSceneReader.BindsScene(lease))
+        {
+            // The scene binds after the strict canonical-input check, which stays unchanged for every existing kind:
+            // its identity is the scene's blank-field content identity, not its payload hash, so it is verified by
+            // the reader against both frozen values instead.
+            var scene = await (measuredAssociationScenes ?? throw new CentralDerivativeJobStateException(
+                    "Measured-association scene resolution is unavailable."))
+                .ReadAsync(lease, jobService, cancellationToken).ConfigureAwait(false);
+            if (scene.FailureReasonCode is { } sceneFailure)
+            {
+                await jobService.FailAsync(
+                    lease.JobId, lease.LeaseToken, sceneFailure, retryable: false, cancellationToken).ConfigureAwait(false);
+                RecordPinRelease(lease, "terminal");
+                return Resolved(new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, sceneFailure));
+            }
+            canonicalInputs.Add(scene.Input!);
+        }
         return new CentralDerivativeExecutionPreparation(
             null, false, selector, optionsDocument.RootElement.Clone(), annotation, canonicalInputs);
     }
@@ -295,6 +314,10 @@ internal sealed class CentralDerivativeJobExecutor(
             ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");
         var canonicalInputs = CreateCanonicalInputs(lease)
             ?? throw new CentralDerivativeJobStateException("The derivative canonical inputs are invalid.");
+        if (CentralMeasuredAssociationSceneReader.BindsScene(lease))
+        {
+            canonicalInputs.Add(CentralMeasuredAssociationSceneReader.CreateIdentityInput(lease.ProjectedScene!));
+        }
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
             ? projectedAnnotation ?? CreateAnnotation(lease.SceneProvenanceJson)
             : null;
@@ -487,9 +510,13 @@ internal sealed class CentralDerivativeJobExecutor(
     /// expected identity left at the requested identity durably records that no annotation was frozen, so provenance
     /// the frame acquires between expansion and lease is withheld and the node runs (and skips) exactly as frozen
     /// instead of producing evidence whose recipe identity the frozen expectation and the evidence trigger reject.
-    /// The marker is unambiguous because <see cref="CentralProcessingGraphNodeRegistry"/> admits annotation nodes with
-    /// only a primary binding, so nothing but a frozen annotation can move the expected identity off the requested
-    /// one. Legacy inline geometry remains immutable when present. Compact captures instead carry a separate
+    /// The marker is unambiguous although <see cref="CentralProcessingGraphNodeRegistry"/> admits one non-primary
+    /// binding on a leaf annotation, the optional measured-association metadata: that auxiliary is bound at lease
+    /// only when its producer completed, and the producer completes only against a scene frozen with this node's
+    /// annotation at expansion; an omitted auxiliary is removed from the expectation in the same convergence step
+    /// that records the omission (<see cref="CentralProcessingGraphScheduler"/>, ruling (Z)). Either way, an
+    /// expected identity equal to the requested one still means exactly "no annotation and no auxiliary was frozen".
+    /// Legacy inline geometry remains immutable when present. Compact captures instead carry a separate
     /// frozen projected-scene artifact reference, which the executor resolves before running the recipe.
     /// Legacy jobs without that reference keep the live frame provenance.
     /// </summary>

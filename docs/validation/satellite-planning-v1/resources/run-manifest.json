@@ -1,0 +1,108 @@
+{
+  "sourceHead": "0c48a01974df2a8d2bb1e73f9af56e7c6e4e5485",
+  "startedUtc": "2026-10-20T04:13:40.013821+00:00",
+  "sdk": "10.0.402",
+  "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+  "environment": {
+    "DOTNET_TieredCompilation": "0"
+  },
+  "hashes": {
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/Program.cs": "66242447DFC572C330C43EB3B63052711074B22544FA34C1C1577941663EE50C",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/Harness.csproj": "CF09F3FC63D51313E32B9944F7D3D91CD4D2540359B46A54BE7BA8ACE76B4BC0",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/predeclared-plan.json": "DAA4310C25292D3695BBF81AD2A45FF0AE55C76452B17891C9B151E694CBE822",
+    "/home/roys/.t3/worktrees/HVO.SkyMonitor/research-527-satellite-virtual-poc/tests/HVO.SkyMonitor.CameraAgent.Tests/OrbitalPlanning/PlanningTestInputs.cs": "92EA613E5B4B04A9B68830985790F41FE0EEF65DCA706D2E067EC8EE44FF636F",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.Core.dll": "3FE2C344EAD0ADBF0A7A7159196716E085C20807435EC805F7492CAA0DAA36EC",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.AgentCore.dll": "E19B658B0FDAEEF1D87ADC5A53B8B4FD89D60A66BC34E2E79F937AFB4ACBE5A4",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Astronomy.dll": "8FD38C88207D13ECC5BD428265EEF9C8CD0FBC08ABF39E1244C7DD0124092255",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Common.dll": "032A5DE88A47C059F1D667C39B0C46ABBF60533D8E5C4F17079BE80C899E0FEE",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Replay.dll": "DF5677DBF80E64673A65196C81ACCBA14C57F83C4CEF9BA0A328EF09FB0E73E0",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Fleet.Contracts.dll": "F322769D08F51E511DDFB45076C8147925379684F7576961BFFB355EBFBCDCC3",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Imaging.dll": "7C23531495C74DB6CC99DD06B9FE7CA3C5EABF3ADC62D83E18A776076180F008",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Processing.dll": "9CF41AF88A8AC5D1BAF7CAC56AE2B54E253CED0A95F1142E6ED1FCD1272AD4DD",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Storage.FileSystem.dll": "92A325B4DDD87FE7AAF514C88928CF047866BCE21163B52D6DA4A5C68EEC3567",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/HVO.SkyMonitor.Video.FFmpeg.dll": "DD4B665E626E5A5AA66E0F1D3FC7B1AE1F3702523DF03C6F8B597CA9118645E3",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Harness.dll": "FBA4EB40B4C31914C7BB760E124F62EB2BE2FEA41DAF656EA5CEFB5FF88B7C12",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Data.Sqlite.dll": "9F1FE804321767B6CC8DB751ECEDD56AB308E5F15492A7F40D7093BB61AB7638",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Configuration.Abstractions.dll": "A6E043ABC339B7341BF7DABF6F101BC16FD5D10DCDE67587AC6418F7FD6615F0",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Configuration.Binder.dll": "53DD1D292FE99D94C03D42A6783E3B3604C2847580C76F7B1F6E0EB1419049D0",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Configuration.dll": "2AFBE810F4988DEBD8C0011053E2C5B751FACECD211933F48BA0F4FFC12BB94B",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.DependencyInjection.Abstractions.dll": "7D07E2588A256AE5983AF6A2E64EAC603CB81D8F224DBEA5E65EDA8D67258175",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.DependencyInjection.dll": "BA7E45A53867BFCF4B12997C2D565CE7C0EAA9595D2B509C56605B46A28228B1",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Diagnostics.Abstractions.dll": "F8DC83F39FA7AA57833FE06C6AF149B3C050325BFDA9F2325557B84AE7FD95A5",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Diagnostics.dll": "DBF06D7F3D2937400AC706F2F0491549A9AA4A4F6FF9DECA62AD92EC29AE6C2E",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.FileProviders.Abstractions.dll": "23F3AB8C92B4687B53454395D3B09F0940C3692025B2020882775133D02D0CAC",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Hosting.Abstractions.dll": "C71749C0ADAFC6A77995429A7D777CF4EDDC723B0B29FBBA40BA2B91CE9B8E06",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Http.dll": "F66488D0D48A5A0C1ACA17042213DF387EBC8CC02A984C80B64C95BC1443DE23",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Logging.Abstractions.dll": "D0A3CCE0CAF2BDDA4AF7D54135A321B45438015947FD902D7C2E6A0A30730C55",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Logging.dll": "16944DE682F1DB805B8AA4148E167D5C16A63A75FF8D3D753CB9A3A1DC6C63FF",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Options.ConfigurationExtensions.dll": "E4268AA2FFFA635B28A4AB11AA2C75B7442278E12E98FCD72C677923C0EAD52E",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Options.DataAnnotations.dll": "D2A3489E9FCE5833832CBCB27EC490AFB021B02F2AC93C2840361A4D0E5641CF",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Options.dll": "B99E0911EB18A1819923D812F6E5424B4A63B6959BFCDE26D8F202BC8A9E807E",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Microsoft.Extensions.Primitives.dll": "DEB951C8DE3092D81DD4459AC4E51B819883F30F6488ABC4BFB915F1E33DB183",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/SQLitePCLRaw.batteries_v2.dll": "BC69777001EB4DB81C580F62835396F67E74AAA381EEF446193A904499D5310B",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/SQLitePCLRaw.core.dll": "50C999A1AB2AFEACC93BCE5AC2948D3BB630D99D23EFC3CFCBD8BC11D3426EB7",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/SQLitePCLRaw.provider.e_sqlite3.dll": "02AD639F45A26DE1919FFBB6696BDB399AD01AFC149970A163C3867162F310B3",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/SkiaSharp.dll": "2C9BBBE1A3D0E9407894C319821B5CDCADE1F302466A950A2E5D6024AEE32422",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/astronomy.dll": "9123F6D67A56B3982E395A516F672B5EA7BFDA7E76F9B1E8D4097BD2173FAE1A",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-1-core.json": "CE2D138DC6D56BFE65E11FAFFA044C7CF06ACBEB9ABF59BA706EBA7C7CFBA8B1",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-2-facade.json": "F7E5BD8C1DCD3201E2E3D2A866ECE11C6E7E59165795DE6B409258AB6836DA59",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-3-facade.json": "F999AA29D40596A52F356E7BC3278C9BE00412D8CADE7D3A1BDAA127A93047E0",
+    "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-4-core.json": "D547B983E264BF674C41E6BB4DDF280E68E906C4BDDA782E3D5448763127F2F9"
+  },
+  "runs": [
+    {
+      "mode": "core",
+      "command": [
+        "dotnet",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Harness.dll",
+        "/home/roys/.t3/worktrees/HVO.SkyMonitor/research-527-satellite-virtual-poc",
+        "core",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-1-core.json"
+      ],
+      "startedUtc": "2026-10-20T04:13:40.151990+00:00",
+      "exitCode": 0,
+      "elapsedSeconds": 1.6852282360196114
+    },
+    {
+      "mode": "facade",
+      "command": [
+        "dotnet",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Harness.dll",
+        "/home/roys/.t3/worktrees/HVO.SkyMonitor/research-527-satellite-virtual-poc",
+        "facade",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-2-facade.json"
+      ],
+      "startedUtc": "2026-10-20T04:13:41.837682+00:00",
+      "exitCode": 0,
+      "elapsedSeconds": 1.8065227831248194
+    },
+    {
+      "mode": "facade",
+      "command": [
+        "dotnet",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Harness.dll",
+        "/home/roys/.t3/worktrees/HVO.SkyMonitor/research-527-satellite-virtual-poc",
+        "facade",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-3-facade.json"
+      ],
+      "startedUtc": "2026-10-20T04:13:43.644746+00:00",
+      "exitCode": 0,
+      "elapsedSeconds": 1.6701681190170348
+    },
+    {
+      "mode": "core",
+      "command": [
+        "dotnet",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/bin/Release/net10.0/Harness.dll",
+        "/home/roys/.t3/worktrees/HVO.SkyMonitor/research-527-satellite-virtual-poc",
+        "core",
+        "/home/roys/.codex/artifacts/batch-a-1393-2026-10-20/planning-resource-harness/measurement-4-core.json"
+      ],
+      "startedUtc": "2026-10-20T04:13:45.315333+00:00",
+      "exitCode": 0,
+      "elapsedSeconds": 1.344992317026481
+    }
+  ],
+  "finishedUtc": "2026-10-20T04:13:46.660702+00:00",
+  "postRunHead": "0c48a01974df2a8d2bb1e73f9af56e7c6e4e5485"
+}

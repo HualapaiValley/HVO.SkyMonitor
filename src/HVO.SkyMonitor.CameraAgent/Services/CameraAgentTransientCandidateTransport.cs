@@ -62,6 +62,13 @@ internal sealed class CameraAgentTransientCandidateTransport(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeout.Token).ConfigureAwait(false);
+            // TestServer and proxies can return a response when the request token is
+            // canceled. Cancellation must never turn a durable candidate into a rejection.
+            cancellationToken.ThrowIfCancellationRequested();
+            if (timeout.IsCancellationRequested)
+            {
+                return new(TransientCandidateTransportDisposition.Retry, "request-timeout");
+            }
             if (response.StatusCode is HttpStatusCode.Accepted or HttpStatusCode.OK)
             {
                 var bytes = await ReadBoundedAsync(
@@ -118,7 +125,7 @@ internal sealed class CameraAgentTransientCandidateTransport(
                     RetryAfter: ResolveRetryAfter(response.Headers.RetryAfter));
             }
             if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
-                (int)response.StatusCode >= 500)
+                (int)response.StatusCode is 499 or >= 500)
             {
                 return new(
                     TransientCandidateTransportDisposition.Retry,

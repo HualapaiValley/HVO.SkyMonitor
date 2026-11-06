@@ -118,3 +118,32 @@ their recorded identity. Lifecycle operations must use
 the exact UUID instance root and ownership manifest; they must not enumerate or
 delete sibling roots. The deployment does not accept or migrate the former
 singular product layout.
+
+## Upgrade Recovery Boundary (Approved Target)
+
+The [SkyMonitor recovery contract](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+in #1606 is approved target behavior, not a new snapshot backend or a change to
+the host policy enforced today. The single-mount rule and separate instance and
+catalog binds above remain in force; #1292 owns host-policy implementation.
+Do not repartition, format, create subvolumes, relocate SQLite or move instance
+roots to satisfy this documentation change. #1607 and #1608 must first show a
+clear net benefit before recommending a filesystem or layout change.
+
+An upgrade checkpoint must cover the entire instance's mutable DB/files/config,
+identity, key ring and referenced payloads at one fenced point, including any
+configured external storage roots. The explicit backup unit above is a coverage
+inventory, not an instruction to create a full archive on every upgrade. SQLite
+backup copies remain a valid candidate if referenced immutable files are pinned
+and every mutable part is recovered coherently. LogicHost coordinates its SQL
+Server, object roots and host state under its own cutoff; placing only its
+instance directory on a snapshot filesystem does not cover SQL.
+
+Keep operation journal, protected/unprotected status, checkpoint/image pairing,
+restore progress, final receipt and minimal non-rewindable fact capsule outside
+all reverted trees (an explicitly excluded product `operations/` location may
+serve this role). A product-wide filesystem revert must not roll them or sibling
+instances back. Qualify single-instance recovery while a sibling continues
+working. Pin verified immutable catalog packages for each instance, including
+historical references, without rewinding a shared catalog selector or deleting
+another instance's package. Retained checkpoint bytes after commit confer no
+later rollback authority.

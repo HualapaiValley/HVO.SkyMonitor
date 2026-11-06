@@ -30,6 +30,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class ProcessingRunnerProtocolIntegrationTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly byte[] SourcePayload = [1, 0, 2, 0, 3, 0, 4, 0];
 
     /// <summary>
@@ -62,6 +64,28 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
         claim.Inputs.Should().ContainSingle();
         claim.Inputs[0].PayloadLength.Should().Be(SourcePayload.Length);
         claim.Inputs[0].Layout.Should().NotBeNull();
+        // The claim carries the capture and descriptor identity the in-process path binds (#526), taken from the
+        // persisted reconstruction descriptor, and the runner restores both onto the artifact it executes.
+        await using (var sourceScope = factory.Services.CreateAsyncScope())
+        {
+            var sourceDb = sourceScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var source = await sourceDb.CentralArtifacts.AsNoTracking()
+                .Include(item => item.Layout)
+                .Include(item => item.Recipe)
+                .Include(item => item.Sources)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
+                .SingleAsync(item => item.Id == sourceId).ConfigureAwait(false);
+            var persistedDescriptor = CentralReconstructionDescriptorFactory.Create(source.Frame!, source);
+            var descriptorIdentity = CaptureContractJson.ComputeDescriptorSha256(persistedDescriptor);
+            claim.Inputs[0].CaptureId.Should().Be(persistedDescriptor.Capture.CaptureId);
+            claim.Inputs[0].DescriptorIdentitySha256.Should().Be(descriptorIdentity);
+            var restored = ProcessingRunnerProjection.ReconstructArtifact(claim.Inputs[0], SourcePayload);
+            restored.CaptureId.Should().Be(persistedDescriptor.Capture.CaptureId);
+            restored.DescriptorIdentitySha256.Should().Be(descriptorIdentity);
+        }
 
         var execution = await RunnerJobExecution.ExecuteAsync(
             client, new ProcessingRecipeExecutor(), claim, ProcessingRunnerProtocol.MaximumTransferBytes,
@@ -339,9 +363,9 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
                 second.JobId, new ProcessingRunnerFailureRequest(second.LeaseToken, "runner.test", true), CancellationToken.None))
             .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
         stale.Which.IsLeaseStale.Should().BeTrue();
-        await expiryClient.FailAsync(
+        await Infrastructure.SqlWaitEvidence.WhileAsync(() => expiryClient.FailAsync(
             reclaimed.JobId, new ProcessingRunnerFailureRequest(reclaimed.LeaseToken, "object.missing", true, null, reclaimed.Inputs[0].ArtifactId),
-            CancellationToken.None).ConfigureAwait(false);
+            CancellationToken.None), AssemblyHooks.Fixture.SqlServerConnectionString, TestContext.WriteLine).ConfigureAwait(false);
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -583,9 +607,14 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await DisableClaimableJobsAsync(db).ConfigureAwait(false);
+    }
+
+    internal static async Task DisableClaimableJobsAsync(ApplicationDbContext db)
+    {
         await Infrastructure.DerivativeResetDiagnostics.RunAsync(db, "runner", async () =>
         {
-            await db.CentralDerivativeJobs.Where(job => job.Status != CentralDerivativeJobStatus.Completed)
+            await Infrastructure.DerivativeFixtureJobs.ActiveForReset(db)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                     .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
