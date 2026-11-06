@@ -238,7 +238,8 @@ deploy_run_smoke() {
         DEPLOY_SMOKE_ACTIVE_TARGET="$target"; DEPLOY_SMOKE_ACTIVE_REMOTE="$target_remote"
         DEPLOY_SMOKE_ACTIVE_PRIVATE_ROOT="$private_root"; DEPLOY_SMOKE_ACTIVE_RENDER_ROOT="$render_root"
         DEPLOY_SMOKE_ACTIVE_COOKIES="$cookies"; DEPLOY_SMOKE_ACTIVE_RUN_ID="$run_id"
-        for path in /alive /health /metrics; do
+        # /metrics requires the owner session. Anonymous readiness remains /alive and /health.
+        for path in /alive /health; do
             deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$target")" "$endpoint$path" ||
               { deploy_fail smoke "$name" "${path#/}-failed"; return 1; }
         done
@@ -309,7 +310,7 @@ deploy_run_smoke() {
             deploy_fail smoke "$name" artifact-checksum-proof-mismatch
             return 1
         fi
-        metrics_status="$(deploy_bootstrap_request "$target" GET "$endpoint/metrics" "" "" "" \
+        metrics_status="$(deploy_bootstrap_request "$target" GET "$endpoint/metrics" "" "" "$cookies" \
           "$target_remote/metrics.txt" "$private_root/$name-metrics.txt")" || return 1
         if [[ "$metrics_status" != 200 ]] || ! metrics_facts="$(deploy_smoke_metrics_facts "$private_root/$name-metrics.txt")"; then
             deploy_fail smoke "$name" bounded-metrics-invalid

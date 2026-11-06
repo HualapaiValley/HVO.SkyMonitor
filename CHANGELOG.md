@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Security
+
+- CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
+
 ### Added
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663

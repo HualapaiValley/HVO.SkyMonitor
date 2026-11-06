@@ -622,7 +622,9 @@ and archive roots, but no central SQL/Redis credentials. Fresh durable
 capture state is paused and upload is disabled; central integration remains
 enabled so the supported bootstrap workflow can reach LogicHost. `/alive` and
 `/health` prove provisioning-gated startup only; they do not claim bootstrap or
-fleet readiness. Private ledgers and evidence contain resource names, image
+fleet readiness. CameraAgent `/metrics` is a separate scrape for the ready site
+owner's session, or an operations-read API key in the `Authorization` header.
+It is not an anonymous startup check. Private ledgers and evidence contain resource names, image
 and catalog identities, and bounded status, but no secret values or connection
 strings.
 Failed startup atomically publishes the exact completed service, initializer,
