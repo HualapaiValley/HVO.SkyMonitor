@@ -1166,9 +1166,35 @@ integrity failures still fail startup.
   This action does not reclaim disk space. A capture with a leased lane must
   settle that lease before either action can apply.
 
-Both actions keep the released capture's raw evidence protected from ordinary
-retention, including after lane holds are recomputed. Revalidation also does not
-reclaim disk space.
+A standard-lane quarantine whose raw capture is still `committed` is not in that list.
+It is the lane row, not missing or corrupt raw bytes. Open **Quarantine → Processing
+lane quarantine** (`/operations/quarantine?kind=ProcessingLane`) or:
+
+```bash
+curl -sS -b "$COOKIE" \
+  "https://<camera>/api/v1/operations/processing-lane-quarantine?pageSize=25"
+```
+
+The page returns one action token per quarantined standard-lane row whose failure
+is not `evidence-invalid` or `evidence-expired`. Acknowledge it with
+`POST /api/v1/operations/processing-lane-quarantine/acknowledge`, the owner
+session, antiforgery, an `Idempotency-Key`, and JSON
+`{"actionToken":"<token>","reasonCode":"processing-failure-acknowledged"}`.
+The same key returns the original receipt. A changed row, a leased lane, an
+evidence-invalid quarantine, or any other reason is refused.
+
+Acknowledgement sets that lane row to `abandoned` and appends a
+`processing-lane-ack.*` stage event naming the actor, reason and time. It keeps
+the original failure reason, the raw bytes, the raw checksum, and the failed
+execution history. It does not mark the capture successful and does not retry
+it. After the lane refresh, a required-lane quarantine no longer blocks
+admission or `/health`. Use archived replay when the corrected graph should run
+against that same raw capture. Evidence-invalid quarantines stay on the raw
+evidence release above and still block admission.
+
+Raw evidence revalidation and write-off keep that capture's raw evidence protected
+from ordinary retention, including after lane holds are recomputed. Revalidation
+also does not reclaim disk space.
 
 The owner-authenticated operations API exposes the same bounded history through
 `GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token

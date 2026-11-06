@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 
@@ -170,15 +172,64 @@ public static class CaptureOrbitalPredictionJson
     public const string SchemaVersion = "hvo-capture-orbital-prediction-v1";
     public const string MediaType = "application/vnd.hvo.capture-orbital-prediction+json";
     public const int MaximumOutputBytes = 16 * 1024 * 1024;
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    private static readonly JsonSerializerOptions Options = CreateOptions();
+
+    private static JsonSerializerOptions CreateOptions()
     {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        RespectNullableAnnotations = true,
-        RespectRequiredConstructorParameters = true,
-        AllowDuplicateProperties = false,
-        MaxDepth = 32,
-        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
-    };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            RespectNullableAnnotations = true,
+            RespectRequiredConstructorParameters = true,
+            AllowDuplicateProperties = false,
+            MaxDepth = 32,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { AllowOmittedNullableCaptureFacts } },
+            Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
+        };
+        return options;
+    }
+
+    /// <summary>
+    /// The capture writer omits null solar regime, metering and other nullable cycle facts. Those constructor
+    /// parameters have no default, so <see cref="JsonSerializerOptions.RespectRequiredConstructorParameters"/> would
+    /// reject a real descriptor. Absent nullable facts stay null. Properties marked required, and non-nullable
+    /// constructor parameters, stay required.
+    /// </summary>
+    private static void AllowOmittedNullableCaptureFacts(JsonTypeInfo typeInfo)
+    {
+        if (typeInfo.Type != typeof(CaptureCycleEvidence) &&
+            typeInfo.Type != typeof(CaptureMeteringEvidence) &&
+            typeInfo.Type != typeof(CaptureControlDecisionEvidence))
+        {
+            return;
+        }
+        foreach (var property in typeInfo.Properties)
+        {
+            if (IsOmittedNullableCaptureFact(property))
+            {
+                property.IsRequired = false;
+            }
+        }
+    }
+
+    private static bool IsOmittedNullableCaptureFact(JsonPropertyInfo property)
+    {
+        if (property.AttributeProvider?.GetCustomAttributes(typeof(JsonRequiredAttribute), true) is { Length: > 0 })
+        {
+            return false;
+        }
+        if (Nullable.GetUnderlyingType(property.PropertyType) is not null)
+        {
+            return true;
+        }
+        var nullability = property.AttributeProvider switch
+        {
+            PropertyInfo info => new NullabilityInfoContext().Create(info),
+            ParameterInfo parameter => new NullabilityInfoContext().Create(parameter),
+            _ => null
+        };
+        return nullability?.ReadState == NullabilityState.Nullable;
+    }
 
     internal static T Deserialize<T>(ReadOnlySpan<byte> bytes) => JsonSerializer.Deserialize<T>(bytes, Options)
         ?? throw new ArgumentException("missing-capture-prediction");

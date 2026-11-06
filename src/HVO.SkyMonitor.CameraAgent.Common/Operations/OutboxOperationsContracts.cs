@@ -196,7 +196,8 @@ public static class OutboxOperationsReasonCodes
     {
         "invalid-source",
         "irrecoverable-evidence",
-        "operator-approved-loss"
+        "operator-approved-loss",
+        "processing-failure-acknowledged"
     };
 
     public static bool IsAllowed(OutboxOperationAction action, string? reasonCode)

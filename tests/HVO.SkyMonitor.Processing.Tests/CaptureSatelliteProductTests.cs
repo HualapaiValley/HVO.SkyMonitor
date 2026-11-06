@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
@@ -126,6 +129,66 @@ public sealed class CaptureSatelliteProductTests
         Assert.AreEqual(checksum, ProcessingIdentity.ComputePayloadSha256(fixture.Raw.Payload));
         Assert.IsTrue(CaptureSatelliteProducts.ParseStatus(first.Single(p => p.SchemaVersion == CaptureSatelliteProducts.StatusSchema).Payload.Span).Renderable);
     }
+
+    [TestMethod]
+    public void OmittedNullableCaptureFactsRoundTripAndRequiredFactsStayRequired()
+    {
+        var f = new CaptureSatelliteFixture();
+        var readout = f.Descriptor.Timing.ReadoutCompletedUtc;
+        var evidence = new CaptureCycleEvidence(
+            CaptureCadenceMode.MinimumStartInterval,
+            CaptureStartReason.DeadlineReached,
+            AutomaticControlOwnership.Disabled,
+            AutomaticControlOwnership.Disabled,
+            null,
+            f.Descriptor.Timing.ExposureStartedUtc,
+            null,
+            null,
+            new CaptureControlDecisionEvidence(
+                readout, readout, f.Descriptor.Controls.EffectiveExposure, f.Descriptor.Controls.EffectiveGain,
+                f.Descriptor.Controls.EffectiveExposure, f.Descriptor.Controls.EffectiveGain,
+                CaptureControlDecisionReason.Disabled),
+            f.Descriptor.Timing.DurableIngressUtc)
+        { MonotonicStartJitter = TimeSpan.FromMilliseconds(1) };
+        var written = CaptureContractJson.SerializeToElement(evidence);
+        Assert.IsFalse(written.TryGetProperty("solarRegime", out _));
+        Assert.IsFalse(written.TryGetProperty("metering", out _));
+        var unavailable = OrbitalSnapshotReadResult.Unavailable(OrbitalSnapshotUnavailableReason.NoActiveSnapshot);
+        var input = Predict(f, f.Descriptor with { CycleEvidence = evidence }, unavailable);
+        Assert.IsNull(input.Plan.Descriptor.CycleEvidence!.SolarRegime);
+        Assert.IsNull(input.Plan.Descriptor.CycleEvidence.Metering);
+        Assert.AreEqual(CaptureControlDecisionReason.Disabled, input.Plan.Descriptor.CycleEvidence.Decision.Reason);
+        Assert.AreEqual(OrbitalSnapshotUnavailableReason.NoActiveSnapshot, input.Plan.SnapshotUnavailableReason);
+        var again = Predict(f, input.Plan.Descriptor, unavailable);
+        CollectionAssert.AreEqual(input.SerializePlan(), again.SerializePlan());
+
+        var unmetered = evidence with
+        {
+            ExposureControl = AutomaticControlOwnership.HostMetered,
+            SolarRegime = CaptureSolarRegime.Night,
+            Metering = new CaptureMeteringEvidence(
+                readout, readout, 0, 0, 0, 0, null, CaptureMeteringOutcome.NoFrame),
+            Decision = evidence.Decision with { Reason = CaptureControlDecisionReason.NoSample }
+        };
+        Assert.IsFalse(CaptureContractJson.SerializeToElement(unmetered.Metering!).TryGetProperty("normalizedLevel", out _));
+        var withFacts = Predict(f, f.Descriptor with { CycleEvidence = unmetered }, unavailable);
+        Assert.AreEqual(CaptureSolarRegime.Night, withFacts.Plan.Descriptor.CycleEvidence!.SolarRegime);
+        Assert.AreEqual(CaptureMeteringOutcome.NoFrame, withFacts.Plan.Descriptor.CycleEvidence.Metering!.Outcome);
+        Assert.IsNull(withFacts.Plan.Descriptor.CycleEvidence.Metering.NormalizedLevel);
+
+        var plan = JsonNode.Parse(input.SerializePlan())!;
+        var cycle = plan["descriptor"]!["cycleEvidence"]!.AsObject();
+        Assert.IsTrue(cycle.Remove("cadenceMode"));
+        Assert.ThrowsExactly<JsonException>(() => CaptureOrbitalPredictionInput.Restore(
+            Encoding.UTF8.GetBytes(plan.ToJsonString()), unavailable));
+    }
+
+    private static CaptureOrbitalPredictionInput Predict(
+        CaptureSatelliteFixture fixture, ReconstructionDescriptor descriptor, OrbitalSnapshotReadResult snapshot)
+        => new(
+            descriptor, fixture.Input.Plan.Observer, fixture.Input.Plan.Geometry, fixture.Input.Plan.Timing,
+            fixture.Input.Plan.Model, fixture.Input.Plan.Bounds, fixture.Input.Plan.Availability, snapshot,
+            new(fixture.Input.Plan.SelectionPolicy.Sources), fixture.Input.Plan.Objects);
 
     [TestMethod]
     public void ChangedRigSnapshotTimeOrRawEvidenceCannotMasqueradeAsTheOriginal()

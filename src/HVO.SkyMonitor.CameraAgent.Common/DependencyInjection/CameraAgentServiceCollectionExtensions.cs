@@ -121,6 +121,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawEvidenceOperations>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<IProcessingLaneQuarantineOperations>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IProjectedSceneStageOwnerProvider>(provider => provider.GetRequiredService<RawCaptureIngress>());

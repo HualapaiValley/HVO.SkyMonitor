@@ -22,6 +22,7 @@ internal sealed partial class RawCaptureIngress :
     IRawIngressPressureReporter,
     IRawIngressWakeupReporter,
     ICaptureLaneStore,
+    IProcessingLaneQuarantineOperations,
     IOperationsQueueSnapshotRefresher,
     IProjectedSceneStageOwnerProvider,
     IDisposable
