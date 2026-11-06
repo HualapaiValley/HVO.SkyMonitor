@@ -88,10 +88,31 @@ independent sources succeeded. It also preserved the original subject exception.
 This validates the collector, not the CI root cause. The probe exited zero and
 removed its container/tmpfs state, private files and port lock. Evidence:
 `/tmp/t3-1448-invalidation-probe/direct-observer-live.log` and
-`/tmp/t3-1448-locks-native/live-final-lifecycle.log` and `live-final-build.log`.
+`/tmp/t3-1448-locks-native/live-r1-lifecycle.log` and `live-r1-build.log`.
 These `/tmp` evidence paths are host-local, not durable shared artifacts.
 
 Historical runner timeout and underlying artifact/fence stall acceptance remain
 **OPEN**. The next reviewed diagnostic qualification must identify a blocker or
 runtime condition before a production correction is justified. A green rerun
 alone does not resolve that acceptance.
+
+
+## Review corrections and embedded-collector check
+
+Opus F1 restores `schedulingLagMs`: the due time is recorded before the sampling
+interval delay, with zero lag on preflight. SQL query duration is not charged to
+timer scheduling lag. F2 pairs the controlled live row data with its final
+correction-build/lifecycle logs and discloses their host-local retention. F3
+adds an `is_observer` flag without disclosing program names, filters background
+requests, and trims padded lock descriptions; observations still use no DMV join.
+
+The three native durable-submission rows ran with the embedded correction built
+at `84626928`, under the uncommitted fixture naming/port overlay. All passed:
+rows 0/250/12000 took 45.855/37.673/48.608 seconds. Their stdout sizes were
+277208/227275/249628 bytes, including ordinary test logs. They retained
+165/145/145 successful source observations respectively and no observer errors;
+scheduling-lag fields were present. This is measured local diagnostic overhead
+and output volume, not a production performance bound or proof of the CI cause.
+The wrapper exited zero, cleaned owned containers/private files and user locks,
+and restored the overlay; the worktree was clean afterward. Evidence and TRX are
+retained in `/tmp/t3-1448-locks-native/embedded-collector`.
