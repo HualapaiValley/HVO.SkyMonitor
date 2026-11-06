@@ -87,8 +87,8 @@ verified that the collector named the exact blocking session while all five
 independent sources succeeded. It also preserved the original subject exception.
 This validates the collector, not the CI root cause. The probe exited zero and
 removed its container/tmpfs state, private files and port lock. Evidence:
-`/tmp/t3-1448-invalidation-probe/direct-observer-live.log` and
-`/tmp/t3-1448-locks-native/live-r1-lifecycle.log` and `live-r1-build.log`.
+`/tmp/t3-1448-42158642535-integration/memory-probe-observations.log`,
+`memory-probe-lifecycle.log` and `memory-probe-build.log` in that same directory.
 These `/tmp` evidence paths are host-local, not durable shared artifacts.
 
 Historical runner timeout and underlying artifact/fence stall acceptance remain
@@ -116,3 +116,83 @@ and output volume, not a production performance bound or proof of the CI cause.
 The wrapper exited zero, cleaned owned containers/private files and user locks,
 and restored the overlay; the worktree was clean afterward. Evidence and TRX are
 retained in `/tmp/t3-1448-locks-native/embedded-collector`.
+
+
+## Qualification 42158642535: reconciled failure evidence
+
+Quality rejected whitespace in the shared library's connection-string builder.
+The earlier project-scoped formatter did not verify that referenced project's
+source. The initializer is now formatted explicitly and checked through the
+solution-level formatter on the actual shared-library path. No format exception
+or suppression is introduced.
+
+The new direct observer succeeded during the runner failure. At samples 2/3/4,
+session 51 was suspended on `RESOURCE_SEMAPHORE` with zero blocking session,
+waiting about 4.98/13.04/21.06 seconds. It requested 49,920 KB of execution memory
+(required minimum 2,176 KB); no grant had been awarded. Several other application
+sessions also awaited grants, including 1,024 KB requests. The grants snapshots
+contained only waiting requests and no granted rows. Session observations mark
+these as non-observer sessions. The observer sources returned in milliseconds;
+.NET timer lag remained near zero with no queued ThreadPool work.
+
+A controlled execution of the exact retained 2,825-byte invalidation SQL in a
+private migrated database reproduced query hash `3E4E7159F917CC27`, matching
+session 51 in the failing CI observations. The XML and DMV hash agree. This
+pins the runner's SQL timeout to an execution-memory grant wait, rather than a
+row-lock blocker, an observer drain exception or unproven Cartesian execution
+cost. The empty controlled database needed no execution grant; it validates the
+hash mapping, not the CI memory requirement or starvation cause. Evidence is in
+`/tmp/t3-1448-42158642535-integration/hash-lifecycle.log`,
+`invalidation-hash-proof.xml`, `requests-summary.json`, and `grants-summary.json`.
+The memory pressure's source (SQL target/budget, host pressure, or resource-pool
+state) was not captured and remains unresolved. Query and lock-policy changes
+would be speculative at this point.
+
+The other failure is in the later eight-overlapping-submission scenario, not the
+single-entry observer wrapper: one request held its five fences, while the
+snapshot saw zero of the expected seven waiting application-lock sessions.
+The run-level log records future-capture SELECT timeouts for overlapping
+requests before the assertions complete. Those requests cannot reach the fence
+queue while still validating future inputs. The overlapping scenario does not
+run the SQL observer; prior observer scopes are drained and disposed before it.
+This is an unmet concurrency precondition under upstream SQL stalls, not proof
+that the five-fence invariant changed. Its timeout's exact wait type was not
+captured, so attributing it specifically to the later runner's semaphore state
+would overstate the evidence. Its original assertions and deadlines stay intact.
+
+The correction adds independent numeric semaphore, SQL-process memory, system
+memory, and min/max SQL-memory configuration observations to explain the grant
+queue on the next occurrence. These sources do not join other DMVs, change SQL
+configuration or allocate grants for an application query. Row limits, fresh
+sessions, two-second opening/read limits, five-minute overall cap and passive
+subject-outcome handling remain unchanged. Tests verify every catalog source
+runs in every cycle despite another source failing. The live deliberate-blocker
+check with all nine sources passed and cleaned its container/private files/lock;
+its observations and lifecycle/build logs are retained together in the directory
+above. Earlier live-r1 logs are historical and their mutable row-output path was
+superseded by this archived correction evidence.
+
+Neither integration failure warrants raising timeouts or weakening assertions.
+The prior incident's allocation origin is still OPEN; this run identifies the
+runner's specific memory-grant wait and explains why the fence test did not
+observe the intended queue. Next qualification must retain the memory-state
+sources before an evidence-backed capacity or query correction is justified.
+
+Correction validation with all nine observation sources: the focused native
+combined rows 0/250/12000 passed in 45.681/36.820/47.738 seconds, with
+288/261/252 successful source reads, zero observer errors, and stdout sizes
+315257/298908/290751 bytes. The wrapper exited zero, removed owned containers,
+private files and locks, and restored the uncommitted fixture overlay. These
+local rows validate the collector's execution and output volume, not the CI
+pressure's origin. Retained TRX/logs are under `embedded-nine` in the failed-run
+evidence directory.
+
+A separate offline factory-lifetime probe confirmed that a shared
+WebApplicationFactory retains disposed derived factory objects. However, a
+follow-up with actual started hosts retained all six disposed service providers
+both with the shared-derived approach and with independently created factories
+at the observation point. That experiment does not establish a remedy for the
+observed SQL pressure. No factory-lifetime rewrite, SQL resource configuration,
+GC budget, lane scheduling or runner capacity change is included on that basis.
+Its logs are retained as `factory-probe.log` and `started-factory-lifecycle.log`
+in the evidence directory; it is not presented as a proven CI cause or fix.

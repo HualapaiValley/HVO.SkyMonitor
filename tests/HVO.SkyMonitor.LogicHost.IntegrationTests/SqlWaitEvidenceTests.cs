@@ -84,7 +84,7 @@ public sealed class SqlWaitEvidenceTests
             calls.Add((name, sample));
             return name == "requests" ? Task.FromException(new IOException("private-query-details")) : Task.CompletedTask;
         }, output.Enqueue, CancellationToken.None, maximumSamples: 3, interval: TimeSpan.Zero).ConfigureAwait(false);
-        calls.Should().HaveCount(15);
+        calls.Should().HaveCount(SqlDiagnosticObservation.Queries.Count * 3);
         foreach (var name in SqlDiagnosticObservation.Queries.Keys)
             calls.Where(call => call.Name == name).Select(call => call.Sample).Order().Should().Equal(1, 2, 3);
         output.Should().Contain(line => line.Contains("source=requests sample=3 type=IOException", StringComparison.Ordinal));
@@ -102,6 +102,6 @@ public sealed class SqlWaitEvidenceTests
             await stop.CancelAsync().ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
         }, _ => { }, stop.Token, maximumSamples: 3, interval: TimeSpan.Zero).ConfigureAwait(false);
-        calls.Should().Be(5);
+        calls.Should().Be(SqlDiagnosticObservation.Queries.Count);
     }
 }

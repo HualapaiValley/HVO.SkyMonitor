@@ -14,6 +14,10 @@ public static class SqlDiagnosticObservation
         ["requests"] = "SELECT TOP (64) session_id,connection_id,blocking_session_id,status,wait_type,wait_time,wait_resource,cpu_time,logical_reads,reads,writes,total_elapsed_time,open_transaction_count,query_hash,query_plan_hash FROM sys.dm_exec_requests WHERE session_id>50 AND session_id<>@@SPID AND status<>'background';",
         ["sessions"] = "SELECT TOP (128) session_id,CASE WHEN program_name = N'HVO.SkyMonitor.QualificationObserver' THEN 1 ELSE 0 END AS is_observer,status,open_transaction_count,last_request_start_time,last_request_end_time,cpu_time,logical_reads,reads,writes FROM sys.dm_exec_sessions WHERE is_user_process=1 AND session_id<>@@SPID;",
         ["grants"] = "SELECT TOP (64) session_id,requested_memory_kb,granted_memory_kb,required_memory_kb,used_memory_kb,wait_time_ms FROM sys.dm_exec_query_memory_grants;",
+        ["semaphores"] = "SELECT TOP (16) resource_semaphore_id,pool_id,target_memory_kb,max_target_memory_kb,total_memory_kb,available_memory_kb,granted_memory_kb,used_memory_kb,grantee_count,waiter_count,timeout_error_count,forced_grant_count FROM sys.dm_exec_query_resource_semaphores;",
+        ["process-memory"] = "SELECT physical_memory_in_use_kb,virtual_address_space_committed_kb,available_commit_limit_kb,process_physical_memory_low,process_virtual_memory_low FROM sys.dm_os_process_memory;",
+        ["system-memory"] = "SELECT total_physical_memory_kb,available_physical_memory_kb,total_page_file_kb,available_page_file_kb,system_high_memory_signal_state,system_low_memory_signal_state FROM sys.dm_os_sys_memory;",
+        ["memory-config"] = "SELECT name,value_in_use FROM sys.configurations WHERE name IN (N'min server memory (MB)',N'max server memory (MB)');",
         ["locks"] = "SELECT TOP (256) request_session_id,resource_type,resource_database_id,resource_associated_entity_id,RTRIM(resource_description) AS resource_description,request_mode,request_status,request_owner_type FROM sys.dm_tran_locks WHERE request_session_id>50 AND (resource_type='APPLICATION' OR request_status<>'GRANT');"
     };
 
@@ -26,7 +30,9 @@ public static class SqlDiagnosticObservation
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumSamples, 300);
         var builder = new SqlConnectionStringBuilder(connectionString)
         {
-            Pooling = false, ConnectTimeout = 2, ConnectRetryCount = 0,
+            Pooling = false,
+            ConnectTimeout = 2,
+            ConnectRetryCount = 0,
             ApplicationName = "HVO.SkyMonitor.QualificationObserver"
         };
         return WhileObservedAsync(operation, token => SampleAsync(
