@@ -2006,6 +2006,12 @@ hvo-sky-install cameraagent backup --instance-id <uuid>
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
+`--allow-quarantined-readiness` on `backup`, `upgrade`, and `rollback` accepts a host whose only unhealthy
+readiness checks are a required processing-lane quarantine and, with it, that lane's terminal processing outcome.
+Catalog identity, installation identity, the container, and archive checksums are still verified. Any other unhealthy
+check still fails readiness. The flag is not part of the operation's identity, so a backup interrupted before the flag
+existed resumes when the same command is repeated with it.
+
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
 migration, and the upgrade then snapshots the small databases before the candidate starts, when any of these holds:
 
@@ -2044,7 +2050,7 @@ rollback models are rejected before runtime mutation.
 never copies bulk data (install contract draft 4).
 
 ```bash
-hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume] [--abort] [--allow-quarantined-readiness]
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
 ```
 
@@ -2126,7 +2132,31 @@ This is a check of the archive the backup wrote, not a proof of the gzip format.
 A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). The instance is
 started and resumed whatever becomes of the discard. If the discard or the restart fails, both errors are reported and
 the operation stays resumable. After an interruption, `--resume` keeps nothing written before the archive was complete.
-From then on, it reads the archive back, commits it and finishes. A partial or unrecorded archive is never restorable.
+From then on, it reads the archive back, proves it whole, commits it and finishes. A partial or unrecorded archive is
+never restorable. If recovery already discarded that partial, `--resume` puts the instance back and settles the
+operation with no backup, so it no longer blocks a later command.
+
+**A processing-lane quarantine.** `/health` stays unavailable while a required lane is quarantined, which makes the
+restart after a backup or an upgrade fail and leaves the backup operation incomplete. That incomplete operation then
+refuses every later lifecycle command until it is resumed or aborted. Pass `--allow-quarantined-readiness` to treat
+that quarantine as backup-safe:
+
+- `capture-lanes` may be Unhealthy only when its quarantine count is at least one and it reports the required-lane
+  failure. A required lane that is unhealthy with a quarantine count of zero is still refused.
+- `capture-processing` may be Unhealthy only together with that lane quarantine, and only for the terminal outcome the
+  quarantine records (`terminal`, or `terminal` with `processing-quarantine`). A retry, a missing product, or any other
+  reason is still refused.
+- Every other unhealthy check is still refused. Degraded checks do not make `/health` unavailable and are unchanged.
+- The catalog check must still be Healthy and must still name this instance's catalog. Installation identity, container
+  ownership, and the archive's SHA-256 are unchanged. A partial whose bytes differ from the hash recorded when it was
+  written is not committed.
+
+`--abort` discards the partial, puts the instance back the way a failed backup does, and settles the journal. It does
+not commit an archive and does not restore or overwrite instance data. It refuses a backup whose archive is already
+committed; finish that one with `--resume`. `--abort` is not a resume, and it cannot be combined with `--plan`. Run it
+as the same service account. When the quarantine is why the restart failed, pass `--allow-quarantined-readiness` with
+`--abort` or `--resume` as well. A settled abort does not block the next backup or upgrade. Completing or aborting a
+backup that had stopped a running instance starts that instance and resumes capture.
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall

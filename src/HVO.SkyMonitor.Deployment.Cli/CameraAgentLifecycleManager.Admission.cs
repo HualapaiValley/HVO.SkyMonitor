@@ -77,7 +77,7 @@ internal sealed partial class CameraAgentLifecycleManager
                          await BackupStartsInstanceAsync(manifest, compose, docker, resumed, cancellationToken).ConfigureAwait(false)
             ? AdmitHostLimits(request, paths, manifest, capabilities!)
             : null;
-        if (kind == LifecycleOperationKind.Backup && resumed is null)
+        if (kind == LifecycleOperationKind.Backup && resumed is null && !request.Abort)
         {
             await AdmitBackupAsync(request, paths, manifest, processRunner, uid, gid, cancellationToken).ConfigureAwait(false);
         }

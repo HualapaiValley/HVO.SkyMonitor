@@ -421,8 +421,12 @@ public sealed partial class InstallerFlowTests
 
         public int FailOnVerification { get; set; } = -1;
 
-        public Task WaitForHealthAsync(ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
-            => inner.WaitForHealthAsync(expectedCatalog, cancellationToken, timeout);
+        public Task WaitForHealthAsync(
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
+            => inner.WaitForHealthAsync(expectedCatalog, cancellationToken, timeout, allowQuarantinedReadiness);
 
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => inner.ReadStateAsync(ownerEmail, password, cancellationToken);
