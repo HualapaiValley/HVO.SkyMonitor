@@ -186,7 +186,8 @@ public sealed class VirtualSkyCameraModule(
     /// <summary>
     /// Renders one preview at the requested setpoint and simulated focus position without advancing the capture
     /// sequence or fixed-sequence timeline, without retaining the scene in the projected-scene store, and without
-    /// staging any artifact. Ordinary captures never use the simulated focus model.
+    /// staging any artifact or waiting for an exposure. Ordinary captures wait in real time and never use the
+    /// simulated focus model.
     /// </summary>
     public Task<CaptureResult> CaptureFocusPreviewAsync(
         CameraFocusPreviewRequest request,
@@ -234,6 +235,28 @@ public sealed class VirtualSkyCameraModule(
 
         var setpoint = request.RequestedSetpoint ?? new CaptureSetpoint(
             config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
+        if (setpoint.Exposure < TimeSpan.Zero || setpoint.Exposure > TimeSpan.FromDays(1))
+            throw new ArgumentOutOfRangeException(nameof(request), "Virtual exposure must be between zero and one day.");
+        // The operational acquisition clock is independent of the requested/fixed scene clocks below.
+        // Wait before rendering or staging so an interrupted exposure owns no incomplete frame or artifact.
+        var exposureStartedUtc = preview is null
+            ? timeProvider.GetUtcNow().ToUniversalTime()
+            : request.RequestedStartUtc;
+        var exposureEndedUtc = preview is null ? exposureStartedUtc + setpoint.Exposure : exposureStartedUtc;
+        if (preview is null)
+        {
+            var exposureTimestamp = timeProvider.GetTimestamp();
+            var remaining = setpoint.Exposure;
+            while (remaining > TimeSpan.Zero)
+            {
+                // Task.Delay has millisecond resolution. Round up and verify elapsed time so a short exposure
+                // or an early timer callback cannot complete acquisition before the effective setpoint.
+                var delay = TimeSpan.FromMilliseconds(Math.Ceiling(remaining.TotalMilliseconds));
+                await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
+                remaining = setpoint.Exposure - timeProvider.GetElapsedTime(exposureTimestamp);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
         var sensor = config.Rig.Sensor;
         var outputProjection = RigProjectionContextFactory.Create(config.Rig);
         var useNativeReadout = RequiresNativeReadout(config.Rig, _resolvedReadout);
@@ -770,13 +793,14 @@ public sealed class VirtualSkyCameraModule(
         {
             Layout = frameLayout
         };
+        cancellationToken.ThrowIfCancellationRequested();
+        var readoutCompletedUtc = preview is null ? timeProvider.GetUtcNow().ToUniversalTime() : exposureEndedUtc;
         var result = new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
         {
-            // VirtualSky models exposure energy without waiting wall-clock exposure time.
             AcquisitionTiming = new CaptureAcquisitionTiming(
-                request.RequestedStartUtc,
-                request.RequestedStartUtc,
-                request.RequestedStartUtc)
+                exposureStartedUtc,
+                exposureEndedUtc,
+                readoutCompletedUtc < exposureEndedUtc ? exposureEndedUtc : readoutCompletedUtc)
         };
         if (stageKey is null || stagingStore is null) return result;
         try

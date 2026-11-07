@@ -71,8 +71,8 @@ public sealed class TransientStarMaskStrategyTests
         var catalog = CreateCatalog(workload.MaximumResults * 2);
         var starStore = new ProjectedSceneStore();
         var controlStore = new ProjectedSceneStore();
-        var starModule = new VirtualSkyCameraModule(TimeProvider.System, catalog, starStore);
-        var controlModule = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), controlStore);
+        var starModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, starStore);
+        var controlModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), controlStore);
         var config = CreateConfig(workload);
         await starModule.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         await controlModule.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);

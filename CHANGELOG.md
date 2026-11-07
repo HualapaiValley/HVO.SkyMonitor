@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, and cancels interrupted exposures cleanly. #1707
+
 - HYG 4.4 and OpenNGC catalog builds reproduce the approved checksums with the pinned SQLite source build as well as Ubuntu's packaged SQLite. #1701
 
 - CameraAgent backup, upgrade and rollback can accept a proven required standard processing-lane quarantine with `--allow-quarantined-readiness`. Per-cause health evidence keeps required pressure, worker/claim/state failures and unrelated terminal outcomes refused; older images lacking that evidence fail closed. Operational failures remain visible across backlog refreshes until the matching operation succeeds. #1700

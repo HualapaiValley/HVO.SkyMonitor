@@ -222,7 +222,7 @@ public sealed class SpaceWeatherRefreshPerformanceTests
     private static async Task<string[]> CaptureSeriesAsync(string name, Dictionary<string, List<Sample>> stages, int frameCount)
     {
         var clock = new Fetch.ManualTimeProvider(SpaceWeatherTestHost.Start);
-        var module = new VirtualSkyCameraModule(clock, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(clock.GetUtcNow(), true), new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
         var config = new CameraModuleConfig(new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix"),
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { seed = 2025, maximumResults = 1, shotNoiseEnabled = false, darkCurrentElectronsPerSecond = 0d })),
             new CameraRigConfig(new SensorProfile("VirtualAsi174Mm", 1280, 960, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16,

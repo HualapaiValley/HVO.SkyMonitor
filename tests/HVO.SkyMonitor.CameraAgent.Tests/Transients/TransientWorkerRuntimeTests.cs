@@ -1979,7 +1979,7 @@ public sealed partial class TransientWorkerRuntimeTests
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             provider.GetRequiredService<ICelestialCatalog>(),
             new ProjectedSceneStore(),
             stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
