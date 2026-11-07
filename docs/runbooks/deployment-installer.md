@@ -1166,9 +1166,35 @@ integrity failures still fail startup.
   This action does not reclaim disk space. A capture with a leased lane must
   settle that lease before either action can apply.
 
-Both actions keep the released capture's raw evidence protected from ordinary
-retention, including after lane holds are recomputed. Revalidation also does not
-reclaim disk space.
+A standard-lane quarantine whose raw capture is still `committed` is not in that list.
+It is the lane row, not missing or corrupt raw bytes. Open **Quarantine → Processing
+lane quarantine** (`/operations/quarantine?kind=ProcessingLane`) or:
+
+```bash
+curl -sS -b "$COOKIE" \
+  "https://<camera>/api/v1/operations/processing-lane-quarantine?pageSize=25"
+```
+
+The page returns one action token per quarantined standard-lane row whose failure
+is not `evidence-invalid` or `evidence-expired`. Acknowledge it with
+`POST /api/v1/operations/processing-lane-quarantine/acknowledge`, the owner
+session, antiforgery, an `Idempotency-Key`, and JSON
+`{"actionToken":"<token>","reasonCode":"processing-failure-acknowledged"}`.
+The same key returns the original receipt. A changed row, a leased lane, an
+evidence-invalid quarantine, or any other reason is refused.
+
+Acknowledgement sets that lane row to `abandoned` and appends a
+`processing-lane-ack.*` stage event naming the actor, reason and time. It keeps
+the original failure reason, the raw bytes, the raw checksum, and the failed
+execution history. It does not mark the capture successful and does not retry
+it. After the lane refresh, a required-lane quarantine no longer blocks
+admission or `/health`. Use archived replay when the corrected graph should run
+against that same raw capture. Evidence-invalid quarantines stay on the raw
+evidence release above and still block admission.
+
+Raw evidence revalidation and write-off keep that capture's raw evidence protected
+from ordinary retention, including after lane holds are recomputed. Revalidation
+also does not reclaim disk space.
 
 The owner-authenticated operations API exposes the same bounded history through
 `GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token
@@ -1799,8 +1825,11 @@ this runbook does not restate them. Read the values an image actually carries wi
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
-raw-ingress schema 11. The current image requires the catalog manifest version, Identity migration, and
-raw-ingress schema its labels declare, and migrates an earlier canonical raw journal only through the transition
+raw-ingress schema 11. The current image requires the Identity migration and
+raw-ingress schema its labels declare. Its `catalog-manifest-version` label is the
+highest catalog manifest it reads: preflight accepts a selected catalog from manifest
+version 2 through that label, and refuses manifest version 1 or anything newer.
+It migrates an earlier canonical raw journal only through the transition
 its `io.hvo.skymonitor.raw-ingress-migration` label names, as described in
 [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade). There is no supported automatic
 migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, snapshot,
@@ -1863,7 +1892,8 @@ rolling back to one, are not state migrations and therefore also accept the supe
 boundary label a candidate omits, whichever contract it declares, is skipped rather than assumed met, and the
 report records an advisory `candidate-boundaries-undeclared` finding naming exactly which labels were
 omitted; an image predating the correction declares none of them. The catalog manifest version is still
-compared against the version the runtime resolver enforces even when the image declares none. Rolling a state
+compared against manifest version 2 when the image declares none. A declared label accepts every manifest from
+version 2 through that label. Rolling a state
 boundary backwards is not supported: if an instance has run a newer state contract, restore it through the
 reset procedure below rather than by rolling back to a pre-`70ecdd3` image.
 
@@ -2753,9 +2783,12 @@ package version, lineage or hash that the embedded approved-catalog registry
 does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
-mount and reauthenticates the Compose model. It requires an image whose catalog
-contract label is `hvo-approved-catalogs-v1`, retires the retained image
-rollback, and pins the previous identity as a historical reference. `rollback`
+mount and reauthenticates the Compose model. A current image declares
+`hvo-approved-catalogs-v2` and can select HYG 4.2, HYG 4.4 and
+`hyg-v44-openngc-production`. An image declaring `hvo-approved-catalogs-v1` can
+select the two HYG lineages and refuses the composed catalog. An unknown
+catalog-contract label is refused. Cross-lineage selection retires the retained image
+rollback and pins the previous identity as a historical reference. `rollback`
 returns to the previous selection across lineages. The exact identities and
 selection behavior are documented in
 [HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).

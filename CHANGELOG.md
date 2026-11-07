@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Fixed
+
+- CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
+
 ### Security
 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
@@ -36,6 +40,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
 
 ### Changed
+
+- CameraAgent images declare approved-catalog contract `hvo-approved-catalogs-v2` and catalog manifest version 3. An upgraded instance keeps a verified manifest 2 HYG catalog, and can install and select the verified HYG 4.4 + OpenNGC manifest 3 catalog. Curated deep-sky expected positions stay off until `curatedAnnotations` is enabled. Checksums and manifests stay required. #1388
 
 - Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
 

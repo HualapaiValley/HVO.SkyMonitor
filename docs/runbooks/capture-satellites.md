@@ -60,6 +60,20 @@ time data is relabelled as originally available: original knowledge is cut off
 at this raw capture's recorded durable-ingress UTC. No retrospective
 reassessment is silently substituted.
 
+A capture whose automatic exposure and gain are not host-metered records no
+solar regime and no metering sample. Those omitted facts stay null. They are
+not treated as measured night, day, or a zero level, and they do not fail the
+prediction input. With no active orbital snapshot the node retains the
+unavailable status and empty geometry.
+
+If a processing failure still quarantines the required standard lane, the raw
+capture stays committed and is absent from raw-evidence recovery. Acknowledge
+that lane quarantine from **Quarantine → Processing lane quarantine**
+(`/operations/quarantine?kind=ProcessingLane`), as described in the
+[deployment installer](deployment-installer.md). Acknowledgement abandons the
+lane row and records the owner, reason and time. It leaves the raw bytes and
+the failed execution history unchanged.
+
 The capture must retain its actual readout and protected deployment-location
 identity. The capture-time location history and frozen rig/optics determine
 observer/projection; current settings never supply replacement coordinates.

@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -1358,6 +1359,193 @@ LIMIT 1;
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
         return connection;
+    }
+
+    internal async Task<ProcessingLaneQuarantinePage> ReadProcessingLaneQuarantinePageAsync(
+        int pageSize, long? beforeWorkId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT work.work_id, work.failure_reason, work.updated_unix_ms, work.attempt_count,
+                   raw.capture_id, raw.manifest_sha256, raw.agent_id, raw.capture_sequence,
+                   raw.raw_artifact_id, raw.payload_length, raw.durable_ingress_unix_ms,
+                   audit.state, audit.source, audit.event_unix_ms
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            LEFT JOIN raw_capture_stage_events audit ON audit.rowid = (
+                SELECT event.rowid FROM raw_capture_stage_events event
+                WHERE event.raw_capture_row_id = raw.raw_capture_row_id
+                  AND event.stage_key GLOB 'processing-lane-ack.*'
+                ORDER BY event.event_unix_ms DESC, event.rowid DESC LIMIT 1)
+            WHERE work.lane_name = 'standard' AND work.state = 'quarantined'
+              AND raw.state = 'committed'
+              AND work.failure_reason NOT IN ('evidence-invalid', 'evidence-expired')
+              AND length(work.failure_reason) BETWEEN 1 AND 64
+              AND ($before IS NULL OR work.work_id < $before)
+            ORDER BY work.work_id DESC LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$before", beforeWorkId.HasValue ? beforeWorkId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        var items = new List<ProcessingLaneQuarantineItem>();
+        long? next = null;
+        var hasMore = false;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (items.Count == pageSize)
+            {
+                hasMore = true;
+                break;
+            }
+            next = reader.GetInt64(0);
+            ProcessingLaneQuarantineAudit? audit = null;
+            if (!await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false))
+            {
+                audit = ReadProcessingLaneAudit(reader.GetString(11), reader.GetString(12), reader.GetInt64(13));
+            }
+            items.Add(new ProcessingLaneQuarantineItem(
+                new ProcessingLaneQuarantineTarget(
+                    reader.GetInt64(0), Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5),
+                    reader.GetString(1), reader.GetInt64(2)),
+                reader.GetString(6), reader.GetInt64(7), Guid.ParseExact(reader.GetString(8), "N"),
+                reader.GetInt64(9), reader.GetInt32(3),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(10)), false, audit));
+        }
+        return new ProcessingLaneQuarantinePage(items, hasMore ? next : null);
+    }
+
+    internal async Task<ProcessingLaneQuarantineReceipt> AcknowledgeProcessingLaneQuarantineAsync(
+        ProcessingLaneQuarantineTarget target, string operationKey, string actor, string reason,
+        CancellationToken cancellationToken)
+    {
+        var stageKey = "processing-lane-ack." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(operationKey)));
+        var auditState = $"Ack:{target.WorkId.ToString(CultureInfo.InvariantCulture)}:{reason}";
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        using (var duplicate = connection.CreateCommand())
+        {
+            duplicate.Transaction = transaction;
+            duplicate.CommandText = """
+                SELECT raw.capture_id, raw.manifest_sha256, event.state, event.source, event.event_unix_ms
+                FROM raw_capture_stage_events event
+                JOIN raw_captures raw ON raw.raw_capture_row_id = event.raw_capture_row_id
+                WHERE event.stage_key = $stage;
+                """;
+            duplicate.Parameters.AddWithValue("$stage", stageKey);
+            using var reader = await duplicate.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.GetString(0) != target.CaptureId.ToString("N") || reader.GetString(1) != target.ManifestSha256 ||
+                    reader.GetString(2) != auditState || reader.GetString(3) != actor)
+                {
+                    throw new InvalidOperationException("Processing lane acknowledgement key conflicts with an earlier request.");
+                }
+                return new ProcessingLaneQuarantineReceipt(
+                    true, ReadProcessingLaneAudit(reader.GetString(2), reader.GetString(3), reader.GetInt64(4)));
+            }
+        }
+        long rawRowId;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT work.raw_capture_row_id
+                FROM capture_lane_work work
+                JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+                WHERE work.work_id = $work AND work.lane_name = 'standard' AND work.state = 'quarantined'
+                  AND work.failure_reason = $reason AND work.updated_unix_ms = $updated
+                  AND work.failure_reason NOT IN ('evidence-invalid', 'evidence-expired')
+                  AND raw.capture_id = $capture AND raw.manifest_sha256 = $manifest AND raw.state = 'committed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM capture_lane_work leased
+                      WHERE leased.raw_capture_row_id = work.raw_capture_row_id AND leased.state = 'leased');
+                """;
+            read.Parameters.AddWithValue("$work", target.WorkId);
+            read.Parameters.AddWithValue("$reason", target.FailureReason);
+            read.Parameters.AddWithValue("$updated", target.UpdatedUnixMs);
+            read.Parameters.AddWithValue("$capture", target.CaptureId.ToString("N"));
+            read.Parameters.AddWithValue("$manifest", target.ManifestSha256);
+            var value = await read.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Processing lane quarantine changed or is not eligible.");
+            rawRowId = (long)value;
+        }
+        var occurred = _timeProvider.GetUtcNow();
+        var occurredUnix = occurred.ToUnixTimeMilliseconds();
+        using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
+                VALUES ($raw, $stage, $state, $actor, $now);
+                """;
+            insert.Parameters.AddWithValue("$raw", rawRowId);
+            insert.Parameters.AddWithValue("$stage", stageKey);
+            insert.Parameters.AddWithValue("$state", auditState);
+            insert.Parameters.AddWithValue("$actor", actor);
+            insert.Parameters.AddWithValue("$now", occurredUnix);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE capture_lane_work
+                SET state = 'abandoned', completed_unix_ms = $now, updated_unix_ms = $now,
+                    lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL
+                WHERE work_id = $work AND lane_name = 'standard' AND state = 'quarantined'
+                  AND failure_reason = $reason AND updated_unix_ms = $updated;
+                """;
+            update.Parameters.AddWithValue("$now", occurredUnix);
+            update.Parameters.AddWithValue("$work", target.WorkId);
+            update.Parameters.AddWithValue("$reason", target.FailureReason);
+            update.Parameters.AddWithValue("$updated", target.UpdatedUnixMs);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("Processing lane quarantine changed before it was acknowledged.");
+            }
+        }
+        await RecomputeRetentionHoldAsync(connection, transaction, rawRowId, cancellationToken).ConfigureAwait(false);
+        await RecomputeStandardPressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new ProcessingLaneQuarantineReceipt(false, new ProcessingLaneQuarantineAudit(actor, reason, occurred));
+    }
+
+    private async Task RecomputeStandardPressureAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        var standard = _policy.Definitions.Single(static lane => string.Equals(lane.Name, "standard", StringComparison.Ordinal));
+        var backlog = await ReadBacklogAsync(connection, standard, transaction, cancellationToken).ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow();
+        var age = backlog.OldestPendingUtc is { } oldest ? now - oldest : TimeSpan.Zero;
+        var hard = backlog.QuarantineCount > 0 ||
+                   backlog.PendingCount >= _options.RequiredMaximumPendingCount ||
+                   CaptureLanePressureMath.ExceedsAfterAdding(
+                       backlog.PendingBytes, 0, _options.RequiredMaximumPendingBytes) ||
+                   age >= TimeSpan.FromMinutes(_options.RequiredMaximumOldestAgeMinutes);
+        var recovered = backlog.QuarantineCount == 0 &&
+                        backlog.PendingCount * 100 < _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent &&
+                        !CaptureLanePressureMath.IsAtOrAbovePercentage(
+                            backlog.PendingBytes, _options.RequiredMaximumPendingBytes, _options.PressureRecoveryPercent) &&
+                        age.TotalMinutes * 100 < _options.RequiredMaximumOldestAgeMinutes * _options.PressureRecoveryPercent;
+        var warning = backlog.PendingCount * 100 >= _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent ||
+                      CaptureLanePressureMath.IsAtOrAbovePercentage(
+                          backlog.PendingBytes, _options.RequiredMaximumPendingBytes, _options.PressureRecoveryPercent);
+        var next = hard || backlog.PressureLevel == 2 && !recovered ? 2 : warning ? 1 : 0;
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = "UPDATE capture_lane_definitions SET pressure_state = $pressure WHERE lane_name = 'standard';";
+        update.Parameters.AddWithValue("$pressure", next);
+        await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ProcessingLaneQuarantineAudit ReadProcessingLaneAudit(string state, string actor, long occurred)
+    {
+        const string prefix = "Ack:";
+        var reason = state.StartsWith(prefix, StringComparison.Ordinal)
+            ? state[(state.LastIndexOf(':') + 1)..]
+            : state;
+        return new ProcessingLaneQuarantineAudit(actor, reason, DateTimeOffset.FromUnixTimeMilliseconds(occurred));
     }
 
     private SqliteTransaction BeginImmediate(SqliteConnection connection)

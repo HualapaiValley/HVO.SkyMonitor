@@ -69,7 +69,7 @@ public sealed class ProductionCatalogRegistryTests
             CameraAgentImageContract.RegistryV1CatalogIds.ToArray());
 
     [TestMethod]
-    public void Registry_ComposedFactsDoNotEnableCurrentImageInstallation()
+    public void Registry_ComposedCatalogRequiresTheV2ImageContractAndKeepsStarsLineages()
     {
         const string composedCatalogId = "hyg-v44-openngc-production";
         var composed = ProductionCatalog.Get(composedCatalogId);
@@ -78,15 +78,33 @@ public sealed class ProductionCatalogRegistryTests
         Assert.AreEqual(3, composed.ManifestVersion);
         Assert.AreEqual("hyg-v4.4-openngc-v20260501-p5-s4-r", composed.PackageVersionPrefix);
         Assert.AreEqual(HygV42.CatalogId, defaultCatalog.CatalogId);
-        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog("hvo-approved-catalogs-v1", defaultCatalog.CatalogId));
-        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.CatalogContract, composedCatalogId));
-        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.LegacyCatalogContract, composedCatalogId));
-        Assert.IsFalse(CameraAgentImageContract.IsKnownCatalogContract("hvo-approved-catalogs-v2"));
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.ComposedCatalogContract, composedCatalogId));
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.ComposedCatalogContract, defaultCatalog.CatalogId));
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.ComposedCatalogContract, HygV44CatalogId));
+        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.ComposedCatalogContract, "hyg-v45-production"));
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.CatalogContract, defaultCatalog.CatalogId));
+        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.CatalogContract, composedCatalogId));
+        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(
+            CameraAgentImageContract.LegacyCatalogContract, composedCatalogId));
+        Assert.IsTrue(CameraAgentImageContract.IsKnownCatalogContract(
+            CameraAgentImageContract.ComposedCatalogContract));
     }
 
     [TestMethod]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v42-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v44-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v44-openngc-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v45-production", false)]
+    [DataRow("hvo-approved-catalogs-v2", null, false)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v42-production", true)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v44-production", true)]
+    [DataRow("hvo-approved-catalogs-v1", "hyg-v44-openngc-production", false)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v45-production", false)]
     [DataRow("hvo-approved-catalogs-v1", null, false)]
     [DataRow("hyg-v42-production-p3-s2", "hyg-v42-production", true)]
@@ -97,7 +115,9 @@ public sealed class ProductionCatalogRegistryTests
     {
         Assert.AreEqual(supported, CameraAgentImageContract.SupportsCatalog(catalogContract, catalogId));
         Assert.AreEqual(
-            catalogContract is "hvo-approved-catalogs-v1" or "hyg-v42-production-p3-s2",
+            catalogContract is CameraAgentImageContract.ComposedCatalogContract
+                or CameraAgentImageContract.CatalogContract
+                or CameraAgentImageContract.LegacyCatalogContract,
             CameraAgentImageContract.IsKnownCatalogContract(catalogContract));
     }
 
