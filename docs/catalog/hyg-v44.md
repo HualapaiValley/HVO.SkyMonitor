@@ -30,7 +30,14 @@ command described in [Side-by-side selection](#side-by-side-selection).
   `ea0e1699a1e7d48daa197b5fe567fcf447420e367f37619862ee1d6f077599cd`
 - Preprocessing version: `4`
 - SQLite schema/user version: `3`
-- SQLite serializer: `sqlite3 3.45.1`
+- SQLite serializer: `sqlite3 3.45.1` with `PRAGMA secure_delete = ON` for the
+  whole build, including `VACUUM`. Ubuntu and Debian compile that mode in
+  (`SQLITE_SECURE_DELETE`). The isolated CLI from
+  `scripts/catalog/install-sqlite-3.45.1.sh` does not, and without the pragma it
+  leaves unused page bytes in place: the database is still 16,166,912 bytes and
+  119,613 rows, but its SHA-256 is
+  `fbcfa886aea87d30584c038121310205b66840f1ccd470eb2f51e86ab9c024ea` instead of
+  the pin below. The builder sets the pragma so both serializers match the pin.
 - Canonical builder: Ubuntu 24.04 on `linux/amd64`. Build once and distribute the
   approved immutable bundle to every deployment architecture.
 - Generated SQLite file: `hyg_v44.sqlite`
