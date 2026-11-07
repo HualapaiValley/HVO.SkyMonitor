@@ -20,6 +20,10 @@ catalog data. The builders read only previously acquired, pinned inputs:
 - `scripts/catalog/bundle-hyg-v44-openngc.sh DATABASE OUTPUT` validates the
   database again and emits the self-contained bundle.
 
+Both composition and cleanup connections explicitly set `PRAGMA secure_delete = ON`
+to reproduce the approved bytes with upstream and Ubuntu SQLite 3.45.1 builds.
+See the [toolchain, root cause and repeated-build regression](hyg-v44-reproducibility.md).
+
 Library consumers resolve the explicitly selected pinned package. A current
 CameraAgent image can install and select this package, as described below.
 The default catalog for a fresh install remains HYG 4.2.
