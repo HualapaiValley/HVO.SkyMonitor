@@ -341,7 +341,30 @@ internal sealed partial class CameraAgentLifecycleManager
         TextWriter error,
         CancellationToken cancellationToken)
     {
-        var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+        var existing = BackupToAbort(request, manifest,
+            await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false));
+        var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
+        await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
+        if (existing.PreMutationContinuity is not null)
+        {
+            var service = BackupServiceFor(
+                request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                lifecycleControlToken, verificationToken, hostLimits, existing.OperationId, uid, gid);
+            await service.RestartAsync(existing.OperationId, cancellationToken).ConfigureAwait(false);
+        }
+        return await SettleAbandonedBackupAsync(
+            paths, manifest, existing, daemon,
+            new InstallationWarning(AbandonedBackupCode,
+                "The operator aborted the incomplete backup. Its partial archive was discarded and no backup was kept. Instance data was not restored or overwritten."),
+            existing.PreMutationContinuity is not null, request.Json, error, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>The matching incomplete backup whose abort is admitted before anything is written or discarded.</summary>
+    private static LifecycleOperationState BackupToAbort(
+        LifecycleRequest request,
+        InstanceManifest manifest,
+        LifecycleOperationState? existing)
+    {
         if (existing is not { Kind: LifecycleOperationKind.Backup } || existing.InstanceId != manifest.InstanceId ||
             existing.Status == InstallationStatus.Completed || IsRefused(existing) || IsAbandonedBackup(existing) ||
             (existing.Status == InstallationStatus.Failed && !existing.MutationStarted))
@@ -357,19 +380,7 @@ internal sealed partial class CameraAgentLifecycleManager
             throw InstallerException.Refused("The backup archive is already committed; rerun the same command with --resume to finish its record.");
         }
 
-        var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
-        await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
-        if (existing.PreMutationContinuity is not null)
-        {
-            var service = BackupServiceFor(
-                request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                lifecycleControlToken, verificationToken, hostLimits, existing.OperationId, uid, gid);
-            await service.RestartAsync(existing.OperationId, cancellationToken).ConfigureAwait(false);
-        }
-        return await SettleAbandonedBackupAsync(
-            paths, manifest, existing, daemon, AbandonedBackupCode,
-            "The operator aborted the incomplete backup. Its partial archive was discarded and no backup was kept. Instance data was not restored or overwritten.",
-            existing.PreMutationContinuity is not null, request.Json, error, cancellationToken).ConfigureAwait(false);
+        return existing;
     }
 
     /// <summary>
@@ -381,8 +392,7 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         LifecycleOperationState operation,
         DockerDaemonIdentity daemon,
-        string failureCode,
-        string message,
+        InstallationWarning warning,
         bool restarted,
         bool json,
         TextWriter error,
@@ -393,10 +403,9 @@ internal sealed partial class CameraAgentLifecycleManager
             Phase = LifecycleOperationPhase.Prepared,
             Status = InstallationStatus.Failed,
             MutationStarted = false,
-            FailureCode = failureCode,
-            FailureMessage = message
+            FailureCode = warning.Code,
+            FailureMessage = warning.Message
         }, cancellationToken).ConfigureAwait(false);
-        var warning = new InstallationWarning(failureCode, message);
         if (!json)
         {
             await error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
@@ -463,8 +472,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 // Recovery already discarded the partial after readiness failed. The archive cannot be committed, and
                 // leaving the journal mutated would block every later command. Settle it once the instance is back.
                 return await SettleAbandonedBackupAsync(
-                    paths, manifest, operation, daemon, MissingPartialBackupCode,
-                    "The partial archive was already discarded, so this resume kept no backup. The incomplete operation is settled and no longer blocks another command. Instance data was not restored or overwritten.",
+                    paths, manifest, operation, daemon,
+                    new InstallationWarning(MissingPartialBackupCode,
+                        "The partial archive was already discarded, so this resume kept no backup. The incomplete operation is settled and no longer blocks another command. Instance data was not restored or overwritten."),
                     operation.PreMutationContinuity is not null, request.Json, error, cancellationToken).ConfigureAwait(false);
             }
             var record = await CommitBackupArchiveAsync(vault, name, operation, service.Uid, service.Gid, error, request.Json, cancellationToken)

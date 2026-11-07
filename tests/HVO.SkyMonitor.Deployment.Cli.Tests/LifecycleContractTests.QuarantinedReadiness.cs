@@ -101,6 +101,81 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task BackupAsync_AbortStoppedInstanceOnAHostWithTooFewCpus_LeavesThePartialAndJournalUntouched()
+    {
+        using var fixture = await BackupFixtureAsync();
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var compose = (await File.ReadAllTextAsync(composePath))
+            .Replace("cpus: \"1\"", "cpus: \"2\"", StringComparison.Ordinal)
+            .Replace("mem_limit: 1G", "mem_limit: 4G", StringComparison.Ordinal);
+        SafeFileSystem.WriteTextAtomic(composePath, compose);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.ManifestPath,
+            fixture.Manifest with
+            {
+                Resources = CameraAgentContainerResources.Default,
+                ComposeModelSha256 = ComposeDeployment.ComputeSha256(compose)
+            },
+            DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+        var installation = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.ResultPath, installation with { ComposeModelSha256 = ComposeDeployment.ComputeSha256(compose) },
+            DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
+        var bulk = SeedBulk(fixture.Paths, filesPerTree: 2);
+        var owner = QuarantinedOwner(fixture);
+        var lifecycle = new FakeLifecycleClient();
+        await FailRestartAfterTheArchiveIsWrittenAsync(fixture, lifecycle, owner, discardPartial: false);
+        fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
+        fixture.Runner.Cpus = 1;
+        var partial = Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName), "*.partial").Single();
+        var before = FileSystemActivity.Snapshot(fixture.Root);
+        var (ups, stops, resumes) = (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount);
+
+        var refused = await Assert.ThrowsExactlyAsync<HostPrerequisiteException>(() =>
+            BackupAsync(fixture, lifecycle, abort: true, allowQuarantinedReadiness: true, owner: owner));
+
+        AssertRefusedFindings(refused, [HostCpusInsufficient], "the aborted backup's restart");
+        Assert.IsTrue(File.Exists(partial));
+        Assert.IsFalse(fixture.Runner.Running);
+        Assert.AreEqual((ups, stops, resumes), (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount));
+        FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "abort admission changed the partial, journal or instance data");
+        AssertBulkUntouched(bulk);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task BackupAsync_AbortStoppedInstanceWithoutCpuQuota_RestartsWithoutCpuLimitsAndWarns()
+    {
+        using var fixture = await BackupFixtureAsync();
+        var bulk = SeedBulk(fixture.Paths, filesPerTree: 2);
+        var owner = QuarantinedOwner(fixture);
+        var lifecycle = new FakeLifecycleClient();
+        await FailRestartAfterTheArchiveIsWrittenAsync(fixture, lifecycle, owner, discardPartial: false);
+        fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
+        fixture.Runner.CpuCfsQuota = false;
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var compose = await File.ReadAllTextAsync(composePath);
+        var started = fixture.Runner.StartedModels.Count;
+        using var error = new StringWriter();
+
+        var result = await BackupAsync(fixture, lifecycle, abort: true, allowQuarantinedReadiness: true, owner: owner, error: error);
+
+        Assert.AreEqual("aborted", result.Outcome);
+        Assert.IsNull(result.Backup);
+        Assert.IsTrue(fixture.Runner.Running);
+        Assert.IsEmpty(Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName), "*.partial"));
+        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(compose), fixture.Runner.StartedModels.Skip(started).Single());
+        Assert.AreEqual(compose, await File.ReadAllTextAsync(composePath));
+        AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error", "BACKUP");
+        Assert.IsTrue(result.Warnings?.Any(static warning => warning.Code == CpuQuotaUnsupported) ?? false);
+        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.IsFalse(journal.MutationStarted);
+        Assert.AreEqual(CameraAgentLifecycleManager.AbandonedBackupCode, journal.FailureCode);
+        AssertBulkUntouched(bulk);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_QuarantinedReadiness_ReachesHealthVerification()
     {
         var daemonArchitecture = ReleaseAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";

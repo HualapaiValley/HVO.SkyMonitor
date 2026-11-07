@@ -150,9 +150,9 @@ internal sealed partial class CameraAgentLifecycleManager
 
     /// <summary>
     /// Whether a backup will start the instance (#1353 PR-1369-R2 F19): a fresh backup stops and starts an installed
-    /// instance only when it is running, and a resumed one when its journal recorded that it was, as its pre-mutation
-    /// continuity. A backup that starts nothing is not held to the host's limits, so a host that could not start the
-    /// instance does not stop a backup of it.
+    /// instance only when it is running, and a resumed or aborted one when its journal recorded that it was, as its
+    /// pre-mutation continuity. A backup that starts nothing is not held to the host's limits, so a host that could not
+    /// start the instance does not stop a backup of it.
     /// </summary>
     private static async Task<bool> BackupStartsInstanceAsync(
         InstanceManifest manifest,

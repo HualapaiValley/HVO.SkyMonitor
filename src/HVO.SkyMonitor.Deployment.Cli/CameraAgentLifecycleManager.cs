@@ -1872,7 +1872,8 @@ internal sealed partial class CameraAgentLifecycleManager
 
     /// <summary>
     /// The journal gates every lifecycle command and its plan pass before anything changes, reading the journal only.
-    /// Returns the retained operation a <c>--resume</c> continues, or <see langword="null"/> for a fresh operation.
+    /// Returns the retained operation a <c>--resume</c> continues or <c>--abort</c> settles, or <see langword="null"/>
+    /// for a fresh operation.
     /// </summary>
     private static async Task<LifecycleOperationState?> AdmitAsync(
         LifecycleRequest request,
@@ -1882,7 +1883,7 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-        // Abort is not a new operation and not a resume. The backup command settles the retained journal itself.
+        // Abort settles the retained journal itself, but admission still needs its recorded restart boundary.
         if (request.Abort)
         {
             if (kind != LifecycleOperationKind.Backup)
@@ -1890,7 +1891,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 throw new InstallUsageException("--abort applies only to cameraagent backup.");
             }
 
-            return null;
+            return BackupToAbort(request, manifest, existing);
         }
         var hash = request.ComputeRequestSha256();
         // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers

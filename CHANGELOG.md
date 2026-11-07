@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent backup and upgrade can proceed when the only unhealthy readiness check is a processing-lane quarantine, by passing `--allow-quarantined-readiness`. An incomplete backup can be resumed, or abandoned with `--abort`, without restoring instance data; an archive is still committed only when its checksum verifies. #1388
+- CameraAgent backup and upgrade can proceed when the only unhealthy readiness check is a processing-lane quarantine, by passing `--allow-quarantined-readiness`. An incomplete backup can be resumed, or abandoned with `--abort`, without restoring instance data; abort checks the required restart against host limits before discarding the partial, and an archive is still committed only when its checksum verifies. #1700
 
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
 
