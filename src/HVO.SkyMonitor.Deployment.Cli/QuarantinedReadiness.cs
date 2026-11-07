@@ -58,6 +58,8 @@ internal static class QuarantinedReadiness
 
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var laneQuarantine = false;
+            long requiredProcessingQuarantine = 0;
+            long? processingTerminal = null;
             string? processingProblem = null;
             var otherUnhealthy = new List<string>();
             foreach (var check in health.GetProperty("checks").EnumerateArray())
@@ -84,7 +86,7 @@ internal static class QuarantinedReadiness
 
                 if (name == LaneCheck)
                 {
-                    if (!IsLaneQuarantine(check, out var laneProblem))
+                    if (!IsLaneQuarantine(check, out requiredProcessingQuarantine, out var laneProblem))
                     {
                         reason = laneProblem;
                         return false;
@@ -96,9 +98,13 @@ internal static class QuarantinedReadiness
 
                 if (name == ProcessingCheck)
                 {
-                    if (!IsProcessingTerminal(check, out var problem))
+                    if (!IsProcessingTerminal(check, out var terminal, out var problem))
                     {
                         processingProblem = problem;
+                    }
+                    else
+                    {
+                        processingTerminal = terminal;
                     }
 
                     continue;
@@ -119,6 +125,12 @@ internal static class QuarantinedReadiness
                 return false;
             }
 
+            if (processingTerminal is { } terminalCount && terminalCount != requiredProcessingQuarantine)
+            {
+                reason = "capture-processing terminal evidence does not match the required processing-lane quarantine.";
+                return false;
+            }
+
             if (otherUnhealthy.Count > 0)
             {
                 reason = "CameraAgent /health has unhealthy checks other than the processing-lane quarantine: " +
@@ -136,14 +148,21 @@ internal static class QuarantinedReadiness
         }
     }
 
-    private static bool IsLaneQuarantine(JsonElement check, out string reason)
+    private static bool IsLaneQuarantine(JsonElement check, out long processingQuarantine, out string reason)
     {
+        processingQuarantine = 0;
         reason = "capture-lanes is unhealthy for a reason other than a processing-lane quarantine.";
         if (check.GetProperty("description").GetString() != LaneDescription ||
             !check.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             data.GetProperty("Availability").GetString() != "Unhealthy" ||
+            data.GetProperty("Reason").GetString() != "required-quarantine" ||
             !TryNonNegative(data, "QuarantineCount", out var quarantine) || quarantine < 1 ||
-            !TryNonNegative(data, "LaneCount", out _) ||
+            !TryNonNegative(data, "LaneCount", out var lanes) || lanes < 1 ||
+            !TryNonNegative(data, "RequiredQuarantinedLaneCount", out var required) || required != 1 ||
+            !TryNonNegative(data, "RequiredPressureLaneCount", out var pressure) || pressure != 0 ||
+            !TryNonNegative(data, "OperationalFailureCount", out var failures) || failures != 0 ||
+            !TryNonNegative(data, "RequiredProcessingQuarantineCount", out processingQuarantine) ||
+            processingQuarantine < 1 || processingQuarantine > quarantine ||
             !TryNonNegative(data, "PendingCount", out _) ||
             !TryNonNegative(data, "PendingBytes", out _) ||
             !TryNonNegative(data, "LeasedCount", out _))
@@ -159,38 +178,27 @@ internal static class QuarantinedReadiness
     /// The terminal processing outcome published with a lane quarantine. A retry, a missing product, or any other
     /// reason is a different failure and stays unhealthy.
     /// </summary>
-    private static bool IsProcessingTerminal(JsonElement check, out string reason)
+    private static bool IsProcessingTerminal(JsonElement check, out long terminal, out string reason)
     {
+        terminal = 0;
         reason = "capture-processing is unhealthy for a reason other than the quarantined lane's terminal outcome.";
         if (check.GetProperty("description").GetString() != ProcessingDescription ||
             !check.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             data.GetProperty("Availability").GetString() != "Unhealthy" ||
-            !TryNonNegative(data, "TerminalCount", out var terminal) || terminal < 1)
+            !TryNonNegative(data, "TerminalCount", out terminal) || terminal < 1 ||
+            !TryNonNegative(data, "LaneQuarantineTerminalCount", out var attributed) || attributed != terminal ||
+            !TryNonNegative(data, "ProcessingQuarantineCount", out var quarantined) ||
+            !TryNonNegative(data, "RetryCount", out var retry) || retry != 0 ||
+            !TryNonNegative(data, "MissingProductCount", out var missing) || missing != 0 ||
+            !TryNonNegative(data, "ReplayTerminalCount", out var replayTerminal) || replayTerminal != 0 ||
+            !TryNonNegative(data, "ReplayRetryCount", out var replayRetry) || replayRetry != 0 ||
+            !HasFalseValue(data, "DurableStateUnavailable") || !HasFalseValue(data, "ReconciliationFailed"))
         {
             return false;
         }
 
-        var text = data.GetProperty("Reason").GetString();
-        if (string.IsNullOrEmpty(text))
-        {
-            return false;
-        }
-
-        var sawTerminal = false;
-        foreach (var token in text.Split(';', StringSplitOptions.None))
-        {
-            if (token is not ("terminal" or "processing-quarantine"))
-            {
-                return false;
-            }
-
-            if (token == "terminal")
-            {
-                sawTerminal = true;
-            }
-        }
-
-        if (!sawTerminal)
+        var expectedReason = quarantined > 0 ? "terminal;processing-quarantine" : "terminal";
+        if (data.GetProperty("Reason").GetString() != expectedReason)
         {
             return false;
         }
@@ -198,6 +206,9 @@ internal static class QuarantinedReadiness
         reason = "";
         return true;
     }
+
+    private static bool HasFalseValue(JsonElement data, string name)
+        => data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.False;
 
     private static bool TryNonNegative(JsonElement data, string name, out long value)
     {

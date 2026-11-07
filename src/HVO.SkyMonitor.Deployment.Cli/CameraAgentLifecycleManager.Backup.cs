@@ -353,25 +353,37 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var existing = BackupToAbort(request, manifest,
             await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false));
+        var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
+        await EnsureBackupUnpublishedAsync(vault, name, cancellationToken).ConfigureAwait(false);
         EnsureBackupRestartAdmitted(existing, hostLimits);
         if (existing.PreMutationContinuity is not null)
         {
             await WriteHostLimitsToInstallLogAsync(request, paths, existing.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
         }
-        var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
-        await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
-        if (existing.PreMutationContinuity is not null)
+        var service = BackupServiceFor(
+            request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+            lifecycleControlToken, verificationToken, hostLimits, existing.OperationId, uid, gid);
+        using var recovery = new CancellationTokenSource(BackupRecoveryTimeout);
+        var (cleanupFailure, restartFailure) = await RecoverBackupAsync(
+            vault, name, service, existing, existing.PreMutationContinuity is not null, recovery.Token).ConfigureAwait(false);
+        if (cleanupFailure is not null || restartFailure is not null)
         {
-            var service = BackupServiceFor(
-                request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                lifecycleControlToken, verificationToken, hostLimits, existing.OperationId, uid, gid);
-            await service.RestartAsync(existing.OperationId, cancellationToken).ConfigureAwait(false);
+            throw InstallerException.Formatted(RecoveryFailureMessage(
+                "Aborting the incomplete backup failed", cleanupFailure, restartFailure, existing.PreMutationContinuity is not null));
         }
         return await SettleAbandonedBackupAsync(
             paths, manifest, existing, daemon,
             new InstallationWarning(AbandonedBackupCode,
                 "The operator aborted the incomplete backup. Its partial archive was discarded and no backup was kept. Instance data was not restored or overwritten."),
-            existing.PreMutationContinuity is not null, request.Json, error, cancellationToken).ConfigureAwait(false);
+            existing.PreMutationContinuity is not null, request.Json, error, recovery.Token).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureBackupUnpublishedAsync(IBackupVault vault, string name, CancellationToken cancellationToken)
+    {
+        if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is not null)
+        {
+            throw InstallerException.Refused("The backup archive is already committed; rerun the same command with --resume to finish its record.");
+        }
     }
 
     /// <summary>The matching incomplete backup whose abort is admitted before anything is written or discarded.</summary>

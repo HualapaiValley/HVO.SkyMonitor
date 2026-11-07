@@ -70,11 +70,16 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
+        if (request.Abort && resumed is not null)
+        {
+            await EnsureBackupUnpublishedAsync(BackupVault.For(request),
+                BackupVaultFiles.NameFor(manifest.InstanceId, resumed.StartedUtc, resumed.OperationId), cancellationToken).ConfigureAwait(false);
+        }
         // A backup that starts the instance it stopped is held to the host's limits as a rollback is (#1357); one that
         // starts nothing is not (PR-1369-R2 F19).
         var hostLimits = imageChange ||
                          kind == LifecycleOperationKind.Backup &&
-                         await BackupStartsInstanceAsync(manifest, compose, docker, resumed, cancellationToken).ConfigureAwait(false)
+                         await BackupStartsInstanceAsync(request, manifest, compose, docker, resumed, cancellationToken).ConfigureAwait(false)
             ? AdmitHostLimits(request, paths, manifest, capabilities!)
             : null;
         if (kind == LifecycleOperationKind.Backup && resumed is null && !request.Abort)
@@ -155,14 +160,15 @@ internal sealed partial class CameraAgentLifecycleManager
     /// start the instance does not stop a backup of it.
     /// </summary>
     private static async Task<bool> BackupStartsInstanceAsync(
+        LifecycleRequest request,
         InstanceManifest manifest,
         ComposeFiles compose,
         DockerClient docker,
         LifecycleOperationState? resumed,
         CancellationToken cancellationToken)
         => manifest.LifecycleCondition == InstanceLifecycleCondition.Installed &&
-           (resumed is { MutationStarted: true }
-               ? resumed.PreMutationContinuity is not null
+           (request.Abort || resumed is { MutationStarted: true }
+               ? resumed?.PreMutationContinuity is not null
                : (await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false)).Running);
 
     /// <summary>

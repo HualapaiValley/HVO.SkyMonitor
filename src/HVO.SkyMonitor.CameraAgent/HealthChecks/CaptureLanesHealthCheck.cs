@@ -17,7 +17,14 @@ public sealed class CaptureLanesHealthCheck(CaptureLaneState state) : IHealthChe
             ["PendingCount"] = snapshot.PendingCount,
             ["PendingBytes"] = snapshot.PendingBytes,
             ["LeasedCount"] = snapshot.LeasedCount,
-            ["QuarantineCount"] = snapshot.QuarantineCount
+            ["QuarantineCount"] = snapshot.QuarantineCount,
+            ["Reason"] = snapshot.Reason,
+            ["OperationalFailureCount"] = snapshot.OperationalFailureCount,
+            ["RequiredQuarantinedLaneCount"] = snapshot.Lanes.Count(static lane => lane.Required && lane.QuarantineCount > 0),
+            ["RequiredPressureLaneCount"] = snapshot.Lanes.Count(static lane => lane.Required && lane.PressureLevel >= 2),
+            ["RequiredProcessingQuarantineCount"] = snapshot.Lanes
+                .Where(static lane => lane.Required && lane.Lane == "standard")
+                .Sum(static lane => lane.QuarantineCount)
         };
         var result = snapshot.Availability switch
         {

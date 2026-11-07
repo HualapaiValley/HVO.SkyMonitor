@@ -24,7 +24,8 @@ public sealed record CaptureProcessingSnapshot(
     string? SupersededActiveRevisionId = null,
     long LeasedCount = 0,
     long ReplayLeasedCount = 0,
-    long ReplayAbandonedCount = 0);
+    long ReplayAbandonedCount = 0,
+    long LaneQuarantineTerminalCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -46,6 +47,7 @@ public sealed class CaptureProcessingState
     private long _leased;
     private long _retry;
     private long _terminal;
+    private long _laneQuarantineTerminal;
     private long _quarantine;
     private long _missing;
     private DateTimeOffset? _oldest;
@@ -108,6 +110,9 @@ public sealed class CaptureProcessingState
             _leased = leased;
             _retry = retry;
             _terminal = terminal;
+            // ReadOperationalStateAsync counts terminal work from quarantined standard-lane rows. Graph callbacks
+            // alone do not establish that attribution and must never increase this evidence counter.
+            _laneQuarantineTerminal = terminal;
             _oldest = oldestPendingUtc;
             _durableUnavailable = false;
         }
@@ -165,6 +170,6 @@ public sealed class CaptureProcessingState
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
             _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
-            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned);
+            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned, _laneQuarantineTerminal);
     }
 }

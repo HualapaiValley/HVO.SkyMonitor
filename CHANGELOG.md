@@ -14,7 +14,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - HYG 4.4 and OpenNGC catalog builds reproduce the approved checksums with the pinned SQLite source build as well as Ubuntu's packaged SQLite. #1701
 
-- CameraAgent backup and upgrade can proceed when the only unhealthy readiness check is a processing-lane quarantine, by passing `--allow-quarantined-readiness`. An incomplete backup can be resumed, or abandoned with `--abort`, without restoring instance data. Recovery checks the required restart against host limits before touching the partial and records relaxed resource limits in the operation log before a restart. An archive is still committed only when its checksum verifies. #1700
+- CameraAgent backup, upgrade and rollback can accept a proven required standard processing-lane quarantine with `--allow-quarantined-readiness`. Per-cause health evidence keeps required pressure, worker/claim/state failures and unrelated terminal outcomes refused; older images lacking that evidence fail closed. Operational failures remain visible across backlog refreshes until the matching operation succeeds. #1700
+
+- Incomplete CameraAgent backups can be resumed or abandoned without restoring instance data. Abort retains restart protection when partial deletion fails, refuses already-published archives even before the journal advances, and keeps the journal until cleanup and restart succeed. Host-limit admission and retained warnings still precede mutation; an archive is committed only when its checksum verifies. #1700
 
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
 

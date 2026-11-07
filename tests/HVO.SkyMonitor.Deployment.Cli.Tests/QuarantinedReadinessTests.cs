@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class QuarantinedReadinessTests
+public sealed partial class QuarantinedReadinessTests
 {
     private static readonly ApprovedCatalogContract Catalog = ProductionCatalog.Get(HygV42.CatalogId);
 
@@ -145,6 +145,8 @@ public sealed class QuarantinedReadinessTests
             .Append("\",\"data\":{\"Availability\":\"").Append(laneStatus)
             .Append("\",\"LaneCount\":1,\"PendingCount\":0,\"PendingBytes\":0,\"LeasedCount\":0,\"QuarantineCount\":")
             .Append(laneQuarantine.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .Append(",\"Reason\":\"required-quarantine\",\"RequiredQuarantinedLaneCount\":1,\"RequiredPressureLaneCount\":0,\"OperationalFailureCount\":0,\"RequiredProcessingQuarantineCount\":")
+            .Append(laneQuarantine.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .Append("}},{\"name\":\"capture-admission\",\"status\":\"Healthy\",\"description\":\"Capture admission is intentionally paused.\",\"data\":{\"State\":\"Paused\",\"Version\":14,\"IsInitialized\":true}}");
         if (processing is null)
         {
@@ -154,7 +156,9 @@ public sealed class QuarantinedReadinessTests
         {
             checks.Append(",{\"name\":\"capture-processing\",\"status\":\"Unhealthy\",\"description\":\"")
                 .Append(QuarantinedReadiness.ProcessingDescription)
-                .Append("\",\"data\":{\"Availability\":\"Unhealthy\",\"PendingCount\":0,\"RetryCount\":0,\"TerminalCount\":1,\"OldestPendingAgeSeconds\":0,\"Reason\":\"")
+                .Append("\",\"data\":{\"Availability\":\"Unhealthy\",\"PendingCount\":0,\"RetryCount\":0,\"TerminalCount\":1,\"LaneQuarantineTerminalCount\":1,\"ProcessingQuarantineCount\":")
+                .Append(processing.Contains("processing-quarantine", StringComparison.Ordinal) ? "1" : "0")
+                .Append(",\"MissingProductCount\":0,\"DurableStateUnavailable\":false,\"ReconciliationFailed\":false,\"ReplayTerminalCount\":0,\"ReplayRetryCount\":0,\"OldestPendingAgeSeconds\":0,\"Reason\":\"")
                 .Append(processing)
                 .Append("\"}}");
         }

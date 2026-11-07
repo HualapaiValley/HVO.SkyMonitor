@@ -2006,11 +2006,13 @@ hvo-sky-install cameraagent backup --instance-id <uuid>
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
-`--allow-quarantined-readiness` on `backup`, `upgrade`, and `rollback` accepts a host whose only unhealthy
-readiness checks are a required processing-lane quarantine and, with it, that lane's terminal processing outcome.
-Catalog identity, installation identity, the container, and archive checksums are still verified. Any other unhealthy
-check still fails readiness. The flag is not part of the operation's identity, so a backup interrupted before the flag
-existed resumes when the same command is repeated with it.
+`--allow-quarantined-readiness` on `backup`, `upgrade`, and `rollback` requires explicit per-cause health evidence
+that the only unhealthy lane is the required `standard` processing lane, with a quarantine and no required-lane
+pressure or operational failure. An unhealthy processing check must identify the same durable lane quarantine;
+aggregate quarantine counts or a bare `terminal` reason alone are insufficient. Catalog identity, installation
+identity, the container, and archive checksums are still verified. Older images without the new cause evidence are
+refused; this flag is not a legacy-payload override. It remains outside the operation's request hash, so adding it
+does not change immutable inputs, but readiness must still prove the narrow exception.
 
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
 migration, and the upgrade then snapshots the small databases before the candidate starts, when any of these holds:
@@ -2141,22 +2143,30 @@ restart after a backup or an upgrade fail and leaves the backup operation incomp
 refuses every later lifecycle command until it is resumed or aborted. Pass `--allow-quarantined-readiness` to treat
 that quarantine as backup-safe:
 
-- `capture-lanes` may be Unhealthy only when its quarantine count is at least one and it reports the required-lane
-  failure. A required lane that is unhealthy with a quarantine count of zero is still refused.
-- `capture-processing` may be Unhealthy only together with that lane quarantine, and only for the terminal outcome the
-  quarantine records (`terminal`, or `terminal` with `processing-quarantine`). A retry, a missing product, or any other
-  reason is still refused.
+- `capture-lanes` must publish `Reason=required-quarantine`, `RequiredQuarantinedLaneCount=1`, a positive
+  `RequiredProcessingQuarantineCount`, and zero `RequiredPressureLaneCount` and `OperationalFailureCount`.
+  Optional-lane quarantines cannot justify a required-lane failure. Required pressure is refused even on the
+  quarantined lane. Worker, claim and lane-state failures remain recorded across backlog refreshes until the
+  matching worker/claim operation or state refresh succeeds.
+- If `capture-processing` is Unhealthy, its `TerminalCount` and `LaneQuarantineTerminalCount` must both equal the
+  required processing lane's quarantine count. The latter comes from durable standard-lane work, not arbitrary
+  graph callbacks. Retry, missing-product, replay-terminal/retry, unavailable-state and reconciliation failures are
+  refused. The reason must exactly match `terminal`, or `terminal;processing-quarantine` when processing quarantine
+  evidence is present. Missing, malformed or inconsistent evidence fails closed, including older image payloads.
 - Every other unhealthy check is still refused. Degraded checks do not make `/health` unavailable and are unchanged.
 - The catalog check must still be Healthy and must still name this instance's catalog. Installation identity, container
   ownership, and the archive's SHA-256 are unchanged. A partial whose bytes differ from the hash recorded when it was
   written is not committed.
 
 `--abort` discards the partial, puts the instance back the way a failed backup does, and settles the journal. It does
-not commit an archive and does not restore or overwrite instance data. It refuses a backup whose archive is already
-committed; finish that one with `--resume`. `--abort` is not a resume, and it cannot be combined with `--plan`. Run it
+not commit an archive and does not restore or overwrite instance data. A discard failure still attempts the required
+restart in `finally`, reports both failures with recovery guidance, and retains the journal until both succeed.
+It refuses a backup whose archive and record are already published, even if the journal has not reached `Committed`;
+finish that one with `--resume`. `--abort` is not a resume, and it cannot be combined with `--plan` or `--resume`. Run it
 as the same service account. When the quarantine is why the restart failed, pass `--allow-quarantined-readiness` with
-`--abort` or `--resume` as well. A settled abort does not block the next backup or upgrade. Completing or aborting a
-backup that had stopped a running instance starts that instance and resumes capture.
+`--abort` or `--resume` as well, provided that image publishes the required cause evidence. A settled abort does not
+block the next backup or upgrade. Completing or aborting a backup that had stopped a running instance starts that
+instance and resumes capture.
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall

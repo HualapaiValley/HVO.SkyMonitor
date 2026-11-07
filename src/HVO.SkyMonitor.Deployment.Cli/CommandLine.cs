@@ -181,7 +181,7 @@ internal static class CommandLine
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
         ["--abort"] = (null, "Abandon an incomplete backup: discard its partial archive, put the instance back, and leave no backup. Does not restore or overwrite instance data."),
-        ["--allow-quarantined-readiness"] = (null, "Accept /health when its only unhealthy checks are a required processing-lane quarantine and, with it, that lane's terminal processing outcome. Catalog identity, installation identity, the container, and archive checksums are still verified."),
+        ["--allow-quarantined-readiness"] = (null, "Accept /health only with explicit evidence of a required standard processing-lane quarantine and, if processing is Unhealthy, its matching durable terminal outcome. Required-lane pressure, lane worker/claim/state failures and missing cause evidence remain refused, including older unhealthy images without that evidence. Catalog identity, installation identity, the container, and archive checksums are still verified."),
         ["--json"] = (null, "Write the result, or the error, as JSON."),
         ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),

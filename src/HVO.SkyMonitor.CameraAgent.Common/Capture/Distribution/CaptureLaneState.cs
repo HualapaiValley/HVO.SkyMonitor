@@ -32,7 +32,8 @@ public sealed record CaptureLaneSnapshot(
     long RetryCount,
     long QuarantineCount,
     DateTimeOffset? OldestPendingUtc,
-    DateTimeOffset EvaluatedUtc);
+    DateTimeOffset EvaluatedUtc,
+    int OperationalFailureCount = 0);
 
 public sealed class CaptureLaneState(
     TimeProvider timeProvider,
@@ -40,6 +41,9 @@ public sealed class CaptureLaneState(
 {
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly Options.CaptureDistributionOptions _options = options.Value.CaptureDistribution;
+    private readonly object _gate = new();
+    private readonly HashSet<(string Reason, string? Lane)> _failures = [];
+    private CaptureLaneSnapshot? _backlogSnapshot;
     private CaptureLaneSnapshot _snapshot = new(
         CaptureLaneAvailability.Initializing,
         "initializing",
@@ -107,7 +111,7 @@ public sealed class CaptureLaneState(
                     capture.AgentId,
                     capture.CaptureSequence)).ToArray() ?? []));
         }
-        Volatile.Write(ref _snapshot, new CaptureLaneSnapshot(
+        var snapshot = new CaptureLaneSnapshot(
             availability,
             reason,
             lanes,
@@ -119,18 +123,50 @@ public sealed class CaptureLaneState(
             lanes.Where(static lane => lane.OldestPendingUtc is not null)
                 .Select(static lane => lane.OldestPendingUtc)
                 .Min(),
-            now));
+            now);
+        lock (_gate)
+        {
+            _backlogSnapshot = snapshot;
+            PublishSnapshot(now);
+        }
     }
 
-    internal void SetUnhealthy(string reason)
+    internal void SetUnhealthy(string reason, string? lane = null)
     {
-        var snapshot = Snapshot;
-        Volatile.Write(ref _snapshot, snapshot with
+        var now = _timeProvider.GetUtcNow();
+        lock (_gate)
         {
-            Availability = CaptureLaneAvailability.Unhealthy,
-            Reason = reason,
-            EvaluatedUtc = _timeProvider.GetUtcNow()
-        });
+            _backlogSnapshot ??= _snapshot;
+            _failures.Add((reason, lane));
+            PublishSnapshot(now);
+        }
+    }
+
+    internal void ClearUnhealthy(string reason, string? lane = null)
+    {
+        // The normal success path needs neither a lock nor a new snapshot when no failure is retained.
+        if (Snapshot.OperationalFailureCount == 0) return;
+        var now = _timeProvider.GetUtcNow();
+        lock (_gate)
+        {
+            if (_failures.Remove((reason, lane))) PublishSnapshot(now);
+        }
+    }
+
+    private void PublishSnapshot(DateTimeOffset now)
+    {
+        var snapshot = _backlogSnapshot!;
+        if (_failures.Count > 0)
+        {
+            snapshot = snapshot with
+            {
+                Availability = CaptureLaneAvailability.Unhealthy,
+                Reason = _failures.First().Reason,
+                OperationalFailureCount = _failures.Count,
+                EvaluatedUtc = now
+            };
+        }
+        Volatile.Write(ref _snapshot, snapshot);
     }
 
     internal DateTimeOffset GetUtcNow() => _timeProvider.GetUtcNow();

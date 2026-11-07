@@ -206,6 +206,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
                     owner,
                     _configuration!,
                     _abort.Token).ConfigureAwait(false);
+                _state.ClearUnhealthy("lane-claim-failed", lane.Name);
             }
             catch (OperationCanceledException) when (_abort.IsCancellationRequested)
             {
@@ -213,7 +214,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             }
             catch (Exception exception)
             {
-                _state.SetUnhealthy("lane-claim-failed");
+                _state.SetUnhealthy("lane-claim-failed", lane.Name);
                 ClaimFailed(_logger, lane.Name, exception);
                 await DelayAsync(_options.PollIntervalMilliseconds, _abort.Token).ConfigureAwait(false);
                 continue;
@@ -232,6 +233,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             try
             {
                 await ProcessLeaseAsync(handler, lease).ConfigureAwait(false);
+                _state.ClearUnhealthy("lane-worker-failed", lane.Name);
             }
             catch (OperationCanceledException) when (_abort.IsCancellationRequested)
             {
@@ -239,7 +241,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             }
             catch (Exception exception)
             {
-                _state.SetUnhealthy("lane-worker-failed");
+                _state.SetUnhealthy("lane-worker-failed", lane.Name);
                 HandlerFailed(_logger, lane.Name, exception);
                 try
                 {
@@ -390,6 +392,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
                     item.Config,
                     item.Submission,
                     _abort.Token).ConfigureAwait(false);
+                _state.ClearUnhealthy("ephemeral-worker-failed");
             }
             catch (OperationCanceledException) when (_abort.IsCancellationRequested)
             {
