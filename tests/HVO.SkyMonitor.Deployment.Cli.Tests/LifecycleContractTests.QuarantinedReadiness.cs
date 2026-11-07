@@ -144,7 +144,9 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task BackupAsync_AbortStoppedInstanceWithoutCpuQuota_RestartsWithoutCpuLimitsAndWarns()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task BackupAsync_AbortStoppedInstanceWithoutCpuQuota_RestartsWithoutCpuLimitsAndWarns(bool existingLog)
     {
         using var fixture = await BackupFixtureAsync();
         var bulk = SeedBulk(fixture.Paths, filesPerTree: 2);
@@ -156,9 +158,33 @@ public sealed partial class LifecycleContractTests
         var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
         var compose = await File.ReadAllTextAsync(composePath);
         var started = fixture.Runner.StartedModels.Count;
+        var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        var logPath = InstallLogPath(fixture, operation.OperationId);
+        const string earlierEvidence = "Earlier backup evidence.\n";
+        if (existingLog)
+        {
+            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(logPath)!);
+            SafeFileSystem.WriteTextAtomic(logPath, earlierEvidence);
+        }
         using var error = new StringWriter();
-
-        var result = await BackupAsync(fixture, lifecycle, abort: true, allowQuarantinedReadiness: true, owner: owner, error: error);
+        var loggedBeforeDiscard = false;
+        BackupVault.Override = _ => new FaultingVault(new OwnerBackupVault(new BackupVaultFiles(Path.Combine(fixture.Root, BackupVault.FolderName))))
+        {
+            DiscardFault = () =>
+            {
+                AssertRecoveryWarning(File.ReadAllText(logPath), [CpuQuotaUnsupported], "the log before partial discard", "BACKUP");
+                loggedBeforeDiscard = true;
+            }
+        };
+        LifecycleResult result;
+        try
+        {
+            result = await BackupAsync(fixture, lifecycle, abort: true, allowQuarantinedReadiness: true, owner: owner, error: error);
+        }
+        finally
+        {
+            BackupVault.Override = null;
+        }
 
         Assert.AreEqual("aborted", result.Outcome);
         Assert.IsNull(result.Backup);
@@ -167,11 +193,84 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(compose), fixture.Runner.StartedModels.Skip(started).Single());
         Assert.AreEqual(compose, await File.ReadAllTextAsync(composePath));
         AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error", "BACKUP");
+        Assert.IsTrue(loggedBeforeDiscard);
+        var log = await File.ReadAllTextAsync(logPath);
+        AssertRecoveryWarning(log, [CpuQuotaUnsupported], "the retained install log", "BACKUP");
+        if (existingLog) StringAssert.StartsWith(log, earlierEvidence, StringComparison.Ordinal);
         Assert.IsTrue(result.Warnings?.Any(static warning => warning.Code == CpuQuotaUnsupported) ?? false);
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.IsFalse(journal.MutationStarted);
         Assert.AreEqual(CameraAgentLifecycleManager.AbandonedBackupCode, journal.FailureCode);
         AssertBulkUntouched(bulk);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task BackupAsync_RestartBoundaryChangesAfterAdmission_LeavesThePartialAndInstanceUntouched(bool abort)
+    {
+        using var fixture = await BackupFixtureAsync();
+        var bulk = SeedBulk(fixture.Paths, filesPerTree: 2);
+        var owner = QuarantinedOwner(fixture);
+        var lifecycle = new FakeLifecycleClient();
+        await FailRestartAfterTheArchiveIsWrittenAsync(fixture, lifecycle, owner, discardPartial: false);
+        var retained = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
+        fixture.Runner.CpuCfsQuota = false;
+        // Admission sees an unmutated preparation that needs no restart. Another backup with the same request can
+        // supersede that preparation while this invocation waits for the locks, retaining a required restart instead.
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.LifecycleStatePath, retained with
+        {
+            OperationId = Guid.NewGuid(),
+            Phase = LifecycleOperationPhase.Prepared,
+            Status = InstallationStatus.Running,
+            MutationStarted = false,
+            PreMutationContinuity = null,
+            BackupManifestSha256 = null
+        }, DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+        var beforeLocked = Array.Empty<string>();
+        var runner = new BeforeLockedBackupReadRunner(fixture.Runner, async () =>
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.LifecycleStatePath, retained,
+                DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+            beforeLocked = FileSystemActivity.Snapshot(fixture.Root);
+        });
+        var partial = Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName), "*.partial").Single();
+        var (ups, stops, resumes) = (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount);
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Backup) with
+            {
+                Abort = abort,
+                Resume = !abort,
+                AllowQuarantinedReadiness = true
+            }, runner, _ => lifecycle, _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
+
+        StringAssert.Contains(failure.Message, "restart that was not checked", StringComparison.Ordinal);
+        Assert.IsNotEmpty(beforeLocked, "the journal interleaving was not exercised");
+        Assert.IsTrue(File.Exists(partial));
+        Assert.IsFalse(fixture.Runner.Running);
+        Assert.AreEqual((ups, stops, resumes), (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount));
+        FileSystemActivity.AssertUnchanged(beforeLocked, FileSystemActivity.Snapshot(fixture.Root), "recovery mutated before its restart was admitted");
+        AssertBulkUntouched(bulk);
+    }
+
+    /// <summary>Changes the journal after admission, immediately before the locked journal reread.</summary>
+    private sealed class BeforeLockedBackupReadRunner(IProcessRunner inner, Func<Task> beforeLockedRead) : IProcessRunner
+    {
+        private int infoCalls;
+
+        public async Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<string> command = arguments;
+            if (command is ["--host", _, ..]) command = command.Skip(2).ToArray();
+            if (fileName == "docker" && command is ["info", ..] && ++infoCalls == 2)
+            {
+                await beforeLockedRead().ConfigureAwait(false);
+            }
+            return await inner.RunAsync(fileName, arguments, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]

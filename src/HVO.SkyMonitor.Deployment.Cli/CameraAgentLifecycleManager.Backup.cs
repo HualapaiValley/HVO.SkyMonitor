@@ -186,6 +186,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         var operation = await BeginAsync(request, paths, LifecycleOperationKind.Backup, manifest, cancellationToken)
             .ConfigureAwait(false);
+        EnsureBackupRestartAdmitted(operation, hostLimits);
         var name = BackupVaultFiles.NameFor(manifest.InstanceId, operation.StartedUtc, operation.OperationId);
         if (request.DryRun)
         {
@@ -317,6 +318,15 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
+    /// <summary>A locked journal reread must not introduce a restart the pre-lock admission never checked.</summary>
+    private static void EnsureBackupRestartAdmitted(LifecycleOperationState operation, HostPrerequisiteReport? hostLimits)
+    {
+        if (operation.PreMutationContinuity is not null && hostLimits is null)
+        {
+            throw InstallerException.Formatted("The backup now requires a restart that was not checked against this host's limits. Run the same backup recovery command again.");
+        }
+    }
+
     /// <summary>
     /// Abandons an incomplete backup. A committed archive is left for <c>--resume</c>. Anything earlier has its partial
     /// discarded, the instance put back when the backup stopped it, and the journal settled so it no longer blocks a
@@ -343,6 +353,11 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var existing = BackupToAbort(request, manifest,
             await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false));
+        EnsureBackupRestartAdmitted(existing, hostLimits);
+        if (existing.PreMutationContinuity is not null)
+        {
+            await WriteHostLimitsToInstallLogAsync(request, paths, existing.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
+        }
         var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
         await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
         if (existing.PreMutationContinuity is not null)
@@ -549,7 +564,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (cleanupFailure is not null) parts.Add($"discarding its partial archive also failed ({CameraAgentStateDiagnostics.Failure(cleanupFailure)})");
         if (restartFailure is not null) parts.Add($"restarting the instance also failed ({CameraAgentStateDiagnostics.Failure(restartFailure)})");
         else if (restarted) parts.Add("the instance was restarted and resumed");
-        return $"{string.Join("; ", parts)}. Rerun the same command with --resume to finish, or with --abort to discard the partial and stop blocking later commands.";
+        return $"{string.Join("; ", parts)}. Rerun the backup with --resume to finish, or with --abort instead of --resume to discard the partial and stop blocking later commands.";
     }
 
     /// <summary>

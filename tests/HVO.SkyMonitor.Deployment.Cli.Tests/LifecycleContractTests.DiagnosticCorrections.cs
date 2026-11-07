@@ -235,7 +235,7 @@ public sealed partial class LifecycleContractTests
     {
         var method = typeof(CameraAgentLifecycleManager).GetMethod("RecoveryFailureMessage", BindingFlags.Static | BindingFlags.NonPublic)!;
         var actual = (string)method.Invoke(null, ["The backup failed (No space left on device)", new IOException("Read-only file system"), new IOException("daemon unavailable"), true])!;
-        Assert.AreEqual("The backup failed (No space left on device); discarding its partial archive also failed (Read-only file system); restarting the instance also failed (daemon unavailable). Rerun the same command with --resume to finish, or with --abort to discard the partial and stop blocking later commands.", actual);
+        Assert.AreEqual("The backup failed (No space left on device); discarding its partial archive also failed (Read-only file system); restarting the instance also failed (daemon unavailable). Rerun the backup with --resume to finish, or with --abort instead of --resume to discard the partial and stop blocking later commands.", actual);
         Console.WriteLine(JsonSerializer.Serialize(actual));
     }
 }
