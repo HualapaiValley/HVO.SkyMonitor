@@ -2145,9 +2145,13 @@ that quarantine as backup-safe:
 
 - `capture-lanes` must publish `Reason=required-quarantine`, `RequiredQuarantinedLaneCount=1`, a positive
   `RequiredProcessingQuarantineCount`, and zero `RequiredPressureLaneCount` and `OperationalFailureCount`.
-  Optional-lane quarantines cannot justify a required-lane failure. Required pressure is refused even on the
-  quarantined lane. Worker, claim and lane-state failures remain recorded across backlog refreshes until the
-  matching worker/claim operation or state refresh succeeds.
+  Optional-lane quarantines cannot justify a required-lane failure. For this readiness decision, required pressure
+  means a hard count, byte or oldest-age limit reached by `pending`, `leased` or `retry_wait` work. Quarantined rows
+  are excluded from those three measurements: their age and the persisted admission `pressure_state=2` do not
+  constitute active-work pressure. Genuine active-work pressure is still refused, including on the quarantined
+  lane. Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
+  Worker, claim and lane-state failures remain recorded across backlog refreshes until the matching worker/claim
+  operation or state refresh succeeds.
 - If `capture-processing` is Unhealthy, its `TerminalCount` and `LaneQuarantineTerminalCount` must both equal the
   required processing lane's quarantine count. The latter comes from durable standard-lane work, not arbitrary
   graph callbacks. Retry, missing-product, replay-terminal/retry, unavailable-state and reconciliation failures are
@@ -2167,6 +2171,21 @@ as the same service account. When the quarantine is why the restart failed, pass
 `--abort` or `--resume` as well, provided that image publishes the required cause evidence. A settled abort does not
 block the next backup or upgrade. Completing or aborting a backup that had stopped a running instance starts that
 instance and resumes capture.
+
+If abort's cleanup and restart succeed but its four-minute recovery budget expires while settling the journal,
+the command may exit with cancellation and leave the operation incomplete. Rerun the same backup with `--abort`
+(and the readiness flag when needed); it is safe to repeat the restart and finish settlement. Do not delete or edit
+the retained journal to unblock another command.
+
+**An incomplete backup on an older image.** The readiness flag cannot accept an image that lacks the cause evidence
+above. If that image supports the owner **Processing lane quarantine** acknowledgement described in
+[Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade),
+review the failed capture and explicitly acknowledge its standard-lane quarantine as the owner. That preserves raw
+bytes and failed execution history while abandoning that lane's work; it does not retry it or mark it successful.
+After health recovers, rerun the original backup with `--resume` to finish or `--abort` to discard its partial.
+Evidence-invalid quarantines require the raw-evidence recovery procedure in the same section instead. If the old
+image exposes neither recovery action, stop and arrange operator-assisted recovery for that image before retrying
+the installer. Keep the journal, partial and instance stores intact; this flag does not bypass old-image health.
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall

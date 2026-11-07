@@ -18,7 +18,8 @@ public sealed record CaptureLaneBacklogSnapshot(
     long RetryCount,
     long QuarantineCount,
     int PressureLevel,
-    IReadOnlyList<CaptureLanePendingCaptureSnapshot> PendingCaptures);
+    IReadOnlyList<CaptureLanePendingCaptureSnapshot> PendingCaptures,
+    bool? HasActiveWorkPressure = null);
 
 public sealed record CaptureLanePendingCaptureSnapshot(string AgentId, long CaptureSequence);
 
@@ -84,6 +85,12 @@ public sealed class CaptureLaneState(
                           CaptureLanePressureMath.IsAtOrAbovePercentage(
                               backlog.PendingBytes, bytesMaximum, _options.PressureRecoveryPercent);
             var pressure = Math.Max(backlog.PressureLevel, hard ? 2 : warning ? 1 : 0);
+            // pressure_state and the aggregate age include quarantine. The installer exception needs a separate
+            // hard-limit decision over active work, without changing the lane's normal admission status.
+            bool? activePressure = backlog.ActiveWork is { } active
+                ? active.Count >= countMaximum || active.Bytes >= bytesMaximum ||
+                  (active.OldestUtc is { } activeOldest && now - activeOldest >= ageMaximum)
+                : null;
             hard = pressure == 2;
             warning = pressure >= 1;
             if (backlog.Required && (hard || backlog.QuarantineCount > 0))
@@ -109,7 +116,8 @@ public sealed class CaptureLaneState(
                 pressure,
                 backlog.PendingCaptures?.Select(static capture => new CaptureLanePendingCaptureSnapshot(
                     capture.AgentId,
-                    capture.CaptureSequence)).ToArray() ?? []));
+                    capture.CaptureSequence)).ToArray() ?? [],
+                activePressure));
         }
         var snapshot = new CaptureLaneSnapshot(
             availability,

@@ -21,7 +21,8 @@ public sealed class CaptureLanesHealthCheck(CaptureLaneState state) : IHealthChe
             ["Reason"] = snapshot.Reason,
             ["OperationalFailureCount"] = snapshot.OperationalFailureCount,
             ["RequiredQuarantinedLaneCount"] = snapshot.Lanes.Count(static lane => lane.Required && lane.QuarantineCount > 0),
-            ["RequiredPressureLaneCount"] = snapshot.Lanes.Count(static lane => lane.Required && lane.PressureLevel >= 2),
+            ["RequiredPressureLaneCount"] = snapshot.Lanes.Count(static lane =>
+                lane.Required && (lane.HasActiveWorkPressure ?? lane.PressureLevel >= 2)),
             ["RequiredProcessingQuarantineCount"] = snapshot.Lanes
                 .Where(static lane => lane.Required && lane.Lane == "standard")
                 .Sum(static lane => lane.QuarantineCount)
