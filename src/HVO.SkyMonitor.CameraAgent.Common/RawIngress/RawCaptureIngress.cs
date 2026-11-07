@@ -1227,6 +1227,7 @@ internal sealed partial class RawCaptureIngress :
         {
             var prior = _laneState.Snapshot;
             _laneState.Update(await _laneStore.ReadBacklogsAsync(cancellationToken).ConfigureAwait(false));
+            _laneState.ClearUnhealthy("lane-state-unavailable");
             var current = _laneState.Snapshot;
             if (current.Availability != prior.Availability || !string.Equals(current.Reason, prior.Reason, StringComparison.Ordinal))
             {
