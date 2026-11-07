@@ -33,6 +33,10 @@ for both files:
 | `celestial_objects` | `79f071b94db9d77fddd1db1949af6162b2e6b2a713bf8ac834d8555fc3591a15` |
 | `celestial_object_aliases` | `9fef7733add7c7d11b6938e270d7a5d348aa80f1d5086d371a07fdaae4f965fc` |
 
+Full `.dump` output (schema, metadata, all rows and index) also compares
+byte-for-byte, SHA-256
+`101ed1cfa307736c198722b6a7ddf175db84d5bb9d33657bc58cc7ed9c90eb61`.
+
 Setting `secure_delete=ON` before the unchanged HYG SQL on the upstream CLI
 produces a file byte-identical to the approved Ubuntu output. This controlled
 change reproduces the original pin; changing the pin is unnecessary.
@@ -88,6 +92,29 @@ SHA-256 was `5c09ccc5b2b3f0f7e17acab3f317817c3b9f04ab8815131e17d77a10e29b6d26`;
 the Ubuntu `/usr/bin/sqlite3` executable was
 `04d261a472c6838700310da6c8abaec05534945c6fe1a2b3353e945313fc20b4`.
 Binary checksums describe these particular tool builds, not a new catalog pin.
+
+To repeat the controlled pre-fix experiment, use the verified decompressed CSV
+and source-built CLI above. Snapshot only the old libraries into scratch, emit
+the original SQL unchanged, and run it against two nonexistent database paths:
+
+```bash
+probe_dir="$(mktemp -d)"
+base=91f56c727d27acc0805a1fd1258778ba386b1af3
+for library in catalog-common.sh hyg-v44-common.sh; do
+  git show "$base:scripts/catalog/$library" > "$probe_dir/$library"
+done
+bash -euo pipefail -c '
+  source "$1"
+  sqlite3() { cat; }
+  hyg44_build_database "$2" unused
+' _ "$probe_dir/hyg-v44-common.sh" /absolute/path/hyg_v44.csv > "$probe_dir/recipe.sql"
+/absolute/path/upstream/sqlite3 "$probe_dir/default.sqlite" < "$probe_dir/recipe.sql"
+/absolute/path/upstream/sqlite3 -cmd 'PRAGMA secure_delete=ON;' \
+  "$probe_dir/explicit-on.sqlite" < "$probe_dir/recipe.sql"
+sha256sum "$probe_dir/default.sqlite" "$probe_dir/explicit-on.sqlite"
+```
+
+The results are respectively `fbcfa886…24ea` and `2cc06890…3321` as listed above.
 
 ## Inputs and offline regression
 
