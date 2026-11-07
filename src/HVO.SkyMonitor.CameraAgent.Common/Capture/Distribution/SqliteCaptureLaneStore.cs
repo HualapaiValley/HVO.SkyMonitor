@@ -724,7 +724,10 @@ LIMIT 1;
             SELECT COUNT(*), COALESCE(SUM(r.payload_length), 0), MIN(r.durable_ingress_unix_ms),
                    COALESCE(SUM(CASE WHEN w.state = 'leased' THEN 1 ELSE 0 END), 0),
                    COALESCE(SUM(CASE WHEN w.state = 'retry_wait' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN w.state = 'quarantined' THEN 1 ELSE 0 END), 0)
+                   COALESCE(SUM(CASE WHEN w.state = 'quarantined' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN w.state IN ('pending', 'leased', 'retry_wait') THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN w.state IN ('pending', 'leased', 'retry_wait') THEN r.payload_length ELSE 0 END), 0),
+                   MIN(CASE WHEN w.state IN ('pending', 'leased', 'retry_wait') THEN r.durable_ingress_unix_ms END)
             FROM capture_lane_work w
             JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
             WHERE w.lane_name = $lane AND w.state IN ('pending', 'leased', 'retry_wait', 'quarantined');
@@ -740,6 +743,12 @@ LIMIT 1;
         var leased = reader.GetInt64(3);
         var retrying = reader.GetInt64(4);
         var quarantined = reader.GetInt64(5);
+        // The persisted pressure_state also latches quarantine. Keep ordinary admission/retention unchanged and
+        // publish independent queue evidence so health can distinguish quarantine from actual backlog pressure.
+        var active = new CaptureLaneActiveBacklog(reader.GetInt64(6), reader.GetInt64(7),
+            await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)));
         await reader.DisposeAsync().ConfigureAwait(false);
         var required = count == 0
             ? lane.Required
@@ -753,7 +762,8 @@ LIMIT 1;
             leased,
             retrying,
             quarantined,
-            PendingCaptures: []);
+            PendingCaptures: [],
+            ActiveWork: active);
         using var pressure = connection.CreateCommand();
         pressure.Transaction = transaction;
         pressure.CommandText = "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = $lane;";

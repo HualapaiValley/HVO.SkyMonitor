@@ -8,8 +8,16 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal interface IOwnerBootstrapClient
 {
-    /// <summary>Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.</summary>
-    Task WaitForHealthAsync(ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null);
+    /// <summary>
+    /// Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.
+    /// With <paramref name="allowQuarantinedReadiness"/>, an otherwise ready host whose only unhealthy checks are a
+    /// processing-lane quarantine is ready too.
+    /// </summary>
+    Task WaitForHealthAsync(
+        ApprovedCatalogContract expectedCatalog,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null,
+        bool allowQuarantinedReadiness = false);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
     Task<string> VerifyInstallationAsync(
@@ -51,16 +59,21 @@ internal sealed class OwnerBootstrapClient(
         TimeSpan.FromSeconds(1));
 
     public async Task WaitForHealthAsync(
-        ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+        ApprovedCatalogContract expectedCatalog,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null,
+        bool allowQuarantinedReadiness = false)
     {
         ArgumentNullException.ThrowIfNull(expectedCatalog);
-        using var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = false,
-            UseProxy = false,
-            CheckCertificateRevocationList = true
-        };
-        using var client = new HttpClient(handler, disposeHandler: false)
+        using var ownedHandler = handler is null
+            ? new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                UseProxy = false,
+                CheckCertificateRevocationList = true
+            }
+            : null;
+        using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
         {
             BaseAddress = baseAddress,
             Timeout = TimeSpan.FromSeconds(5)
@@ -77,20 +90,21 @@ internal sealed class OwnerBootstrapClient(
                 if (alive.IsSuccessStatusCode && health.IsSuccessStatusCode)
                 {
                     using var document = JsonDocument.Parse(latest);
-                    var catalog = document.RootElement.GetProperty("checks").EnumerateArray().Single(item =>
-                        item.GetProperty("name").GetString() == "catalog");
-                    var data = catalog.GetProperty("data");
-                    // A host predating issue #521 does not report PackageVersion; when present it must be this lineage's.
-                    if (data.GetProperty("CatalogId").GetString() == expectedCatalog.CatalogId &&
-                        data.GetProperty("CatalogVersion").GetString() == expectedCatalog.CatalogVersion &&
-                        data.GetProperty("SchemaVersion").GetString() == expectedCatalog.SchemaVersion &&
-                        data.GetProperty("PreprocessingVersion").GetString() == expectedCatalog.PreprocessingVersion &&
-                        data.GetProperty("RowCount").GetInt64() == expectedCatalog.RowCount &&
-                        (!data.TryGetProperty("PackageVersion", out var packageVersion) ||
-                         expectedCatalog.IsPackageVersion(packageVersion.GetString())))
+                    if (QuarantinedReadiness.CatalogMatches(document.RootElement, expectedCatalog))
                     {
                         return;
                     }
+                }
+                else if (allowQuarantinedReadiness && alive.IsSuccessStatusCode &&
+                         health.StatusCode == HttpStatusCode.ServiceUnavailable)
+                {
+                    using var document = JsonDocument.Parse(latest);
+                    if (QuarantinedReadiness.TryAccept(document.RootElement, expectedCatalog, out var reason))
+                    {
+                        return;
+                    }
+
+                    latest = reason;
                 }
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)

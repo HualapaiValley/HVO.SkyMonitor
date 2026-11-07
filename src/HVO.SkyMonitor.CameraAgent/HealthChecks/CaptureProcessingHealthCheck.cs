@@ -16,6 +16,7 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
             ["PendingCount"] = snapshot.PendingCount,
             ["RetryCount"] = snapshot.RetryCount,
             ["TerminalCount"] = snapshot.TerminalCount,
+            ["LaneQuarantineTerminalCount"] = snapshot.LaneQuarantineTerminalCount,
             ["ProcessingQuarantineCount"] = snapshot.ProcessingQuarantineCount,
             ["MissingProductCount"] = snapshot.MissingProductCount,
             ["DurableStateUnavailable"] = snapshot.DurableStateUnavailable,

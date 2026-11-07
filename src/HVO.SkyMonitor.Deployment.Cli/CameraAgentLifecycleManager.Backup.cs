@@ -177,8 +177,16 @@ internal sealed partial class CameraAgentLifecycleManager
         var stores = BackupStores(paths, manifest);
         var running = manifest.LifecycleCondition == InstanceLifecycleCondition.Installed &&
                       (await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false)).Running;
+        if (request.Abort)
+        {
+            return await AbortBackupAsync(
+                request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                lifecycleControlToken, verificationToken, hostLimits, vault, daemon, uid, gid, error, cancellationToken)
+                .ConfigureAwait(false);
+        }
         var operation = await BeginAsync(request, paths, LifecycleOperationKind.Backup, manifest, cancellationToken)
             .ConfigureAwait(false);
+        EnsureBackupRestartAdmitted(operation, hostLimits);
         var name = BackupVaultFiles.NameFor(manifest.InstanceId, operation.StartedUtc, operation.OperationId);
         if (request.DryRun)
         {
@@ -191,12 +199,9 @@ internal sealed partial class CameraAgentLifecycleManager
                     await CameraAgentStateSnapshotRetention.PlanAsync(paths, manifest, cancellationToken).ConfigureAwait(false))
             };
         }
-        var service = new BackupService(
-            paths, manifest, installationResult, compose, docker,
-            CreateLifecycleClient(installationResult.Url, lifecycleClientFactory),
-            ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url),
-            lifecycleControlToken, verificationToken, hostLimits,
-            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D")), uid, gid);
+        var service = BackupServiceFor(
+            request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+            lifecycleControlToken, verificationToken, hostLimits, operation.OperationId, uid, gid);
         // The limits the restart goes ahead without are kept in the operation's install log, as a rollback keeps them.
         await WriteHostLimitsToInstallLogAsync(request, paths, operation.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
         if (operation.MutationStarted)
@@ -313,10 +318,160 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
+    /// <summary>A locked journal reread must not introduce a restart the pre-lock admission never checked.</summary>
+    private static void EnsureBackupRestartAdmitted(LifecycleOperationState operation, HostPrerequisiteReport? hostLimits)
+    {
+        if (operation.PreMutationContinuity is not null && hostLimits is null)
+        {
+            throw InstallerException.Formatted("The backup now requires a restart that was not checked against this host's limits. Run the same backup recovery command again.");
+        }
+    }
+
+    /// <summary>
+    /// Abandons an incomplete backup. A committed archive is left for <c>--resume</c>. Anything earlier has its partial
+    /// discarded, the instance put back when the backup stopped it, and the journal settled so it no longer blocks a
+    /// later command. Instance data is not restored or overwritten, and no archive is committed.
+    /// </summary>
+    private static async Task<LifecycleResult> AbortBackupAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        HostPrerequisiteReport? hostLimits,
+        IBackupVault vault,
+        DockerDaemonIdentity daemon,
+        uint uid,
+        uint gid,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var existing = BackupToAbort(request, manifest,
+            await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false));
+        var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
+        await EnsureBackupUnpublishedAsync(vault, name, cancellationToken).ConfigureAwait(false);
+        EnsureBackupRestartAdmitted(existing, hostLimits);
+        if (existing.PreMutationContinuity is not null)
+        {
+            await WriteHostLimitsToInstallLogAsync(request, paths, existing.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
+        }
+        var service = BackupServiceFor(
+            request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+            lifecycleControlToken, verificationToken, hostLimits, existing.OperationId, uid, gid);
+        using var recovery = new CancellationTokenSource(BackupRecoveryTimeout);
+        var (cleanupFailure, restartFailure) = await RecoverBackupAsync(
+            vault, name, service, existing, existing.PreMutationContinuity is not null, recovery.Token).ConfigureAwait(false);
+        if (cleanupFailure is not null || restartFailure is not null)
+        {
+            throw InstallerException.Formatted(RecoveryFailureMessage(
+                "Aborting the incomplete backup failed", cleanupFailure, restartFailure, existing.PreMutationContinuity is not null));
+        }
+        return await SettleAbandonedBackupAsync(
+            paths, manifest, existing, daemon,
+            new InstallationWarning(AbandonedBackupCode,
+                "The operator aborted the incomplete backup. Its partial archive was discarded and no backup was kept. Instance data was not restored or overwritten."),
+            existing.PreMutationContinuity is not null, request.Json, error, recovery.Token).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureBackupUnpublishedAsync(IBackupVault vault, string name, CancellationToken cancellationToken)
+    {
+        if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is not null)
+        {
+            throw InstallerException.Refused("The backup archive is already committed; rerun the backup with --resume instead of --abort to finish its record.");
+        }
+    }
+
+    /// <summary>The matching incomplete backup whose abort is admitted before anything is written or discarded.</summary>
+    private static LifecycleOperationState BackupToAbort(
+        LifecycleRequest request,
+        InstanceManifest manifest,
+        LifecycleOperationState? existing)
+    {
+        if (existing is not { Kind: LifecycleOperationKind.Backup } || existing.InstanceId != manifest.InstanceId ||
+            existing.Status == InstallationStatus.Completed || IsRefused(existing) || IsAbandonedBackup(existing) ||
+            (existing.Status == InstallationStatus.Failed && !existing.MutationStarted))
+        {
+            throw InstallerException.Refused("No incomplete backup operation exists to abort.");
+        }
+        if (existing.RequestSha256 != request.ComputeRequestSha256())
+        {
+            throw InstallerException.Refused("The retained lifecycle operation belongs to different immutable inputs.");
+        }
+        if (existing.Phase == LifecycleOperationPhase.Committed)
+        {
+            throw InstallerException.Refused("The backup archive is already committed; rerun the backup with --resume instead of --abort to finish its record.");
+        }
+
+        return existing;
+    }
+
+    /// <summary>
+    /// Records an incomplete backup as terminal and no longer blocking. The caller has already discarded any partial
+    /// and put the instance back; this writes no archive and does not touch instance data.
+    /// </summary>
+    private static async Task<LifecycleResult> SettleAbandonedBackupAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        DockerDaemonIdentity daemon,
+        InstallationWarning warning,
+        bool restarted,
+        bool json,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        await RecordAsync(paths, operation with
+        {
+            Phase = LifecycleOperationPhase.Prepared,
+            Status = InstallationStatus.Failed,
+            MutationStarted = false,
+            FailureCode = warning.Code,
+            FailureMessage = warning.Message
+        }, cancellationToken).ConfigureAwait(false);
+        if (!json)
+        {
+            await error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
+        }
+        var settled = Result(
+            operation.Kind, "aborted", operation.OperationId, paths, manifest, daemon, restarted ? true : null, restarted ? true : null);
+        return settled with { Warnings = [warning] };
+    }
+
+    private static BackupService BackupServiceFor(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        HostPrerequisiteReport? hostLimits,
+        Guid operationId,
+        uint uid,
+        uint gid)
+        => new(
+            paths, manifest, installationResult, compose, docker,
+            CreateLifecycleClient(installationResult.Url, lifecycleClientFactory),
+            ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url),
+            lifecycleControlToken, verificationToken, hostLimits,
+            Path.Combine(paths.OperationsRoot, "lifecycle", operationId.ToString("D")), uid, gid)
+        {
+            AllowQuarantinedReadiness = request.AllowQuarantinedReadiness
+        };
+
     /// <summary>
     /// Finishes an interrupted backup. Before its archive was complete, nothing is kept: the partial is discarded, the
     /// instance is put back as it was, and the operation is settled as failed. After, the archive is read back, proved
-    /// whole and committed, and the instance is put back.
+    /// whole and committed, and the instance is put back. A partial that recovery already discarded is settled without
+    /// a backup once the instance is back, so the unfinished operation stops blocking later commands.
     /// </summary>
     private static async Task<LifecycleResult> ResumeBackupAsync(
         LifecycleRequest request,
@@ -335,6 +490,19 @@ internal sealed partial class CameraAgentLifecycleManager
             if (operation.PreMutationContinuity is not null)
             {
                 await service.RestartAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+            }
+            if (operation.Phase == LifecycleOperationPhase.BackupRecorded &&
+                await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is null &&
+                !(await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false))
+                    .Any(partial => partial.Name == name))
+            {
+                // Recovery already discarded the partial after readiness failed. The archive cannot be committed, and
+                // leaving the journal mutated would block every later command. Settle it once the instance is back.
+                return await SettleAbandonedBackupAsync(
+                    paths, manifest, operation, daemon,
+                    new InstallationWarning(MissingPartialBackupCode,
+                        "The partial archive was already discarded, so this resume kept no backup. The incomplete operation is settled and no longer blocks another command. Instance data was not restored or overwritten."),
+                    operation.PreMutationContinuity is not null, request.Json, error, cancellationToken).ConfigureAwait(false);
             }
             var record = await CommitBackupArchiveAsync(vault, name, operation, service.Uid, service.Gid, error, request.Json, cancellationToken)
                 .ConfigureAwait(false);
@@ -408,7 +576,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (cleanupFailure is not null) parts.Add($"discarding its partial archive also failed ({CameraAgentStateDiagnostics.Failure(cleanupFailure)})");
         if (restartFailure is not null) parts.Add($"restarting the instance also failed ({CameraAgentStateDiagnostics.Failure(restartFailure)})");
         else if (restarted) parts.Add("the instance was restarted and resumed");
-        return $"{string.Join("; ", parts)}. Rerun the same command with --resume to finish.";
+        return $"{string.Join("; ", parts)}. Rerun the backup with --resume to finish, or with --abort instead of --resume to discard the partial and stop blocking later commands.";
     }
 
     /// <summary>
@@ -588,6 +756,11 @@ internal sealed partial class CameraAgentLifecycleManager
         uint Gid)
     {
         /// <summary>
+        /// When set, a processing-lane quarantine is backup-safe readiness. Archive checksums are unchanged.
+        /// </summary>
+        public bool AllowQuarantinedReadiness { get; init; }
+
+        /// <summary>
         /// Starts the instance as Docker here can run it, as every lifecycle start does (#1357,
         /// <see cref="StartOnThisHostAsync"/>), then verifies it and resumes capture. A host without CPU quota support was
         /// warned of, and its install log written, in <see cref="OperationRoot"/>, before the instance was stopped.
@@ -597,7 +770,8 @@ internal sealed partial class CameraAgentLifecycleManager
             EnsureDaemon(Manifest.DockerDaemon, await Docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await StartOnThisHostAsync(Docker, Compose, HostLimits, OperationRoot, cancellationToken).ConfigureAwait(false);
             await VerifyCandidateAsync(Owner, Docker, Compose, Paths, Manifest, Result, Manifest.Image, VerificationToken,
-                Manifest.RuntimeUid, Manifest.RuntimeGid, cancellationToken).ConfigureAwait(false);
+                Manifest.RuntimeUid, Manifest.RuntimeGid, cancellationToken,
+                allowQuarantinedReadiness: AllowQuarantinedReadiness).ConfigureAwait(false);
             await Lifecycle.ResumeAsync(operationId, LifecycleControlToken, cancellationToken).ConfigureAwait(false);
         }
     }

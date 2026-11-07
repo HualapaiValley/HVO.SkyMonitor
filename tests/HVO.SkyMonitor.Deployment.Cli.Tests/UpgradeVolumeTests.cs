@@ -249,7 +249,11 @@ public sealed class UpgradeVolumeTests
 
     private sealed class VolumeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
-        public Task WaitForHealthAsync(ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+        public Task WaitForHealthAsync(
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
             => Task.CompletedTask;
 
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
