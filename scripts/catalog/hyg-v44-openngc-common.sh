@@ -553,10 +553,12 @@ hygngc_compose_database() {
 }
 
 # Removes the source_ and build_ tables and rewrites the file, so that two builds from the same inputs are
-# byte-identical.
+# byte-identical. secure_delete is forced for the same reason as the HYG 4.4 builder: VACUUM otherwise preserves
+# unused page bytes when SQLite was compiled without SQLITE_SECURE_DELETE, and the pinned database was not built that way.
 hygngc_finish_database() {
     sqlite3 -batch "$1" > /dev/null <<'SQL'
 .bail on
+PRAGMA secure_delete = ON;
 DROP TABLE build_transformations;
 DROP TABLE build_outline_kept;
 DROP TABLE build_outline_rows;

@@ -52,7 +52,12 @@ hyg44_is_supported_package_version() {
 }
 
 # Writes the schema-3 database for one verified decompressed source. The SQL is the whole transformation
-# recipe for preprocessing version 4; any change to it is a new preprocessing version, never a new revision.
+# recipe for preprocessing version 4; any change to the rows it writes is a new preprocessing version, never a new
+# revision. secure_delete is not part of that recipe: it only zeros unused page bytes. The pinned database was
+# serialized with secure delete on, which is the Ubuntu and Debian SQLite 3.45.1 default (SQLITE_SECURE_DELETE).
+# Upstream sqlite 3.45.1 leaves those bytes untouched, so the same rows hash to
+# fbcfa886aea87d30584c038121310205b66840f1ccd470eb2f51e86ab9c024ea instead of the pin. Forcing the pragma makes both
+# serializers write the pinned bytes.
 hyg44_build_database() {
     local csv="$1"
     local database="$2"
@@ -62,6 +67,7 @@ hyg44_build_database() {
     esac
     sqlite3 "$database" <<SQL
 .bail on
+PRAGMA secure_delete = ON;
 PRAGMA page_size = 4096;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = OFF;

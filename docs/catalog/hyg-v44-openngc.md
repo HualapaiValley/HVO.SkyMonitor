@@ -46,7 +46,10 @@ The default catalog for a fresh install remains HYG 4.2.
 - Preprocessing version: `5`
 - SQLite schema/user version: `4`
 - Manifest version: `3`
-- SQLite serializer: `sqlite3 3.45.1`
+- SQLite serializer: `sqlite3 3.45.1` with `PRAGMA secure_delete = ON` during
+  the final `VACUUM`, the same serializer constraint as
+  [HYG 4.4](hyg-v44.md#pinned-evidence). The stars component is still the
+  unchanged HYG 4.4 database bytes.
 - Canonical builder: Ubuntu 24.04 on `linux/amd64`. Two independent builds
   produced byte-identical databases and bundles.
 - Generated SQLite file: `hyg_v44_openngc.sqlite`

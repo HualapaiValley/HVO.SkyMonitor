@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- The HYG 4.4 and HYG 4.4 + OpenNGC catalog builders force `PRAGMA secure_delete = ON`, so `sqlite3 3.45.1` reproduces the pinned database bytes. A SQLite built without `SQLITE_SECURE_DELETE`, including `scripts/catalog/install-sqlite-3.45.1.sh`, was leaving unused page bytes in place and hashing the same 16,166,912-byte HYG 4.4 database to `fbcfa886aea87d30584c038121310205b66840f1ccd470eb2f51e86ab9c024ea` instead of `2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321`.
+
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
 
 ### Security
