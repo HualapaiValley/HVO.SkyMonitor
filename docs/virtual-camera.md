@@ -24,14 +24,17 @@ the sensor-acquisition stage.
 
 Ordinary VirtualSky captures wait through the effective setpoint exposure using the host's
 `TimeProvider` before rendering or staging a frame. Acquisition start is the operational
-UTC at module entry, exposure end is start plus exposure, and readout completion follows
+UTC when the exposure wait begins, exposure end is start plus exposure, and readout completion follows
 rendering. Cancellation, including capture-service shutdown, interrupts the wait before
 any frame or staged scene can be published. Continuous cadence starts the next acquisition
 after rendering and durable handoff, without an additional inter-exposure delay.
 
-The modeled celestial/scenario clocks and frame request timestamp retain their existing
-semantics, including fixed scene and fixed sequence mappings. Retained acquisition timing
-is recorded separately in the raw descriptor and supplies the satellite processing interval.
+The modeled celestial/scenario clocks retain their existing semantics, including fixed scene
+and fixed sequence mappings. The module's render frame keeps the requested timestamp;
+durable raw reconstruction timestamps the frame at the descriptor's acquisition start.
+Consumers bind modeled request time to the descriptor's requested start, independently of
+that reconstructed frame timestamp. The raw descriptor supplies the satellite processing
+interval; cloud observations retain their modeled scenario interval.
 Focus previews remain render-only: they model exposure energy without a real exposure wait
 and do not advance the capture sequence or stage artifacts. Algorithm and pixel fixtures
 use an explicitly accelerated test clock; acquisition tests control time manually.
