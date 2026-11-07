@@ -1,22 +1,26 @@
+using System.Diagnostics;
+
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
 /// One-shot exposure clock. Rendering/algorithm fixtures opt into automatic advancement; acquisition tests advance
 /// manually to prove that no frame can complete early. This affects only tests, never a runtime camera option.
 /// </summary>
-internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool autoAdvance = false) : TimeProvider
+internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool autoAdvance = false, bool elapseRealTime = false) : TimeProvider
 {
     private readonly object _sync = new();
     private readonly List<ExposureTimer> _timers = [];
     private long _ticks = startUtc.UtcTicks;
+    private readonly long _realStartTimestamp = Stopwatch.GetTimestamp();
+    private long CurrentTicks => _ticks + (elapseRealTime ? Stopwatch.GetElapsedTime(_realStartTimestamp).Ticks : 0);
     internal TaskCompletionSource TimerCreated { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-    public override DateTimeOffset GetUtcNow() { lock (_sync) return new(_ticks, TimeSpan.Zero); }
-    public override long GetTimestamp() { lock (_sync) return _ticks; }
+    public override DateTimeOffset GetUtcNow() { lock (_sync) return new(CurrentTicks, TimeSpan.Zero); }
+    public override long GetTimestamp() { lock (_sync) return CurrentTicks; }
     internal int ActiveTimers { get { lock (_sync) return _timers.Count; } }
 
-    // Pixel/provenance fixtures intentionally measure modeled scenes rather than wall-clock acquisition.
-    internal static ExposureTestTimeProvider ForRendering() => new(new(2000, 1, 1, 0, 0, 0, TimeSpan.Zero), true);
+    // Skip only exposure time in rendering fixtures; retain real render/stage timing for performance evidence.
+    internal static ExposureTestTimeProvider ForRendering() => new(new(2000, 1, 1, 0, 0, 0, TimeSpan.Zero), true, true);
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
@@ -24,7 +28,7 @@ internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool aut
         ExposureTimer timer;
         lock (_sync)
         {
-            timer = new(this, callback, state, _ticks + dueTime.Ticks);
+            timer = new(this, callback, state, CurrentTicks + dueTime.Ticks);
             _timers.Add(timer);
         }
         TimerCreated.TrySetResult();
@@ -38,7 +42,7 @@ internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool aut
         lock (_sync)
         {
             _ticks += elapsed.Ticks;
-            ready = _timers.Where(timer => timer.Deadline <= _ticks).ToList();
+            ready = _timers.Where(timer => timer.Deadline <= CurrentTicks).ToList();
             foreach (var timer in ready) _timers.Remove(timer);
         }
         foreach (var timer in ready) timer.Fire();
