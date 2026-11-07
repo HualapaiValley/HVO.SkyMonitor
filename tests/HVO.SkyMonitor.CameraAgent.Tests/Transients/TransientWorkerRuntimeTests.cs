@@ -1978,8 +1978,9 @@ public sealed partial class TransientWorkerRuntimeTests
     {
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var clock = new ExposureTestTimeProvider(epoch, true);
         var module = new VirtualSkyCameraModule(
-            ExposureTestTimeProvider.ForRendering(),
+            clock,
             provider.GetRequiredService<ICelestialCatalog>(),
             new ProjectedSceneStore(),
             stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
@@ -1998,6 +1999,9 @@ public sealed partial class TransientWorkerRuntimeTests
                 TimeSpan.FromSeconds(5),
                 CaptureMode.Still,
                 new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
+            // Keep the fixture's requested five-second cadence while accelerating the exposure itself.
+            var untilStart = request.RequestedStartUtc - clock.GetUtcNow();
+            if (untilStart > TimeSpan.Zero) clock.Advance(untilStart);
             var capture = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
             var frame = capture.Frame!;
             if (candidateLimitFrame)
