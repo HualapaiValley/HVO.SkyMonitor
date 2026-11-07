@@ -382,7 +382,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is not null)
         {
-            throw InstallerException.Refused("The backup archive is already committed; rerun the same command with --resume to finish its record.");
+            throw InstallerException.Refused("The backup archive is already committed; rerun the backup with --resume instead of --abort to finish its record.");
         }
     }
 
@@ -404,7 +404,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (existing.Phase == LifecycleOperationPhase.Committed)
         {
-            throw InstallerException.Refused("The backup archive is already committed; rerun the same command with --resume to finish its record.");
+            throw InstallerException.Refused("The backup archive is already committed; rerun the backup with --resume instead of --abort to finish its record.");
         }
 
         return existing;

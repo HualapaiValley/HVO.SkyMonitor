@@ -73,7 +73,7 @@ public sealed partial class LifecycleContractTests
         var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => BackupAsync(fixture, new FakeLifecycleClient(), abort: true));
 
         Assert.IsTrue(refused.IsRefusal);
-        StringAssert.Contains(refused.Message, "--resume", StringComparison.Ordinal);
+        StringAssert.Contains(refused.Message, "--resume instead of --abort", StringComparison.Ordinal);
         FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "abort changed a published backup or its recovery journal");
         var resumed = await BackupAsync(fixture, new FakeLifecycleClient(), resume: true);
         Assert.AreEqual("completed", resumed.Outcome);
