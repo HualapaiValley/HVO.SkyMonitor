@@ -19,6 +19,11 @@ The loader verifies the manifest, layout and pixel checksum and holds that
 reference against retention. Do not copy an unrelated image into this path or
 call the first frame clear automatically.
 
+The sample declares the virtual ASI174 native 12-bit codes in a 16-bit container,
+black level 64 ADU and white level 4095 ADU. The installer already declares the
+same linear regime at full sensor dimensions. These are virtual input settings,
+not a physical calibration certificate.
+
 Capture and independently qualify a clear image with the same rig, readout,
 calibration, geometry, gain, exposure and processing graph as the assessed
 captures. Keep both its original manifest and immutable pixel payload. Provision

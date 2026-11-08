@@ -5,8 +5,11 @@ using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
@@ -41,6 +44,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Rig = source.Rig with
                     {
                         Sensor = source.Rig.Sensor with { WidthPixels = 1936, HeightPixels = 1216, StrideBytes = 3872 },
+                        Readout = source.Rig.Readout! with { Roi = new SensorCrop(0, 0, 1936, 1216), StrideBytes = 3872 },
                         Optics = source.Rig.Optics with { PrincipalPointX = 968, PrincipalPointY = 608, ImageCircleRadiusPixels = 595.84 }
                     },
                     Pipeline = source.Pipeline with
@@ -55,7 +59,6 @@ public sealed partial class ProcessingGraphOperationsTests
             options["includeConstellationEndpointStars"] = false;
             options["constellationIds"] = new JsonArray();
             options["fixedSceneUtc"] = "2026-01-15T08:00:00Z";
-            options["asi174Sensor"]!["enabled"] = false;
             options["backgroundElectronsPerSecond"] = 100;
             options["vignettingStrength"] = 0.4;
             options["shotNoiseEnabled"] = false;
@@ -70,7 +73,12 @@ public sealed partial class ProcessingGraphOperationsTests
                         : step).ToArray()
                 }
             };
-            using var provider = CreateProvider(root);
+            using var provider = CreateProvider(root, configureServices: services =>
+            {
+                services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Utc));
+                services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+            });
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
@@ -147,9 +155,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 }
                 else
                 {
-                    Assert.AreEqual(CloudAssessmentStatus.Quantified, assessment.Status);
+                    Assert.AreEqual(CloudAssessmentStatus.Quantified, assessment.Status, string.Join(",", assessment.ReasonCodes));
                     Assert.AreEqual(reference.Manifest.Descriptor.Artifact.ArtifactId, assessment.ClearReference!.ArtifactId);
                     Assert.IsNotNull(assessment.Mask);
+                    CollectionAssert.AreEqual(
+                        new[] { current.Manifest.Descriptor.Artifact.ArtifactId, reference.Manifest.Descriptor.Artifact.ArtifactId },
+                        (await store.ReadOutputSourcesAsync(output.OutputIdentitySha256, 3, CancellationToken.None).ConfigureAwait(false))
+                            .Select(item => item.ArtifactId).ToArray());
                     Assert.AreEqual(assessment.CoverageMillionths, gallery.Detail!.CloudAssessment.CoverageMillionths);
                     if (scenario == "clear") Assert.AreEqual(0, assessment.CoverageMillionths);
                     if (scenario == "partial") Assert.IsTrue(assessment.CoverageMillionths is > 0 and < 1_000_000);
@@ -163,6 +175,17 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(quantified, presentation.Presentation.Layers.Any(layer => layer.Kind == "cloud-labels"));
                 Assert.IsLessThanOrEqualTo(1024 * 1024, payload.Length);
                 Console.WriteLine($"{scenario} fullFrame={fullFrame}: coverage={assessment.CoverageMillionths}; identity={assessment.AssessmentIdentitySha256}; processingMs={elapsed.TotalMilliseconds:F1}; payloadBytes={payload.Length}");
+                if (Environment.GetEnvironmentVariable("HVO_CLOUD_ACCEPTANCE_OUTPUT") is { Length: > 0 } evidenceRoot)
+                {
+                    var directory = Path.Combine(evidenceRoot, $"{scenario}-{(fullFrame ? "full" : "sample")}");
+                    Directory.CreateDirectory(directory);
+                    await File.WriteAllBytesAsync(Path.Combine(directory, "assessment.json"), payload).ConfigureAwait(false);
+                    await File.WriteAllBytesAsync(Path.Combine(directory, "layers.svg"), presentation.Presentation.Svg.ToArray()).ConfigureAwait(false);
+                    var preview = await provider.GetRequiredService<ICameraAgentArtifactService>()
+                        .GetPreviewAsync(presentation.Presentation.BaseArtifactId, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(CameraAgentArtifactReadStatus.Found, preview.Status);
+                    await File.WriteAllBytesAsync(Path.Combine(directory, "base.jpg"), preview.Content.ToArray()).ConfigureAwait(false);
+                }
             }
             CollectionAssert.AreEqual(currentHash, SHA256.HashData(await File.ReadAllBytesAsync(current.StoredFrame.AbsolutePath).ConfigureAwait(false)));
             CollectionAssert.AreEqual(referenceHash, SHA256.HashData(await File.ReadAllBytesAsync(reference.StoredFrame.AbsolutePath).ConfigureAwait(false)));
@@ -177,8 +200,9 @@ public sealed partial class ProcessingGraphOperationsTests
 
             async Task<RawCaptureReceipt> CaptureAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
             {
-                await using var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, provider.GetRequiredService<IProjectedSceneStore>(),
+                var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, provider.GetRequiredService<IProjectedSceneStore>(),
                     planetEphemeris: new AstronomyEnginePlanetEphemeris(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var moduleLifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(cameraConfig, CancellationToken.None).ConfigureAwait(false);
                 var requested = DateTimeOffset.Parse("2026-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture).AddSeconds(ordinal * 25);
                 var request = new CaptureRequest(requested, TimeSpan.FromSeconds(25), CaptureMode.Still,

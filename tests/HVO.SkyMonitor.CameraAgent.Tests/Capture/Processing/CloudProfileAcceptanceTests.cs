@@ -17,6 +17,10 @@ public sealed class CloudProfileAcceptanceTests
     public async Task ShippedVirtualSkyProfileEnablesOptionalCloudEvidenceAndRetainedLayers()
     {
         var config = await LoadAsync().ConfigureAwait(false);
+        Assert.IsNotNull(config.Rig.Readout);
+        Assert.AreEqual(12, config.Rig.Readout.SampleDepthBits);
+        Assert.AreEqual(64d, config.Rig.Readout.BlackLevel);
+        Assert.AreEqual(4095d, config.Rig.Readout.WhiteLevel);
         using var provider = ProcessingGraphOperationsTests.CreateProvider(Path.GetTempPath());
         var plan = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(config);
         var cloud = plan.EffectiveNodes.SingleOrDefault(node => node.Alias == "CloudAssessment");

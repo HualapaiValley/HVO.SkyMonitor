@@ -1172,18 +1172,6 @@ public sealed class VirtualSkyCameraModule(
         }
 
         var resolved = rig.Readout is null ? null : SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout);
-        var requiresNativeReadout = RequiresNativeReadout(rig, resolved);
-        if (requiresNativeReadout &&
-            (rig.Sensor.PixelFormat != CameraPixelFormat.Mono16 ||
-             resolved!.Layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16) ||
-             resolved.Profile.BinningAlgorithm == FrameBinningAlgorithm.ChargeSumV1 ||
-             resolved.Profile.Packing != FrameSamplePacking.ByteAligned ||
-             options.SyntheticCalibration is not null || options.CloudScenario is not null ||
-             options.TransientScenario is { SensorTracks.Count: > 0 }))
-        {
-            throw new NotSupportedException(
-                "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without clouds, sensor-plane transient tracks, or synthetic calibration.");
-        }
         var nativeSampleDepth = rig.Sensor.SimulationResponse?.AdcBitDepth ?? options switch
         {
             { Asi174Sensor.Enabled: true } => 12,
@@ -1191,6 +1179,29 @@ public sealed class VirtualSkyCameraModule(
             { Asi178Sensor.Enabled: true } => 14,
             _ => 16
         };
+        // Cloud rendering already operates on the native scene. An explicit full-frame identity readout only
+        // declares its linear levels; it needs no crop/bin coordinate adaptation or sample conversion.
+        var identityCloudReadout = resolved is not null &&
+            resolved.Geometry.RoiX == 0 && resolved.Geometry.RoiY == 0 &&
+            resolved.Geometry.RoiWidth == rig.Sensor.WidthPixels && resolved.Geometry.RoiHeight == rig.Sensor.HeightPixels &&
+            resolved.Geometry.BinX == 1 && resolved.Geometry.BinY == 1 &&
+            resolved.Profile.BinningAlgorithm == FrameBinningAlgorithm.IdentityV1 &&
+            resolved.Layout.PixelFormat == CameraPixelFormat.Mono16 &&
+            resolved.Layout.SampleDepthBits == nativeSampleDepth &&
+            resolved.Layout.StoredCodeTransform == FrameStoredCodeTransform.RightAlignedV1 &&
+            resolved.Layout.ByteOrder == FrameByteOrder.LittleEndian;
+        var requiresNativeReadout = RequiresNativeReadout(rig, resolved);
+        if (requiresNativeReadout &&
+            (rig.Sensor.PixelFormat != CameraPixelFormat.Mono16 ||
+             resolved!.Layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16) ||
+             resolved.Profile.BinningAlgorithm == FrameBinningAlgorithm.ChargeSumV1 ||
+             resolved.Profile.Packing != FrameSamplePacking.ByteAligned ||
+             options.SyntheticCalibration is not null || options.CloudScenario is not null && !identityCloudReadout ||
+             options.TransientScenario is { SensorTracks.Count: > 0 }))
+        {
+            throw new NotSupportedException(
+                "VirtualSky native readout requires byte-aligned monochrome modes without sensor-plane transient tracks or synthetic calibration; clouds require full-frame native-depth identity readout.");
+        }
         if (resolved is not null && resolved.Layout.SampleDepthBits > nativeSampleDepth)
         {
             throw new NotSupportedException("The output sample depth exceeds the configured native sensor response.");

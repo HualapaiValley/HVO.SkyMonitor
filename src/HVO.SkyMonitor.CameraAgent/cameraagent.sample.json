@@ -30,6 +30,21 @@
             "byteOrder": "LittleEndian",
             "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2"
         },
+        "readout": {
+            "roi": { "x": 0, "y": 0, "width": 484, "height": 304 },
+            "binX": 1,
+            "binY": 1,
+            "binningAlgorithm": "IdentityV1",
+            "pixelFormat": "Mono16",
+            "sampleDepthBits": 12,
+            "containerDepthBits": 16,
+            "packing": "ByteAligned",
+            "storedCodeTransform": "RightAlignedV1",
+            "levelCodeSpace": "NativeSample",
+            "blackLevel": 64,
+            "whiteLevel": 4095,
+            "strideBytes": 968
+        },
         "optics": {
             "projectionModel": "EquidistantFisheye",
             "focalLengthMillimeters": 0.0,

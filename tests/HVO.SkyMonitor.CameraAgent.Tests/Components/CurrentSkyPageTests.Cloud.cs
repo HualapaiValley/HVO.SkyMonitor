@@ -49,5 +49,10 @@ public sealed partial class CurrentSkyPageTests
             else
                 StringAssert.Contains(label.TextContent, "no layer retained", StringComparison.Ordinal);
         });
+        if (Environment.GetEnvironmentVariable("HVO_CLOUD_ACCEPTANCE_OUTPUT") is { Length: > 0 } evidenceRoot)
+        {
+            Directory.CreateDirectory(evidenceRoot);
+            File.WriteAllText(Path.Combine(evidenceRoot, $"current-sky-cloud-{retained}.html"), cut.Markup);
+        }
     }
 }
