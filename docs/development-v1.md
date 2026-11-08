@@ -34,7 +34,10 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
 local builds, the devcontainer, CI, and SDK container images use that version.
-Runtime images and SDK-bundled runtimes use 10.0.13; Microsoft NuGet package pins use 10.0.14.
+CameraAgent and LogicHost runtime images use ASP.NET Core 10.0.14 (#1667).
+ProcessingRunner's `runtime-deps` base moves to 10.0.14 with #1668 as an OS-layer update only;
+its self-contained .NET runtime and the SDK-bundled runtime remain at 10.0.13 because SDK 10.0.402 is unchanged.
+Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixes reach ProcessingRunner only with a coordinated SDK update.
 
 The branch currently requires:
 
