@@ -26,6 +26,11 @@ public interface ILocalAutomationStore
     /// <summary>Creates or validates the store and settles runs interrupted by a stop.</summary>
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 
+    /// <summary>Retained daily still generation attempts for a bounded library scan.</summary>
+    ValueTask<IReadOnlyList<NightlyProducts.NightlyProductGenerationAttempt>> ListNightlyProductRunsAsync(
+        NightlyProducts.NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ValueTask.FromResult<IReadOnlyList<NightlyProducts.NightlyProductGenerationAttempt>>([]);
+
     /// <summary>The complete operator projection, including the registry and the next-run calendar.</summary>
     ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken);
 
