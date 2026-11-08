@@ -38,8 +38,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var errors = new List<string>();
         page.PageError += (_, error) => errors.Add(error);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
-        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.GotoAsync("/operations/automations").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator("#automation-create").ClickAsync().ConfigureAwait(false);
         await page.Locator("#automation-id").FillAsync("browser-hourly").ConfigureAwait(false);
         await page.Locator("#automation-name").FillAsync("Browser hourly").ConfigureAwait(false);
