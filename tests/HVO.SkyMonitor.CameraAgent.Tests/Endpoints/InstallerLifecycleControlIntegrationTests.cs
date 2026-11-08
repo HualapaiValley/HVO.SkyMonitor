@@ -69,7 +69,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
         var durable = JsonSerializer.Deserialize<CameraAgentControlReceipt>(await File.ReadAllTextAsync(localJournal).ConfigureAwait(false),
             Json)!;
         Assert.AreEqual(terminal.Phase, durable.Phase);
-        Assert.AreEqual(1, fixture.RestartCalls);
+        Assert.AreEqual(1, fixture.RestartCalls, JsonSerializer.Serialize(durable, Json));
         Assert.AreEqual(neverReturns ? CameraAgentControlPhase.Failed : CameraAgentControlPhase.Succeeded, durable.Phase);
         if (neverReturns)
         {
