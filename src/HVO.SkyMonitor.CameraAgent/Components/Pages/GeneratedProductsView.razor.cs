@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <summary>
 /// The generated products library: one card per recorded daily final of a whole sunrise-to-sunrise period, newest
 /// report date first. Every filter and page position is URL state, so links, back and reload keep them. Hourly products
-/// and periods still in progress belong to the observing day page, and nothing is shown for product types or states
+/// belong to the observing day page, and nothing is shown for product types or states
 /// CameraAgent does not record.
 /// </summary>
 public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposable
@@ -36,7 +36,8 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         new("produced", "Produced", true),
         new("partial", "Partial", true),
         new("not-produced", "Not produced", true),
-        new("running", "Running", false)
+        new("running", "Running", true),
+        new("stalled", "Stalled", true)
     ];
 
     private readonly HashSet<Guid> _failedPreviews = [];
@@ -92,13 +93,13 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
                 "produced" => NightlyProductLibraryState.Produced,
                 "partial" => NightlyProductLibraryState.Partial,
                 "not-produced" => NightlyProductLibraryState.NotProduced,
+                "running" => NightlyProductLibraryState.Running,
+                "stalled" => NightlyProductLibraryState.Stalled,
                 _ => null
             };
             if (state is null)
             {
-                return (null, string.Equals(status, "running", StringComparison.Ordinal)
-                    ? "Generation progress is not recorded, so no product is shown as running. Periods still in progress are on each observing day's page."
-                    : "The status filter is not a recorded product state.");
+                return (null, "The status filter is not a recorded product state.");
             }
         }
         DateOnly? observingDate = null;
@@ -254,7 +255,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     /// </summary>
     internal static string? PeriodNote(NightlyProductLibraryEntry entry, string? calendarPeriodIdentity)
     {
-        var period = entry.Daily.ReportingPeriod;
+        var period = entry.SourceWindow.ReportingPeriod;
         return !string.Equals(period.IdentitySha256, calendarPeriodIdentity, StringComparison.Ordinal)
             ? $"Recorded under another source period than the calendar shows for this date (another site or time-zone rules). Source period: {ObservingDayPage.OtherPeriodLabel(period)}"
             : entry.OtherPeriodRecorded ? $"Source period: {ObservingDayPage.OtherPeriodLabel(period)}" : null;
@@ -267,27 +268,29 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     private static string CardLabel(NightlyProductLibraryEntry entry)
         => $"{NightlyProductLinks.KindLabel(entry.Summary.Kind)}, night of {NightDate(entry.Summary.ObservingDate)}";
 
-    private static string TimeZoneOf(NightlyProductLibraryEntry entry) => entry.Daily.ReportingPeriod.Site.TimeZoneId;
+    private static string TimeZoneOf(NightlyProductLibraryEntry entry) => entry.SourceWindow.ReportingPeriod.Site.TimeZoneId;
 
     /// <summary>
     /// What a card without an image shows in its place. The recorded reason is the card's description; no image is
     /// ever substituted.
     /// </summary>
     internal static string PlaceholderText(NightlyProductLibraryEntry entry)
-        => entry.State == NightlyProductLibraryState.Partial
+        => entry.Generation is not null ? StatusLabel(entry)
+            : entry.State == NightlyProductLibraryState.Partial
             ? $"No nightly {NightlyProductLinks.KindNoun(entry.Summary.Kind)}"
             : "Not produced";
 
     // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
     internal static string Sources(NightlyProductLibraryEntry entry)
     {
-        var admitted = entry.Daily.Status.AdmittedCount;
+        if (entry.Generation is not null) return "Not yet evaluated";
+        var admitted = entry.Daily?.Status.AdmittedCount ?? 0;
         return FormattableString.Invariant($"{admitted:N0} segment product{(admitted == 1 ? "" : "s")}");
     }
 
     internal static (string Label, string Value) Span(NightlyProductLibraryEntry entry) => entry.Product is { } product
         ? ("Frames", ObservingDayPage.LocalSpan(product.FirstObservationUtc, product.LastObservationUtc, TimeZoneOf(entry)))
-        : ("Period", ObservingDayPage.LocalSpan(entry.Daily.Status.WindowStartUtc, entry.Daily.Status.WindowEndUtc, TimeZoneOf(entry)));
+        : ("Period", ObservingDayPage.LocalSpan(entry.SourceWindow.StartUtc, entry.SourceWindow.EndUtc, TimeZoneOf(entry)));
 
     internal static string? Hourly(NightlyProductLibraryEntry entry)
     {
@@ -298,9 +301,29 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
 
     internal static string Automation(NightlyProductLibraryEntry entry)
     {
-        var occurrence = entry.Daily.Status.Occurrence;
+        var occurrence = entry.Occurrence;
         return FormattableString.Invariant($"{occurrence.Definition.Name} · revision {occurrence.DefinitionVersion}");
     }
+
+    internal static string StatusLabel(NightlyProductLibraryEntry entry) => entry.Generation is not null
+        ? entry.State.ToString() : ObservingDayPage.ChipLabel(Badge(entry).State);
+
+    internal static string StatusClass(NightlyProductLibraryEntry entry) => entry.Generation is not null
+        ? entry.State == NightlyProductLibraryState.Running ? "hvo-chip--info" : "hvo-chip--warning"
+        : ObservingDayPage.ChipClass(Badge(entry).State);
+
+    internal static string Description(NightlyProductLibraryEntry entry) => entry.Generation is { } run
+        ? run.Outcome switch
+        {
+            Common.Automation.LocalAutomationRunOutcome.Queued => run.Attempt > 1 ? $"Retrying: attempt {run.Attempt} queued" : "Queued for generation",
+            Common.Automation.LocalAutomationRunOutcome.Running => run.Attempt > 1 ? $"Running: retry attempt {run.Attempt}" : "Running generation",
+            Common.Automation.LocalAutomationRunOutcome.Interrupted => "Stalled: generation was interrupted; an explicit retry is required",
+            _ => "Stalled: generation failed; open the observing day or automation history for details"
+        }
+        : Badge(entry).Description;
+
+    internal static string Started(NightlyProductLibraryEntry entry) => entry.Generation?.StartedAtUtc is { } started
+        ? started.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture) : "Not started";
 
     private string PageSummary(NightlyProductLibraryPage page)
     {
