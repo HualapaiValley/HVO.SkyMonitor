@@ -648,16 +648,18 @@ public sealed class NightlyProductProjectionTests
     }
 
     [TestMethod]
-    [DataRow(NightlyProductKind.Keogram)]
-    [DataRow(NightlyProductKind.StarTrail)]
-    public async Task Library_EnabledRunningAttemptTakesPrecedenceOverNewerDisabledQueue(NightlyProductKind kind)
+    [DataRow(NightlyProductKind.Keogram, true)]
+    [DataRow(NightlyProductKind.StarTrail, true)]
+    [DataRow(NightlyProductKind.Keogram, false)]
+    [DataRow(NightlyProductKind.StarTrail, false)]
+    public async Task Library_RunningAttemptTakesPrecedenceOverNewerQueueRegardlessOfEnablement(NightlyProductKind kind, bool runningEnabled)
     {
         using var harness = Harness(new(), NightlyProductFixture.Options());
         var running = Progress(NightlyProductFixture.Occurrence(kind), LocalAutomationRunOutcome.Running);
         var disabled = Progress(NightlyProductFixture.Occurrence(kind, definitionId: "disabled-definition"),
             LocalAutomationRunOutcome.Queued) with
         { Sequence = 2 };
-        var attempts = new[] { new NightlyProductGenerationAttempt(running, true), new NightlyProductGenerationAttempt(disabled, false) };
+        var attempts = new[] { new NightlyProductGenerationAttempt(running, runningEnabled), new NightlyProductGenerationAttempt(disabled, false) };
         var query = new NightlyProductLibraryQuery(1, kind, NightlyProductLibraryState.Running);
         var active = (await harness.Store.ListLibraryAsync(query, CancellationToken.None, attempts)).Entries.Single();
         Assert.AreEqual(running.RunKey, active.Generation!.RunKey);
@@ -667,6 +669,32 @@ public sealed class NightlyProductProjectionTests
         var stalled = (await harness.Store.ListLibraryAsync(query with { State = NightlyProductLibraryState.Stalled },
             CancellationToken.None, [attempts[1]])).Entries.Single();
         Assert.AreEqual(disabled.RunKey, stalled.Generation!.RunKey);
+        var newerEnabledQueue = attempts[1] with { Enabled = true };
+        Assert.AreEqual(running.RunKey, (await harness.Store.ListLibraryAsync(query, CancellationToken.None,
+            [attempts[0], newerEnabledQueue])).Entries.Single().Generation!.RunKey);
+    }
+
+    [TestMethod]
+    [DataRow(NightlyProductKind.Keogram)]
+    [DataRow(NightlyProductKind.StarTrail)]
+    public async Task Library_DisabledQueuedOccurrenceKeepsPublishedFinal(NightlyProductKind kind)
+    {
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, new(2026, 10, 2, 4, 5, 0, TimeSpan.Zero)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        var published = NightlyProductFixture.Occurrence(kind);
+        await harness.Run(published);
+        var productId = await FinalId(harness.Store, published);
+        var queued = Progress(NightlyProductFixture.Occurrence(kind, definitionId: "disabled-later-definition"), LocalAutomationRunOutcome.Queued);
+        var query = new NightlyProductLibraryQuery(1, kind);
+        var attempts = new[] { new NightlyProductGenerationAttempt(queued, false) };
+        var retained = (await harness.Store.ListLibraryAsync(query, CancellationToken.None, attempts)).Entries.Single();
+        Assert.AreEqual(NightlyProductLibraryState.Produced, retained.State);
+        Assert.AreEqual(productId, retained.Product!.ProductId);
+        Assert.AreEqual(productId, (await harness.Store.ListLibraryAsync(query with { State = NightlyProductLibraryState.Produced },
+            CancellationToken.None, attempts)).Entries.Single().Product!.ProductId);
+        Assert.IsEmpty((await harness.Store.ListLibraryAsync(query with { State = NightlyProductLibraryState.Running }, CancellationToken.None, attempts)).Entries);
+        Assert.IsEmpty((await harness.Store.ListLibraryAsync(query with { State = NightlyProductLibraryState.Stalled }, CancellationToken.None, attempts)).Entries);
     }
 
     private static NightlyProductGenerationAttempt[] Attempts(params LocalAutomationRun[] runs)

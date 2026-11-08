@@ -68,7 +68,7 @@ public sealed class GeneratedProductsLibraryTests
     [TestMethod]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Queued)]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Running)]
-    public void Library_DisabledGenerationCardsShowStalledWithoutPublishedMedia(Common.Automation.LocalAutomationRunOutcome outcome)
+    public void Library_DisabledGenerationOnlyStallsQueuedWorkAndKeepsExecutingWorkRunning(Common.Automation.LocalAutomationRunOutcome outcome)
     {
         using var context = new BunitContext();
         var (_, nightly) = Configure(context);
@@ -81,14 +81,16 @@ public sealed class GeneratedProductsLibraryTests
         { Occurrence = occurrence };
         nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(
             new([previous with { Generation = run, GenerationEnabled = false }], null, null));
-        var cut = Render(context, "/archive/products?status=stalled");
+        var executing = outcome == Common.Automation.LocalAutomationRunOutcome.Running;
+        var cut = Render(context, executing ? "/archive/products?status=running" : "/archive/products?status=stalled");
         var card = cut.Find(".library-card");
-        Assert.AreEqual("stalled", card.GetAttribute("data-nightly-state"));
-        StringAssert.Contains(card.TextContent, "Stalled: generation is disabled", StringComparison.Ordinal);
+        Assert.AreEqual(executing ? "running" : "stalled", card.GetAttribute("data-nightly-state"));
+        StringAssert.Contains(card.TextContent, executing ? "Running generation" : "Stalled: generation is disabled", StringComparison.Ordinal);
         Assert.IsNull(card.QuerySelector("img"));
         Assert.IsNull(card.QuerySelector("a.library-card__media"));
         Assert.IsFalse(card.TextContent.Contains("Queued for generation", StringComparison.Ordinal));
-        Assert.IsFalse(card.TextContent.Contains("Running generation", StringComparison.Ordinal));
+        Assert.AreEqual(executing, card.TextContent.Contains("Running generation", StringComparison.Ordinal));
+        Assert.AreEqual(!executing, card.TextContent.Contains("Stalled: generation is disabled", StringComparison.Ordinal));
     }
 
     [TestMethod]

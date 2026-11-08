@@ -53,7 +53,12 @@ public sealed record NightlyProductLibraryQuery(
     DateOnly? Before = null);
 
 /// <summary>A retained attempt and its current host/definition availability, without changing the durable run.</summary>
-public sealed record NightlyProductGenerationAttempt(LocalAutomationRun Run, bool Enabled);
+public sealed record NightlyProductGenerationAttempt(LocalAutomationRun Run, bool Enabled)
+{
+    /// <summary>Disabling future claims does not stop an attempt already executing.</summary>
+    public bool IsActive => Run.Outcome == LocalAutomationRunOutcome.Running ||
+        (Enabled && Run.Outcome == LocalAutomationRunOutcome.Queued);
+}
 
 /// <summary>
 /// One daily evaluation or retained generation attempt of a product kind and source period, with its hourly summary.
@@ -67,13 +72,13 @@ public sealed record NightlyProductLibraryEntry(
     /// <summary>The retained automation attempt, when generation has not completed an evaluation.</summary>
     public LocalAutomationRun? Generation { get; init; }
 
-    /// <summary>Whether the current host and definition can execute the retained attempt.</summary>
+    /// <summary>Whether queued work can be claimed; a durable Running attempt is already executing.</summary>
     public bool GenerationEnabled { get; init; } = true;
 
     public LocalAutomationOccurrence Occurrence => Generation?.Occurrence ?? Daily!.Status.Occurrence;
     public LocalAutomationSourceWindow SourceWindow => Occurrence.SourceWindow!;
     public NightlyProductLibraryState State => Generation is { } run
-        ? GenerationEnabled && (run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
+        ? run.Outcome == LocalAutomationRunOutcome.Running || (GenerationEnabled && run.Outcome == LocalAutomationRunOutcome.Queued)
             ? NightlyProductLibraryState.Running : NightlyProductLibraryState.Stalled
         : Classify(Summary);
 

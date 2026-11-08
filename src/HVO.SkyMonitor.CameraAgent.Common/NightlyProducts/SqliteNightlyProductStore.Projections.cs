@@ -168,14 +168,13 @@ internal sealed partial class SqliteNightlyProductStore
             {
                 var previous = entries.SingleOrDefault(entry => entry.Summary.ObservingDate == group.Key.ReportDate &&
                     entry.Summary.Kind == group.Key.Kind && entry.Summary.ReportingPeriodSha256 == group.Key.IdentitySha256);
-                var attempt = group.OrderByDescending(static attempt => attempt.Enabled &&
-                        (attempt.Run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))
+                var attempt = group.OrderByDescending(static attempt => attempt.Run.Outcome == LocalAutomationRunOutcome.Running)
+                    .ThenByDescending(static attempt => attempt.IsActive)
                     .ThenByDescending(static attempt => attempt.Run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
                     .ThenByDescending(static attempt => attempt.Run.Sequence).First();
                 var run = attempt.Run;
                 // Active work wins; a later failed occurrence cannot retire a still-current published final.
-                if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
-                    previous?.Product is not null) continue;
+                if (!attempt.IsActive && previous?.Product is not null) continue;
                 // Exact-attempt evaluations settle that attempt; newer finals also retire historical failures.
                 if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
                     run.StartedAtUtc is { } started && rows.Any(evaluated =>

@@ -313,7 +313,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         : ObservingDayPage.ChipClass(Badge(entry).State);
 
     internal static string Description(NightlyProductLibraryEntry entry) => entry.Generation is { } run
-        ? !entry.GenerationEnabled && (run.Outcome is Common.Automation.LocalAutomationRunOutcome.Queued or Common.Automation.LocalAutomationRunOutcome.Running)
+        ? !entry.GenerationEnabled && run.Outcome == Common.Automation.LocalAutomationRunOutcome.Queued
             ? "Stalled: generation is disabled"
             : run.Outcome switch
             {

@@ -148,6 +148,101 @@ public sealed class ProductsLibraryProgressTests
         finally { Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    [DataRow(NightlyProductKind.Keogram)]
+    [DataRow(NightlyProductKind.StarTrail)]
+    public async Task RunningStillTaskRemainsRunningWhenItsDefinitionIsDisabledUntilRunnerCompletes(NightlyProductKind kind)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-library-running-disabled", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var site = DeploymentLocationSnapshot.Create("virtual-library-running", 1, "test", null,
+                new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.5599378, -113.9119818, 520, "America/Phoenix");
+            var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(ObservingDayCalendar.ForDeployment(site)));
+            var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion,
+                LocalAutomationSourceWindowKind.SunriseDay,
+                kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources : LocalAutomationSourceSelection.DarkNightActualSources,
+                TimeSpan.Zero);
+            var date = new DateOnly(2026, 10, 1);
+            var window = planner.ResolveWindows(date, policy).Single();
+            var clock = new FixtureClock(DateTimeOffset.FromUnixTimeMilliseconds(window.EarliestFinalUtc.AddMinutes(10).ToUnixTimeMilliseconds()));
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var registry = new BlockedTaskRegistry();
+            var captureSequence = new CaptureSequence();
+            using var store = new SqliteLocalAutomationStore(registry, captureSequence, options, clock,
+                NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner);
+            using var catalog = new SqliteNightlyProductStore(options, clock);
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var target = NightlyProductContract.TargetFor(kind) + ":" + new string('A', 64);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await store.SaveAsync(new("daily", "Virtual daily", true,
+                LocalAutomationTaskKind.StillImageGeneration, target, LocalAutomationTriggerKind.SourceWindowClosed,
+                1, 0, "save", "fixture", "running fixture", policy), CancellationToken.None).ConfigureAwait(false)).Status);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await store.BackfillAsync(
+                new("daily", date, null, 1, "backfill", "fixture", "running fixture"), CancellationToken.None).ConfigureAwait(false)).Status);
+            using var runner = new LocalAutomationRunnerService(store, registry, captureSequence, options, clock,
+                NullLogger<LocalAutomationRunnerService>.Instance, windowPlanner: planner);
+            var sweep = runner.SweepAsync(CancellationToken.None);
+            LocalAutomationRun? claimed = null;
+            try
+            {
+                var occurrence = await registry.Started.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                var query = new NightlyProductLibraryQuery(1, kind, NightlyProductLibraryState.Running, date);
+                var before = await store.ListNightlyProductRunsAsync(query, CancellationToken.None).ConfigureAwait(false);
+                claimed = before.Single().Run;
+                Assert.AreEqual(LocalAutomationRunOutcome.Running, claimed.Outcome);
+                Assert.IsTrue(before.Single().Enabled);
+                Assert.HasCount(1, (await catalog.ListLibraryAsync(query, CancellationToken.None, before).ConfigureAwait(false)).Entries);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await store.SaveAsync(new("daily", "Virtual daily", false,
+                    LocalAutomationTaskKind.StillImageGeneration, target, LocalAutomationTriggerKind.SourceWindowClosed,
+                    1, 1, "disable", "fixture", "disable during execution", policy), CancellationToken.None).ConfigureAwait(false)).Status);
+                var after = await store.ListNightlyProductRunsAsync(query, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(after.Single().Enabled);
+                Assert.AreEqual(LocalAutomationRunOutcome.Running, after.Single().Run.Outcome);
+                Assert.IsFalse(sweep.IsCompleted, "The real runner is still awaiting the controlled task.");
+                Assert.IsFalse(registry.ExecutionToken.IsCancellationRequested);
+                var card = (await catalog.ListLibraryAsync(query with { State = null }, CancellationToken.None, after).ConfigureAwait(false)).Entries.Single();
+                Assert.AreEqual(NightlyProductLibraryState.Running, card.State);
+                Assert.AreEqual(claimed.RunKey, card.Generation!.RunKey);
+                Assert.AreEqual(claimed.StartedAtUtc, card.Generation.StartedAtUtc);
+                Assert.AreEqual(occurrence, card.Occurrence);
+                Assert.AreEqual(window, card.SourceWindow);
+                Assert.IsNull(card.Product);
+                Assert.HasCount(1, (await catalog.ListLibraryAsync(query, CancellationToken.None, after).ConfigureAwait(false)).Entries);
+                Assert.IsEmpty((await catalog.ListLibraryAsync(query with { State = NightlyProductLibraryState.Stalled }, CancellationToken.None, after).ConfigureAwait(false)).Entries);
+                Assert.IsEmpty((await catalog.ListLibraryAsync(query with { State = NightlyProductLibraryState.Produced }, CancellationToken.None, after).ConfigureAwait(false)).Entries);
+            }
+            finally
+            {
+                registry.Release.TrySetResult();
+                await sweep.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            var settled = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single(run => run.RunKey == claimed!.RunKey);
+            Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, settled.Outcome);
+            Assert.IsNotNull(settled.CompletedAtUtc);
+            Assert.IsEmpty(await store.ListNightlyProductRunsAsync(new(1, kind, NightlyProductLibraryState.Running, date), CancellationToken.None).ConfigureAwait(false));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class BlockedTaskRegistry : ILocalAutomationTaskRegistry
+    {
+        internal TaskCompletionSource<LocalAutomationOccurrence> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal CancellationToken ExecutionToken { get; private set; }
+        public IReadOnlyList<LocalAutomationTaskDescriptor> Describe() => [];
+        public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition) => LocalAutomationDefinitionValidator.Validate(definition);
+        public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationDefinition definition, string runKey, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("This fixture requires the retained occurrence.");
+        public async ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+        {
+            ExecutionToken = cancellationToken;
+            Started.TrySetResult(occurrence);
+            await Release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return new(LocalAutomationRunOutcome.Succeeded, "Controlled task completed after disablement.");
+        }
+    }
+
     private sealed class FixtureClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
