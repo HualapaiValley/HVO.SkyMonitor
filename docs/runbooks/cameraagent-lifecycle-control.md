@@ -42,8 +42,11 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    **Draining** before pausing acquisition with the expected version. The current
    exposure must finish through durable ingress. Accepted raw, lane, processing
    and artifact-delivery pending/leased counts must all reach zero within two
-   minutes using a monotonic elapsed-time budget. A required quarantined or offline-delivery backlog can time out;
-   this command does not purge, acknowledge or bypass it. Explicit archived
+   minutes using a monotonic elapsed-time budget. Current pending/leased work, including
+   held delivery retries/quarantine, can time out. Fresh numerical observations remain
+   usable when a historical raw reconciliation warning marks health Degraded;
+   unavailable, initializing, unhealthy or stale observations never prove drain.
+   The command does not purge, acknowledge or bypass accepted evidence. Explicit archived
    replay retains the existing installer checkpoint semantics: pinned queued
    replay is preserved and interrupted claims recover, rather than blocking drain.
 3. A standalone drain ends **Succeeded**, with capture paused until an explicit
@@ -55,14 +58,18 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    86,400 seconds. Run now is unavailable. A scheduled occurrence inside a
    capture window is recorded as skipped; it never forces that window closed.
    Before draining and again before requesting restart, the schedule must be
-   demonstrably closed for at least four minutes. Manual pause, unknown solar
+   demonstrably closed for the remaining lifecycle budget: four minutes plus the
+   one-second supervised-stop delay before drain, then two minutes plus that delay
+   immediately before restart. The drain budget is not charged twice. Manual pause, unknown solar
    boundaries and unavailable scheduling do not count as a closed window.
    Current force-open/force-closed overrides participate in that decision.
 5. The installer journals **Restarting**, including the verification deadline,
    before calling the fixed installer-only supervised process-restart mechanism.
    CameraAgent stops only itself; its existing supervisor starts it again.
    A lost acknowledgement is ambiguous and leads to verification, never a second
-   restart request.
+   restart request. Once an accepted delayed stop is armed, an independent process-local
+   capture/resume fence remains until that original process exits. Cancellation or a
+   terminal failure receipt cannot reopen capture while its stop is still pending.
 6. The independent installer journals **Verifying** and allows two monotonic minutes for a
    different CameraAgent process identity, initialized capture control, the same
    durable pause version, a nondecreasing durable capture sequence, and the
@@ -73,8 +80,19 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    is lost, terminal failure publication first restores the pause; replaying the
    receipt cannot undo a later explicit owner resume. Local resume is fenced while
    a lifecycle request is active, including after
-   CameraAgent restarts. Terminal failure/cancellation releases that fence for
-   an explicit authorized resume; it never automatically resumes capture.
+   CameraAgent restarts. Terminal settlement releases the intent fence, but cannot
+   release an armed-stop fence in the original process. The next process reloads the
+   durable pause and terminal evidence before an explicit authorized resume.
+
+For scheduled restart failures or cancellation **before a stop was issued**, the
+installer restores the prior running state before publishing the terminal receipt,
+when the same process and its exact completed pause command still own the boundary.
+It uses the stored command identity, actor, expected version and result version;
+a later owner pause cannot be undone. A definite refusal of the restart mechanism
+also permits this recovery; an ambiguous restart acknowledgement does not. An
+originally paused host stays paused. If the recovery resume is unconfirmed,
+publication restores paused admission and records `restart.resume-unconfirmed`.
+Standalone Drain always leaves capture paused. No recovery deletes accepted work.
 
 ## Receipts and failure recovery
 
@@ -90,9 +108,13 @@ CameraAgent persists immutable intent, cancellation intent and bounded receipt
 projections under the raw-ingress root's `.lifecycle-control/state.json`.
 **Recent control receipts** displays progress and terminal outcomes; the page
 refreshes active progress every two seconds. Its cancellation command requests
-settlement at a bounded boundary; cancellation does not undo an already issued
-restart or automatically resume capture. Closing the confirmation dialog sends
-no request.
+settlement at a bounded boundary, with a required cancellation reason. It records who cancelled, when and the reason in
+Recent control receipts. An unclaimed Queued request is cancelled locally without
+waiting for a worker; a concurrent late installer claim is refused before any pause.
+An unclaimed request does not fence ordinary resume. Claimed requests require
+installer settlement. Cancellation cannot undo an already accepted delayed stop.
+Closing the confirmation dialog sends no request. Storage faults return Unavailable
+without faulting the Blazor circuit.
 
 If CameraAgent never returns, the installer writes **Failed** with
 `restart.verification-timeout` locally even though it cannot deliver that receipt
@@ -116,6 +138,41 @@ unrelated retained request cannot keep it Running. Ordinary automation restart r
 ownership are unchanged. The installer never rewrites an already terminal run.
 Retaining a new task kind is a forward-only definition change, consistent with
 the other appended registered task kinds; older binaries cannot read it.
+
+## Expired workers, refused publication and damaged projections
+
+System control identifies an expired worker lease while a request is active, and
+separately identifies a pending stop in the current process. An owner may cancel an
+unclaimed Queued request and use ordinary resume. For claimed orphaned work, restore
+the independent worker using the same installation and retained journal. It records
+`lifecycle.installer-interrupted`, never reissues an ambiguous stop, and restores
+only a provably owned pre-restart pause. If a restored active CameraAgent projection
+has no installer journal authority, the worker settles it as
+`lifecycle.projection-orphaned` without replaying its effects. Inspect the receipt
+and actual capture state before an explicit resume; an armed stop keeps its original
+process fenced even after settlement.
+
+A definite 4xx publication refusal is durably recorded in the installer journal's
+`refused` entries with operation ID, status and UTC time. It emits
+`publication=quarantined` and continues heartbeating and processing other requests.
+The refused receipt is not endlessly replayed or silently discarded. At the
+100-receipt bound, retained refused/unpublished evidence prevents new work until
+operator reconciliation. Preserve the journal and compare the refused receipt with
+the matching CameraAgent request/backup; repair the consistent installation state
+or archive the complete journal as retained evidence during offline maintenance
+before creating a new journal. Never edit a receipt to make a conflict disappear.
+
+Corrupt, unsupported, oversized or linked CameraAgent projection files remain a
+fail-closed startup condition. Recovery is an **offline operator maintenance** task:
+ensure no original process or delayed stop remains, retain copies/checksums of
+`.lifecycle-control/state.json`, the authoritative installer journal, automation
+SQLite and capture-control journal, then restore a mutually consistent known-good
+backup. If no such backup exists, preserve the damaged projection separately and
+reconstruct its receipts from the authoritative installer evidence before restarting
+CameraAgent; do not delete pause intent, automation history or accepted frames to
+make startup pass. Validate the repaired JSON/schema and capture state with the
+virtual/fake recovery tests before authorizing normal operation. This runbook does
+not grant the web owner a host-power or reset capability.
 
 ## Validation and deployment boundary
 

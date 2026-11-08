@@ -9,6 +9,7 @@ public sealed class InstallerControlVerifierTests
 {
     private static readonly string[] RestartEffects = ["drain", "restart", "verify", "resume"];
     private static readonly string[] DrainEffects = ["drain"];
+    private static readonly string[] RestoreEffects = ["drain", "resume"];
     private static readonly InstallerControlBudgets Budgets = new(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2),
         TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(1));
 
@@ -108,20 +109,21 @@ public sealed class InstallerControlVerifierTests
         Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
         Assert.AreEqual("drain.timeout", receipt.Events[^1].Code);
         Assert.DoesNotContain("restart", fixture.Client.Effects);
-        Assert.DoesNotContain("resume", fixture.Client.Effects);
+        Assert.IsTrue(receipt.ResumeConfirmed);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
         await fixture.ReloadAndAssertAsync(receipt);
     }
 
     [TestMethod]
-    public async Task CancellationAfterPause_RecordsCancelledAndNeverRestartsOrResumes()
+    public async Task CancellationAfterPause_RestoresOriginalRunningStateWithoutRestart()
     {
         using var fixture = new Fixture();
         using var cancellation = new CancellationTokenSource();
         fixture.Client.AfterDrain = cancellation.Cancel;
         var receipt = await fixture.RunAsync(cancellationToken: cancellation.Token);
         Assert.AreEqual(CameraAgentControlPhase.Cancelled, receipt.Phase);
-        Assert.AreEqual("Paused", fixture.Client.CaptureState);
-        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(RestoreEffects, fixture.Client.Effects);
         await fixture.ReloadAndAssertAsync(receipt);
     }
 
@@ -133,7 +135,7 @@ public sealed class InstallerControlVerifierTests
         var receipt = await fixture.RunAsync();
         Assert.AreEqual(CameraAgentControlPhase.Cancelled, receipt.Phase);
         Assert.DoesNotContain("restart", fixture.Client.Effects);
-        Assert.DoesNotContain("resume", fixture.Client.Effects);
+        Assert.IsTrue(receipt.ResumeConfirmed);
     }
 
     [TestMethod]
@@ -161,13 +163,13 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
-    public async Task WindowOpensWhileDraining_LeavesPausedAndDoesNotRestart()
+    public async Task WindowOpensWhileDraining_RestoresOriginalRunningStateWithoutRestart()
     {
         using var fixture = new Fixture();
         fixture.Client.AfterDrain = () => fixture.Client.WindowSafe = false;
         var receipt = await fixture.RunAsync();
         Assert.AreEqual("restart.boundary-changed", receipt.Events[^1].Code);
-        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
         Assert.DoesNotContain("restart", fixture.Client.Effects);
     }
 
@@ -184,7 +186,33 @@ public sealed class InstallerControlVerifierTests
         fixture.Client.Failure = failure;
         var receipt = await fixture.RunAsync();
         Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
-        Assert.DoesNotContain("resume", fixture.Client.Effects);
+        Assert.AreEqual(failure is "unobserved-queues" or "drain-backlog", receipt.ResumeConfirmed);
+    }
+
+    [TestMethod]
+    public async Task DefiniteRestartRefusalRestoresOriginalOwnedPause()
+    {
+        using var fixture = new Fixture();
+        fixture.Client.Failure = "restart-refused";
+        var receipt = await fixture.RunAsync();
+        Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
+        Assert.AreEqual("restart.refused", receipt.Events[^1].Code);
+        Assert.IsTrue(receipt.RestartRefused);
+        Assert.IsTrue(receipt.ResumeConfirmed);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RefusedUnclaimedIntentIsCancelledWithoutAnyCaptureEffect(bool beforeInitialExchange)
+    {
+        using var fixture = new Fixture();
+        fixture.Client.Failure = beforeInitialExchange ? "initial-claim-refused" : "claim-refused";
+        var receipt = await fixture.RunAsync();
+        Assert.AreEqual(CameraAgentControlPhase.Cancelled, receipt.Phase);
+        Assert.AreEqual("lifecycle.claim-refused", receipt.Events[^1].Code);
+        Assert.IsEmpty(fixture.Client.Effects);
     }
 
     [TestMethod]
@@ -279,12 +307,15 @@ public sealed class InstallerControlVerifierTests
         public Task<CameraAgentControlSnapshot> ExchangeAsync(CameraAgentControlReceipt? receipt, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (receipt?.Phase == CameraAgentControlPhase.Queued && Failure == "initial-claim-refused" ||
+                receipt?.Phase == CameraAgentControlPhase.Draining && Failure == "claim-refused")
+                throw new InstallerControlRefusalException(409);
             if (_restarted && NeverReturns) return new TaskCompletionSource<CameraAgentControlSnapshot>().Task;
             if (receipt is { IsTerminal: true }) TerminalDelivered = true;
             return Task.FromResult(new CameraAgentControlSnapshot(receipt, CancelRequested,
                 _restarted && !KeepProcessIdentity ? _new : _original,
                 _restarted && Failure == "pause-lost" ? "Running" : CaptureState,
-                _restarted && Failure == "version-changed" ? Version + 1 : Version, true, Supervised, WindowSafe));
+                _restarted && Failure == "version-changed" ? Version + 1 : Version, true, Supervised, WindowSafe, Effects.Contains("drain") ? 8 : null));
         }
 
         public Task<LifecycleContinuity> DrainAsync(CameraAgentControlRequest request, CancellationToken cancellationToken)
@@ -302,6 +333,7 @@ public sealed class InstallerControlVerifierTests
         {
             BeforeEffect?.Invoke(CameraAgentControlPhase.Restarting);
             Effects.Add("restart");
+            if (Failure == "restart-refused") throw new InstallerControlRefusalException(409);
             _restarted = true;
             if (LostAcknowledgement) throw new HttpRequestException("response lost");
             return Task.CompletedTask;
@@ -319,7 +351,7 @@ public sealed class InstallerControlVerifierTests
 
         public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
         {
-            BeforeEffect?.Invoke(CameraAgentControlPhase.Verifying);
+            BeforeEffect?.Invoke(receipt.RestartRefused ? CameraAgentControlPhase.Restarting : receipt.RestartRequested ? CameraAgentControlPhase.Verifying : CameraAgentControlPhase.Draining);
             Effects.Add("resume");
             CaptureState = "Running";
             return Task.CompletedTask;

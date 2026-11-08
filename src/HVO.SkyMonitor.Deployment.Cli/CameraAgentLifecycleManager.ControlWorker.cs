@@ -66,54 +66,19 @@ internal sealed partial class CameraAgentLifecycleManager
         var address = IPAddress.TryParse(manifest.BindAddress, out var binding) && IPAddress.Any.Equals(binding)
             ? new Uri($"http://127.0.0.1:{manifest.Port}") : result.Url;
         using var client = new InstallerControlHttpClient(address, token, workerId);
-        // An interrupted installer never reissues an ambiguously acknowledged pause/restart. Settle its retained
-        // operation as failed, preserve capture state, and deliver the actual failure when CameraAgent is reachable.
-        await journal.RecoverInterruptedAsync(DateTimeOffset.UtcNow).ConfigureAwait(false);
-        do
+        async Task<IDisposable> AcquireDeploymentAsync(CancellationToken token)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), TimeSpan.Zero, token);
             try
             {
-                foreach (var receipt in journal.Unpublished.ToArray())
-                {
-                    await client.ExchangeAsync(receipt, cancellationToken).ConfigureAwait(false);
-                    await journal.AcknowledgeAsync(receipt.Request.OperationId).ConfigureAwait(false);
-                }
-                var snapshot = await client.ExchangeAsync(null, cancellationToken).ConfigureAwait(false);
-                if (snapshot.Current is { } current)
-                {
-                    var retained = journal.Receipts.FirstOrDefault(item => item.Request.OperationId == current.Request.OperationId);
-                    if (retained is { IsTerminal: true })
-                        await client.ExchangeAsync(retained, cancellationToken).ConfigureAwait(false);
-                    else
-                    {
-                        try
-                        {
-                            using var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"),
-                                TimeSpan.Zero, cancellationToken);
-                            var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-                            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation))
-                                throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
-                            var verifier = new InstallerControlVerifier(client, journal.SaveAsync, TimeProvider.System);
-                            await verifier.ExecuteAsync(current, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch (InstallerException)
-                        {
-                            var failed = current with
-                            {
-                                Phase = CameraAgentControlPhase.Failed,
-                                Events = [.. current.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "lifecycle.installer-busy")]
-                            };
-                            await journal.SaveAsync(failed).ConfigureAwait(false);
-                            await client.ExchangeAsync(failed, cancellationToken).ConfigureAwait(false);
-                        }
-                    }
-                }
+                var operation = await ReadOperationAsync(paths.LifecycleStatePath, token).ConfigureAwait(false);
+                if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation))
+                    throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
+                return deploymentLock;
             }
-            catch (HttpRequestException) when (!request.Once) { /* Heartbeat expires; durable evidence remains queued. */ }
-            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested && !request.Once) { }
-            if (request.Once) return;
-            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-        } while (true);
+            catch { deploymentLock.Dispose(); throw; }
+        }
+        await new InstallerControlWorker(client, journal, AcquireDeploymentAsync, TimeProvider.System,
+            message => Console.Error.WriteLine(message)).RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
     }
 }

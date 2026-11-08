@@ -119,6 +119,8 @@ else
     @if (_lifecycle?.Receipts.LastOrDefault(item => !item.IsTerminal) is { } activeLifecycle)
     {
         <div class="ops-note-banner" role="status"><span>@CameraAgentSystemUiService.LifecycleDetail(activeLifecycle)</span>
+            <label for="control-cancel-reason">Cancellation reason (required)</label>
+            <input id="control-cancel-reason" maxlength="@ReasonMaxLength" @bind="_cancelReasonInput" />
             <button type="button" id="control-lifecycle-cancel" class="button secondary" @onclick="() => CancelLifecycleAsync(activeLifecycle.Request.OperationId)">Cancel lifecycle</button></div>
     }
     <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>@SiteTime.Label</span></header>

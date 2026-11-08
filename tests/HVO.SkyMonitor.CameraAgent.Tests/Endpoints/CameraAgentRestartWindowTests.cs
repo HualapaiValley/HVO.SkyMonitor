@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed class CameraAgentRestartWindowTests
 {
     [TestMethod]
-    [DataRow(false, CaptureScheduleAdmissionReason.DefaultClosed, 240, true)]
+    [DataRow(false, CaptureScheduleAdmissionReason.DefaultClosed, 241, true)]
     [DataRow(false, CaptureScheduleAdmissionReason.Blackout, 300, true)]
     [DataRow(false, CaptureScheduleAdmissionReason.ForceClosedOverride, 300, true)]
     [DataRow(false, CaptureScheduleAdmissionReason.DefaultClosed, 239, false)]

@@ -25,7 +25,7 @@ public sealed class InstallerControlDrainClientTests
     }
 
     [TestMethod]
-    [DataRow("Degraded", "fresh")]
+    [DataRow("Unavailable", "fresh")]
     [DataRow("Healthy", "unknown")]
     public async Task EmptyCountersWithoutTrustworthyObservationCannotProveDrain(string availability, string freshness)
     {
@@ -36,6 +36,16 @@ public sealed class InstallerControlDrainClientTests
         await Assert.ThrowsAsync<InstallerException>(() => client.PauseControlAndDrainAsync(id, 7,
             "installation-test-token", CancellationToken.None));
         Assert.IsGreaterThan(0, handler.StateReads);
+    }
+
+    [TestMethod]
+    public async Task HistoricalDegradedStateWithFreshEmptyCountersProvesDrain()
+    {
+        var id = Guid.NewGuid();
+        using var handler = new DrainHandler("none", id, "Degraded");
+        var client = new CameraAgentLifecycleClient(new Uri("http://virtual-cameraagent"), handler);
+        var boundary = await client.PauseControlAndDrainAsync(id, 7, "installation-test-token", CancellationToken.None);
+        Assert.IsTrue(boundary.QueuesObserved);
     }
 
     private sealed class DrainHandler(string pendingSection, Guid operationId, string availability = "Healthy", string freshness = "fresh") : HttpMessageHandler

@@ -24,6 +24,9 @@ public sealed record LocalAutomationRunnerEntry(
 /// <summary>The durable owner of local automation definitions and their run-history journal.</summary>
 public interface ILocalAutomationStore
 {
+    /// <summary>Only a matched durable installer request may retain completion ownership across process lifetimes.</summary>
+    ValueTask<bool> HasInstallerLifecycleIntentAsync(string runKey, CancellationToken cancellationToken) => ValueTask.FromResult(false);
+
     /// <summary>Creates or validates the store and settles runs interrupted by a stop.</summary>
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 

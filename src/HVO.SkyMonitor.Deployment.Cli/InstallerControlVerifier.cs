@@ -27,6 +27,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     Func<CameraAgentControlReceipt, Task> persist, TimeProvider timeProvider, InstallerControlBudgets? budgets = null)
 {
     private readonly InstallerControlBudgets _budgets = budgets ?? InstallerControlBudgets.Default;
+    private CameraAgentControlCancellation? _cancellation;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Installer-owned terminal evidence must survive transport faults and CameraAgent shutdown.")]
@@ -35,7 +36,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         ArgumentNullException.ThrowIfNull(receipt);
         if (!receipt.IsValid() || receipt.Phase != CameraAgentControlPhase.Queued)
             throw new ArgumentException("Only a queued immutable lifecycle request may execute.", nameof(receipt));
-        var stage = "lifecycle";
+        var stage = "claim";
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -51,7 +52,8 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
 
             receipt = receipt with { OriginalProcessId = initial.ProcessId, ResumeAfterVerification = initial.CaptureState == "Running" };
             receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Draining, "lifecycle.draining").ConfigureAwait(false);
-            await ReadAsync(receipt, cancellationToken).ConfigureAwait(false); // publish before issuing the pause
+            stage = "claim";
+            await ReadAsync(receipt, cancellationToken).ConfigureAwait(false); // publish the claim before issuing the pause
             stage = "drain";
             var drained = await BoundedAsync(token => client.DrainAsync(receipt.Request, token), _budgets.Drain, cancellationToken)
                 .ConfigureAwait(false);
@@ -68,13 +70,22 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             var verificationStarted = timeProvider.GetTimestamp();
             var verificationDeadline = timeProvider.GetUtcNow() + _budgets.Verify;
             receipt = receipt with { VerificationDeadlineUtc = verificationDeadline };
-            receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Restarting, "restart.requesting").ConfigureAwait(false);
+            // Claim cancellation before committing to the potentially ambiguous restart effect.
             ThrowIfCancelled(await ReadAsync(receipt, cancellationToken).ConfigureAwait(false));
+            cancellationToken.ThrowIfCancellationRequested();
+            receipt = receipt with { RestartRequested = true };
+            receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Restarting, "restart.requesting").ConfigureAwait(false);
+            await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
             stage = "restart";
             try
             {
                 await BoundedAsync(async token => { await client.RestartAsync(receipt, token).ConfigureAwait(false); return true; },
-                    _budgets.Read, cancellationToken).ConfigureAwait(false);
+                    _budgets.Read, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (InstallerControlRefusalException)
+            {
+                return await FinishAsync(receipt with { RestartRefused = true }, CameraAgentControlPhase.Failed,
+                    "restart.refused").ConfigureAwait(false);
             }
             catch (HttpRequestException)
             {
@@ -115,6 +126,8 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                             ThrowIfCancelled(await ReadAsync(receipt, cancellationToken).ConfigureAwait(false));
                             await BoundedAsync(async token => { await client.ResumeAsync(receipt, token).ConfigureAwait(false); return true; },
                                 Min(_budgets.Read, _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted)), cancellationToken).ConfigureAwait(false);
+                            receipt = receipt with { ResumeConfirmed = true };
+                            await persist(receipt).ConfigureAwait(false);
                         }
                         return await FinishAsync(receipt, CameraAgentControlPhase.Succeeded,
                             receipt.ResumeAfterVerification ? "restart.verified-resumed" : "restart.verified-paused").ConfigureAwait(false);
@@ -128,13 +141,19 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             }
             return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.verification-timeout").ConfigureAwait(false);
         }
+        catch (InstallerControlRefusalException) when (stage == "claim")
+        {
+            // Local cancellation won the serialized unclaimed-to-Draining race; no pause was authorized.
+            return await FinishAsync(receipt with { ResumeAfterVerification = false }, CameraAgentControlPhase.Cancelled,
+                "lifecycle.claim-refused").ConfigureAwait(false);
+        }
         catch (OperationCanceledException)
         {
             return await FinishAsync(receipt, CameraAgentControlPhase.Cancelled, "lifecycle.cancelled-check-capture").ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, stage == "drain" ? "drain.timeout" : "lifecycle.timeout").ConfigureAwait(false);
+            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, receipt.ResumeRequested ? "restart.resume-unconfirmed" : stage == "drain" ? "drain.timeout" : "lifecycle.timeout").ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -147,8 +166,15 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         }
     }
 
-    private Task<CameraAgentControlSnapshot> ReadAsync(CameraAgentControlReceipt receipt, CancellationToken token) =>
-        BoundedAsync(cancellation => client.ExchangeAsync(receipt, cancellation), _budgets.Read, token);
+    internal Task<CameraAgentControlReceipt> SettleInterruptedAsync(CameraAgentControlReceipt receipt) =>
+        FinishAsync(receipt, CameraAgentControlPhase.Failed, "lifecycle.installer-interrupted");
+
+    private async Task<CameraAgentControlSnapshot> ReadAsync(CameraAgentControlReceipt receipt, CancellationToken token)
+    {
+        var snapshot = await BoundedAsync(cancellation => client.ExchangeAsync(receipt, cancellation), _budgets.Read, token).ConfigureAwait(false);
+        _cancellation ??= snapshot.Current?.Cancellation;
+        return snapshot;
+    }
 
     private async Task<T> BoundedAsync<T>(Func<CancellationToken, Task<T>> operation, TimeSpan budget, CancellationToken cancellationToken)
     {
@@ -170,14 +196,44 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The journal stays authoritative when CameraAgent is offline; publication is retried by the installer worker.")]
     private async Task<CameraAgentControlReceipt> FinishAsync(CameraAgentControlReceipt receipt, CameraAgentControlPhase phase, string code)
     {
+        if (phase != CameraAgentControlPhase.Succeeded && receipt.Request.Kind == CameraAgentControlKind.Restart &&
+            (receipt.Phase == CameraAgentControlPhase.Draining && !receipt.RestartRequested ||
+             receipt.Phase == CameraAgentControlPhase.Restarting && receipt.RestartRefused) && receipt.ResumeAfterVerification)
+            receipt = await RestoreBeforeRestartAsync(receipt).ConfigureAwait(false);
+        receipt = receipt with { Cancellation = receipt.Cancellation ?? _cancellation };
+        if (receipt.ResumeRequested && !receipt.ResumeConfirmed && phase != CameraAgentControlPhase.Succeeded)
+            code = "restart.resume-unconfirmed";
         var terminal = await AdvanceAsync(receipt, phase, code).ConfigureAwait(false);
         try { await ReadAsync(terminal, CancellationToken.None).ConfigureAwait(false); }
         catch (Exception) { /* Durable installer evidence is retained independently of the projection. */ }
         return terminal;
     }
 
-    private static void ThrowIfCancelled(CameraAgentControlSnapshot snapshot)
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failed rollback retains the fenced pause and durable unconfirmed receipt for explicit recovery.")]
+    private async Task<CameraAgentControlReceipt> RestoreBeforeRestartAsync(CameraAgentControlReceipt receipt)
     {
+        try
+        {
+            var current = await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
+            if (!current.Initialized || current.ProcessId != receipt.OriginalProcessId ||
+                current.CaptureState != "Paused" || current.OwnedPauseVersion != current.CaptureVersion)
+                return receipt;
+            // The original process and exact pause version prove no restart or later operator mutation intervened.
+            receipt = receipt with { PausedVersion = current.CaptureVersion, VerifiedProcessId = current.ProcessId, ResumeRequested = true };
+            await persist(receipt).ConfigureAwait(false);
+            await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
+            await BoundedAsync(async token => { await client.ResumeAsync(receipt, token).ConfigureAwait(false); return true; },
+                _budgets.Read, CancellationToken.None).ConfigureAwait(false);
+            receipt = receipt with { ResumeConfirmed = true };
+            await persist(receipt).ConfigureAwait(false);
+        }
+        catch (Exception) { /* The receipt records whether a recovery resume was issued and confirmed. */ }
+        return receipt;
+    }
+
+    private void ThrowIfCancelled(CameraAgentControlSnapshot snapshot)
+    {
+        _cancellation ??= snapshot.Current?.Cancellation;
         if (snapshot.CancelRequested) throw new OperationCanceledException();
     }
 

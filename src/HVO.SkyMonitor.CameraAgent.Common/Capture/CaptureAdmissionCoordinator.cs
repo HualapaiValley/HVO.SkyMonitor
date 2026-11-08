@@ -336,6 +336,10 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         return await _store.ReadRecentCommandsAsync(limit, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Reads one completed, changed pause receipt, so lifecycle recovery never resumes another actor's pause.</summary>
+    public Task<long?> ReadCompletedPauseVersionAsync(string idempotencyKey, long expectedVersion, string actor,
+        CancellationToken cancellationToken) => _store.ReadCompletedPauseVersionAsync(idempotencyKey, expectedVersion, actor, cancellationToken);
+
     internal async Task<T> ExecuteCaptureBoundaryAsync<T>(
         Func<CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
@@ -841,6 +845,23 @@ internal sealed class SqliteCaptureControlStore(
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new CaptureControlStoreResult(completed, true, false, true, requestedUtc, now);
+    }
+
+    internal async Task<long?> ReadCompletedPauseVersionAsync(string idempotencyKey, long expectedVersion, string actor,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT result_version FROM capture_control_commands
+            WHERE idempotency_key = $key AND actor = $actor AND expected_version = $expected
+              AND target_state = 'paused' AND result_state = 'paused' AND status = 'completed' AND changed = 1;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        command.Parameters.AddWithValue("$actor", actor);
+        command.Parameters.AddWithValue("$expected", expectedVersion);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     internal async Task<IReadOnlyList<CaptureControlCommandRecord>> ReadRecentCommandsAsync(

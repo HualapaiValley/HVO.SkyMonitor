@@ -57,8 +57,18 @@ internal sealed class InstallerControlHttpClient : IInstallerControlClient, IDis
     private static void Check(HttpResponseMessage response)
     {
         if ((int)response.StatusCode >= 500) throw new HttpRequestException("CameraAgent lifecycle transport is unavailable.");
-        if (!response.IsSuccessStatusCode) throw new InstallerException($"CameraAgent refused the lifecycle exchange ({(int)response.StatusCode}).");
+        if (!response.IsSuccessStatusCode) throw new InstallerControlRefusalException((int)response.StatusCode);
     }
 
     public void Dispose() => _http.Dispose();
+}
+
+/// <summary>A definite protocol refusal is evidence to quarantine, not a retryable transport outage.</summary>
+internal sealed class InstallerControlRefusalException : Exception
+{
+    public InstallerControlRefusalException() { }
+    public InstallerControlRefusalException(string message) : base(message) { }
+    public InstallerControlRefusalException(string message, Exception innerException) : base(message, innerException) { }
+    internal InstallerControlRefusalException(int statusCode) : base($"CameraAgent refused lifecycle publication ({statusCode}).") => StatusCode = statusCode;
+    internal int StatusCode { get; } = 400;
 }

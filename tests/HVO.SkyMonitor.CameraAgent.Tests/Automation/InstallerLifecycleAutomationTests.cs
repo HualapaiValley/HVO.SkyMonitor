@@ -104,6 +104,35 @@ public sealed class InstallerLifecycleAutomationTests
     }
 
     [TestMethod]
+    public async Task RunnerRejectsDelegatedRunningWithoutMatchedDurableInstallerIntent()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-1739-unmatched-delegation-");
+        try
+        {
+            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
+            var fake = new FakePeriodicTaskAdapter(LocalAutomationTaskKind.ScheduledCameraAgentRestart)
+            { MinimumIntervalSeconds = 3600, Executor = (_, _) => ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Running, "No intent")) };
+            using var registry = new PeriodicRegistryHarness(clock, [fake]);
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.FullName });
+            using var controls = new CameraAgentControlStore(options, clock);
+            using var store = new SqliteLocalAutomationStore(registry.Registry, new StubCaptureSequenceSource(), options, clock,
+                NullLogger<SqliteLocalAutomationStore>.Instance, lifecycleControls: controls);
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await store.SaveAsync(new(CameraAgentRestartAutomationAdapter.DefinitionId, "Scheduled restart", true,
+                LocalAutomationTaskKind.ScheduledCameraAgentRestart, FakePeriodicTaskAdapter.Target, LocalAutomationTriggerKind.Periodic,
+                3600, 0, "save", "owner", null), CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromHours(1));
+            using var runner = new LocalAutomationRunnerService(store, registry.Registry, new StubCaptureSequenceSource(), options,
+                clock, NullLogger<LocalAutomationRunnerService>.Instance);
+            await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+            var run = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+            Assert.AreEqual(LocalAutomationRunOutcome.Failed, run.Outcome);
+            Assert.IsEmpty((await controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [TestMethod]
     public async Task OrdinaryAutomationCannotBeSettledByAnInstallerLifecycleReceipt()
     {
         var root = Directory.CreateTempSubdirectory("hvo-1711-unrelated-run-");

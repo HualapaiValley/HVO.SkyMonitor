@@ -5,6 +5,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 public sealed partial class SqliteLocalAutomationStore
 {
+    public async ValueTask<bool> HasInstallerLifecycleIntentAsync(string runKey, CancellationToken cancellationToken) =>
+        _lifecycleControls is not null && (await _lifecycleControls.ReadAsync(cancellationToken).ConfigureAwait(false)).Receipts.Any(item =>
+            item.Request.Kind == CameraAgentControlKind.Restart && item.Request.AutomationRunKey == runKey);
+
     /// <summary>
     /// Installer-authenticated completion of one delegated restart. The immutable retained occurrence must have this
     /// exact run key and task kind. Ordinary runs still require their process claimant and never use this route.

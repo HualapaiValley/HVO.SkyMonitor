@@ -26,7 +26,7 @@ internal sealed class TestSystemUiService : ICameraAgentSystemUiService
         DrainRequests.Add((id, version, reason));
         return DrainHandler!(id, version, reason, token);
     }
-    public ValueTask<OperatorUiResult<bool>> CancelLifecycleAsync(Guid id, CancellationToken token)
+    public ValueTask<OperatorUiResult<bool>> CancelLifecycleAsync(Guid id, CancellationToken token, string reason = "Operator requested lifecycle cancellation")
     {
         CancelRequests.Add(id);
         return ValueTask.FromResult(OperatorUiResult<bool>.Success(true));

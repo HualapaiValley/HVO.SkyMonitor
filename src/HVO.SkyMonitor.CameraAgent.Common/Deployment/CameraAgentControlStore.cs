@@ -20,11 +20,13 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private Guid _worker;
     private DateTimeOffset _leaseUntil;
     private int _admissionHeld;
+    private int _stopPending;
     private TaskCompletionSource _admissionReleased = ReleasedSignal();
 
     public Guid ProcessId { get; } = Guid.NewGuid();
-    public bool Available => _worker != Guid.Empty && timeProvider.GetUtcNow() < _leaseUntil;
-    public bool AdmissionHeld => Volatile.Read(ref _admissionHeld) != 0;
+    public bool Available => !StopPending && _worker != Guid.Empty && timeProvider.GetUtcNow() < _leaseUntil;
+    public bool StopPending => Volatile.Read(ref _stopPending) != 0;
+    public bool AdmissionHeld => Volatile.Read(ref _admissionHeld) != 0 || StopPending;
     public Task WaitForAdmissionReleaseAsync(CancellationToken cancellationToken) =>
         Volatile.Read(ref _admissionReleased).Task.WaitAsync(cancellationToken);
 
@@ -41,7 +43,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
         try
         {
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            return new(Available, state.Receipts.ToArray());
+            return new(Available, state.Receipts.ToArray(), StopPending, _worker == Guid.Empty || timeProvider.GetUtcNow() >= _leaseUntil);
         }
         finally { _gate.Release(); }
     }
@@ -73,14 +75,31 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
         finally { _gate.Release(); }
     }
 
-    public async Task CancelAsync(Guid operationId, CancellationToken cancellationToken)
+    public async Task CancelAsync(Guid operationId, CancellationToken cancellationToken, string actor = "owner", string reason = "Operator requested lifecycle cancellation")
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            if (state.Receipts.Any(item => item.Request.OperationId == operationId && !item.IsTerminal))
-                await SaveAsync(state with { CancelledOperationId = operationId }, cancellationToken).ConfigureAwait(false);
+            var receipt = state.Receipts.FirstOrDefault(item => item.Request.OperationId == operationId && !item.IsTerminal);
+            if (receipt is not null)
+            {
+                var cancellation = receipt.Cancellation ?? new CameraAgentControlCancellation(actor, timeProvider.GetUtcNow(), reason);
+                // Queued is unclaimed: cancelling it and a concurrent installer claim are serialized by this gate.
+                var next = receipt with { Cancellation = cancellation };
+                if (!next.IsValid()) throw new ArgumentException("Cancellation requires a valid actor, UTC time and printable reason.", nameof(reason));
+                if (receipt.Phase == CameraAgentControlPhase.Queued)
+                    next = next with
+                    {
+                        Phase = CameraAgentControlPhase.Cancelled,
+                        Events = [.. receipt.Events, new(CameraAgentControlPhase.Cancelled, cancellation.Utc, "lifecycle.unclaimed-cancelled")]
+                    };
+                await SaveAsync(state with
+                {
+                    CancelledOperationId = operationId,
+                    Receipts = state.Receipts.Select(item => item.Request.OperationId == operationId ? next : item).ToArray()
+                }, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally { _gate.Release(); }
     }
@@ -93,10 +112,13 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
         {
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
             var active = state.Receipts.FirstOrDefault(item => !item.IsTerminal);
-            return active is null || active.Phase == CameraAgentControlPhase.Verifying &&
-                active.VerifiedProcessId == ProcessId && state.CancelledOperationId != active.Request.OperationId &&
-                active.ResumeRequested &&
-                actor == $"installer-lifecycle:{active.Request.OperationId:D}";
+            if (StopPending) return false;
+            return active is null || active.Phase == CameraAgentControlPhase.Queued ||
+                active.ResumeRequested && active.VerifiedProcessId == ProcessId &&
+                actor == $"installer-lifecycle:{active.Request.OperationId:D}" &&
+                (active.Phase == CameraAgentControlPhase.Verifying && state.CancelledOperationId != active.Request.OperationId ||
+                 !active.RestartRequested && active.Phase == CameraAgentControlPhase.Draining ||
+                 active.RestartRefused && active.Phase == CameraAgentControlPhase.Restarting);
         }
         finally { _gate.Release(); }
     }
@@ -113,6 +135,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
             if (exchange.Receipt is not { } next) return false;
             var prior = state.Receipts.FirstOrDefault(item => item.Request.OperationId == next.Request.OperationId);
+            if (prior is not null) next = next with { Cancellation = prior.Cancellation ?? next.Cancellation };
             if (prior is null || !IsValidSuccessor(prior, next)) throw new InvalidOperationException("The lifecycle receipt is invalid.");
             return !Same(prior, next);
         }
@@ -134,6 +157,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             if (exchange.Receipt is { } receipt)
             {
                 var prior = state.Receipts.FirstOrDefault(item => item.Request.OperationId == receipt.Request.OperationId);
+                if (prior is not null) receipt = receipt with { Cancellation = prior.Cancellation ?? receipt.Cancellation };
                 if (prior is null || !IsValidSuccessor(prior, receipt))
                     throw new InvalidOperationException("The installer receipt does not match the retained lifecycle request.");
                 if (!Same(prior, receipt))
@@ -153,17 +177,29 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
         finally { _gate.Release(); }
     }
 
-    public async Task<bool> MayRestartAsync(CameraAgentControlRestart command, long captureVersion, CancellationToken cancellationToken)
+    public Task<bool> MayRestartAsync(CameraAgentControlRestart command, long captureVersion, CancellationToken cancellationToken) =>
+        CheckRestartAsync(command, captureVersion, false, cancellationToken);
+
+    public Task<bool> ArmRestartAsync(CameraAgentControlRestart command, long captureVersion, CancellationToken cancellationToken) =>
+        CheckRestartAsync(command, captureVersion, true, cancellationToken);
+
+    private async Task<bool> CheckRestartAsync(CameraAgentControlRestart command, long captureVersion, bool arm, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            return Available && _worker == command.WorkerId && state.CancelledOperationId != command.OperationId &&
+            var allowed = Available && _worker == command.WorkerId && state.CancelledOperationId != command.OperationId &&
                 command.ExpectedCaptureVersion == captureVersion && state.Receipts.Any(item =>
                     item.Request.OperationId == command.OperationId && item.Phase == CameraAgentControlPhase.Restarting &&
                     item.PausedVersion == captureVersion);
+            if (allowed && arm)
+            {
+                if (!AdmissionHeld) Volatile.Write(ref _admissionReleased, new(TaskCreationOptions.RunContinuationsAsynchronously));
+                Volatile.Write(ref _stopPending, 1);
+            }
+            return allowed;
         }
         finally { _gate.Release(); }
     }
@@ -174,6 +210,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private static bool IsValidSuccessor(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
         next.IsValid() && next.Request == prior.Request &&
         (!prior.ResumeRequested || next.ResumeRequested) &&
+        (!prior.RestartRequested || next.RestartRequested) && (!prior.ResumeConfirmed || next.ResumeConfirmed) &&
         (prior.OriginalProcessId is null || next.OriginalProcessId == prior.OriginalProcessId) &&
         (prior.PausedVersion is null || next.PausedVersion == prior.PausedVersion) &&
         (prior.VerificationDeadlineUtc is null || next.VerificationDeadlineUtc == prior.VerificationDeadlineUtc) && next.Events is { Count: > 0 and <= 10 } &&
@@ -215,15 +252,15 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private void ApplyState(State state)
     {
         var held = state.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued);
-        if (held && !AdmissionHeld)
+        if (held && Volatile.Read(ref _admissionHeld) == 0)
         {
             Volatile.Write(ref _admissionReleased, new(TaskCreationOptions.RunContinuationsAsynchronously));
             Volatile.Write(ref _admissionHeld, 1);
         }
-        else if (!held && AdmissionHeld)
+        else if (!held && Volatile.Read(ref _admissionHeld) != 0)
         {
             Volatile.Write(ref _admissionHeld, 0);
-            _admissionReleased.TrySetResult();
+            if (!StopPending) _admissionReleased.TrySetResult();
         }
         _state = state;
     }

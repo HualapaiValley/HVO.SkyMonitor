@@ -32,7 +32,7 @@ internal static partial class CameraAgentControlLifecycleEndpoints
         try
         {
             var newReceipt = await controls.ValidateReceiptAsync(exchange, cancellationToken).ConfigureAwait(false);
-            if (newReceipt && exchange.Receipt is { IsTerminal: true, ResumeRequested: true } failed &&
+            if (newReceipt && exchange.Receipt is { IsTerminal: true, ResumeRequested: true, ResumeConfirmed: false } failed &&
                 failed.Phase != CameraAgentControlPhase.Succeeded)
             {
                 // Admission is still fenced by the nonterminal projection. Settle an ambiguously acknowledged
@@ -52,29 +52,33 @@ internal static partial class CameraAgentControlLifecycleEndpoints
             if (exchange.Receipt is { IsTerminal: true } receipt)
                 await automations.CompleteInstallerLifecycleAsync(receipt, cancellationToken).ConfigureAwait(false);
             var safeWindow = current?.Request.Kind == CameraAgentControlKind.Restart &&
-                await window.IsSafeAsync(cancellationToken).ConfigureAwait(false);
+                await window.IsSafeAsync(cancellationToken, current.Phase != CameraAgentControlPhase.Queued).ConfigureAwait(false);
+            var operation = current ?? exchange.Receipt;
+            var ownedPause = operation is null ? null : await capture.ReadCompletedPauseVersionAsync(
+                $"lifecycle:{operation.Request.OperationId:D}:pause", operation.Request.ExpectedCaptureVersion,
+                $"installer-lifecycle:{operation.Request.OperationId:D}", cancellationToken).ConfigureAwait(false);
             var snapshot = capture.Snapshot;
             return Results.Ok(new CameraAgentControlSnapshot(current, cancelled, controls.ProcessId,
                 snapshot.State.ToString(), snapshot.Version, snapshot.IsInitialized,
-                CameraAgentRestart.IsSupervised(configuration), safeWindow));
+                CameraAgentRestart.IsSupervised(configuration), safeWindow, ownedPause));
         }
         catch (ArgumentException) { return Results.BadRequest(); }
         catch (InvalidOperationException) { return Results.Conflict(); }
     }
 
     /// <summary>Manual pause and unsafe/unknown solar data are never mistaken for a closed capture window.</summary>
-    internal static bool IsRestartWindowSafe(CaptureScheduleDecision decision, DateTimeOffset now) =>
+    internal static bool IsRestartWindowSafe(CaptureScheduleDecision decision, DateTimeOffset now, bool beforeRestart = false) =>
         !decision.Admitted && decision.Reason is not (CaptureScheduleAdmissionReason.ManualPause or
             CaptureScheduleAdmissionReason.NoSolarEvent or CaptureScheduleAdmissionReason.SafetyUnavailable) &&
-        decision.NextTransitionUtc is { } next && next >= now + TimeSpan.FromMinutes(4);
+        decision.NextTransitionUtc is { } next && next >= now + TimeSpan.FromMinutes(beforeRestart ? 2 : 4) + CameraAgentRestart.DefaultDelay;
 
     private static async Task<IResult> RestartAsync(CameraAgentControlRestart command, HttpContext context,
         IConfiguration configuration, CameraAgentControlStore controls, CaptureAdmissionCoordinator capture,
         IHostApplicationLifetime lifetime, TimeProvider clock, ICameraAgentControlRestartWindow window, ILoggerFactory loggers, CancellationToken cancellationToken)
     {
         if (!CameraAgentLifecycleEndpoints.IsAuthorized(context, configuration)) return Results.Unauthorized();
-        if (!await window.IsSafeAsync(cancellationToken).ConfigureAwait(false) || capture.Snapshot.State != CaptureAdmissionState.Paused ||
-            !await controls.MayRestartAsync(command, capture.Snapshot.Version, cancellationToken).ConfigureAwait(false))
+        if (!CameraAgentRestart.IsSupervised(configuration) || !await window.IsSafeAsync(cancellationToken, true).ConfigureAwait(false) || capture.Snapshot.State != CaptureAdmissionState.Paused ||
+            !await controls.ArmRestartAsync(command, capture.Snapshot.Version, cancellationToken).ConfigureAwait(false))
             return Results.Conflict();
         var disposition = CameraAgentRestart.Request(lifetime, configuration, $"installer-lifecycle:{command.OperationId:D}",
             CameraAgentRestart.DefaultDelay, clock, loggers.CreateLogger("InstallerLifecycle"),

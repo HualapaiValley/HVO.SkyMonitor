@@ -33,11 +33,12 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private CameraAgentRestartStatus? _restart;
     private CameraAgentControlView? _lifecycle;
     private Task _lifecycleRefresh = Task.CompletedTask;
-    private bool CanDrain => _lifecycle?.Available == true && _view is not null &&
+    private bool CanDrain => _lifecycle?.StopPending != true && _lifecycle?.Available == true && _view is not null &&
         CaptureState is "Running" or "Paused" && !_lifecycle.Receipts.Any(item => !item.IsTerminal);
     private PendingControl? _pending;
     private StatusMessage? _message;
     private string _reasonInput = string.Empty;
+    private string _cancelReasonInput = string.Empty;
     private string? _error;
     private string? _receiptsError;
     private string? _commandError;
@@ -60,7 +61,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 
     private string CaptureState => _view?.Summary.CaptureControl.Value.State ?? "Unknown";
 
-    private bool LifecycleActive => _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true;
+    private bool LifecycleActive => _lifecycle?.StopPending == true || _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true;
 
     private bool CanPause => CaptureState == "Running" && !LifecycleActive;
 
@@ -76,7 +77,11 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             _ => "Capture control is unavailable on this host.",
         };
 
-    private Banner StateBanner => _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true
+    private Banner StateBanner => _lifecycle?.StopPending == true
+        ? new Banner("warning", "A restart stop is still pending in this process.", "Capture admission stays held until this process exits, even after cancellation.")
+        : _lifecycle is { WorkerLeaseExpired: true } && _lifecycle.Receipts.Any(item => !item.IsTerminal)
+        ? new Banner("warning", "Worker lease expired with active request.", "Cancel an unclaimed request here; claimed lifecycle work requires installer recovery. See the lifecycle runbook.")
+        : _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true
         ? new Banner("running", "Capture admission is held for installer lifecycle control.", "Accepted work remains durable. Wait for the terminal receipt before resuming.")
         : CaptureState switch
         {
@@ -94,7 +99,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         _ => "Restart availability could not be read.",
     };
 
-    private string? RestartUnavailableReason => LifecycleActive ? "An installer lifecycle operation is in progress." : _restarting
+    private string? RestartUnavailableReason => LifecycleActive || _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true ? "An installer lifecycle operation is in progress." : _restarting
         ? "A restart is already in progress."
         : _restart switch
         {
@@ -281,10 +286,16 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 
     private async Task CancelLifecycleAsync(Guid operationId)
     {
-        var result = await SystemService.CancelLifecycleAsync(operationId, _lifetime.Token);
+        if (string.IsNullOrWhiteSpace(_cancelReasonInput))
+        {
+            _message = new StatusMessage("warning", "A cancellation reason is required.", "Describe why this lifecycle request should be cancelled.");
+            return;
+        }
+        var result = await SystemService.CancelLifecycleAsync(operationId, _lifetime.Token, _cancelReasonInput.Trim());
+        if (result.IsSuccess) _cancelReasonInput = string.Empty;
         if (result.Kind == OperatorUiResultKind.Unauthorized) { DenyAccess(); return; }
         _message = new StatusMessage("warning", result.IsSuccess ? "Cancellation requested." : "Cancellation was not accepted.",
-            result.IsSuccess ? "The installer settles the current boundary and records a terminal receipt. Capture is not automatically resumed." : result.Message ?? "Refresh to read installer progress.");
+            result.IsSuccess ? "An unclaimed request is cancelled locally. Claimed work is settled by the installer; an accepted stop remains fenced until the old process exits." : result.Message ?? "Refresh to read installer progress.");
         await LoadAsync();
     }
 

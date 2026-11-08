@@ -73,7 +73,12 @@ public sealed class CameraAgentControlStoreTests
         using (var controls = Create())
         {
             await RegisterAsync(controls).ConfigureAwait(false);
-            await controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+            var queued = await controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+            await controls.ExchangeAsync(new(Worker, queued with
+            {
+                Phase = CameraAgentControlPhase.Draining,
+                Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining")]
+            }), CancellationToken.None).ConfigureAwait(false);
             await controls.CancelAsync(request.OperationId, CancellationToken.None).ConfigureAwait(false);
         }
         using var restarted = Create();

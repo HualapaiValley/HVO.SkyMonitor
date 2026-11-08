@@ -47,6 +47,36 @@ public sealed partial class CameraAgentSystemUiServiceTests
     }
 
     [TestMethod]
+    public async Task UnclaimedCancellationRecordsOwnerTimeAndReasonInRecentReceipt()
+    {
+        using var fixture = new Fixture(lifecycle: true);
+        await fixture.InitializeStoresAsync().ConfigureAwait(false);
+        await fixture.Controls!.ExchangeAsync(new(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        var queued = (await fixture.Service.RequestDrainAsync(Guid.NewGuid(), fixture.Coordinator.Snapshot.Version,
+            "maintenance", CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.IsTrue((await fixture.Service.CancelLifecycleAsync(queued.Request.OperationId, CancellationToken.None, "Maintenance no longer needed").ConfigureAwait(false)).IsSuccess);
+        var cancelled = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual(CameraAgentControlPhase.Cancelled, cancelled.Phase);
+        Assert.AreEqual("owner", cancelled.Cancellation!.Actor);
+        Assert.AreEqual(fixture.Clock.GetUtcNow(), cancelled.Cancellation.Utc);
+        var detail = (await fixture.Service.GetControlReceiptsAsync(25, CancellationToken.None).ConfigureAwait(false)).Value!.Single().Detail;
+        StringAssert.Contains(detail, "Cancelled by owner", StringComparison.Ordinal);
+        StringAssert.Contains(detail, "Maintenance no longer needed", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("{\"schemaVersion\":99,\"receipts\":[],\"cancelledOperationId\":null}")]
+    [DataRow("not json")]
+    public async Task CorruptProjectionReturnsUnavailableForReadAndCancelWithoutFaultingCircuit(string contents)
+    {
+        using var fixture = new Fixture(lifecycle: true);
+        var folder = Directory.CreateDirectory(Path.Combine(fixture.Root, ".lifecycle-control"));
+        await File.WriteAllTextAsync(Path.Combine(folder.FullName, "state.json"), contents).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, (await fixture.Service.GetLifecycleAsync(CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, (await fixture.Service.CancelLifecycleAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false)).Kind);
+    }
+
+    [TestMethod]
     public async Task LifecycleInvalidReasonAndStaleVersionNeverQueueAnIntent()
     {
         using var fixture = new Fixture(lifecycle: true);

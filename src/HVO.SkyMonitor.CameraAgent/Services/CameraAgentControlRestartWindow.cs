@@ -5,13 +5,13 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal interface ICameraAgentControlRestartWindow
 {
-    Task<bool> IsSafeAsync(CancellationToken cancellationToken);
+    Task<bool> IsSafeAsync(CancellationToken cancellationToken, bool beforeRestart = false);
 }
 
 internal sealed class CameraAgentControlRestartWindow(CaptureScheduleRuntimeCoordinator schedule,
     TimeProvider clock) : ICameraAgentControlRestartWindow
 {
-    public async Task<bool> IsSafeAsync(CancellationToken cancellationToken)
+    public async Task<bool> IsSafeAsync(CancellationToken cancellationToken, bool beforeRestart = false)
     {
         if (schedule.Snapshot is null) return false;
         var state = await schedule.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
@@ -20,6 +20,6 @@ internal sealed class CameraAgentControlRestartWindow(CaptureScheduleRuntimeCoor
             new(now, CaptureScheduleSafetyState.Available, ManualPaused: false, state.Overrides));
         // A permanently closed schedule may have no transition; its checked preview still bounds the evidence.
         return CameraAgentControlLifecycleEndpoints.IsRestartWindowSafe(decision with
-        { NextTransitionUtc = decision.NextTransitionUtc ?? state.Preview.PreviewEndUtc }, now);
+        { NextTransitionUtc = decision.NextTransitionUtc ?? state.Preview.PreviewEndUtc }, now, beforeRestart);
     }
 }

@@ -309,6 +309,10 @@ public sealed partial class LocalAutomationRunnerService(
         {
             execution = await registry.ExecuteAsync(occurrence, cancellationToken)
                 .ConfigureAwait(false);
+            if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.ScheduledCameraAgentRestart &&
+                execution is { Outcome: LocalAutomationRunOutcome.Running, Detail: not null } &&
+                await store.HasInstallerLifecycleIntentAsync(journalRunKey, cancellationToken).ConfigureAwait(false))
+                return; // The matched durable installer request owns the terminal outcome.
             if (execution is null || !Enum.IsDefined(execution.Outcome) ||
                 execution.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running ||
                 execution.Detail is null)
@@ -329,11 +333,6 @@ public sealed partial class LocalAutomationRunnerService(
             execution = new LocalAutomationExecution(
                 LocalAutomationRunOutcome.Failed,
                 string.Concat("The registered task threw ", exception.GetType().Name, "."));
-        }
-        if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.ScheduledCameraAgentRestart &&
-            execution.Outcome == LocalAutomationRunOutcome.Running)
-        {
-            return; // Only the independent installer's terminal receipt completes this delegated occurrence.
         }
         var elapsed = Stopwatch.GetElapsedTime(started);
         activity?.SetTag("outcome", execution.Outcome.ToString());

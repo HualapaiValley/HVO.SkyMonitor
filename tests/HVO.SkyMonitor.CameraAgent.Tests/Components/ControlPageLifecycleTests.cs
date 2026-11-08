@@ -75,6 +75,9 @@ public sealed partial class ControlPageTests
             Assert.IsEmpty(cut.FindAll("dialog"));
         });
         cut.Find("#control-lifecycle-cancel").Click();
+        Assert.IsEmpty(system.CancelRequests, "Cancellation must carry an operator reason.");
+        cut.Find("#control-cancel-reason").Change("Maintenance no longer needed");
+        cut.Find("#control-lifecycle-cancel").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(receipt!.Request.OperationId, system.CancelRequests.Single()));
     }
 
@@ -89,6 +92,41 @@ public sealed partial class ControlPageTests
             Assert.IsTrue(cut.Find("#control-drain").HasAttribute("disabled"));
             Assert.IsFalse(cut.Find("#control-capture").HasAttribute("disabled"));
             StringAssert.Contains(cut.Find("#control-drain").GetAttribute("title"), "installer lifecycle worker", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void ExpiredWorkerWithQueuedRequestOffersCancellationAndOrdinaryResume()
+    {
+        using var context = new BunitContext();
+        var (operations, system, _) = Configure(context);
+        operations.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(WithCapture("Paused", 7)));
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Drain, "owner", "maintenance", 7, OperatorUiTestData.Now);
+        system.LifecycleHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(false,
+            [new(request, CameraAgentControlPhase.Queued, [new(CameraAgentControlPhase.Queued, request.RequestedUtc, "lifecycle.queued")])], WorkerLeaseExpired: true)));
+        var cut = context.Render<ControlPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Worker lease expired with active request", StringComparison.Ordinal);
+            Assert.AreEqual("Resume", cut.Find("#control-capture").TextContent);
+            Assert.IsFalse(cut.Find("#control-capture").HasAttribute("disabled"));
+            Assert.IsNotNull(cut.Find("#control-lifecycle-cancel"));
+        });
+    }
+
+    [TestMethod]
+    public void TerminalCancellationWithArmedStopKeepsResumeDisabledAndExplainsFence()
+    {
+        using var context = new BunitContext();
+        var (operations, system, _) = Configure(context);
+        operations.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(WithCapture("Paused", 7)));
+        system.LifecycleHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(false, [], StopPending: true)));
+        var cut = context.Render<ControlPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "restart stop is still pending", StringComparison.Ordinal);
+            Assert.IsTrue(cut.Find("#control-capture").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("#control-drain").HasAttribute("disabled"));
         });
     }
 

@@ -359,6 +359,7 @@ public sealed partial class CameraAgentSystemUiServiceTests
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-system-ui", Guid.NewGuid().ToString("N"));
         private readonly CaptureControlTelemetry _telemetry = new();
+        internal string Root => _root;
 
         internal Mock<IRawCaptureIngress> Ingress { get; } = new();
 

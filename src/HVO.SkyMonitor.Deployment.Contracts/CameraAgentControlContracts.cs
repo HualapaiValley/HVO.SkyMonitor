@@ -23,13 +23,16 @@ public sealed record CameraAgentControlRequest(Guid OperationId, CameraAgentCont
         value.Length <= maximum && value == value.Trim() && !value.Any(char.IsControl);
 }
 
+public sealed record CameraAgentControlCancellation(string Actor, DateTimeOffset Utc, string Reason);
+
 public sealed record CameraAgentControlEvent(CameraAgentControlPhase Phase, DateTimeOffset Utc, string Code);
 
 /// <summary>The installer journal is authoritative; CameraAgent retains a read projection of these receipts.</summary>
 public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request, CameraAgentControlPhase Phase,
     IReadOnlyList<CameraAgentControlEvent> Events, Guid? OriginalProcessId = null, Guid? VerifiedProcessId = null,
     long? PausedVersion = null, long? DrainedCaptureSequence = null, bool ResumeAfterVerification = false, DateTimeOffset? VerificationDeadlineUtc = null,
-    bool ResumeRequested = false)
+    bool ResumeRequested = false, bool ResumeConfirmed = false, bool RestartRequested = false, bool RestartRefused = false,
+    CameraAgentControlCancellation? Cancellation = null)
 {
     public bool IsTerminal => Phase is CameraAgentControlPhase.Succeeded or CameraAgentControlPhase.Failed or
         CameraAgentControlPhase.Cancelled or CameraAgentControlPhase.Skipped;
@@ -41,6 +44,10 @@ public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request
             Events.Any(item => item is null || !Enum.IsDefined(item.Phase) || item.Utc == default || item.Utc.Offset != TimeSpan.Zero ||
                 item.Code is not { Length: > 0 and <= 96 } || !item.Code.All(character => char.IsAsciiLetterLower(character) || character is '.' or '-')))
             return false;
+        if (Cancellation is { } cancellation && (string.IsNullOrWhiteSpace(cancellation.Actor) || cancellation.Actor.Length > 256 ||
+            cancellation.Actor != cancellation.Actor.Trim() || cancellation.Actor.Any(char.IsControl) || cancellation.Utc == default ||
+            cancellation.Utc.Offset != TimeSpan.Zero || string.IsNullOrWhiteSpace(cancellation.Reason) || cancellation.Reason.Length > 512 ||
+            cancellation.Reason != cancellation.Reason.Trim() || cancellation.Reason.Any(char.IsControl))) return false;
         for (var index = 1; index < Events.Count; index++)
         {
             var prior = Events[index - 1];
@@ -63,9 +70,9 @@ public sealed record CameraAgentControlExchange(Guid WorkerId, CameraAgentContro
 
 public sealed record CameraAgentControlSnapshot(CameraAgentControlReceipt? Current, bool CancelRequested,
     Guid ProcessId, string CaptureState, long CaptureVersion, bool Initialized, bool Supervised,
-    bool RestartWindowSafe);
+    bool RestartWindowSafe, long? OwnedPauseVersion = null);
 
-public sealed record CameraAgentControlView(bool Available, IReadOnlyList<CameraAgentControlReceipt> Receipts);
+public sealed record CameraAgentControlView(bool Available, IReadOnlyList<CameraAgentControlReceipt> Receipts, bool StopPending = false, bool WorkerLeaseExpired = false);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentControlRestart(Guid WorkerId, Guid OperationId, long ExpectedCaptureVersion);
