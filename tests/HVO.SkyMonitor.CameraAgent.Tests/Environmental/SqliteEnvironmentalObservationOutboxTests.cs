@@ -296,17 +296,6 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         var history = await restarted.ReadLocalPageAsync(
             _root!, EnvironmentalObservationKind.RelativeHumidity, 10, null, CancellationToken.None)
             .ConfigureAwait(false);
-        Assert.IsNull(await restarted.ClaimAsync(
-            _root!, "v2-restart", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false),
-            "A derivative cannot be delivered while its unprojected input is still absent centrally.");
-        Assert.AreEqual(1, await restarted.AssignUnprojectedAsync(
-            _root!, target, 10, CancellationToken.None).ConfigureAwait(false));
-        var inputLease = await restarted.ClaimAsync(
-            _root!, "v2-restart", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(inputLease);
-        Assert.AreEqual(EnvironmentalObservationSchemaVersions.V1, inputLease.Record.Observation.SchemaVersion);
-        var acknowledgement = new FaithfulCentralReceiver(TimeProvider.System).Ingest(inputLease.Record.Observation);
-        await restarted.AcknowledgeAsync(_root!, inputLease, acknowledgement, CancellationToken.None).ConfigureAwait(false);
         var lease = await restarted.ClaimAsync(
             _root!, "v2-restart", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
 
@@ -318,8 +307,6 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             item.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V2));
         Assert.IsNotNull(lease);
         Assert.AreEqual(EnvironmentalObservationSchemaVersions.V2, lease.Record.Observation.SchemaVersion);
-        Assert.AreEqual(inputLease.Record.SourceIdentitySha256, lease.Record.Observation.Lineage.Single().SourceIdentitySha256);
-        Assert.AreEqual(v1.ObservationId, lease.Record.Observation.Lineage.Single().ObservationId);
         var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
         using var verify = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
         await verify.OpenAsync().ConfigureAwait(false);

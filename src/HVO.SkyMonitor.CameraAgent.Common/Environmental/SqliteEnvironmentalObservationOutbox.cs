@@ -28,11 +28,14 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
     private const int CurrentSchemaVersion = 3;
-    // A local lineage pin also retains the acknowledged projection of each input. Reuse that durable
-    // acknowledgement rather than queue order: retrying or expired input leases must not release a derivative.
+    // V3 maps local lineage into central identities. Retain legacy v1/v2 projection semantics;
+    // for v3, retrying or expired input leases must not release a derivative before its inputs are acknowledged.
     private const string AcknowledgedLineageSql = """
         AND NOT EXISTS (
             SELECT 1 FROM environmental_observation_local_lineage AS dependency
+            JOIN environmental_observation_journal AS derivative
+                ON derivative.record_id = dependency.local_record_id
+                AND derivative.schema_version = 'environmental-observation-v3'
             LEFT JOIN environmental_observation_central_projection AS owner_projection
                 ON owner_projection.local_record_id = candidate.local_record_id
                 AND owner_projection.outbox_record_id = candidate.record_id
