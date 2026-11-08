@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
+- Upgrade notes identify custom cloud/environment-only graphs and early 0.9.1 pre-release scene graphs whose producer plans are superseded, preserve revision/replay recovery steps, and distinguish current host and ProcessingRunner runtime versions. #1697
 - CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
 
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
@@ -38,6 +40,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage and drying-state handling; physical sensor qualification remains held. #1090
 - Configure an SQM adapter with capture association, real integration intervals and sensor-temperature metadata; physical meter qualification remains held. #1091
 - Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff and explicit source priority. #1092
+- Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
