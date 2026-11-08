@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
 - Upgrade notes identify custom cloud/environment-only graphs and early 0.9.1 pre-release scene graphs whose producer plans are superseded, preserve revision/replay recovery steps, and distinguish current host and ProcessingRunner runtime versions. #1697
+- Observing Day reports whether time-lapse generation is disabled, no video was requested, or the time-lapse state could not be read, while keeping configured samples clearly separate from the night's products. #1709
+
 - CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
 
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
@@ -38,11 +40,15 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
+
 - New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
+
 - CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
 - Download bounded, versioned pipeline run manifests with retained plan identities, node attempts, artifact checksums and lineage; unavailable evidence has a specific reason, and the empty run-actions menu is removed. #1715
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
+- Edit legacy Annotation constellation selections, corner fact lines and environmental kinds in graph drafts, with bounded validation and explicit activation. #1386
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
