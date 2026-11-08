@@ -17,17 +17,26 @@ public sealed partial class CaptureScalarOptionsEditorTests
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=legacy-annotation#legacy-annotation");
         var cut = context.Render<ProcessingGraphEditorPage>();
         var panel = cut.Find("#legacy-annotation[aria-label='Legacy annotation']");
-        Assert.HasCount(22, panel.QuerySelectorAll("input"));
+        var scalarInputs = panel.QuerySelectorAll(".option-field")
+            .Where(static field => field.QuerySelector("fieldset") is null)
+            .SelectMany(static field => field.QuerySelectorAll("input")).ToArray();
+        Assert.HasCount(22, scalarInputs);
+        Assert.HasCount(6, panel.QuerySelectorAll("fieldset.collection-editor"));
         foreach (var option in AnnotationOptionDescriptors.Descriptor.Options)
         {
             var id = "node-options-0-" + option.Key;
-            Assert.IsNotEmpty(cut.Find("label[for='" + id + "']").TextContent);
-            Assert.AreEqual(id + "-help", cut.Find("#" + id).GetAttribute("aria-describedby"));
+            var field = cut.Find("#" + id);
+            if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.EnumCollection)
+                Assert.AreEqual(option.Label, field.QuerySelector("legend")!.TextContent);
+            else
+                Assert.IsNotEmpty(cut.Find("label[for='" + id + "']").TextContent);
+            Assert.AreEqual(id + "-help", field.GetAttribute("aria-describedby"));
             Assert.IsNotEmpty(cut.Find("#" + id + "-help").TextContent);
         }
         StringAssert.Contains(panel.TextContent, "constellation color affects RGB previews", StringComparison.Ordinal);
         Assert.HasCount(1, panel.QuerySelectorAll("input[type=color]"));
-        Assert.IsEmpty(panel.QuerySelectorAll("select"));
+        Assert.AreEqual("utc", cut.Find("#node-options-0-topLeftTokens-0").GetAttribute("value"));
+        Assert.AreEqual("ORI", cut.Find("#node-options-0-constellationIds-0").GetAttribute("value"));
         Assert.AreEqual("numeric", cut.Find("#node-options-0-metadataInset").GetAttribute("inputmode"));
         Assert.AreEqual("decimal", cut.Find("#node-options-0-constellationLineOpacity").GetAttribute("inputmode"));
         var path = Path.Combine(TestContext.TestResultsDirectory!, "legacy-annotation-options.html");
