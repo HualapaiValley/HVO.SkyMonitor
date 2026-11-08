@@ -68,7 +68,9 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                     AssemblyHooks.Fixture.SqlServerConnectionString, scenario.CentralArtifactIds[0]).ConfigureAwait(false);
                 Assert.IsFalse(blocker.TimedOut);
                 reader.Release();
-                response = await responseTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                response = await Infrastructure.ConcurrentRequestProbe.WaitForResponseAsync(
+                    responseTask, TimeSpan.FromSeconds(30),
+                    () => $"generationCalls={reader.GenerationCalls} verifyCalls={reader.VerifyCalls}").ConfigureAwait(false);
             }
             catch
             {
