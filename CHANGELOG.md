@@ -14,6 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
+- CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
+
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
 
 - HYG 4.4 and OpenNGC catalog builds reproduce the approved checksums with the pinned SQLite source build as well as Ubuntu's packaged SQLite. #1701

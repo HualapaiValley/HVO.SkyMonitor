@@ -351,6 +351,65 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void ObservingDay_NavigationDoesNotOfferThePreviousDaysEvidenceWhileLoading(bool nextReadFails)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var firstDate = new DateOnly(2026, 7, 21);
+        var nextDate = firstDate.AddDays(1);
+        var firstDay = Phoenix.Resolve(firstDate);
+        var nextDay = Phoenix.Resolve(nextDate);
+        var nextRead = new TaskCompletionSource<OperatorUiResult<CameraAgentObservingDayView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        static CameraAgentObservingDayView View(ObservingDay day) => new(
+            new CameraAgentGalleryCalendarDay(day, 3, 1, day.StartUtc, day.StartUtc),
+            [], TimeSpan.FromSeconds(60), null, [], false, [], null, null, null);
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (date, _) => date == firstDate
+                ? ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(View(firstDay)))
+                : new(nextRead.Task)
+        });
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-21"));
+        Assert.AreEqual(ArchiveCalendarPage.CapturesUrl(firstDay), cut.Find(".day-actions a[href^='/gallery']").GetAttribute("href"));
+        Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(firstDay), cut.Find(".day-actions a[href^='/transients']").GetAttribute("href"));
+
+        cut.Render(parameters => parameters.Add(page => page.DateText, "2026-07-22"));
+        try
+        {
+            cut.WaitForAssertion(() =>
+            {
+                StringAssert.Contains(cut.Find("h1").TextContent, "22 July 2026", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Markup, "Loading observing day", StringComparison.Ordinal);
+                Assert.IsEmpty(cut.FindAll(".day-actions a[href^='/gallery'], .day-actions a[href^='/transients']"),
+                    "A new date must not offer evidence from the previous date.");
+                Assert.IsFalse(cut.Find(".day-lead").TextContent.Contains("21 Jul 2026", StringComparison.Ordinal));
+            });
+        }
+        finally
+        {
+            nextRead.SetResult(nextReadFails
+                ? OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable, "Day read failed.")
+                : OperatorUiResult<CameraAgentObservingDayView>.Success(View(nextDay)));
+        }
+
+        cut.WaitForAssertion(() =>
+        {
+            if (nextReadFails)
+            {
+                StringAssert.Contains(cut.Find(".page-state--error").TextContent, "Day read failed.", StringComparison.Ordinal);
+                Assert.IsEmpty(cut.FindAll(".day-actions a[href^='/gallery'], .day-actions a[href^='/transients']"));
+            }
+            else
+            {
+                Assert.AreEqual(ArchiveCalendarPage.CapturesUrl(nextDay), cut.Find(".day-actions a[href^='/gallery']").GetAttribute("href"));
+                Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(nextDay), cut.Find(".day-actions a[href^='/transients']").GetAttribute("href"));
+            }
+        });
+    }
+
+    [TestMethod]
     public void ObservingDay_SunrisePeriodShowsRecordedNightlyProductsAndALabelledSample()
     {
         using var context = new BunitContext();
