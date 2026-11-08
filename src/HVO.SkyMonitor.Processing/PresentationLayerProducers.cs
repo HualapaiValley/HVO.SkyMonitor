@@ -378,7 +378,7 @@ public static class PresentationLayerProducers
                     using var font = PresentationFont.Create(block, 0);
                     var bounds = PresentationFont.BackplateBounds(block, width, height, font);
                     return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
-                }).ToArray(), maximumPrimitives: remainingPrimitives).Payload;
+                }).ToArray(), maximumPrimitives: remainingPrimitives, horizon: horizon?.SelectDeepSky(scene)).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,

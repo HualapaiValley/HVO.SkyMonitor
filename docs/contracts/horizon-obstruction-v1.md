@@ -92,3 +92,15 @@ intervals stay unknown. Capture policy and exposure-envelope edits do not change
 installation geometry or prevent horizon preview/save. Calibration candidate reuse
 requires the current horizon content identity; a new candidate can reuse optics
 equipment while retaining an incompatible horizon for explicit revalidation.
+
+Curated deep-sky composition consumes a frozen `horizon-curated-selection-v1`
+selection of at most 128 sorted object IDs. It binds the retained scene identity
+and the evaluated horizon-view identity (profile, geometry and calibration).
+Known footprints require clear supported points and segments; glyphs require an
+eligible source position. Both scene-layer aliases use this selection, and
+flattened processing carries it as canonical auxiliary JSON through the existing
+replay transport. Its hash participates in recipe identity. Wrong scene, object,
+schema or payload identity fails closed; an empty selection draws no catalog
+objects or object labels. The scientific caption remains. Retained scene bytes,
+source identity and raw pixels are preserved, and no-profile output identities
+remain unchanged.

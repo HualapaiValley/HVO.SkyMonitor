@@ -59,6 +59,27 @@ public sealed class HorizonObstructionSceneEligibility
             throw new ArgumentException("The horizon eligibility belongs to another retained scene.", nameof(scene));
     }
 
+    /// <summary>Freezes eligible curated IDs for downstream composition without rewriting retained scene evidence.</summary>
+    public HorizonObstructionSceneSelection SelectDeepSky(ProjectedSceneV1 scene)
+    {
+        ProjectedSceneJson.Validate(scene);
+        ValidateScene(scene);
+        var footprints = (scene.ResolvedFootprints ?? [])
+            .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
+            .ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        bool Eligible(ProjectedDeepSkyObject item)
+        {
+            if (item.Pixel is { } pixel && !IsClear(pixel)) return false;
+            if (!footprints.TryGetValue(item.Id, out var footprint)) return item.Pixel is not null;
+            return footprint.Parts.All(part => part.Points.All(IsClear) &&
+                Enumerable.Range(0, part.Closed ? part.Points.Count : part.Points.Count - 1)
+                    .All(i => IsSegmentClear(part.Points[i], part.Points[(i + 1) % part.Points.Count])));
+        }
+        var ids = (scene.DeepSky?.Objects ?? []).Where(Eligible).Select(static item => item.Id)
+            .Order(StringComparer.Ordinal).ToArray();
+        return new(HorizonObstructionSceneSelection.CurrentSchemaVersion, SceneIdentitySha256, IdentitySha256, ids);
+    }
+
     public bool IsClear(PixelPoint pixel) => Direction(pixel) is { } direction &&
         _evaluator.Evaluate(direction) == HorizonObstructionEligibility.Clear;
 

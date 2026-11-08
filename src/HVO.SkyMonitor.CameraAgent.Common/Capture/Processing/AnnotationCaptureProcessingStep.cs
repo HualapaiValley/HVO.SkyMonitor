@@ -190,6 +190,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
 
+        HorizonObstructionSceneSelection? curatedHorizon = null;
         if (context.Config.Rig.HorizonObstruction is { } horizon)
         {
             var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
@@ -200,6 +201,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             {
                 var eligibility = new HorizonObstructionSceneEligibility(evaluator, context.Config.Rig, projectedScene);
                 (objects, segments) = HorizonObstructionAnnotation.Filter(eligibility, objects, segments);
+                if (projectedScene.DeepSky is not null) curatedHorizon = eligibility.SelectDeepSky(projectedScene);
                 context.RecordCanonicalInput("horizon-scene-eligibility", "1", eligibility.IdentitySha256);
             }
             else
@@ -237,6 +239,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         var executionInputs = new List<ProcessingArtifact> { input };
         var auxiliaryInputs = new List<ProcessingAuxiliaryInput>();
+        if (curatedHorizon is not null) auxiliaryInputs.Add(curatedHorizon.ToAuxiliaryInput());
         if (projectedSceneProduct is not null)
         {
             var projectedSceneArtifactId = CaptureProcessingContext.CreateArtifactId(

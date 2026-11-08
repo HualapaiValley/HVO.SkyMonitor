@@ -38,7 +38,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation overlays and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. #1394
+- Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation and curated deep-sky overlays, and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. #1394
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 
