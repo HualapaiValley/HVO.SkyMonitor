@@ -259,7 +259,7 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         return CreateService(principal, authorization.Object, source, enabled);
     }
 
-    private static CameraAgentEnvironmentalUiService CreateService(
+    internal static CameraAgentEnvironmentalUiService CreateService(
         ClaimsPrincipal principal,
         IAuthorizationService authorization,
         EnvironmentalSourceConfiguration source,
@@ -267,7 +267,9 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         IEnvironmentalAcquisitionStateStore? stateStore = null,
         ILocalEnvironmentalObservationStore? observationStore = null,
         EnvironmentalObservationDeliveryState? deliveryState = null,
-        CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled)
+        CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled,
+        string root = Root,
+        TimeProvider? timeProvider = null)
     {
         return new CameraAgentEnvironmentalUiService(
             new FixedAuthenticationStateProvider(principal),
@@ -278,7 +280,7 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             deliveryState ?? new EnvironmentalObservationDeliveryState(),
             Options.Create(new CameraAgentHostOptions
             {
-                RawIngressRoot = Root,
+                RawIngressRoot = root,
                 CentralIntegration = new CentralIntegrationOptions { Mode = centralMode },
                 EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
                 {
@@ -288,11 +290,11 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
                 }
             }),
             null!,
-            new FixedTimeProvider(Now),
+            timeProvider ?? new FixedTimeProvider(Now),
             NullLogger<CameraAgentEnvironmentalUiService>.Instance);
     }
 
-    private static (ClaimsPrincipal Principal, IAuthorizationService Authorization) ReadAuthorized(bool allowed = true)
+    internal static (ClaimsPrincipal Principal, IAuthorizationService Authorization) ReadAuthorized(bool allowed = true)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, "owner-1")], IdentityConstants.ApplicationScheme));

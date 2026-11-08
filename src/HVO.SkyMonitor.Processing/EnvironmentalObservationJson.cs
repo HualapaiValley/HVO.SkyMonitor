@@ -18,6 +18,7 @@ public static class EnvironmentalObservationReasonCodes
     public const string InvalidQuality = "environment.invalid-quality";
     public const string InvalidUncertainty = "environment.invalid-uncertainty";
     public const string PayloadTooLarge = "environment.payload-too-large";
+    public const string MissingLineage = "environment.lineage-missing";
 }
 
 public readonly record struct EnvironmentalObservationValidationResult(
@@ -258,7 +259,9 @@ public static class EnvironmentalObservationJson
                 .Distinct()
                 .Count() != observation.Lineage.Count ||
             observation.Source.Kind == EnvironmentalObservationSourceKind.Derived && observation.Lineage.Count == 0 ||
-            observation.Source.Kind != EnvironmentalObservationSourceKind.Derived && observation.Lineage.Count != 0)
+            observation.Source.Kind != EnvironmentalObservationSourceKind.Derived && observation.Lineage.Count != 0 &&
+                !(observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 &&
+                    observation.Source.Kind == EnvironmentalObservationSourceKind.Simulated))
         {
             return Failure(EnvironmentalObservationReasonCodes.InvalidProvenance, "lineage");
         }

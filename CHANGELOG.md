@@ -12,6 +12,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Station readings remain available alongside IR derivation inputs, and coalesced triggers cannot revive evidence from a failed environmental source. #1089
+- IR cloud delivery waits for acknowledged lineage inputs, unresolved projections allow independent progress, and simulated cloud estimates retain Simulated provenance. #1090
+- LogicHost retains v3 device-receipt and SQM diagnostic metadata without breaking content hashes; the canonical unreleased schema is updated, and SQM frequency mode has an explicit unavailable state. #1091
+- Environmental overlays preserve source, age and mixed-source labels within their line limits; online weather recovers startup schedule faults and refreshes correctly at native cadence and freshness boundaries. #1092
+
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
 - Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705

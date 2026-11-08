@@ -102,8 +102,14 @@ internal sealed class DeviceEnvironmentalObservationController(
                 "Device credentials are invalid or inactive.",
                 "environment.authentication-rejected");
         }
-        catch (EnvironmentalObservationConflictException)
+        catch (EnvironmentalObservationConflictException exception)
         {
+            if (exception.IsMissingLineage)
+            {
+                Rejected(logger, EnvironmentalObservationReasonCodes.MissingLineage, null);
+                return ProblemResponse(StatusCodes.Status409Conflict,
+                    "Environmental lineage inputs have not been received yet.", EnvironmentalObservationReasonCodes.MissingLineage);
+            }
             Rejected(logger, "environment.content-conflict", null);
             return ProblemResponse(
                 StatusCodes.Status409Conflict,

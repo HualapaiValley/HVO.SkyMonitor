@@ -52,7 +52,8 @@ public sealed class InfraredSkySource : EnvironmentalAdapterSource
         var cover = Math.Clamp((sky - ambient - DeviceOptions.ClearDeltaCelsius) /
             (DeviceOptions.CloudyDeltaCelsius - DeviceOptions.ClearDeltaCelsius), 0, 1);
         return Produced(Fact(sample, context, new(Descriptor.Kind, EnvironmentalObservationUnit.Fraction, cover, null,
-            EnvironmentalObservationQuality.Good), sourceKind: EnvironmentalObservationSourceKind.Derived,
+            EnvironmentalObservationQuality.Good), sourceKind: sample.Simulated
+                ? EnvironmentalObservationSourceKind.Simulated : EnvironmentalObservationSourceKind.Derived,
             lineage: inputs.Select(f => new EnvironmentalObservationReference(EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(f), f.ObservationId)).ToArray()));
     }
 }

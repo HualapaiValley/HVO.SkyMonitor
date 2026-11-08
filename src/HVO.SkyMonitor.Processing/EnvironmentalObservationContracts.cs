@@ -82,7 +82,14 @@ public sealed record EnvironmentalObservationSource(
     [property: JsonRequired] string SourceId,
     [property: JsonRequired] string Version,
     [property: JsonRequired] EnvironmentalObservationSourceKind Kind,
-    [property: JsonRequired] EnvironmentalObservationProvenance Provenance);
+    [property: JsonRequired] EnvironmentalObservationProvenance Provenance)
+{
+    /// <summary>Retained derivation evidence which must not compete with configured primary readings.</summary>
+    [JsonIgnore]
+    public bool IsLineageInput => Provenance is not null && Provenance.Parameters.ValueKind == JsonValueKind.Object &&
+        Provenance.Parameters.TryGetProperty("readingRole", out var role) && role.ValueKind == JsonValueKind.String &&
+        string.Equals(role.GetString(), "lineage-input", StringComparison.Ordinal);
+}
 
 public sealed record EnvironmentalObservationSampleMetadata(
     DateTimeOffset? DeviceReceivedAtUtc = null,

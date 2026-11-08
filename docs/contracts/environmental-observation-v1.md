@@ -116,9 +116,13 @@ V3 adds:
   distinct from ambient air, an image-sensor reading, a temperature differential,
   and cloud cover. The chosen bridge preserves the device's sky-facing Celsius
   value; physical calibration and site/model qualification remain held. Cloud
-  cover derived from sky minus ambient temperature carries its own `Derived`
-  source and lineage to both committed temperature facts, with the formula
-  version and site thresholds in stable provenance.
+  cover computed from measured sky and ambient temperatures carries its own
+  `Derived` source and lineage to both committed facts, with the formula version
+  and site thresholds in stable provenance. A v3 computation using simulated
+  inputs remains `Simulated` and may carry that lineage; v1/v2 lineage rules do
+  not change. Synthetic derivation inputs carry `readingRole: "lineage-input"`
+  in source provenance and are retained as evidence, not primary readings for
+  current display, capture association or central correlation.
 - `SeaLevelPressure` in `Pascals`, positive finite: pressure corrected to sea level,
   including the HVO Davis barometer feed. It never means station pressure.
 - Optional `value.metadata` with `deviceReceivedAtUtc` (UTC producer receipt of a
@@ -130,6 +134,12 @@ New kinds and non-null sample metadata require v3. Null metadata is omitted from
 serialization, preserving old v1/v2 bytes and hashes. Producer device receipt is
 source-authored sample metadata and participates in fact identity; it is distinct
 from LogicHost's receiver-owned `ReceivedAtUtc` excluded from source content.
+LogicHost must durably persist metadata presence and values before acknowledging
+delivery and reconstruct the identical typed value on reads. Derived producer
+identities also bind their lineage, including when a model clips different
+inputs to the same numeric result. Delivery holds local derivatives until their
+input projections are acknowledged; the explicit `environment.lineage-missing`
+conflict reason is retryable without weakening terminal content-conflict handling.
 
 Adapters derive their bounded source version from the algorithm, stable settings,
 and simulated/measured device nature. Moving from a simulator to a physical

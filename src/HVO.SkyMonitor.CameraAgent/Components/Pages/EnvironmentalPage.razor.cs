@@ -435,7 +435,8 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         if (observation is null)
         {
             var configured = _status?.Sources.Any(source => slot.Kinds.Contains(source.Kind)) == true;
-            return new(null, "--", configured ? "No observation yet" : "No source configured", null);
+            var unavailable = _status?.Sources.Any(source => slot.Kinds.Contains(source.Kind) && source.Freshness == "Unavailable") == true;
+            return new(null, "--", unavailable ? "Unavailable" : configured ? "No observation yet" : "No source configured", null);
         }
         var evaluated = _status?.EvaluatedUtc ?? observation.ObservedAtUtc;
         var freshness = evaluated > observation.StaleAfterUtc ? "Stale" : "Fresh";

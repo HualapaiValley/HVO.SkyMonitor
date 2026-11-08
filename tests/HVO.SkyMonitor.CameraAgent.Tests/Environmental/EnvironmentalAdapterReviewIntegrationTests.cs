@@ -146,7 +146,8 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
             using (var service = new EnvironmentalAcquisitionService(coordinator, store, store, telemetry, clock, options, NullLogger<EnvironmentalAcquisitionService>.Instance))
             {
                 await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-                await WaitFor(async () => (await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false)).Count >= 1).ConfigureAwait(false);
+                // Settle both initial polls before advancing the fake clock; otherwise one poll appears to take a whole period.
+                await WaitFor(async () => (await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false)).Count >= 2).ConfigureAwait(false);
                 clock.Advance(TimeSpan.FromSeconds(300));
                 await WaitFor(async () =>
                 {

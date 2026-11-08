@@ -16,6 +16,29 @@ public sealed class EnvironmentalPageTests
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void FailedSourceWithRetainedHistoryShowsUnavailableInsteadOfNoObservationYet()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([
+                Source("station", EnvironmentalObservationKind.AirTemperature, freshness: "Unavailable",
+                    disposition: EnvironmentalAcquisitionDisposition.Missing, failures: 1)])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([]),
+            History = _ => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null, sourceId: "station")], null))
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find("[data-slot='air-temperature']").TextContent, "Unavailable", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find("[data-slot='air-temperature']").TextContent.Contains("No observation yet", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".environment-history-table").TextContent, "station", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void ImportedStationMetadataAndMixedSourceLabelsAreVisible()
     {
         using var context = new BunitContext();

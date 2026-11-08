@@ -9,10 +9,11 @@ public static class EnvironmentalReadingSelection
     public static string? SourceGroup(EnvironmentalObservationFactV1 fact)
     {
         ArgumentNullException.ThrowIfNull(fact);
-        if (fact.SchemaVersion != EnvironmentalObservationSchemaVersions.V3) return null;
         var parameters = fact.Source.Provenance.Parameters;
-        var identity = parameters.TryGetProperty("stationId", out var station) ? station.GetString() :
-            parameters.TryGetProperty("deviceGroup", out var device) ? device.GetString() : fact.Source.SourceId;
+        var identity = parameters.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            parameters.TryGetProperty("stationId", out var station) && station.ValueKind == System.Text.Json.JsonValueKind.String ? station.GetString() :
+            parameters.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            parameters.TryGetProperty("deviceGroup", out var device) && device.ValueKind == System.Text.Json.JsonValueKind.String ? device.GetString() : fact.Source.SourceId;
         return fact.Source.Provider + "/" + identity;
     }
 
@@ -33,7 +34,11 @@ public static class EnvironmentalReadingSelection
             state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
             .Where(state => options.Sources.Any(source => source.Id == state.SourceId && source.Type is "LocalWeatherStation" or "InfraredSky" or "SkyQualityMeter" or "OnlineWeather"))
             .Select(state => state.SourceId).ToArray();
-        var available = candidates.Where(candidate => !unavailable.Contains(Owner(candidate.Fact), StringComparer.Ordinal)).ToArray();
+        var available = candidates.Where(candidate => !candidate.Fact.Source.IsLineageInput &&
+            !unavailable.Contains(Owner(candidate.Fact), StringComparer.Ordinal) &&
+            // Older v3 IR inputs did not carry a readingRole. Their explicit acquisition owner still identifies them.
+            (Owner(candidate.Fact) == candidate.Fact.Source.SourceId ||
+                options.Sources.Any(source => source.Id == Owner(candidate.Fact) && source.Kind == candidate.Fact.Value.Kind))).ToArray();
         if (options.WeatherSourcePriority.Count == 0 || !options.Sources.Any(source => source.Type == "OnlineWeather" && source.Kind == kind))
             return available;
         foreach (var id in options.WeatherSourcePriority)
@@ -41,7 +46,8 @@ public static class EnvironmentalReadingSelection
             var eligible = available.Where(candidate => candidate.Fact.Source.SourceId == id &&
                 candidate.Fact.Source.Kind is EnvironmentalObservationSourceKind.Measured or EnvironmentalObservationSourceKind.Imported &&
                 candidate.Fact.Value.Quality is EnvironmentalObservationQuality.Good or EnvironmentalObservationQuality.Unknown &&
-                candidate.Fact.ValidFromUtc <= from && candidate.Fact.ValidThroughUtc >= through && candidate.Fact.StaleAfterUtc > through).ToArray();
+                candidate.Fact.ValidFromUtc <= from && candidate.Fact.ValidThroughUtc >= through &&
+                (from == through ? candidate.Fact.StaleAfterUtc > through : candidate.Fact.StaleAfterUtc >= through)).ToArray();
             if (eligible.Length > 0) return eligible;
         }
         return [];

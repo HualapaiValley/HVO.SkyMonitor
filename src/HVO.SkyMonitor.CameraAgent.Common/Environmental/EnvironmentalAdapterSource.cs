@@ -83,6 +83,7 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
             protocol = Descriptor.Type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
             deviceGroup = DeviceOptions.DeviceId,
             acquisitionSourceId = Descriptor.Id,
+            readingRole = suffix is null ? "primary" : "lineage-input",
             DeviceOptions.ModelVersion,
             DeviceOptions.ClearDeltaCelsius,
             DeviceOptions.CloudyDeltaCelsius
@@ -103,7 +104,8 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
             value = withMetadata,
             sample.SampledAtUtc,
             context.DeploymentLocation.CanonicalSha256,
-            from
+            from,
+            lineage
         });
         return new(EnvironmentalObservationSchemaVersions.V3, new Guid(Convert.FromHexString(identity).AsSpan(0, 16)),
             source, sample.SampledAtUtc, from, from.HasValue ? sample.SampledAtUtc : null,

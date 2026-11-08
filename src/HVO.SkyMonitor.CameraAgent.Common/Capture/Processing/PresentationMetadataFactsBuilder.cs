@@ -114,8 +114,8 @@ internal sealed class PresentationMetadataFactsBuilder(
                     conflictRecords[index].Fact.SchemaVersion, conflictRecords[index].ContentSha256);
         }
 
-        if (sourceGroups.Count > 1 && environment.Count > 0)
-            environment[0] = environment[0] with { DisplayLine = "MIXED SOURCES / " + environment[0].DisplayLine };
+        var environmentLines = environment.Select(static item => item.DisplayLine);
+        if (sourceGroups.Count > 1) environmentLines = environmentLines.Prepend("MIXED SOURCES");
         var schedule = descriptor.CycleEvidence?.ScheduleAdmission;
         var capture = JsonSerializer.SerializeToElement(new
         {
@@ -151,7 +151,7 @@ internal sealed class PresentationMetadataFactsBuilder(
               $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
               $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
             DisplayLines(environment.Count == 0 ? ["ENVIRONMENT", "NOT RETAINED"] :
-                environment.Select(static item => item.DisplayLine).Prepend("ENVIRONMENT")),
+                environmentLines.Prepend("ENVIRONMENT")),
             DisplayLines(["LINEAGE", $"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
               $"CALIBRATION {descriptor.Profiles.Calibration.Version} / {descriptor.Profiles.Calibration.Sha256[..12]}",
               stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
@@ -194,17 +194,65 @@ internal sealed class PresentationMetadataFactsBuilder(
         LocalEnvironmentalObservationRecord? selected,
         DateTimeOffset evaluatedUtc)
     {
-        var kind = association.Kind.ToString().ToUpperInvariant();
+        var kind = association.Kind switch
+        {
+            EnvironmentalObservationKind.AirTemperature => "AIR",
+            EnvironmentalObservationKind.RelativeHumidity => "RH",
+            EnvironmentalObservationKind.AtmosphericPressure => "PRESS",
+            EnvironmentalObservationKind.SeaLevelPressure => "SLP",
+            EnvironmentalObservationKind.WindSpeed => "WIND",
+            EnvironmentalObservationKind.WindDirection => "DIR",
+            EnvironmentalObservationKind.WindGust => "GUST",
+            EnvironmentalObservationKind.PrecipitationRate => "RAINRATE",
+            EnvironmentalObservationKind.RainState => "RAIN",
+            EnvironmentalObservationKind.SkyBrightness => "SKYBR",
+            EnvironmentalObservationKind.SkyQuality => "SQM",
+            EnvironmentalObservationKind.CloudCover => "CLOUD",
+            EnvironmentalObservationKind.CameraSensorTemperature => "CAMTEMP",
+            EnvironmentalObservationKind.SkyTemperature => "SKYTEMP",
+            _ => association.Kind.ToString().ToUpperInvariant()
+        };
         var status = association.Status.ToString().ToUpperInvariant();
         if (selected is null) return $"{kind} {status}";
         var value = selected.Fact.Value;
         var formatted = value.BooleanValue is { } boolean
             ? boolean ? "TRUE" : "FALSE"
             : value.NumericValue?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE";
-        var age = Math.Max(0, Math.Round((evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds));
-        var sourceLabel = selected.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3
-            ? $" {selected.Fact.Source.Kind.ToString().ToUpperInvariant()} SOURCE {EnvironmentalReadingSelection.SourceGroup(selected.Fact)}" : string.Empty;
-        return $"{kind} {formatted} {value.Unit.ToString().ToUpperInvariant()} {status} {value.Quality.ToString().ToUpperInvariant()} AGE {age.ToString("F0", CultureInfo.InvariantCulture)} S{sourceLabel}";
+        var unit = value.Unit switch
+        {
+            EnvironmentalObservationUnit.DegreesCelsius => "C",
+            EnvironmentalObservationUnit.Percent => "%",
+            EnvironmentalObservationUnit.Pascals => "Pa",
+            EnvironmentalObservationUnit.MetersPerSecond => "m/s",
+            EnvironmentalObservationUnit.DegreesTrue => "deg",
+            EnvironmentalObservationUnit.MillimetersPerHour => "mm/h",
+            EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond => "mag/as2",
+            EnvironmentalObservationUnit.Fraction => "frac",
+            _ => string.Empty
+        };
+        var ageSeconds = Math.Max(0, (evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds);
+        var age = ageSeconds < 60 ? FormattableString.Invariant($"{ageSeconds:0}S") :
+            ageSeconds < 3600 ? FormattableString.Invariant($"{ageSeconds / 60:0}M") :
+            ageSeconds < 86400 ? FormattableString.Invariant($"{ageSeconds / 3600:0}H") :
+            FormattableString.Invariant($"{ageSeconds / 86400:0}D");
+        var quality = value.Quality == EnvironmentalObservationQuality.Good ? string.Empty : " ?";
+        var prefix = $"{kind} {formatted}{unit} {status}{quality} AGE {age} {selected.Fact.Source.Kind.ToString().ToUpperInvariant()} SRC ";
+        var group = EnvironmentalReadingSelection.SourceGroup(selected.Fact)!;
+        return prefix + CompactSource(group, PresentationLayerPayloadV1.MaximumLineCharacters - prefix.Length);
+    }
+
+    private static string CompactSource(string value, int maximum)
+    {
+        if (value.Length <= maximum) return value;
+        if (maximum <= 3) return value[..Math.Max(0, maximum)];
+        var slash = value.LastIndexOf('/');
+        if (slash < 0) return Shorten(value, maximum);
+        var providerBudget = Math.Min(slash, Math.Max(1, maximum / 2));
+        return Shorten(value[..slash], providerBudget) + "/" + Shorten(value[(slash + 1)..], maximum - providerBudget - 1);
+
+        static string Shorten(string text, int limit)
+            => text.Length <= limit ? text : limit <= 1 ? text[..Math.Max(0, limit)] :
+                text[..((limit - 1) / 2)] + "…" + text[^(limit / 2)..];
     }
 
     private static string[] DisplayLines(IEnumerable<string> lines) => lines

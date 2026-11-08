@@ -28,6 +28,22 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
     private const int CurrentSchemaVersion = 3;
+    // A local lineage pin also retains the acknowledged projection of each input. Reuse that durable
+    // acknowledgement rather than queue order: retrying or expired input leases must not release a derivative.
+    private const string AcknowledgedLineageSql = """
+        AND NOT EXISTS (
+            SELECT 1 FROM environmental_observation_local_lineage AS dependency
+            LEFT JOIN environmental_observation_central_projection AS owner_projection
+                ON owner_projection.local_record_id = candidate.local_record_id
+                AND owner_projection.outbox_record_id = candidate.record_id
+            LEFT JOIN environmental_observation_central_projection AS input_projection
+                ON input_projection.local_record_id = dependency.referenced_record_id
+                AND input_projection.target_site_id = owner_projection.target_site_id
+                AND input_projection.target_agent_id = owner_projection.target_agent_id
+                AND input_projection.target_rig_id IS owner_projection.target_rig_id
+            WHERE dependency.local_record_id = candidate.local_record_id
+                AND (input_projection.status IS NULL OR input_projection.status != 'acknowledged'))
+        """;
     private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private const int MaximumAuditRecords = 10_000;
@@ -472,6 +488,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             if (result.Disposition != EnvironmentalObservationProjectionDisposition.Staged)
             {
+                if (result.Disposition == EnvironmentalObservationProjectionDisposition.Waiting && result.Observation is null)
+                    continue;
                 break;
             }
             projected++;
@@ -751,13 +769,17 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 ON CONFLICT(source_id) DO UPDATE SET
                     observation_kind = excluded.observation_kind,
                     required = excluded.required,
-                    last_outcome = excluded.last_outcome,
-                    last_reason = excluded.last_reason,
+                    last_outcome = CASE WHEN excluded.last_outcome = 'Coalesced'
+                        THEN environmental_source_runtime.last_outcome ELSE excluded.last_outcome END,
+                    last_reason = CASE WHEN excluded.last_outcome = 'Coalesced'
+                        THEN environmental_source_runtime.last_reason ELSE excluded.last_reason END,
                     last_observation_id = COALESCE(excluded.last_observation_id, environmental_source_runtime.last_observation_id),
                     last_observed_unix_ms = COALESCE(excluded.last_observed_unix_ms, environmental_source_runtime.last_observed_unix_ms),
                     last_stale_after_unix_ms = COALESCE(excluded.last_stale_after_unix_ms, environmental_source_runtime.last_stale_after_unix_ms),
-                    last_started_unix_ms = excluded.last_started_unix_ms,
-                    last_completed_unix_ms = excluded.last_completed_unix_ms,
+                    last_started_unix_ms = CASE WHEN excluded.last_outcome = 'Coalesced'
+                        THEN environmental_source_runtime.last_started_unix_ms ELSE excluded.last_started_unix_ms END,
+                    last_completed_unix_ms = CASE WHEN excluded.last_outcome = 'Coalesced'
+                        THEN environmental_source_runtime.last_completed_unix_ms ELSE excluded.last_completed_unix_ms END,
                     consecutive_failures = CASE
                         WHEN excluded.last_outcome IN ('Produced','Duplicate') THEN 0
                         WHEN excluded.last_outcome = 'Coalesced' THEN environmental_source_runtime.consecutive_failures
@@ -1263,27 +1285,30 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             using (var candidate = connection.CreateCommand())
             {
                 candidate.Transaction = transaction;
-                candidate.CommandText = """
+                candidate.CommandText = $"""
                     SELECT record_id FROM (
                         SELECT * FROM (
-                            SELECT record_id, next_attempt_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'pending'
-                            ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.next_attempt_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'pending'
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.next_attempt_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1)
                         UNION ALL
                         SELECT * FROM (
-                            SELECT record_id, next_attempt_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'retry' AND next_attempt_unix_ms <= $now
-                            ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.next_attempt_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'retry' AND candidate.next_attempt_unix_ms <= $now
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.next_attempt_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1)
                         UNION ALL
                         SELECT * FROM (
-                            SELECT record_id, lease_expires_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'leased' AND lease_expires_unix_ms <= $now
-                            ORDER BY lease_expires_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.lease_expires_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'leased' AND candidate.lease_expires_unix_ms <= $now
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.lease_expires_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1))
                     ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
                     LIMIT 1;
@@ -2518,7 +2543,19 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
 
         if (unresolvedLineage)
+        {
+            using var rotate = connection.CreateCommand();
+            rotate.Transaction = transaction;
+            rotate.CommandText = """
+                UPDATE environmental_observation_central_projection
+                SET updated_unix_ms = MAX(updated_unix_ms + 1, $now)
+                WHERE local_record_id = $local AND status = 'waiting';
+                """;
+            rotate.Parameters.AddWithValue("$now", now);
+            rotate.Parameters.AddWithValue("$local", record.RecordId);
+            await rotate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Waiting, null, null);
+        }
 
         var sourceIdentity = EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation);
         var contentIdentity = EnvironmentalObservationJson.ComputeContentSha256(observation);

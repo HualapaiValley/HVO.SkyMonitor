@@ -33,8 +33,10 @@ fault states. `mode` is `Normal`, `Missing`, `Disconnected`, `Faulted`, `Stale`,
 Configure clear/cloudy, rain/drying, saturation, slow integration and malformed
 scenarios through `payload`. Recreation after restart reproduces the same
 scenario. A simulated device always publishes `Simulated`, including when its
-adapter is later used with a measured transport. Derived infrared cloud cover
-remains `Derived`, with lineage to the two simulated or measured input facts.
+adapter is later used with a measured transport. Computed infrared cloud cover
+is `Simulated` when its inputs are simulated, and `Derived` when measured. Both
+retain the two input facts and model lineage; simulated cloud cover never gains
+the default priority of measured or derived evidence.
 
 Example source entry (repeat with a different `id` and `kind` for other fields):
 
@@ -89,7 +91,12 @@ The `sky-ambient-linear-v1` model maps sky minus ambient between
 `clearDeltaCelsius` (default -25) and `cloudyDeltaCelsius` (default -5), clamps to
 [0,1], and retains both thresholds and version in provenance. Thresholds require
 site qualification. Temperature input facts are durably published before the
-derived cloud fact; retries are idempotent. Sensor and image cloud-cover facts
+derived cloud fact; retries are idempotent. Synthetic temperature inputs carry
+`readingRole: "lineage-input"` in provenance. They remain in history and delivery
+but do not compete with configured station readings in current, capture or central
+correlation selection. The outbox waits for both inputs to be acknowledged before
+claiming the cloud fact; missing-lineage conflicts are retryable, and an unresolved
+waiting projection does not block independent records. Sensor and image cloud-cover facts
 keep separate source identities. The bridge owns heater control and must assert
 `drying` throughout heater-driven drying/warm-up until a valid dry reading is
 qualified; the adapter never commands a heater or assumes it has finished. A drying wet sensor reports
@@ -100,9 +107,19 @@ parses the six-field `r,<mag>m,<frequency>Hz,<counts>c,<integration>s,<temperatu
 response. LAN and USB transport are both physically held. The real integration
 interval is retained, with sensor temperature in per-reading metadata. A zero
 or negative magnitude is saturated; invalid ranges, malformed values and
-unbounded integrations are unavailable. Configure `BeforeCapture` (optional,
+unbounded integrations are unavailable. A bright frequency-mode response with a
+zero period reports `sqm-frequency-mode`, rather than inventing an integration
+interval or classifying a valid frequency-mode packet as malformed. Configure `BeforeCapture` (optional,
 `required: false`) and/or `Periodic`. A timeout or missing reading does not block
 the exposure; its association is Missing. No image-derived SQM measure is added.
+The retained integration interval describes the measurement. Optional pre-exposure
+association currently uses validity/freshness, so a sample ending just before
+capture can describe that capture without claiming temporal overlap. A versioned
+interval/gap policy and physical timing validation remain tracked in [#1735](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1735).
+`BeforeCaptureWaitMilliseconds` bounds device acquisition. Durable attempt
+settlement can add storage latency; using an expired acquisition token for that
+settlement would allow old failed-source evidence to reappear. A strict total
+capture deadline with a durable capture fence is also tracked in #1735.
 
 ## Online weather
 
@@ -155,6 +172,12 @@ explicitly pinned station; missing metadata is shown as unknown. The Environment
 page shows the source, age, distance and elevation on each imported reading,
 with a mixed-source label when groups differ. Frame Facts retain source and age
 and label mixed groups. No nearest-station selection or averaging is performed.
+Overlay lines reserve space for source class, `SRC` identity and `AGE`; compact
+units keep them within 64 characters. Long source identifiers are shortened only
+for display; retained identities stay complete. `?` marks non-Good quality.
+The separate `MIXED SOURCES` line counts legacy and v3 source groups without
+overwriting a reading's age. History retains all sources; the latest grid shows
+the selected current reading for each kind. Failed slots say `Unavailable`.
 
 ## Contract and evidence
 
@@ -162,8 +185,14 @@ and label mixed groups. No nearest-station selection or averaging is performed.
 optional typed sample metadata for device receipt time and SQM sensor temperature.
 V1/V2 keep their serialization and hash domains; null metadata is omitted. New
 kinds and metadata are rejected in older envelopes. LogicHost accepts v3 through
-the normal authenticated environmental delivery endpoint, covered by compatibility
-integration tests. There is no database schema migration or deployment change.
+the normal authenticated environmental delivery endpoint. POST/read-back/hash
+validation tests cover the metadata, including an explicitly empty metadata object.
+LogicHost stores bounded sample-metadata JSON and a normalized lineage-input role.
+The canonical initial migration, designer and model snapshot are updated together
+under the repository's unreleased-schema contract. An already-applied older initial
+migration does not add these columns: pre-fix unreleased databases need a current
+schema provisioned through that contract before adoption. This PR does not alter
+running databases or deploy anything.
 
 Unit evidence starts with failing-first missing-adapter builds, then behavioral
 parsing regressions. Integration tests use the real factory, coordinator,
@@ -186,3 +215,11 @@ bounded deferred queue drained by the same hosted acquisition service. Queue
 capacity refusal is recorded explicitly; a regime-change request does not need
 a later capture or periodic trigger to make progress. Host shutdown owns worker
 cancellation.
+
+Coalesced receipts remain in attempt history but preserve the last completed
+acquisition's effective availability, reason, timestamps and failure count. Only
+a completed recovery restores a failed source. Online startup schedule reads retry
+inside the hosted recovery loop. Native-period polling also respects completion
+time, avoiding skipped refreshes when scheduling latency shrinks while retaining
+the provider's strict minimum wire spacing. Freshness remains half-open: an
+exposure ending exactly at `StaleAfterUtc` is fresh; a point at that instant is stale.

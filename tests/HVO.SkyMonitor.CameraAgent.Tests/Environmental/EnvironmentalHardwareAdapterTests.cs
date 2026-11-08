@@ -96,7 +96,7 @@ public sealed class EnvironmentalHardwareAdapterTests
         var source = new InfraredSkySource(Descriptor("InfraredSky", EnvironmentalObservationKind.CloudCover), Options(Infrared), publisher: publisher);
         var result = await source.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0, result.Fact!.Value.NumericValue);
-        Assert.AreEqual(EnvironmentalObservationSourceKind.Derived, result.Fact.Source.Kind);
+        Assert.AreEqual(EnvironmentalObservationSourceKind.Simulated, result.Fact.Source.Kind);
         Assert.HasCount(2, result.Fact.Lineage);
         Assert.HasCount(2, publisher.Facts);
         Assert.IsTrue(publisher.Facts.Any(f => f.Value.Kind == EnvironmentalObservationKind.SkyTemperature));

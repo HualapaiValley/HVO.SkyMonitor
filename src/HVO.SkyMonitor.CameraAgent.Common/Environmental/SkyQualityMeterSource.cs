@@ -18,6 +18,7 @@ public sealed class SkyQualityMeterSource(EnvironmentalSourceDescriptor descript
         var integration = Number(fields[4], 's');
         var temperature = Number(fields[5], 'C');
         if (magnitude <= 0) return ValueTask.FromResult(Unavailable("sqm-saturated"));
+        if (integration == 0 && magnitude < 9.5) return ValueTask.FromResult(Unavailable("sqm-frequency-mode"));
         if (magnitude > 30 || frequency < 0 || counts < 0 || counts != Math.Floor(counts) || frequency != Math.Floor(frequency) || integration is <= 0 or > 3600 ||
             temperature is < -100 or > 100) return ValueTask.FromResult(Unavailable("sqm-out-of-range"));
         var fact = Fact(sample, context, new(Descriptor.Kind, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond,
