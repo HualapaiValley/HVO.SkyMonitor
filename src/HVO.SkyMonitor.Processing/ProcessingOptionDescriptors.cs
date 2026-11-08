@@ -835,7 +835,7 @@ public static class ProcessingNodeOptionsDescriptors
         [ScenePresentationLayerV12, ScenePresentationLayer, SceneStylePresentation.Descriptor, FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
-            CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, CalibrationOptionDescriptors.Normalization,
+            CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.MixedGain, CalibrationOptionDescriptors.Normalization,
             CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
             RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment, PresentationMaterializerOptionDescriptors.Descriptor,
             OverlayManifestOptionDescriptors.Descriptor,
