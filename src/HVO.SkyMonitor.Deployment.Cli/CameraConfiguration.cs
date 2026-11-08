@@ -40,24 +40,29 @@ internal static class CameraConfiguration
         }
 
         var rig = CreateRig();
+        var moduleOptions = JsonSerializer.SerializeToNode(new
+        {
+            seed = 2025,
+            maximumMagnitude = 6.5,
+            maximumResults = 2000,
+            magnitudeZeroElectronsPerSecond = 300.0,
+            bortleClass = 3,
+            asi174Sensor = new { enabled = true, blackLevelAdu = 64.0 },
+            constellationIds = ConstellationIds,
+            includeConstellationEndpointStars = true,
+            solarSystemBodies = SolarSystemBodies
+        })!.AsObject();
+        if (request.IlluminationMode is { } illuminationMode)
+        {
+            moduleOptions["illuminationMode"] = illuminationMode;
+        }
         var config = new CameraModuleConfig(
             new ObservatoryLocation(
                 request.LatitudeDegrees,
                 request.LongitudeDegrees,
                 request.ElevationMeters,
                 request.TimeZoneId),
-            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
-            {
-                seed = 2025,
-                maximumMagnitude = 6.5,
-                maximumResults = 2000,
-                magnitudeZeroElectronsPerSecond = 300.0,
-                bortleClass = 3,
-                asi174Sensor = new { enabled = true, blackLevelAdu = 64.0 },
-                constellationIds = ConstellationIds,
-                includeConstellationEndpointStars = true,
-                solarSystemBodies = SolarSystemBodies
-            })),
+            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(moduleOptions)),
             rig,
             new CapturePipelineConfig(CreateProcessingSteps()),
             AgentId: applicationIdentity.ToString("D"))
