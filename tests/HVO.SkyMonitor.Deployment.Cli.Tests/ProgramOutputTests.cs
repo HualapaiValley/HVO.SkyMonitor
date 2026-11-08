@@ -71,6 +71,7 @@ public sealed class ProgramOutputTests
           --elevation <metres>             The camera's elevation (default 0).
           --time-zone <zone>               The camera's IANA time zone (default UTC).
           --replay-profile <profile>       Where archived replay runs: in-process (default) or local-runner.
+          --illumination-mode <mode>       VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
           --cpus <count>                   The container's CPU limit.
           --memory <size>                  The container's memory limit, such as 4g.
           --plan                           Show what the command would change, and change nothing.
