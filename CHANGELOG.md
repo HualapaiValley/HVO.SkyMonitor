@@ -14,6 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
+- Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
+- Upgrade notes identify custom cloud/environment-only graphs and early 0.9.1 pre-release scene graphs whose producer plans are superseded, preserve revision/replay recovery steps, and distinguish current host and ProcessingRunner runtime versions. #1697
 - CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
 
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707

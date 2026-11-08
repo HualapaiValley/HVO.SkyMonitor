@@ -2173,6 +2173,10 @@ From then on, it reads the archive back, proves it whole, commits it and finishe
 never restorable. If recovery already discarded that partial, `--resume` puts the instance back and settles the
 operation with no backup, so it no longer blocks a later command.
 
+A backup whose publication record exists beside its `.partial` archive has crossed the publication boundary,
+including a crash before the archive rename. `--abort` refuses without discarding it; use `--resume` to verify the
+recorded checksum and complete publication. A malformed publication record is not permission to discard the partial.
+
 **A processing-lane quarantine.** `/health` stays unavailable while a required lane is quarantined, which makes the
 restart after a backup or an upgrade fail and leaves the backup operation incomplete. That incomplete operation then
 refuses every later lifecycle command until it is resumed or aborted. Pass `--allow-quarantined-readiness` to treat
@@ -2183,8 +2187,15 @@ that quarantine as backup-safe:
   Optional-lane quarantines cannot justify a required-lane failure. For this readiness decision, required pressure
   means a hard count, byte or oldest-age limit reached by `pending`, `leased` or `retry_wait` work. Quarantined rows
   are excluded from those three measurements: their age and the persisted admission `pressure_state=2` do not
-  constitute active-work pressure. Genuine active-work pressure is still refused, including on the quarantined
-  lane. Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
+  constitute active-work pressure. Pending captures queued behind an ordered lane's quarantined head remain
+  active work, even though they cannot drain. They still count toward the count, byte and oldest-age limits, before
+  and after restart. With the default `RequiredMaximumOldestAgeMinutes=10080`, that queued backlog reaches the age
+  limit after seven days; `--allow-quarantined-readiness` then refuses required-lane backlog pressure. This is the
+  retained fail-closed policy, including pressure caused by work blocked behind the quarantine. Review the failed
+  capture and use the owner **Processing lane quarantine** acknowledgement in [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade)
+  when its raw evidence is still valid, let the ordered backlog drain, then retry. Unrelated required-lane pressure
+  must also recover; acknowledging one quarantine does not waive other pressure or admission safeguards.
+  Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
   Worker, claim and lane-state failures remain recorded across backlog refreshes until the matching worker/claim
   operation or state refresh succeeds.
 - If `capture-processing` is Unhealthy, its `TerminalCount` and `LaneQuarantineTerminalCount` must both equal the
@@ -2193,6 +2204,10 @@ that quarantine as backup-safe:
   refused. The reason must exactly match `terminal`, or `terminal;processing-quarantine` when processing quarantine
   evidence is present. Missing, malformed or inconsistent evidence fails closed, including older image payloads.
 - Every other unhealthy check is still refused. Degraded checks do not make `/health` unavailable and are unchanged.
+  This deliberately includes a standard-lane `evidence-invalid` quarantine alongside Degraded raw ingress, provided
+  all the per-cause conditions above hold. Backup, upgrade and rollback readiness do not acknowledge, revalidate or
+  repair that row. Invalid raw evidence cannot use processing-lane acknowledgement; inspect and follow Raw Evidence
+  Recovery instead. Unhealthy raw ingress remains refused even with the flag.
 - The catalog check must still be Healthy and must still name this instance's catalog. Installation identity, container
   ownership, and the archive's SHA-256 are unchanged. A partial whose bytes differ from the hash recorded when it was
   written is not committed.
