@@ -174,7 +174,11 @@ internal sealed record ProcessingGraphTerminalExecution(
 
 public sealed record ProcessingGraphExecutionDetail(
     ProcessingGraphExecutionState Execution,
-    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes);
+    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes)
+{
+    /// <summary>Expected node count from the bounded manifest snapshot's frozen plan, when read.</summary>
+    public int? FrozenNodeCount { get; init; }
+}
 
 public sealed record ProcessingReplaySubmission(
     Guid CaptureId,

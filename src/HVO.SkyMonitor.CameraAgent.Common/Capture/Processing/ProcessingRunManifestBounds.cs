@@ -34,7 +34,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var bytes = connection.CreateCommand();
         bytes.CommandText = """
             SELECT COALESCE((SELECT length(frozen_plan_json) FROM processing_executions WHERE execution_id = $execution), 0)
-              + COALESCE((SELECT SUM(length(dependencies_json) + length(inputs_json) + length(outputs_json))
+              + COALESCE((SELECT SUM(length(CAST(dependencies_json AS BLOB)) + length(CAST(inputs_json AS BLOB)) + length(CAST(outputs_json AS BLOB)))
                   FROM processing_execution_nodes WHERE execution_id = $execution), 0)
               + COALESCE((SELECT SUM(length(o.descriptor_json) + length(o.algorithms_json) + length(o.compatibility_json))
                   FROM processing_execution_outputs a JOIN processing_outputs o ON o.output_identity_sha256 = a.output_identity_sha256

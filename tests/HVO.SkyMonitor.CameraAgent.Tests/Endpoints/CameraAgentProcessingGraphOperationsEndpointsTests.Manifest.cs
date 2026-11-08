@@ -65,7 +65,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         else setup.ReturnsAsync(scenario switch
         {
             "missing" => null,
-            "expired" => detail with { Nodes = [] },
+            "expired" => detail with { Nodes = [], FrozenNodeCount = 1 },
             "incomplete" => detail with { Nodes = [detail.Nodes[0] with { Outputs = [detail.Nodes[0].Outputs[0] with { PayloadSha256 = null }] }] },
             _ => detail
         });
@@ -96,6 +96,15 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var result = CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { NodeId = "/private-sentinel?password=secret" }] });
         Assert.IsNull(result.Payload);
         Assert.AreEqual(CameraAgentRunManifest.IncompleteReason, result.Reason);
+    }
+
+    [TestMethod]
+    public void ManifestIncludesRetainedEmptyGraphInsteadOfClaimingEvidenceWasPruned()
+    {
+        var result = CameraAgentRunManifest.Create(ManifestDetail() with { Nodes = [], FrozenNodeCount = 0 });
+        Assert.IsNull(result.Reason);
+        using var json = JsonDocument.Parse(result.Payload!);
+        Assert.AreEqual(0, json.RootElement.GetProperty("nodes").GetArrayLength());
     }
 
     private static ProcessingGraphExecutionDetail ManifestDetail()

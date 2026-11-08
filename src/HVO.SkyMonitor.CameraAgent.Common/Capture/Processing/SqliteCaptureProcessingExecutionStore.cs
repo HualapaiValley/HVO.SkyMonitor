@@ -1022,8 +1022,15 @@ internal sealed partial class SqliteCaptureProcessingStore
                         reader.GetString(8), reader.GetString(9)));
                 }
             }
-            var frozenPlans = ReadNormalizationPlans(await ReadExecutionFrozenPlanJsonAsync(
-                connection, null, executionId, cancellationToken).ConfigureAwait(false), nodeId: null)
+            var frozenPlanJson = await ReadExecutionFrozenPlanJsonAsync(
+                connection, null, executionId, cancellationToken).ConfigureAwait(false);
+            int? frozenNodeCount = null;
+            if (manifestOnly)
+            {
+                using var frozenDocument = JsonDocument.Parse(frozenPlanJson);
+                frozenNodeCount = frozenDocument.RootElement.GetProperty("nodes").GetArrayLength();
+            }
+            var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)
                 .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
             foreach (var row in rows)
             {
@@ -1099,7 +1106,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                         ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.")
                 });
             }
-            return new(execution, nodes);
+            return new(execution, nodes) { FrozenNodeCount = frozenNodeCount };
         }
         finally
         {

@@ -591,7 +591,7 @@ public sealed class ProcessingExecutionPagesTests
         StringAssert.Contains(cut.Find(".attempt-list").TextContent, "Attempt 2", StringComparison.Ordinal);
         cut.Find("#run-tab-artifacts").Click();
         StringAssert.Contains(cut.Find(".artifact-table-wrap").TextContent, "Not recorded", StringComparison.Ordinal);
-        Assert.IsNotNull(cut.Find("button[disabled][title='No run manifest download contract']"));
+        Assert.AreEqual(CameraAgentRunManifest.MissingReason, cut.Find("button[aria-describedby='manifest-unavailable']").GetAttribute("title"));
     }
 
     [TestMethod]

@@ -17,7 +17,7 @@ internal static class CameraAgentRunManifest
 
     internal static (byte[]? Payload, string? Reason) Create(ProcessingGraphExecutionDetail detail)
     {
-        if (detail.Nodes.Count == 0) return (null, MissingReason);
+        if (detail.FrozenNodeCount is { } expected && expected != detail.Nodes.Count) return (null, MissingReason);
         if (detail.Nodes.Count > ProcessingRunManifestBounds.MaximumNodes || detail.Nodes.Any(static node =>
             node.Inputs.Count > ProcessingRunManifestBounds.MaximumRows ||
             node.Outputs.Count > ProcessingRunManifestBounds.MaximumRows ||
