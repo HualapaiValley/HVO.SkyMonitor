@@ -340,7 +340,7 @@ public sealed partial class VirtualSkyCloudPerformanceTests
     {
         var config = CreateConfig(workload, scenario);
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             new InMemoryCelestialCatalog([]),
             new ProjectedSceneStore());
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);

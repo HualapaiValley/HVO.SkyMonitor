@@ -170,7 +170,7 @@ public sealed class VirtualSkyTransientPerformanceTests
         foreach (var scenario in PerformanceScenario.All.Where(static item => item.Id is "none" or "short-sky-track"))
         {
             var sceneStore = new ProjectedSceneStore();
-            var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), sceneStore);
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), sceneStore);
             await module.InitializeAsync(CreateConfig(workload, scenario), CancellationToken.None).ConfigureAwait(false);
             var capture = await module.CaptureAsync(
                 new CaptureRequest(
@@ -197,7 +197,7 @@ public sealed class VirtualSkyTransientPerformanceTests
         var configMeasurement = MeasureConfiguration(workload, scenario);
         var config = CreateConfig(workload, scenario);
         var sceneStore = new ProjectedSceneStore();
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), sceneStore);
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), sceneStore);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         var request = new CaptureRequest(
             FixtureUtc,

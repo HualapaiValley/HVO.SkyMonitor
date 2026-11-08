@@ -368,7 +368,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             _ = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
             module = new VirtualSkyCameraModule(
-                TimeProvider.System,
+                ExposureTestTimeProvider.ForRendering(),
                 provider.GetRequiredService<ICelestialCatalog>(),
                 provider.GetRequiredService<IProjectedSceneStore>(),
                 provider.GetRequiredService<IConstellationTopology>(),
