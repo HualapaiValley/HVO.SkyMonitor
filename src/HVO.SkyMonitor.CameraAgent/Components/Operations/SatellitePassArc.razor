@@ -36,9 +36,13 @@
         @foreach (var anchor in _anchors)
         {
             <dt>@anchor.Name</dt>
-            <dd>@(anchor.Sample is { } sample ? $"{Timestamp(sample.Utc)}; altitude {Number(sample.Horizontal.AltitudeDegrees)}°; azimuth {Number(sample.Horizontal.AzimuthDegrees)}°; sunlight {sample.Illumination}" : "Unresolved; no declared sample anchor.")</dd>
+            <dd>
+                @(anchor.Sample is { } sample ? $"{Timestamp(sample.Utc)}; altitude {Number(sample.Horizontal.AltitudeDegrees)}°; azimuth {Number(sample.Horizontal.AzimuthDegrees)}°; sunlight {sample.Illumination}" : "Unresolved; no declared sample anchor.")
+                @if (anchor.Sample is not null) { <br /><span class="anchor-solar-context">@SolarContext(anchor)</span> }
+            </dd>
         }
     </dl>
+    <p class="solar-context-note">Solar context at the original pass observer and each resolved anchor: Day ≥ 0°, Night ≤ −18°, Twilight between, using geometric Sun altitude without refraction or custom obstructions. Ephemeris: @(_solarModelVersion ?? "Unknown — ephemeris unavailable"). Sky darkness does not establish satellite sunlight or optical visibility; missing or invalid solar positions remain Unknown.</p>
     <p>Arc status: @Arc.Status / @Arc.Reason. Physical orbit uncertainty: @(Arc.OrbitUncertainty.Value is { } uncertainty ? Number(uncertainty) + " " + Arc.OrbitUncertainty.Unit : "Unknown") / @Arc.OrbitUncertainty.Reason.</p>
     @if (ShowRigPreview)
     {
