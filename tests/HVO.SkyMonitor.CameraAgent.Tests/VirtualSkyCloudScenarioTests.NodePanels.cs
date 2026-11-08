@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -51,32 +52,35 @@ public sealed partial class VirtualSkyCloudScenarioTests
             context.JSInterop.Mode = JSRuntimeMode.Loose;
             var authorization = context.AddAuthorization();
             authorization.SetAuthorized("owner");
+            authorization.SetPolicies(CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
             authorization.SetClaims(new Claim(ClaimTypes.NameIdentifier, "virtual-owner"),
                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType));
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(config);
-            var service = new CameraAgentProcessingGraphUiService(
-                context.Services.GetRequiredService<AuthenticationStateProvider>(), context.Services.GetRequiredService<IAuthorizationService>(),
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(services => new CameraAgentProcessingGraphUiService(
+                services.GetRequiredService<AuthenticationStateProvider>(), services.GetRequiredService<IAuthorizationService>(),
                 operations, provider.GetRequiredService<ICaptureProcessingPipelineFactory>(), accessor, null, TimeProvider.System,
-                NullLogger<CameraAgentProcessingGraphUiService>.Instance);
-            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance));
             var navigation = context.Services.GetRequiredService<NavigationManager>();
             navigation.NavigateTo("/operations/pipeline/graphs/new?from=" + initial.ActiveRevisionId);
+            var source = await context.Services.GetRequiredService<ICameraAgentProcessingGraphUiService>()
+                .GetRevisionDetailAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(source.IsSuccess, source.Message);
             var cut = context.Render<ProcessingGraphEditorPage>();
             var selector = "#node-options-" + index + "-" + key;
-            cut.WaitForElement(selector).Change(value);
-            if (alias == "CaptureSatelliteTracks") cut.Find("#node-options-4-inputVariant").Change(value);
-            if (alias == "CaptureSatelliteLayer") cut.Find("#node-options-3-outputVariant").Change(value);
-            cut.Find("form").Submit();
+            await cut.WaitForElement(selector).ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+            if (alias == "CaptureSatelliteTracks") await cut.Find("#node-options-4-inputVariant").ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+            if (alias == "CaptureSatelliteLayer") await cut.Find("#node-options-3-outputVariant").ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
             cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled")));
-            cut.Find(selector).Change(invalid);
-            cut.Find("form").Submit();
+            await cut.Find(selector).ChangeAsync(new() { Value = invalid }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
             Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
             Assert.IsNotEmpty(cut.FindAll(".option-errors[role='alert'] li"));
-            cut.Find(selector).Change(value);
-            cut.Find("form").Submit();
+            await cut.Find(selector).ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
             cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled")));
-            cut.Find("button.btn-primary").Click();
+            await cut.Find("button.btn-primary").ClickAsync(new()).ConfigureAwait(false);
             cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
             var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, registry.ActiveRevisionId);
@@ -86,7 +90,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
             navigation.NavigateTo("/operations/pipeline/graphs/new?from=" + saved.RevisionId);
             var reload = context.Render<ProcessingGraphEditorPage>();
             reload.WaitForAssertion(() => Assert.AreEqual(value, reload.Find(selector).GetAttribute("value")));
-            reload.Find("form").Submit();
+            await reload.Find("form").SubmitAsync().ConfigureAwait(false);
             Assert.IsTrue(reload.Find("button.btn-primary").HasAttribute("disabled"));
         }
         finally

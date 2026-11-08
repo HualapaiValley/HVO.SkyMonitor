@@ -111,12 +111,12 @@ public sealed partial class ProcessingGraphOperationsTests
 
     internal static CapturePipelineConfig RemainingOptionsPipeline(string root)
     {
-    var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
-    var catalog = new AstrometryCatalogSnapshotV1(new CatalogMetadata("fixture", "1",
-        new Uri("https://example.test/catalog"), new string('A', 64), "test", "1"), [],
-        new("fixture", "1", "fixture", "unspecified"), true, 7);
-    var pipeline = new CapturePipelineConfig([
-        new("ProjectedScene", "scene", DependsOn: ["$raw"], Publication: durable),
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var catalog = new AstrometryCatalogSnapshotV1(new CatalogMetadata("fixture", "1",
+            new Uri("https://example.test/catalog"), new string('A', 64), "test", "1"), [],
+            new("fixture", "1", "fixture", "unspecified"), true, 7);
+        var pipeline = new CapturePipelineConfig([
+            new("ProjectedScene", "scene", DependsOn: ["$raw"], Publication: durable),
         new("MeasuredStellarAssociations", "measured", DependsOn: ["scene"], Publication: durable),
         new("MeasuredAstrometry", "astrometry", DependsOn: ["scene", "measured"], Required: false,
             Options: JsonSerializer.SerializeToElement(new MeasuredAstrometryCaptureOptions { Catalog = catalog }), Publication: durable),
@@ -125,7 +125,7 @@ public sealed partial class ProcessingGraphOperationsTests
         new("CaptureSatelliteLayer", "satellite-layer", DependsOn: ["satellites"], Required: false, Publication: durable),
         new("Storage", "storage", DependsOn: ["$raw"],
             Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))
-    ]);
+        ]);
         return pipeline;
     }
 
