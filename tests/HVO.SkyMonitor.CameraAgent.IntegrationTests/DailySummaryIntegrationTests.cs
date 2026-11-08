@@ -128,7 +128,6 @@ public sealed class DailySummaryIntegrationTests : IDisposable
             before = (await harness.Store.GetAsync(id, CancellationToken.None))!;
         }
         var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);
-        SqliteConnection.ClearAllPools();
         var source = database + ".source";
         File.Move(database, source);
         using (var connection = new SqliteConnection("Data Source=" + database))
