@@ -1,7 +1,9 @@
 # CameraAgent cloud profile evidence (#1004)
 
 Date: 2026-11-08 UTC. SDK 10.0.402, Linux x64, Release; tier B,
-`profile=development-v1`. Base `16545df686f3abe6df357545278bbc61dc29ea4b`.
+`profile=development-v1`. Initial base
+`16545df686f3abe6df357545278bbc61dc29ea4b`; synchronized base
+`fc8ae601a62fed4a363c300ff7394fa953392a5d` (including #1708).
 This is software/profile integration evidence. Physical ASI174 reference and
 fractional-accuracy qualification remain on #1004; the PR uses `Refs #1004`.
 
@@ -52,9 +54,9 @@ Unit suite; the total change adds 18 Unit cases across the two projects.
 
 | Full-frame result | Coverage millionths | Confidence millionths | Assessment bytes | Standard processing ms |
 | --- | ---: | ---: | ---: | ---: |
-| Clear | 0 | 473791 | 38792 | 479.2 |
-| Partial | 821230 | 317163 | 38482 | 415.8 |
-| Overcast | 1000000 | 440418 | 38497 | 379.0 |
+| Clear | 0 | 473791 | 38792 | 368.5 |
+| Partial | 821230 | 317163 | 38482 | 385.5 |
+| Overcast | 1000000 | 440418 | 38497 | 404.4 |
 
 All three are `Quantified` with degraded quality and
 `cloud.environment-missing`; missing precipitation/solar context was not invented.
@@ -113,3 +115,18 @@ its selected full-frame workload. Its affected test-project Release build passed
 with zero warnings/errors and its format check passed; no long benchmark was
 claimed. These results precede synchronization with #1708; the final target,
 clock interaction checks and final-head CI evidence are in the PR ledger.
+
+## Synchronized candidate
+
+Source head `7128c354c7f5510018279aa64e753a12184572e2` merges #1708's
+real-exposure behavior. The acceptance fixture accelerates only exposure time
+through `ExposureTestTimeProvider`, while retaining real elapsed acquisition
+timing. The full-frame table above was refreshed from this head's complete
+CameraAgent Unit run; all three preview images are byte-identical to the retained
+acceptance-image inputs. Coverage, confidence and payload sizes also match.
+
+The synchronized warning-clean Release solution build, full format verification,
+four CI-control guards and operations documentation audit passed. The full
+CameraAgent Unit suite passed 7561 cases with one existing macOS-only skip and
+zero failures. Final affected-suite totals and required CI are recorded in the
+PR ledger.
