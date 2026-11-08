@@ -39,9 +39,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Added
 
 - Configure a local weather-station adapter with deterministic simulated devices, explicit sensor/freshness failures and primary station readings retained alongside IR inputs; failed acquisitions cannot reuse an old value. Physical station qualification remains held. #1089
-- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, bounded outage retries and drying-state handling; simulated clouds retain Simulated provenance. Physical sensor qualification remains held. #1090
+- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, recoverable dead letters for undeliverable inputs and drying-state handling; simulated clouds retain Simulated provenance. Journal failures identify storage, and explicit delivery discard survives restart. Physical sensor qualification remains held. #1090
 - Configure an SQM adapter with capture association, integration intervals, explicit frequency-mode unavailability and sensor-temperature metadata preserved through LogicHost. Physical meter qualification remains held. #1091
-- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed labels distinguish environmental origins. #1092
+- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed-origin headers preserve room for seven readings. #1092
 
 - New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
 

@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class EnvironmentalAdapterReviewUnitTests
+public sealed class EnvironmentalAdapterContractsTests
 {
     [TestMethod]
     [DataRow(200)]

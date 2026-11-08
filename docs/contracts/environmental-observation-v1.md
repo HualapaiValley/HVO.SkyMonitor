@@ -140,6 +140,18 @@ identities also bind their lineage, including when a model clips different
 inputs to the same numeric result. Delivery holds local derivatives until their
 input projections are acknowledged; the explicit `environment.lineage-missing`
 conflict reason is retryable without weakening terminal content-conflict handling.
+If an input is terminal, quarantined, discarded or permanently bound to another
+target, local pending derivatives become terminal `lineage-input-undeliverable`.
+They are operator-visible and support explicit replay or abandonment. Input replay
+does not automatically replay derivatives; recover inputs first, then replay the
+derivative, retaining the acknowledgement gate and immutable delivery hashes.
+
+For v3, abandonment retains the existing staged projection link after removing
+its outbox row. This link is durable discard evidence, reported locally as
+`Abandoned`; it is never interpreted as an acknowledgement. Duplicate publication
+and waiting-projection passes do not recreate discarded v3 delivery. Unreferenced
+discarded history may expire through normal retention. No wire or SQLite schema
+change is required; v1/v2 independent-reprojection behavior remains unchanged.
 
 Adapters derive their bounded source version from the algorithm, stable settings,
 and simulated/measured device nature. Moving from a simulator to a physical

@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
-public sealed class EnvironmentalAdapterReviewIntegrationTests
+public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
 {
     [TestMethod]
     public async Task PriorityChangePreservesTheCapturedPolicyAndOnlyChangesNewCaptures()
@@ -23,12 +23,12 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
         try
         {
             using var store = new SqliteEnvironmentalObservationOutbox();
-            var local = EnvironmentalAdapterReviewUnitTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);
-            var provider = EnvironmentalAdapterReviewUnitTests.Fact("provider", local.Value.Kind, 21, EnvironmentalObservationSourceKind.Imported);
+            var local = EnvironmentalAdapterContractsTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);
+            var provider = EnvironmentalAdapterContractsTests.Fact("provider", local.Value.Kind, 21, EnvironmentalObservationSourceKind.Imported);
             await store.CommitLocalAsync(root, local, CancellationToken.None).ConfigureAwait(false);
             await store.CommitLocalAsync(root, provider, CancellationToken.None).ConfigureAwait(false);
-            var sources = new[] { EnvironmentalAdapterReviewUnitTests.Configuration("local", local.Value.Kind),
-                EnvironmentalAdapterReviewUnitTests.Configuration("provider", local.Value.Kind, "OnlineWeather") };
+            var sources = new[] { EnvironmentalAdapterContractsTests.Configuration("local", local.Value.Kind),
+                EnvironmentalAdapterContractsTests.Configuration("provider", local.Value.Kind, "OnlineWeather") };
             IOptions<CameraAgentHostOptions> Configure(string[] priority) => Options.Create(new CameraAgentHostOptions
             { RawIngressRoot = root, EnvironmentalAcquisition = new() { Enabled = true, Sources = sources, WeatherSourcePriority = priority } });
             var original = new EnvironmentalAssociationService(store, store, Configure(["local", "provider"]), TimeProvider.System, acquisitionStates: store);
@@ -54,14 +54,14 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
         try
         {
             using var store = new SqliteEnvironmentalObservationOutbox();
-            var fact = EnvironmentalAdapterReviewUnitTests.Fact("station-temperature", EnvironmentalObservationKind.AirTemperature, 20);
+            var fact = EnvironmentalAdapterContractsTests.Fact("station-temperature", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
-            var humidity = EnvironmentalAdapterReviewUnitTests.Configuration("station", EnvironmentalObservationKind.RelativeHumidity);
+            var humidity = EnvironmentalAdapterContractsTests.Configuration("station", EnvironmentalObservationKind.RelativeHumidity);
             var options = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
                 EnvironmentalAcquisition = new()
-                { Enabled = true, Sources = [humidity, EnvironmentalAdapterReviewUnitTests.Configuration("station-temperature", fact.Value.Kind)] }
+                { Enabled = true, Sources = [humidity, EnvironmentalAdapterContractsTests.Configuration("station-temperature", fact.Value.Kind)] }
             });
             await store.RecordAttemptAsync(root, humidity.ToDescriptor(), new("station", EnvironmentalAcquisitionTrigger.Periodic,
                 EnvironmentalAcquisitionDisposition.Failed, "device-disconnected", null, Epoch, Epoch), null, null, CancellationToken.None).ConfigureAwait(false);
@@ -138,7 +138,7 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
                 EnvironmentalAcquisition = new()
                 { Enabled = true, MaximumConcurrency = 1, Sources = configurations, WeatherSourcePriority = ["temperature", "humidity"] }
             });
-            using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterReviewUnitTests.Payload));
+            using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload));
             using (var client = new WeatherProviderClient(new HttpClient(handler), clock, store, root))
             using (var provider = new ServiceCollection().AddSingleton(client).BuildServiceProvider())
             using (var coordinator = new EnvironmentalAcquisitionCoordinator(Factory(provider), new Publisher(store, root), new LocationStore(), options, clock, store))
@@ -159,7 +159,7 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
             }
             clock.Advance(TimeSpan.FromSeconds(60));
             var priorCount = (await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false)).Count;
-            using var restartedHandler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterReviewUnitTests.Payload));
+            using var restartedHandler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload));
             using var restartedClient = new WeatherProviderClient(new HttpClient(restartedHandler), clock, store, root);
             using var restartedProvider = new ServiceCollection().AddSingleton(restartedClient).BuildServiceProvider();
             using var restartedCoordinator = new EnvironmentalAcquisitionCoordinator(Factory(restartedProvider), new Publisher(store, root), new LocationStore(), options, clock, store);

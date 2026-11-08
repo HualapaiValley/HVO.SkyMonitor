@@ -50,7 +50,8 @@ public enum EnvironmentalObservationProjectionDisposition
     NotRequested,
     Waiting,
     Staged,
-    Acknowledged
+    Acknowledged,
+    Abandoned
 }
 
 public sealed record LocalEnvironmentalObservationCommitResult(

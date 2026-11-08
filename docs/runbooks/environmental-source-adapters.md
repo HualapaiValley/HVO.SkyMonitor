@@ -102,6 +102,27 @@ keep separate source identities. The bridge owns heater control and must assert
 qualified; the adapter never commands a heater or assumes it has finished. A drying wet sensor reports
 `wet-sensor-drying`; it never reports dry.
 
+An input that is terminal, quarantined or discarded cannot leave its dependent
+v3 cloud delivery pending indefinitely. The derivative becomes terminal with
+`lineage-input-undeliverable` and appears in environmental dead letters, including
+when it has never been attempted. This propagates through dependent derivatives
+without affecting unrelated delivery. Restart and idle-claim reconciliation repair
+stranded work; an active lease keeps its fencing until it expires.
+
+Recover the inputs first, then explicitly replay the derivative. Replaying an
+input does not silently revive terminal dependents, and derivative replay never
+bypasses input acknowledgement or a still-unrecoverable input. An input frozen to
+a different site, device or rig also requires fresh compatible evidence.
+Abandoning v3 delivery discards that projection durably: restart, waiting projection
+and duplicate publication cannot recreate it. Local history and capture lineage
+remain immutable and expire only through their normal retention policy. The
+legacy v1/v2 independent-reprojection behavior is preserved.
+
+IR input publication failures report `journal-unavailable`, rather than blaming
+the sensor as malformed. Busy-only capture requests retain the last completed
+source availability while remaining visible in the attempt audit; actual read
+timeouts and failures still make the source unavailable.
+
 `SkyQualityMeter` issues Unihedron-compatible `rx` through the transport seam and
 parses the six-field `r,<mag>m,<frequency>Hz,<counts>c,<integration>s,<temperature>C`
 response. LAN and USB transport are both physically held. The real integration
@@ -179,8 +200,9 @@ Mixed-source markers distinguish local measured/derived evidence, simulations,
 and imported provider/station origins. Per-kind virtual sources describe one
 simulated environment; co-located local devices describe one local environment.
 Full per-reading identities remain visible and retained.
-The separate `MIXED SOURCES` line counts these legacy and v3 origins without
-overwriting a reading's age. History retains all sources; the latest grid shows
+The `ENVIRONMENT MIXED SOURCES` header marks differing origins without using a
+reading row, so seven readings still fit the eight-line block and retain their age.
+History retains all sources; the latest grid shows
 the selected current reading for each kind. Failed slots say `Unavailable`.
 
 ## Contract and evidence

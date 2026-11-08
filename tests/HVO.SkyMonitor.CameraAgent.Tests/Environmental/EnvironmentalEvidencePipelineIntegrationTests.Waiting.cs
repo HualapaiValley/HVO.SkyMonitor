@@ -4,7 +4,7 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
-public sealed partial class EnvironmentalOpusReviewIntegrationTests
+public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
 {
     [TestMethod]
     public async Task WaitingProjectionStopsAfterOneCapacityRefusalPerPass()
@@ -14,7 +14,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
         {
             using var store = new SqliteEnvironmentalObservationOutbox(new Clock(), maximumRecords: 1);
             var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
-            var fact = EnvironmentalAdapterReviewUnitTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20);
+            var fact = EnvironmentalAdapterContractsTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, fact, target, CancellationToken.None).ConfigureAwait(false);
             await store.CommitLocalAsync(root, fact with { ObservationId = Guid.NewGuid() }, target, CancellationToken.None).ConfigureAwait(false);
             var before = await store.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);

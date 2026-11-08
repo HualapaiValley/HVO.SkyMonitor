@@ -24,7 +24,7 @@ public sealed class EnvironmentalWeatherPriorityTests
             using var store = new SqliteEnvironmentalObservationOutbox();
             // Each fixture source owns its own alias; cloning an adapter fact while retaining its acquisition owner
             // would describe a different configuration than the local/provider sources under test.
-            var fact = EnvironmentalAdapterReviewUnitTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);
+            var fact = EnvironmentalAdapterContractsTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);
             var measured = fact with
             {
                 Source = fact.Source with { SourceId = "local", Kind = scenario == "simulated" ? EnvironmentalObservationSourceKind.Simulated : EnvironmentalObservationSourceKind.Measured },

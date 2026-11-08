@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class EnvironmentalOpusReviewUnitTests
+public sealed class EnvironmentalEvidenceSemanticsTests
 {
     [TestMethod]
     public async Task DistinctInfraredInputsKeepDistinctDerivedIdentitiesWhenCloudValuesAreClipped()
@@ -31,14 +31,14 @@ public sealed class EnvironmentalOpusReviewUnitTests
     public void WeatherPriorityUsesHalfOpenExposureFreshnessAndStrictPointFreshness(bool point, int afterTicks, string expected)
     {
         var epoch = EnvironmentalHardwareAdapterTests.Epoch;
-        var station = EnvironmentalAdapterReviewUnitTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20)
+        var station = EnvironmentalAdapterContractsTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20)
             with
         { StaleAfterUtc = epoch.AddSeconds(30) };
-        var provider = EnvironmentalAdapterReviewUnitTests.Fact("provider", station.Value.Kind, 21, EnvironmentalObservationSourceKind.Imported);
+        var provider = EnvironmentalAdapterContractsTests.Fact("provider", station.Value.Kind, 21, EnvironmentalObservationSourceKind.Imported);
         var options = new EnvironmentalAcquisitionOptions
         {
-            Sources = [EnvironmentalAdapterReviewUnitTests.Configuration("station", station.Value.Kind),
-            EnvironmentalAdapterReviewUnitTests.Configuration("provider", station.Value.Kind, "OnlineWeather")],
+            Sources = [EnvironmentalAdapterContractsTests.Configuration("station", station.Value.Kind),
+            EnvironmentalAdapterContractsTests.Configuration("provider", station.Value.Kind, "OnlineWeather")],
             WeatherSourcePriority = ["station", "provider"]
         };
         var through = station.StaleAfterUtc.AddTicks(afterTicks);

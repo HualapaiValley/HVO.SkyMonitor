@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
@@ -48,7 +49,15 @@ public sealed class InfraredSkySource : EnvironmentalAdapterSource
             Fact(sample, context, new(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, ambient, null, EnvironmentalObservationQuality.Good), "-ambient")
         };
         // Commit dependencies first. Retries reproduce their identities and are handled by the existing durable publisher.
-        foreach (var input in inputs) await publisher.PublishAsync(input, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var input in inputs) await publisher.PublishAsync(input, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException or
+            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException or EnvironmentalObservationOutboxCapacityException)
+        {
+            return new(EnvironmentalSourceAcquisitionOutcome.Failed, "journal-unavailable");
+        }
         var cover = Math.Clamp((sky - ambient - DeviceOptions.ClearDeltaCelsius) /
             (DeviceOptions.CloudyDeltaCelsius - DeviceOptions.ClearDeltaCelsius), 0, 1);
         return Produced(Fact(sample, context, new(Descriptor.Kind, EnvironmentalObservationUnit.Fraction, cover, null,

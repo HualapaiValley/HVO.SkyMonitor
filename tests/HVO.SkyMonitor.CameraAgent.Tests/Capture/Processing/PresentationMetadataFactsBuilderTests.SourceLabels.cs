@@ -42,7 +42,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.IsNotNull(facts);
         var layer = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
         var lines = layer.TextBlocks.Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
-        Assert.IsTrue(lines.Any(line => line == "MIXED SOURCES"));
+        Assert.AreEqual("ENVIRONMENT MIXED SOURCES", lines[0]);
         var stationLine = lines.Single(line => line.Contains("MEASURED", StringComparison.Ordinal));
         Assert.IsTrue(stationLine.Contains("SRC ", StringComparison.Ordinal));
         if (longIdentity) Assert.IsTrue(stationLine.Contains('…', StringComparison.Ordinal));
@@ -89,9 +89,49 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.IsNotNull(facts);
         var layer = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
         var lines = layer.TextBlocks.Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
-        Assert.IsFalse(lines.Contains("MIXED SOURCES", StringComparer.Ordinal));
+        Assert.AreEqual("ENVIRONMENT", lines[0]);
         Assert.IsTrue(lines.Any(line => line.StartsWith("AIR ", StringComparison.Ordinal)));
         Assert.IsTrue(lines.Any(line => line.StartsWith("RH ", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task MixedOriginMarkerPreservesAllSevenEnvironmentalReadingRows()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        (EnvironmentalObservationKind Kind, EnvironmentalObservationUnit Unit, double Value)[] values =
+        [
+            (EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20),
+            (EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 45),
+            (EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 0.3),
+            (EnvironmentalObservationKind.WindSpeed, EnvironmentalObservationUnit.MetersPerSecond, 2),
+            (EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationUnit.Pascals, 90000),
+            (EnvironmentalObservationKind.PrecipitationRate, EnvironmentalObservationUnit.MillimetersPerHour, 1),
+            (EnvironmentalObservationKind.SkyQuality, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond, 21)
+        ];
+        foreach (var (kind, unit, value) in values)
+        {
+            var fact = Fact(Guid.NewGuid(), kind, value, sourceId: kind.ToString());
+            fact = fact with
+            {
+                Value = fact.Value with { Unit = unit },
+                Source = fact.Source with
+                { Kind = kind == EnvironmentalObservationKind.RelativeHumidity ? EnvironmentalObservationSourceKind.Imported : EnvironmentalObservationSourceKind.Measured }
+            };
+            await CommitAsync(store, fact).ConfigureAwait(false);
+        }
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var kinds = values.Select(item => item.Kind).ToArray();
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        fixture.Context.BeginNode("seven-environment-readings", []);
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), kinds, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var lines = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216).TextBlocks
+            .Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
+        Assert.HasCount(8, lines);
+        Assert.AreEqual("ENVIRONMENT MIXED SOURCES", lines[0]);
+        foreach (var reading in facts.Environment) CollectionAssert.Contains(lines.ToArray(), reading.DisplayLine);
     }
 
 }

@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
-public sealed partial class EnvironmentalOpusReviewIntegrationTests
+public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
 {
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -93,7 +93,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
         {
             var clock = new Clock { Now = Epoch.AddSeconds(20) };
             using var store = new SqliteEnvironmentalObservationOutbox(clock);
-            var station = EnvironmentalAdapterReviewUnitTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20);
+            var station = EnvironmentalAdapterContractsTests.Fact("station", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, station, CancellationToken.None).ConfigureAwait(false);
             var (inputs, _) = await InfraredAsync().ConfigureAwait(false);
             var ambient = inputs.Single(item => item.Value.Kind == station.Value.Kind);
@@ -129,7 +129,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
                 Assert.AreNotEqual(EnvironmentalObservationKind.CloudCover, input.Record.Observation.Value.Kind);
                 await store.RetryAsync(root, input, Epoch.AddSeconds(30), "http-503", CancellationToken.None).ConfigureAwait(false);
             }
-            var independent = EnvironmentalAdapterReviewUnitTests.Fact("independent", EnvironmentalObservationKind.AirTemperature, 20);
+            var independent = EnvironmentalAdapterContractsTests.Fact("independent", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, independent, target, CancellationToken.None).ConfigureAwait(false);
             var ready = await ClaimAsync(store, root).ConfigureAwait(false);
             Assert.AreEqual(independent.ObservationId, ready.Record.Observation.ObservationId);
@@ -158,7 +158,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
         {
             using var store = new SqliteEnvironmentalObservationOutbox(new Clock(), maximumRecords: 1);
             var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
-            var independent = EnvironmentalAdapterReviewUnitTests.Fact("independent", EnvironmentalObservationKind.AirTemperature, 20);
+            var independent = EnvironmentalAdapterContractsTests.Fact("independent", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, independent, target, CancellationToken.None).ConfigureAwait(false);
             var (_, derived) = await InfraredAsync().ConfigureAwait(false);
             await store.CommitLocalAsync(root, derived, target, CancellationToken.None).ConfigureAwait(false);
@@ -205,7 +205,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
             lease.Record.Observation.ObservationId, lease.Record.SourceIdentitySha256, lease.Record.ContentSha256,
             now, EnvironmentalObservationDeliveryDisposition.Accepted), CancellationToken.None);
 
-    private static string Root() => Path.Combine(Path.GetTempPath(), "hvo-opus-" + Guid.NewGuid().ToString("N"));
+    private static string Root() => Path.Combine(Path.GetTempPath(), "hvo-environment-evidence-" + Guid.NewGuid().ToString("N"));
     private static void Delete(string root) { if (Directory.Exists(root)) Directory.Delete(root, true); }
     private sealed class Clock : TimeProvider { public DateTimeOffset Now { get; set; } = Epoch; public override DateTimeOffset GetUtcNow() => Now; }
     private sealed class Devices(bool simulated) : IEnvironmentalDevice

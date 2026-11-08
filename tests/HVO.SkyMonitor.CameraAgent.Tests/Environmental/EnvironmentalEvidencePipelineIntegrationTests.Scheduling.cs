@@ -10,7 +10,7 @@ using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
-public sealed partial class EnvironmentalOpusReviewIntegrationTests
+public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
 {
     [TestMethod]
     public async Task PeriodicProviderRecoversWhenTheInitialScheduleReadFails()
@@ -20,7 +20,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
         {
             var clock = new ExposureTestTimeProvider(Epoch);
             using var store = new SqliteEnvironmentalObservationOutbox(clock);
-            using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterReviewUnitTests.Payload));
+            using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload));
             using var client = new WeatherProviderClient(new HttpClient(handler), clock);
             using var provider = new ServiceCollection().AddSingleton(client).BuildServiceProvider();
             var source = OnlineConfiguration();
@@ -66,7 +66,7 @@ public sealed partial class EnvironmentalOpusReviewIntegrationTests
             using var store = new SqliteEnvironmentalObservationOutbox(clock);
             var requestTimes = new List<DateTimeOffset>();
             using var handler = new OnlineWeatherSourceTests.FakeHandler(_ =>
-            { requestTimes.Add(clock.GetUtcNow()); return OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterReviewUnitTests.Payload); });
+            { requestTimes.Add(clock.GetUtcNow()); return OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload); });
             using var client = new WeatherProviderClient(new HttpClient(handler), clock, store, root);
             using var provider = new ServiceCollection().AddSingleton(client).BuildServiceProvider();
             var source = OnlineConfiguration();

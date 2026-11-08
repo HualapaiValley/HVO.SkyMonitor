@@ -116,7 +116,7 @@ internal sealed class PresentationMetadataFactsBuilder(
         }
 
         var environmentLines = environment.Select(static item => item.DisplayLine);
-        if (sourceGroups.Count > 1) environmentLines = environmentLines.Prepend("MIXED SOURCES");
+        var environmentHeader = sourceGroups.Count > 1 ? "ENVIRONMENT MIXED SOURCES" : "ENVIRONMENT";
         var schedule = descriptor.CycleEvidence?.ScheduleAdmission;
         var capture = JsonSerializer.SerializeToElement(new
         {
@@ -152,7 +152,7 @@ internal sealed class PresentationMetadataFactsBuilder(
               $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
               $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
             DisplayLines(environment.Count == 0 ? ["ENVIRONMENT", "NOT RETAINED"] :
-                environmentLines.Prepend("ENVIRONMENT")),
+                environmentLines.Prepend(environmentHeader)),
             DisplayLines(["LINEAGE", $"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
               $"CALIBRATION {descriptor.Profiles.Calibration.Version} / {descriptor.Profiles.Calibration.Sha256[..12]}",
               stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
