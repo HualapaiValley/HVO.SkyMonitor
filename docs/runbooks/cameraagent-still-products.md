@@ -284,3 +284,13 @@ the ordered immediate lineage. Facts, sources and occurrence bind the output
 identity. Unchanged retries verify the immutable publication; changed captures,
 exclusions or linked products publish a new identity while preserving prior
 outputs. A link is a snapshot of a published product, not a mutable latest pointer.
+
+The schema-3 reader advances the existing `minimum-compatible-revision` image
+boundary to `ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c`. This makes existing
+installers take their paired SQLite checkpoint before adoption; `state-contracts`
+alone is descriptive in the current installer. The frozen previous-release SQL
+images are unchanged. Only the nightly catalog version marker and the two
+extended table constraints are declared as snapshot-rollback exceptions. Rollback
+restores the paired schema-2 checkpoint; a schema-2 binary does not open schema 3.
+This preserves the existing upgrade-checkpoint policy and its documented scope,
+without adding reverse migrations or changing the filesystem layout.
