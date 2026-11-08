@@ -19,14 +19,15 @@ public sealed class IlluminationModeTests
     ];
 
     [TestMethod]
-    public void OmittedMode_PreservesTheLegacyConfigurationAndRequestIdentity()
+    public void OmittedMode_PreservesLegacyIlluminationAndRequestIdentity()
     {
         var request = Request(null);
         var generated = CameraConfiguration.Generate(request, ApplicationIdentity);
         using var document = JsonDocument.Parse(generated.Json);
 
         Assert.IsFalse(document.RootElement.GetProperty("module").GetProperty("options").TryGetProperty("illuminationMode", out _));
-        Assert.AreEqual("6ec0a9605d346d76f5869accda8a5ac50b32d3cfda8942dbb05b0a36085e7f41", generated.Sha256);
+        // The cloud branch changes the configuration identity; omitted lighting retains the legacy request identity.
+        Assert.AreEqual("3694bb506f528030cb2b61e6a8c6ba01f8057357afb186d6b876eecf055a2141", generated.Sha256);
         Assert.AreEqual("df46995abab4cdee5f33813d3076c512b9a279b9a53178a3f39be852fb132be5",
             CameraAgentInstaller.ComputeRequestSha256(request, InstanceId));
     }
