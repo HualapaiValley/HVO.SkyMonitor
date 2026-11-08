@@ -1006,7 +1006,10 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         }
         // Rebuilding CHECK constraints is SQLite's documented table-rebuild path. Foreign-key enforcement is
         // restored after the atomic transaction, and every retained reference is checked before commit.
-        await ExecuteAsync(connection, null, "PRAGMA foreign_keys = OFF;", cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            await ExecuteAsync(connection, null, "PRAGMA foreign_keys = OFF;", cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var version = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken)
             .ConfigureAwait(false);
@@ -1059,7 +1062,10 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 .ConfigureAwait(false) != 0)
             throw new InvalidDataException("Nightly product storage contains invalid references.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        await ExecuteAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            await ExecuteAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
     }
 
