@@ -97,7 +97,11 @@ public sealed record ProcessingGraphExecutionOutputState(
     string Variant,
     string AvailabilityState,
     string? AvailabilityReason,
-    bool Published);
+    bool Published)
+{
+    public string? PayloadSha256 { get; init; }
+    public IReadOnlyList<Guid> SourceArtifactIds { get; init; } = [];
+}
 
 public enum ProcessingGraphExecutionInputKind
 {
@@ -140,6 +144,9 @@ public sealed record ProcessingGraphNodeAttemptState(
 public sealed record ProcessingNormalizationInputDiagnostic(
     int WindowPosition, Guid CaptureId, Guid ArtifactId, double Gain, string Disposition, string? ExclusionReason);
 
+public sealed record ProcessingGraphExecutionCalibrationInputState(
+    Guid ArtifactId, string PayloadSha256, string Kind);
+
 public sealed record ProcessingGraphExecutionNodeState(
     string NodeId,
     bool Required,
@@ -158,6 +165,12 @@ public sealed record ProcessingGraphExecutionNodeState(
     public MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
     public string? MixedGainDiagnosticsUnavailableReason { get; init; }
 
+    /// <summary>Safe master identities retained in the execution's frozen normalization plan.</summary>
+    public IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> CalibrationInputs { get; init; } = [];
+
+    /// <summary>Whether the bounded manifest read retained every recorded artifact input binding.</summary>
+    public bool ArtifactBindingsRetained { get; init; } = true;
+
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
@@ -170,7 +183,11 @@ internal sealed record ProcessingGraphTerminalExecution(
 
 public sealed record ProcessingGraphExecutionDetail(
     ProcessingGraphExecutionState Execution,
-    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes);
+    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes)
+{
+    /// <summary>Expected node count from the bounded manifest snapshot's frozen plan, when read.</summary>
+    public int? FrozenNodeCount { get; init; }
+}
 
 public sealed record ProcessingReplaySubmission(
     Guid CaptureId,
@@ -332,6 +349,11 @@ public interface IProcessingGraphOperations
         CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
+        Guid executionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Reads a bounded, consistent evidence snapshot without opening diagnostic payloads.</summary>
+    ValueTask<ProcessingGraphExecutionDetail?> ReadRunManifestAsync(
         Guid executionId,
         CancellationToken cancellationToken);
 

@@ -20,6 +20,34 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
+    [DataRow("temporary")]
+    [DataRow("bounded")]
+    [DataRow("missing")]
+    public async Task ManifestFailureKeepsReadableJournalAndShowsSpecificSafeReason(string failure)
+    {
+        var execution = ProcessingExecutionPagesTests.Execution(Guid.NewGuid(), ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ReadExecutionDetailAsync(execution.ExecutionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphExecutionDetail(execution, []));
+        var setup = operations.Setup(value => value.ReadRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()));
+        if (failure == "temporary") setup.ThrowsAsync(new IOException("/private/sentinel?password=secret"));
+        else if (failure == "bounded") setup.ThrowsAsync(new InvalidDataException("/private/sentinel"));
+        else setup.ReturnsAsync((ProcessingGraphExecutionDetail?)null);
+        var result = await CreateService(operations.Object, authorized: true)
+            .GetExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        Assert.AreEqual(execution.ExecutionId, result.Value!.Execution.ExecutionId);
+        Assert.AreEqual(failure switch
+        {
+            "temporary" => "The run manifest is temporarily unavailable. Refresh the run to try again.",
+            "bounded" => ProcessingRunManifestBounds.UnavailableReason,
+            _ => CameraAgentRunManifest.MissingReason
+        }, result.Value.ManifestUnavailableReason);
+        Assert.IsFalse(JsonSerializer.Serialize(result.Value).Contains("sentinel", StringComparison.Ordinal));
+        operations.VerifyAll();
+    }
+
+    [TestMethod]
     public async Task EnvironmentPolicyFailureIsInvalidAndExplainedWithoutExposingInternalDetails()
     {
         var pipeline = new CapturePipelineConfig([new("EnvironmentPresentationLayer", "environment",
@@ -171,6 +199,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
+        operations.Setup(value => value.ReadRunManifestAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
         operations.Setup(value => value.ReadExecutionDetailAsync(It.Is<Guid>(id => id != executionId), It.IsAny<CancellationToken>())).ReturnsAsync((ProcessingGraphExecutionDetail?)null);
         var service = CreateService(operations.Object, authorized: true);
 
