@@ -97,7 +97,11 @@ public sealed record ProcessingGraphExecutionOutputState(
     string Variant,
     string AvailabilityState,
     string? AvailabilityReason,
-    bool Published);
+    bool Published)
+{
+    public string? PayloadSha256 { get; init; }
+    public IReadOnlyList<Guid> SourceArtifactIds { get; init; } = [];
+}
 
 public enum ProcessingGraphExecutionInputKind
 {
@@ -332,6 +336,11 @@ public interface IProcessingGraphOperations
         CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
+        Guid executionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Reads a bounded, consistent evidence snapshot without opening diagnostic payloads.</summary>
+    ValueTask<ProcessingGraphExecutionDetail?> ReadRunManifestAsync(
         Guid executionId,
         CancellationToken cancellationToken);
 

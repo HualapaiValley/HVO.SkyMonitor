@@ -973,117 +973,143 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     internal async ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
         Guid executionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool manifestOnly = false)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(executionId, Guid.Empty);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var execution = await ReadExecutionAsync(connection, null, executionId, cancellationToken).ConfigureAwait(false);
-        if (execution is null) return null;
-        var nodes = new List<ProcessingGraphExecutionNodeState>();
-        using var nodeCommand = connection.CreateCommand();
-        nodeCommand.CommandText = """
+        if (manifestOnly)
+        {
+            // A SQL transaction keeps the size check and subsequent reads on one WAL snapshot.
+            // No managed transaction is created: all existing read helpers use this connection.
+            using var snapshot = connection.CreateCommand();
+            snapshot.CommandText = "BEGIN;";
+            await snapshot.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        try
+        {
+            if (manifestOnly) await CheckRunManifestBoundsAsync(connection, executionId, cancellationToken).ConfigureAwait(false);
+            var execution = await ReadExecutionAsync(connection, null, executionId, cancellationToken).ConfigureAwait(false);
+            if (execution is null) return null;
+            var nodes = new List<ProcessingGraphExecutionNodeState>();
+            using var nodeCommand = connection.CreateCommand();
+            nodeCommand.CommandText = """
             SELECT node_id, required, plan_sha256, status, reason, attempt_count,
                    started_unix_ms, completed_unix_ms, dependencies_json, outputs_json
             FROM processing_execution_nodes
             WHERE execution_id = $execution
             ORDER BY rowid;
             """;
-        nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        var rows = new List<(string NodeId, bool Required, string Plan, string Status, string? Reason,
-            int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed, string DependenciesJson, string OutputsJson)>();
-        using (var reader = await nodeCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+            var rows = new List<(string NodeId, bool Required, string Plan, string Status, string? Reason,
+                int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed, string DependenciesJson, string OutputsJson)>();
+            using (var reader = await nodeCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
-                rows.Add((
-                    reader.GetString(0),
-                    reader.GetBoolean(1),
-                    reader.GetString(2),
-                    reader.GetString(3),
-                    await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4),
-                    reader.GetInt32(5),
-                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
-                        ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
-                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
-                        ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
-                    reader.GetString(8), reader.GetString(9)));
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    rows.Add((
+                        reader.GetString(0),
+                        reader.GetBoolean(1),
+                        reader.GetString(2),
+                        reader.GetString(3),
+                        await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4),
+                        reader.GetInt32(5),
+                        await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+                            ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+                        await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
+                            ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
+                        reader.GetString(8), reader.GetString(9)));
+                }
             }
-        }
-        var frozenPlans = ReadNormalizationPlans(await ReadExecutionFrozenPlanJsonAsync(
-            connection, null, executionId, cancellationToken).ConfigureAwait(false), nodeId: null)
-            .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
-        foreach (var row in rows)
-        {
-            var attempts = new List<ProcessingGraphNodeAttemptState>();
-            using (var attemptCommand = connection.CreateCommand())
+            var frozenPlans = ReadNormalizationPlans(await ReadExecutionFrozenPlanJsonAsync(
+                connection, null, executionId, cancellationToken).ConfigureAwait(false), nodeId: null)
+                .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
+            foreach (var row in rows)
             {
-                attemptCommand.CommandText = """
+                var attempts = new List<ProcessingGraphNodeAttemptState>();
+                using (var attemptCommand = connection.CreateCommand())
+                {
+                    attemptCommand.CommandText = """
                     SELECT attempt_number, lease_owner, started_unix_ms, completed_unix_ms,
                            status, outcome, reason, duration_ticks, execution_route
                     FROM processing_node_attempts
                     WHERE execution_id = $execution AND node_id = $node
                     ORDER BY attempt_number;
                     """;
-                attemptCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-                attemptCommand.Parameters.AddWithValue("$node", row.NodeId);
-                using var reader = await attemptCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    attempts.Add(new(
-                        reader.GetInt32(0),
-                        reader.GetString(1),
-                        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
-                        await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
-                            ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
-                        reader.GetString(4),
-                        await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
-                            ? null : Enum.Parse<ProcessingOutcomeStatus>(reader.GetString(5)),
-                        await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
-                        await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
-                            ? null : TimeSpan.FromTicks(reader.GetInt64(7)),
-                        // The column is NOT NULL with a checked value set, so an unparsable value means the
-                        // schema validation that guards initialization did not run or did not hold.
-                        Enum.Parse<ProcessingNodeExecutionRoute>(reader.GetString(8))));
+                    attemptCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+                    attemptCommand.Parameters.AddWithValue("$node", row.NodeId);
+                    using var reader = await attemptCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        attempts.Add(new(
+                            reader.GetInt32(0),
+                            reader.GetString(1),
+                            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+                            await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
+                                ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                            reader.GetString(4),
+                            await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
+                                ? null : Enum.Parse<ProcessingOutcomeStatus>(reader.GetString(5)),
+                            await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
+                            await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
+                                ? null : TimeSpan.FromTicks(reader.GetInt64(7)),
+                            // The column is NOT NULL with a checked value set, so an unparsable value means the
+                            // schema validation that guards initialization did not run or did not hold.
+                            Enum.Parse<ProcessingNodeExecutionRoute>(reader.GetString(8))));
+                    }
                 }
+                var durableOutputs = await ReadExecutionOutputsAsync(
+                    connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                var published = await ReadExecutionOutputPublicationAsync(
+                    connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                var inputs = await ReadExecutionInputsAsync(
+                    connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                var outputs = durableOutputs.Select((output, ordinal) => new ProcessingGraphExecutionOutputState(
+                    ordinal,
+                    output.OutputIdentitySha256,
+                    output.ArtifactId,
+                    output.Artifact.Role,
+                    output.Artifact.Variant,
+                    output.AvailabilityState,
+                    output.AvailabilityReason,
+                    published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)
+                {
+                    PayloadSha256 = output.Artifact.ChecksumSha256,
+                    SourceArtifactIds = output.Artifact.SourceArtifactIds
+                }).ToArray();
+                frozenPlans.TryGetValue(row.NodeId, out var normalization);
+                var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
+                    : await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken).ConfigureAwait(false);
+                nodes.Add(new ProcessingGraphExecutionNodeState(
+                    row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
+                    row.Started, row.Completed, inputs, attempts, outputs)
+                {
+                    NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
+                    NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
+                        input.WindowPosition, input.CaptureId, input.ArtifactId, input.Gain, input.Disposition,
+                        input.ExclusionReason)).ToArray() ?? [],
+                    MixedGainDiagnostics = diagnostics.Value,
+                    MixedGainDiagnosticsUnavailableReason = diagnostics.Reason,
+                    Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
+                        row.DependenciesJson, ExecutionSerializerOptions)
+                        ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),
+                    OutputContracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(
+                        row.OutputsJson, ExecutionSerializerOptions)
+                        ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.")
+                });
             }
-            var durableOutputs = await ReadExecutionOutputsAsync(
-                connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
-            var published = await ReadExecutionOutputPublicationAsync(
-                connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
-            var inputs = await ReadExecutionInputsAsync(
-                connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
-            var outputs = durableOutputs.Select((output, ordinal) => new ProcessingGraphExecutionOutputState(
-                ordinal,
-                output.OutputIdentitySha256,
-                output.ArtifactId,
-                output.Artifact.Role,
-                output.Artifact.Variant,
-                output.AvailabilityState,
-                output.AvailabilityReason,
-                published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)).ToArray();
-            frozenPlans.TryGetValue(row.NodeId, out var normalization);
-            var diagnostics = await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken)
-                .ConfigureAwait(false);
-            nodes.Add(new ProcessingGraphExecutionNodeState(
-                row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
-                row.Started, row.Completed, inputs, attempts, outputs)
-            {
-                NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
-                NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
-                    input.WindowPosition, input.CaptureId, input.ArtifactId, input.Gain, input.Disposition,
-                    input.ExclusionReason)).ToArray() ?? [],
-                MixedGainDiagnostics = diagnostics.Value,
-                MixedGainDiagnosticsUnavailableReason = diagnostics.Reason,
-                Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
-                    row.DependenciesJson, ExecutionSerializerOptions)
-                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),
-                OutputContracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(
-                    row.OutputsJson, ExecutionSerializerOptions)
-                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.")
-            });
+            return new(execution, nodes);
         }
-        return new(execution, nodes);
+        finally
+        {
+            if (manifestOnly)
+            {
+                using var rollback = connection.CreateCommand();
+                rollback.CommandText = "ROLLBACK;";
+                await rollback.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
     }
 
     private static async ValueTask<IReadOnlyList<ProcessingGraphExecutionInputState>> ReadExecutionInputsAsync(
@@ -1100,7 +1126,10 @@ internal sealed partial class SqliteCaptureProcessingStore
             WHERE execution_id = $execution AND node_id = $node
             UNION ALL
             SELECT pin.input_ordinal, pin.window_position, 'ProcessingOutput',
-                   output.capture_id, output.artifact_id, NULL, NULL, pin.output_identity_sha256
+                   output.capture_id, output.artifact_id, NULL,
+                   COALESCE(json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.checksumSha256'),
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.checksumSha256')),
+                   pin.output_identity_sha256
             FROM processing_execution_output_input_pins pin
             JOIN processing_outputs output
               ON output.output_identity_sha256 = pin.output_identity_sha256

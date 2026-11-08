@@ -54,6 +54,40 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    [DataRow(null)]
+    [DataRow("The execution's node evidence is no longer retained.")]
+    [DataRow("The retained run evidence exceeds the manifest download limits.")]
+    public void DetailPage_ManifestHasDownloadOrSpecificUnavailableReason(string? reason)
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(
+                Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)), "shared", "local", [])
+            { ManifestUnavailableReason = reason }
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement(".run-overview");
+        Assert.IsFalse(cut.Markup.Contains("More run actions", StringComparison.Ordinal));
+        if (reason is null)
+        {
+            var link = cut.Find($"a[href='/api/v1/operations/processing-graphs/executions/{CompletedId}/manifest']");
+            Assert.IsTrue(link.HasAttribute("download"));
+            Assert.AreEqual("Download manifest", link.TextContent);
+        }
+        else
+        {
+            var button = cut.Find("button[aria-describedby='manifest-unavailable']");
+            Assert.IsTrue(button.HasAttribute("disabled"));
+            Assert.AreEqual(reason, button.GetAttribute("title"));
+            Assert.AreEqual(reason, cut.Find("#manifest-unavailable").TextContent);
+            Assert.IsFalse(cut.FindAll("a").Any(link => link.GetAttribute("href")?.EndsWith("/manifest", StringComparison.Ordinal) == true));
+        }
+    }
+
+    [TestMethod]
     public void MixedGainDiagnosticsShowsExclusionsClippingAndNoMeasurement()
     {
         using var context = new BunitContext();

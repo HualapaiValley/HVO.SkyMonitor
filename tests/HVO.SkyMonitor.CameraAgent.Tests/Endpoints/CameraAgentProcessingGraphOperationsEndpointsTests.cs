@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 [TestCategory("Unit")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
     Justification = "WebApplication must remain available for the full test scope.")]
-public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
+public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 {
     private static readonly string[] ContentMethods = ["GET", "HEAD"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
@@ -47,7 +47,7 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
             .Where(static endpoint => endpoint.RoutePattern.RawText?.StartsWith(
                 "/api/v1/operations/processing-graphs", StringComparison.Ordinal) == true)
             .ToArray();
-            Assert.HasCount(12, routes);
+            Assert.HasCount(13, routes);
             foreach (var route in routes)
             {
                 var methods = route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;

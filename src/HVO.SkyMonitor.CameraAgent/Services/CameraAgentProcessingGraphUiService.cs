@@ -151,7 +151,10 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
     CameraAgentProcessingExecutionSummary Execution,
     string SharedPlanIdentitySha256,
     string LocalPlanIdentitySha256,
-    IReadOnlyList<CameraAgentProcessingNodeView> Nodes);
+    IReadOnlyList<CameraAgentProcessingNodeView> Nodes)
+{
+    public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
+}
 
 /// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
 internal sealed record CameraAgentProcessingGraphRevisionDetail(
@@ -263,7 +266,21 @@ internal sealed class CameraAgentProcessingGraphUiService(
         => ReadAsync(async token =>
         {
             var detail = await operations.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
-            return detail is null ? null : CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow());
+            if (detail is null) return null;
+            string? reason;
+            try
+            {
+                var manifest = await operations.ReadRunManifestAsync(executionId, token).ConfigureAwait(false);
+                reason = manifest is null ? CameraAgentRunManifest.MissingReason : CameraAgentRunManifest.Create(manifest).Reason;
+            }
+            catch (InvalidDataException)
+            {
+                reason = ProcessingRunManifestBounds.UnavailableReason;
+            }
+            return CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow()) with
+            {
+                ManifestUnavailableReason = reason
+            };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
 
     public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
