@@ -756,6 +756,24 @@ public sealed class ReleaseAssetsToolTests
         return entries;
     }
 
+    [TestMethod]
+    public void ReadUpgradeNotes_091_ExplainsCustomizedAndEarlyPrereleaseGraphSupersessionWithinInstallerBounds()
+    {
+        var notes = Program.ReadUpgradeNotes(Path.Combine(RepositoryRoot(), "docs", "upgrade-notes"), "0.9.1");
+        var note = notes.Single(static note => note.Version == "0.9.1");
+        foreach (var expected in new[]
+        {
+            "cloud producer from v4 to v5", "environment producer from v5 to v6",
+            "without a scene-overlay node", "0.9.1-dev.1 through dev.5", "v11/v12", "v13",
+            "active-revision-superseded", "Raw capture and upload continue",
+            "processing.plan-superseded", "new revision", "fresh replay",
+            "ASP.NET Core runtime images use 10.0.14", "self-contained ProcessingRunner runtime remain at 10.0.13"
+        })
+        {
+            StringAssert.Contains(string.Join(" ", note.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), expected, StringComparison.Ordinal);
+        }
+    }
+
     private static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

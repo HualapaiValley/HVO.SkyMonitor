@@ -120,6 +120,29 @@ public sealed class BackupVaultTests
         Assert.IsTrue(refused.IsRefusal, refused.Message);
     }
 
+    [TestMethod]
+    public async Task OwnerVault_DiscardAfterPublicationRecordBeforeRename_RefusesAndCommitCanResume()
+    {
+        using var root = new Scratch();
+        var vaultRoot = Path.Combine(root.Path, BackupVault.FolderName);
+        var vault = new OwnerBackupVault(new BackupVaultFiles(vaultRoot));
+        await WritePartialAsync(vault, "archive"u8.ToArray());
+        var record = Record(7);
+        await vault.CommitAsync(record, CancellationToken.None);
+        var archive = Path.Combine(vaultRoot, Name);
+        File.Move(archive, archive + BackupVaultFiles.PartialSuffix);
+        var before = FileSystemActivity.Snapshot(vaultRoot);
+
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => vault.DiscardAsync(Name, CancellationToken.None));
+
+        Assert.IsTrue(refused.IsRefusal);
+        StringAssert.Contains(refused.Message, "--resume", StringComparison.Ordinal);
+        FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(vaultRoot), "discard changed publication evidence");
+        await vault.CommitAsync(record, CancellationToken.None);
+        Assert.AreEqual(record, await vault.ReadRecordAsync(Name, CancellationToken.None));
+        CollectionAssert.AreEqual("archive"u8.ToArray(), await File.ReadAllBytesAsync(archive));
+    }
+
     /// <summary>F11: exactly one trailing '/' marks a folder; any other empty segment is not a canonical name.</summary>
     [TestMethod]
     [DataRow("instance/state//")]
