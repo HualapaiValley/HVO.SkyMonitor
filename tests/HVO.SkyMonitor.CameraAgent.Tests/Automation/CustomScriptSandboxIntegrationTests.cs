@@ -16,8 +16,9 @@ public sealed class CustomScriptSandboxIntegrationTests
     [TestInitialize]
     public void RequireSandbox()
     {
-        if (!LinuxCustomScriptSandbox.Probe())
-            Assert.Inconclusive("Requires non-root Linux x64/arm64 with qualified Bubblewrap, dash, prlimit and a systemd user manager with cgroup v2 budgets.");
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("Linux sandbox qualification is required on the Linux Integration lanes.");
+        Assert.IsTrue(LinuxCustomScriptSandbox.Probe(),
+            "Required sandbox qualification could not run: " + LinuxCustomScriptSandbox.ProbeUnavailableReason());
     }
 
     [TestMethod]
@@ -104,17 +105,17 @@ public sealed class CustomScriptSandboxIntegrationTests
         var adapter = CustomScriptTaskAdapterTests.Adapter(script);
         var before = SleepProcesses();
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), cancellation.Token).ConfigureAwait(false))
             .ConfigureAwait(false);
         Assert.IsEmpty(SleepProcesses().Except(before).ToArray());
         using var alreadyCancelled = new CancellationTokenSource();
         await alreadyCancelled.CancelAsync().ConfigureAwait(false);
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), alreadyCancelled.Token).ConfigureAwait(false))
             .ConfigureAwait(false);
         using var nextStop = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), nextStop.Token).ConfigureAwait(false))
             .ConfigureAwait(false);
     }
@@ -180,7 +181,7 @@ public sealed class CustomScriptSandboxIntegrationTests
         finally
         {
             await stop.CancelAsync().ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await first.ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await first.ConfigureAwait(false)).ConfigureAwait(false);
         }
     }
 
@@ -250,7 +251,7 @@ public sealed class CustomScriptSandboxIntegrationTests
         var error = process.StandardError.ReadToEndAsync();
         try
         {
-            await process.StandardInput.WriteLineAsync(script.Content).ConfigureAwait(false);
+            await process.StandardInput.BaseStream.WriteAsync(CustomScriptSyscallPolicy.Create()).ConfigureAwait(false);
             process.StandardInput.Close();
             // The ephemeral ready marker proves the sandbox child started before its launcher dies.
             Assert.AreEqual("ready", await process.StandardOutput.ReadLineAsync()
@@ -280,7 +281,7 @@ public sealed class CustomScriptSandboxIntegrationTests
             """);
         script.TimeoutSeconds = 5;
         var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
-        Assert.AreEqual("completed", result.Status, "The process ceiling must reject fanout before wall timeout.");
+        Assert.AreEqual("process-failed", result.Status, "The process ceiling must reject fanout before wall timeout.");
         Assert.AreNotEqual(0, result.ExitCode);
         var next = CustomScriptTaskAdapterTests.Script();
         Assert.AreEqual(0, (await LinuxCustomScriptSandbox.ExecuteAsync(next, default).ConfigureAwait(false)).ExitCode);
@@ -295,13 +296,180 @@ public sealed class CustomScriptSandboxIntegrationTests
             """);
         script.TimeoutSeconds = 5;
         var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
-        Assert.AreEqual("completed", result.Status, "The memory limit must fail allocation before wall timeout.");
+        Assert.AreEqual("process-failed", result.Status, "The memory limit must fail allocation before wall timeout.");
         Assert.AreNotEqual(0, result.ExitCode);
         Assert.AreEqual(0, (await LinuxCustomScriptSandbox.ExecuteAsync(CustomScriptTaskAdapterTests.Script(), default)
             .ConfigureAwait(false)).ExitCode);
     }
 
-    private static int[] SleepProcesses() => Process.GetProcessesByName("sleep").Select(process =>
+    [TestMethod]
+    [DataRow("memfd")]
+    [DataRow("namespace")]
+    [DataRow("socket")]
+    [DataRow("executable-memory")]
+    public async Task NativePayloadCannotBypassResourceOrNamespacePolicies(string mode)
+    {
+        var bytes = await CustomScriptNativeFixture.CompileAsync(false).ConfigureAwait(false);
+        var content = CustomScriptNativeFixture.WritePayload(bytes, "/work/probe") +
+            "chmod +x /work/probe; /work/probe " + mode;
+        var script = CustomScriptTaskAdapterTests.Script(content);
+        script.ScratchBytes = 32768;
+        Assert.IsTrue(script.IsValid(), "The native regression must fit the supported script contract.");
+        var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Status);
+        Assert.AreEqual(0, result.ExitCode, mode + " must be rejected by the enforced kernel boundary.");
+        Assert.AreEqual(2L, result.StdoutBytes, "The native helper must actually execute its assertions.");
+    }
+
+    [TestMethod]
+    public async Task NativePreloadCannotRunAndScriptStdinCannotConsumeItsContent()
+    {
+        var bytes = await CustomScriptNativeFixture.CompileAsync(true).ConfigureAwait(false);
+        var content = CustomScriptNativeFixture.WritePayload(bytes, "/work/preload.so") +
+            "LD_PRELOAD=/work/preload.so /bin/sleep 0 || exit 41; " +
+            "if read value; then exit 42; fi; " + string.Concat(Enumerable.Repeat(": padding;", 1500)) + " exit 0";
+        var result = await LinuxCustomScriptSandbox.ExecuteAsync(CustomScriptTaskAdapterTests.Script(content), default)
+            .ConfigureAwait(false);
+        Assert.AreEqual(0, result.ExitCode);
+        Assert.AreEqual(0L, result.StdoutBytes);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LaunchingThreadMayExitAndThreadPoolRetirementCannotKillTheScript(bool threadPool)
+    {
+        Task<CustomScriptSandboxResult>? execution = null;
+        var script = CustomScriptTaskAdapterTests.Script(threadPool ? "sleep 25" : "sleep 1");
+        script.TimeoutSeconds = 40;
+        var thread = new Thread(() => execution = threadPool
+            ? Task.Run(async () => await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false))
+            : LinuxCustomScriptSandbox.ExecuteAsync(script, default).AsTask());
+        thread.Start();
+        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(5)));
+        var result = await execution!.WaitAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Status);
+        Assert.AreEqual(0, result.ExitCode, "The thread-pool parent may retire after its idle timeout.");
+    }
+
+    [TestMethod]
+    public async Task OrderlyCancellationPersistsTerminalEvidenceBeforeDelayedRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-script-cancel-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 8, 12, 0, 0, TimeSpan.Zero));
+        var script = CustomScriptTaskAdapterTests.Script("printf abc; sleep 30");
+        var adapter = new CustomScriptTaskAdapter(Options.Create(new CustomScriptOptions
+            { Enabled = true, OwnerAuthorized = true, Scripts = [script] }), clock);
+        using var registry = new PeriodicRegistryHarness(clock, [adapter]);
+        var captures = new StubCaptureSequenceSource();
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        SqliteLocalAutomationStore NewStore() => new(registry.Registry, captures, options, clock, NullLogger<SqliteLocalAutomationStore>.Instance);
+        LocalAutomationRun terminal;
+        try
+        {
+            using (var store = NewStore())
+            using (var worker = new LocalAutomationOffSweepWorker())
+            using (var runner = new LocalAutomationRunnerService(store, registry.Registry, captures, options, clock,
+                NullLogger<LocalAutomationRunnerService>.Instance, offSweepWorker: worker))
+            {
+                await store.InitializeAsync(default).ConfigureAwait(false);
+                var saved = await store.SaveAsync(new("script-task", "Script", true, LocalAutomationTaskKind.CustomScript,
+                    script.Target, LocalAutomationTriggerKind.Periodic, 60, 0, "save", "site-owner", null), default).ConfigureAwait(false);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
+                await store.RunNowAsync(new("script-task", 1, "run", "site-owner", "cancel test"), default).ConfigureAwait(false);
+                var before = SleepProcesses();
+                using var cancel = new CancellationTokenSource();
+                await runner.SweepAsync(cancel.Token).ConfigureAwait(false);
+                var deadline = Stopwatch.StartNew();
+                while (!HasSleepingSandboxProcess() && deadline.Elapsed < TimeSpan.FromSeconds(5))
+                    await Task.Delay(10).ConfigureAwait(false);
+                Assert.IsTrue(HasSleepingSandboxProcess(), "Wait until the script printed its prefix and started sleep.");
+                clock.Advance(TimeSpan.FromSeconds(7));
+                await cancel.CancelAsync().ConfigureAwait(false);
+                await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                terminal = (await store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+                Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, terminal.Outcome);
+                Assert.AreEqual(clock.GetUtcNow(), terminal.CompletedAtUtc);
+                StringAssert.Contains(terminal.Detail, "script.cancelled; exit=", StringComparison.Ordinal);
+                StringAssert.Contains(terminal.Detail, "stdoutBytes=3; stderrBytes=0", StringComparison.Ordinal);
+                Assert.IsFalse(terminal.Detail.Contains("exit=;", StringComparison.Ordinal));
+                Assert.IsEmpty(SleepProcesses().Except(before).ToArray());
+            }
+            clock.Advance(TimeSpan.FromDays(1));
+            using var reopened = NewStore();
+            await reopened.InitializeAsync(default).ConfigureAwait(false);
+            var retained = (await reopened.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+            Assert.AreEqual(terminal, retained, "Restart must preserve the actual end time, detail and occurrence identity.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ContinuouslyDueTimeoutsCannotStarveAReservedRefreshTask()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-script-fairness-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var clock = new MutableTimeProvider(DateTimeOffset.UnixEpoch);
+        var script = CustomScriptTaskAdapterTests.Script("sleep 30");
+        script.TimeoutSeconds = 1;
+        var adapter = CustomScriptTaskAdapterTests.Adapter(script);
+        var refresh = new FakePeriodicTaskAdapter { MinimumIntervalSeconds = 60, RunsOffSweep = true };
+        using var registry = new PeriodicRegistryHarness(clock, [adapter, refresh]);
+        var captures = new StubCaptureSequenceSource();
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        try
+        {
+            using var store = new SqliteLocalAutomationStore(registry.Registry, captures, options, clock, NullLogger<SqliteLocalAutomationStore>.Instance);
+            using var worker = new LocalAutomationOffSweepWorker();
+            using var runner = new LocalAutomationRunnerService(store, registry.Registry, captures, options, clock,
+                NullLogger<LocalAutomationRunnerService>.Instance, offSweepWorker: worker);
+            await store.InitializeAsync(default).ConfigureAwait(false);
+            foreach (var (id, kind, target) in new[] { ("aaa-script", LocalAutomationTaskKind.CustomScript, script.Target),
+                ("orbital-elements-refresh", refresh.TaskKind, FakePeriodicTaskAdapter.Target) })
+            {
+                var saved = await store.SaveAsync(new(id, id, true, kind, target, LocalAutomationTriggerKind.Periodic,
+                    60, 0, "save-" + id, "site-owner", null), default).ConfigureAwait(false);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
+            }
+            for (var tick = 0; tick < 6; tick++)
+            {
+                clock.Advance(TimeSpan.FromSeconds(300));
+                await runner.SweepAsync(default).ConfigureAwait(false);
+                await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            }
+            Assert.IsGreaterThanOrEqualTo(3, refresh.Executed.Count, "A due built-in refresh must progress despite every script timeout.");
+            var state = await store.GetStateAsync(default).ConfigureAwait(false);
+            Assert.IsTrue(state.Runs.Any(static run => run.DefinitionId == "aaa-script" && run.Detail.StartsWith("script.timeout", StringComparison.Ordinal)));
+            Assert.IsTrue(state.Runs.Any(static run => run.DefinitionId == "orbital-elements-refresh" && run.Outcome == LocalAutomationRunOutcome.Succeeded));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true);
+        }
+    }
+
+    private static bool HasSleepingSandboxProcess()
+    {
+        foreach (var directory in Directory.EnumerateDirectories("/proc"))
+        {
+            if (!int.TryParse(Path.GetFileName(directory), out _)) continue;
+            try
+            {
+                if (File.ReadAllText(Path.Combine(directory, "cgroup")).Contains("/hvo-custom-script-", StringComparison.Ordinal) &&
+                    File.ReadAllText(Path.Combine(directory, "wchan")).Contains("nanosleep", StringComparison.Ordinal)) return true;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+        return false;
+    }
+
+    private static int[] SleepProcesses() => Process.GetProcessesByName("sleep").Concat(Process.GetProcessesByName("busybox")).Select(process =>
     {
         using (process) return process.Id;
     }).ToArray();

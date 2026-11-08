@@ -60,6 +60,11 @@ public interface ILocalAutomationStore
         string detail,
         CancellationToken cancellationToken);
 
+    /// <summary>Settles an already-drained cancellation using its actual end time.</summary>
+    ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
+        => CompleteRunAsync(runKey, outcome, detail, cancellationToken);
+
     /// <summary>Records one already-terminal run, such as a window missed while the host was stopped.</summary>
     ValueTask RecordTerminalRunAsync(
         LocalAutomationRunnerEntry entry,
@@ -536,12 +541,13 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
     }
 
-    public async ValueTask CompleteRunAsync(
-        string runKey,
-        LocalAutomationRunOutcome outcome,
-        string detail,
-        CancellationToken cancellationToken)
+    public ValueTask CompleteRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        CancellationToken cancellationToken) => CompleteDrainedRunAsync(runKey, outcome, detail, Now(), cancellationToken);
+
+    public async ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
     {
+        if (completedAtUtc.Offset != TimeSpan.Zero) throw new ArgumentException("Completion must be UTC.", nameof(completedAtUtc));
         using var operation = RetainOperationAuthority(allowDrainingCompletion: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         ArgumentNullException.ThrowIfNull(detail);
@@ -567,7 +573,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 cancellationToken,
                 ("$outcome", outcome.ToString()),
                 ("$detail", Bound(detail)),
-                ("$now", ToUnixMilliseconds(Now())),
+                ("$now", ToUnixMilliseconds(completedAtUtc)),
                 ("$key", runKey),
                 ("$claimant", _claimant)).ConfigureAwait(false);
             if (settled == 0)

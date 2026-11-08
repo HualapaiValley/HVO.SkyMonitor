@@ -132,7 +132,10 @@ public sealed class CustomScriptTaskAdapterTests
         Assert.Contains("--property=CPUQuota=50%", info.ArgumentList);
         Assert.Contains("--property=MemorySwapMax=0", info.ArgumentList);
         Assert.DoesNotContain("--share-net", info.ArgumentList);
-        Assert.DoesNotContain(script.Content, info.ArgumentList);
+        Assert.Contains("--disable-userns", info.ArgumentList);
+        Assert.Contains("--assert-userns-disabled", info.ArgumentList);
+        Assert.Contains("--seccomp", info.ArgumentList);
+        Assert.DoesNotContain("/lib64/ld-linux-x86-64.so.2", info.ArgumentList);
         Assert.IsTrue(info.RedirectStandardInput && info.RedirectStandardOutput && info.RedirectStandardError);
     }
 
@@ -162,6 +165,15 @@ public sealed class CustomScriptTaskAdapterTests
         Assert.IsTrue(script.IsValid());
         Assert.AreEqual(CustomScriptArgumentKind.WholeNumber, script.Arguments.Single().Kind);
     }
+
+    [TestMethod]
+    [DataRow("rw,nsdelegate,memory_recursiveprot", true)]
+    [DataRow("rw,memory_recursiveprot", false)]
+    [DataRow("rw,nsdelegate-suffix", false)]
+    [DataRow("rw", false)]
+    public void AvailabilityRejectsCgroupContextsWithoutNamespaceRootProtection(string flags, bool expected)
+        => Assert.AreEqual(expected, LinuxCustomScriptSandbox.HasProtectedCgroupMount(
+            "33 24 0:28 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 cgroup2 " + flags));
 
     internal static CustomScriptRegistration Script(string content = "exit 0") => new()
     { Id = "operator-test", Content = content, Arguments = [new(CustomScriptArgumentKind.Text, "1")] };

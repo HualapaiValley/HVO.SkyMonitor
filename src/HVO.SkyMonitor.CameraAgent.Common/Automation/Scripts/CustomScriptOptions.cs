@@ -50,7 +50,7 @@ public sealed class CustomScriptRegistration
     /// <summary>Opaque identity only. No script text, command, path or argument is stored in TaskTarget.</summary>
     public string Target => string.Concat(Id, ".", CaptureContractJson.ComputeCanonicalJsonSha256(new
     {
-        Policy = "hvo-custom-script-linux-v1",
+        Policy = "hvo-custom-script-linux-v2",
         Id,
         Interpreter,
         Content,

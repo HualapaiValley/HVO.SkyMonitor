@@ -59,32 +59,60 @@ Arguments are separate argv entries; the adapter never interpolates them into
 script text. Scripts are responsible for quoting their own positional data.
 No arbitrary interpreter, shebang dispatch, executable selection or environment
 extension is supported. Invalid, duplicate, unapproved or unsupported startup
-registration publishes an unavailable descriptor with no selectable targets.
+registration publishes an unavailable descriptor with no selectable targets. Availability uses
+fixed content-free codes (`script.disabled`, `script.owner-authorization-required`,
+`script.binding-invalid`, `script.registration-invalid`, `script.registration-duplicate`,
+and specific `script.sandbox-*` prerequisite/probe codes), logged once at adapter
+construction without rejected values. The existing generic editor continues to
+list this registered kind as disabled when unavailable, and exposes opaque digest
+targets only when enabled. That limited setup is accepted for this adapter slice;
+#1133 owns the later guided task presentation. No wizard files are changed here.
 
 ## Execution boundary
 
 The qualified implementation requires non-root Linux x64 or arm64 with
-`/usr/bin/systemd-run`, `/usr/bin/bwrap`, `/usr/bin/prlimit`, `/usr/bin/dash`,
-`/usr/bin/sleep`, the standard glibc/loader paths, and a systemd user manager
-with delegated cgroup v2 memory, CPU and process controllers. It probes the complete launch boundary before
-publishing availability. No unsafe execution fallback exists. Stock runtime
-images without these prerequisites remain unavailable; this PR changes no
-installer, packages or deployment topology. The implemented arm64 path is not
-physical target qualification.
+`/usr/bin/systemd-run`, `/usr/bin/bwrap` (supporting `--disable-userns` and
+`--assert-userns-disabled`), `/usr/bin/prlimit`, a **statically linked**
+`/usr/bin/busybox`, and a systemd user manager with delegated cgroup v2 memory,
+CPU and process controllers. The cgroup2 mount must have `nsdelegate`; availability
+and every execution fail closed without it. The interpreter ELF is checked for
+absence of a dynamic interpreter. The complete launch is probed before targets
+are published. No weaker fallback exists. Stock runtime images without these
+prerequisites remain unavailable; installer/runtime deployment provisioning is
+outside this PR. ARM64 is not physical-target qualification.
 
 Bubblewrap creates private user, PID, mount, network, IPC, UTS and supported
-cgroup namespaces, drops capabilities, starts a new session and ties the sandbox
-lifetime to its parent. The only host files mounted are the fixed shell, sleep,
-libc, loader and `/dev/null`. Private proc is read-only. There is no host home,
-configuration, archive, capture SDK/device, rig/module, raw-ingress, identity,
-Data Protection, provisioning, socket, secret or protected-state mount. No
-external network is shared. Host networking and firewall configuration are never
-changed. The script can use shell builtins and `sleep`; other tools and language
-runtimes require a separately reviewed future execution policy.
+cgroup namespaces, drops capabilities and starts a new session. It disables and
+asserts the disabling of further user namespaces. The only host files mounted
+are the static BusyBox executable at `/bin/sh` and `/bin/sleep`, plus `/dev/null`.
+Private proc is read-only. No loader, libc, host home, configuration, archive,
+SDK/device, rig/module, raw-ingress, identity, provisioning, socket or secret is
+mounted. Host networking/firewall configuration is unchanged.
+
+This is a kernel-enforced syscall boundary, not a claim that shell text cannot
+materialize native code. BusyBox applets and any native ELF emitted into scratch
+inherit a checked-architecture seccomp allowlist. Unknown syscalls, namespace
+creation, mounts, sockets (including non-IP families), memfd/anonymous temporary
+files, SysV IPC, io_uring, keys, tracing and executable mmap/mprotect are denied.
+There is no dynamic loader or LD_PRELOAD injection path. Ordinary named files,
+including O_TMPFILE, remain confined to the size-limited `/work` mount; proc and
+the rest of the root are read-only. The policy version is part of each target
+identity; this correction is `hvo-custom-script-linux-v2`, so v1 registrations
+are deliberately not reinterpreted.
+
+A dedicated launching thread stays alive until the child exits. This matters
+because Bubblewrap's parent-death signal is tied to the **forking thread**, and
+an idle .NET thread-pool thread may retire while the host still runs. The scope
+also has `RuntimeMaxSec = TimeoutSeconds + 10`, independently bounding an orphan.
 
 The launch environment is cleared; only the non-secret `XDG_RUNTIME_DIR` user-bus
 locator is supplied to the scope launcher. Bubblewrap clears that locator too.
 The script receives only `PATH=/bin`, `HOME=/work`, `TMPDIR=/work` and `LC_ALL=C`.
+Registered content is a literal `sh -c` argument, with separately supplied positional
+arguments. It is never interpolated into a host shell or logged. After verifying
+the cgroup, the host sends only a finite binary seccomp policy to Bubblewrap's
+stdin. Bubblewrap must consume/install it before exec; the script itself receives
+`/dev/null` as stdin, so `read` cannot consume later script lines.
 The working directory is a private size-limited `/work` tmpfs; `/tmp` points to
 it. The remaining filesystem is read-only. Scratch capacity is shared across
 files and defaults to 1 MiB (4 KiB–8 MiB allowed). Scratch disappears with the
@@ -104,7 +132,7 @@ Every launch first enters its own transient systemd user scope: 64 MiB aggregate
 memory (including charged kernel/scratch metadata), zero swap, 16 processes/threads
 including launchers, and 50% of one CPU. These cgroup budgets apply only to that
 script tree and cannot be raised from inside the sandbox. The host verifies the exact scope membership and kernel memory, swap, process
-and CPU limit files before sending any script content to stdin. A failed scope/budget
+and CPU limit files before releasing the seccomp/exec barrier. A failed scope/budget
 setup cannot fall back to an unbudgeted process. The scope is collected after its
 tree exits; no persistent service configuration is changed. `prlimit` additionally
 sets zero core bytes, 32 MiB address space per process, 64 descriptors, file size
@@ -120,15 +148,24 @@ The existing sole SQLite execution authority claims an immutable occurrence
 before launch. Scripts use the bounded off-sweep worker, do not occupy capture
 or live processing slots, and a second direct invocation is refused as busy.
 The worker retains execution authority through cancellation and actual drain.
-Other tasks and acquisition keep their own failure boundaries.
+Admission rotates after the last dispatched off-sweep definition. Even when scripts
+are due on every poll (including runtime/interval/poll mismatches), later reserved
+refresh tasks progress after capacity returns; a lexical-first script cannot
+monopolize every new slot. Other tasks and acquisition keep their failure boundaries.
 
 The journal records definition revision/target digest, occurrence/run identity,
 scheduled/start/end instants and terminal outcome. Detail contains
 `script.completed`, `script.timeout`, `script.output-limit` or
-`script.launch-failed`, exit status and stdout/stderr counts. Nonzero exit,
+`script.launch-failed`, `script.isolation-unavailable` or `script.cancelled`, exit
+status and stdout/stderr counts. `script.process-failed` identifies a nonzero script or
+post-launch setup exit without pretending the script completed successfully; raw diagnostic output remains deliberately discarded. Nonzero exit,
 timeout, capacity/launch failure and output excess are failures. Host shutdown
 cancellation kills the process tree, waits for process exit and pipe drain,
-then propagates cancellation for the runner's interrupted/failed policy.
+then records an `Interrupted` terminal result with the real exit code, stream
+counts and injected-clock completion time. The runner retains execution authority
+through a five-second cancellation-independent journal write before propagating
+cancellation. A delayed restart preserves that result. Abrupt host death still
+uses the existing restart reconciliation when no orderly result is available.
 
 There is no automatic retry of arbitrary side effects or replay of missed work.
 Missed periods are recorded under the existing bounded missed-occurrence policy;
@@ -138,6 +175,26 @@ identity. Any explicit retained-occurrence retry supported by the owning durable
 contract remains an operator choice and may repeat effects. Exactly-once external
 side effects are not promised. Shutdown/timeout/cancellation cannot undo effects
 that happened before termination.
+
+## Required qualification
+
+On Linux the sandbox Integration setup **fails** if the complete probe cannot run;
+it never converts missing enforcement into an inconclusive pass. The main and
+CameraAgent full-qualification Integration lanes provision `bubblewrap`,
+`busybox-static` and `gcc`, start the disposable runner's user manager, and verify
+prerequisites through `scripts/ci:script-sandbox --provision`. This changes only
+test-runner setup, not installer/runtime topology. The positive Unit selection
+remains Docker-free; unavailable hosts are qualified as unavailable in Unit tests.
+Non-Linux Integration execution explicitly reports Linux-only qualification.
+The development-v1 protected profile still runs only Preflight and Build and Unit;
+local Linux Integration evidence remains separately required for this adapter.
+
+Native fixtures are freestanding, bounded C helpers compiled under the test's
+scratch root. They prove memfd rejection, namespace/mount refusal, socket refusal,
+non-executable mappings and preload rejection through the actual script boundary.
+The fixture source is retained; no host escape, unbounded resource load or hardware
+is required. Tests also qualify delayed cancellation recovery and continued built-in
+refresh progress during repeated real script timeouts.
 
 ## Acceptance and qualification
 

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Only the disposable Linux Integration runner uses --provision. Runtime/installer profiles are unchanged.
+case "${1:---verify}" in
+  --provision)
+    sudo apt-get update -qq
+    sudo apt-get install -y --no-install-recommends bubblewrap busybox-static gcc
+    sudo systemctl start "user@$(id -u).service"
+    ;;
+  --verify) ;;
+  *) printf 'Usage: scripts/ci:script-sandbox [--verify|--provision]\n' >&2; exit 2 ;;
+esac
+[[ "$(uname -s)" == Linux && "$(id -u)" != 0 ]] || { echo 'Script qualification requires non-root Linux.' >&2; exit 1; }
+for executable in bwrap busybox prlimit gcc systemd-run; do
+  command -v "$executable" >/dev/null || { printf 'Script qualification prerequisite missing: %s\n' "$executable" >&2; exit 1; }
+done
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user show-environment >/dev/null
+findmnt -n -t cgroup2 -o FS-OPTIONS --target /sys/fs/cgroup | tr ',' '\n' | grep -qx nsdelegate
+printf 'Script sandbox qualification prerequisites present; Integration setup must also execute the complete kernel-policy probe.\n'

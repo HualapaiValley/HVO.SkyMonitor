@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 
@@ -7,26 +8,41 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
 {
     private readonly Dictionary<string, CustomScriptRegistration> _scripts = new(StringComparer.Ordinal);
     private readonly bool _available;
+    private readonly TimeProvider _timeProvider;
+    private string? _unavailableReason;
+    private static readonly Action<ILogger, string, Exception?> Unavailable = LoggerMessage.Define<string>(
+        LogLevel.Information, new EventId(7410, "ScriptUnavailable"), "Custom script availability: {ReasonCode}");
     private int _executing;
 
-    public CustomScriptTaskAdapter(IOptions<CustomScriptOptions> options)
+    public CustomScriptTaskAdapter(IOptions<CustomScriptOptions> options, TimeProvider? timeProvider = null,
+        ILogger<CustomScriptTaskAdapter>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _timeProvider = timeProvider ?? TimeProvider.System;
         CustomScriptOptions value;
         try { value = options.Value; }
         catch (Exception exception) when (exception is InvalidOperationException or OptionsValidationException)
         {
-            // Optional script configuration must neither stop acquisition nor log rejected values.
+            Reject("script.binding-invalid");
             return;
         }
-        if (!value.Enabled || !value.OwnerAuthorized || value.Scripts is not { Count: > 0 and <= 16 } ||
-            value.Scripts.Any(static script => script is null || !script.IsValid()) ||
-            value.Scripts.Select(static script => script.Id).Distinct(StringComparer.Ordinal).Count() != value.Scripts.Count)
-            return;
-        foreach (var script in value.Scripts.Select(static script => script.Snapshot()))
-            _scripts.Add(script.Target, script);
-        // An installed binary alone does not prove namespaces and limits work on this host.
-        _available = LinuxCustomScriptSandbox.Probe();
+        if (!value.Enabled) { Reject("script.disabled"); return; }
+        if (!value.OwnerAuthorized) { Reject("script.owner-authorization-required"); return; }
+        if (value.Scripts is not { Count: > 0 and <= 16 } ||
+            value.Scripts.Any(static script => script is null || !script.IsValid()))
+        { Reject("script.registration-invalid"); return; }
+        if (value.Scripts.Select(static script => script.Id).Distinct(StringComparer.Ordinal).Count() != value.Scripts.Count)
+        { Reject("script.registration-duplicate"); return; }
+        foreach (var script in value.Scripts.Select(static script => script.Snapshot())) _scripts.Add(script.Target, script);
+        _unavailableReason = LinuxCustomScriptSandbox.ProbeUnavailableReason();
+        _available = _unavailableReason is null;
+        if (!_available && logger is not null) Unavailable(logger, _unavailableReason!, null);
+
+        void Reject(string reason)
+        {
+            _unavailableReason = reason;
+            if (logger is not null) Unavailable(logger, reason, null);
+        }
     }
 
     public LocalAutomationTaskKind TaskKind => LocalAutomationTaskKind.CustomScript;
@@ -36,7 +52,7 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
     public LocalAutomationTaskDescriptor Describe() => new(TaskKind,
         "Runs an owner-registered non-secret POSIX script in an isolated, bounded Linux sandbox.",
         [LocalAutomationTriggerKind.Periodic], _available ? [.. _scripts.Keys.Order(StringComparer.Ordinal)] : [],
-        _available, _available ? null : "Custom scripts require owner authorization and a qualified Linux sandbox.");
+        _available, _unavailableReason);
 
     public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition)
     {
@@ -61,9 +77,12 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
             var result = await LinuxCustomScriptSandbox.ExecuteAsync(_scripts[occurrence.Definition.TaskTarget], cancellationToken)
                 .ConfigureAwait(false);
             // Only fixed labels and bounded numeric metadata enter durable history or operator logs.
-            return new(result.Status == "completed" && result.ExitCode == 0
-                ? LocalAutomationRunOutcome.Succeeded : LocalAutomationRunOutcome.Failed,
+            var execution = new LocalAutomationExecution(result.Status == "cancelled" ? LocalAutomationRunOutcome.Interrupted :
+                result.Status == "completed" && result.ExitCode == 0 ? LocalAutomationRunOutcome.Succeeded : LocalAutomationRunOutcome.Failed,
                 FormattableString.Invariant($"script.{result.Status}; exit={result.ExitCode}; stdoutBytes={result.StdoutBytes}; stderrBytes={result.StderrBytes}"));
+            if (result.Status == "cancelled")
+                throw new LocalAutomationDrainedCancellationException(execution, _timeProvider.GetUtcNow(), cancellationToken);
+            return execution;
         }
         finally { Volatile.Write(ref _executing, 0); }
     }

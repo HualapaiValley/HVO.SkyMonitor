@@ -395,6 +395,8 @@ jobs:
       # runner at load 0.46) with the identical per-assembly commands, results directories
       # and TRX names, so coverage slots and evidence consumers are unchanged. Each lane
       # keeps its own log; a failure in either lane fails the step after both finish.
+      - name: Provision required script sandbox qualification
+        run: ./scripts/ci:script-sandbox --provision
       - name: Run Integration suites
         run: |
           mkdir -p TestResults/integration
@@ -719,6 +721,8 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
+      - name: Provision required script sandbox qualification
+        run: ./scripts/ci:script-sandbox --provision
       - name: Run CameraAgent Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"

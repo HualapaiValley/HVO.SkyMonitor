@@ -38,7 +38,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with isolated environments, CPU/memory/process limits, bounded scratch/output/runtime, recorded exit outcomes and cancellation cleanup. Wizard integration remains pending. #1137
+- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, and durable cancellation outcomes. Wizard integration remains pending. #1137
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 

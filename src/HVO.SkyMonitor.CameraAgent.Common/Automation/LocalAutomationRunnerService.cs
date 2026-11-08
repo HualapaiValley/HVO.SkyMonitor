@@ -29,6 +29,7 @@ public sealed partial class LocalAutomationRunnerService(
     LocalAutomationOffSweepWorker? offSweepWorker = null) : BackgroundService
 {
     private readonly LocalAutomationOptions _options = options.Value.Automation;
+    private string? _lastOffSweepDefinitionId;
 
     /// <summary>
     /// Initializes the durable store before the host is considered started. Doing it here rather than in
@@ -113,7 +114,11 @@ public sealed partial class LocalAutomationRunnerService(
             }
         }
         var now = timeProvider.GetUtcNow().ToUniversalTime();
-        foreach (var entry in entries)
+        // Rotate after the last admitted off-sweep task, including queued runs. A perpetually due
+        // lexical-first script cannot win every released slot and starve reserved refresh tasks.
+        foreach (var entry in entries.OrderBy(entry => _lastOffSweepDefinitionId is not null &&
+            string.CompareOrdinal(entry.Definition.DefinitionId, _lastOffSweepDefinitionId) <= 0 ? 1 : 0)
+            .ThenBy(static entry => entry.Definition.DefinitionId, StringComparer.Ordinal))
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -265,6 +270,7 @@ public sealed partial class LocalAutomationRunnerService(
         {
             return ExecuteClaimedAsync(occurrence, journalRunKey, cancellationToken);
         }
+        _lastOffSweepDefinitionId = occurrence.Definition.DefinitionId;
         var authority = (store as ILocalAutomationExecutionAuthority)?.RetainExecutionAuthority();
         reservation.Dispatch(async token =>
         {
@@ -316,6 +322,12 @@ public sealed partial class LocalAutomationRunnerService(
                 execution = new(LocalAutomationRunOutcome.Failed, "The task returned no valid terminal outcome.");
             }
         }
+        catch (LocalAutomationDrainedCancellationException drained) when (cancellationToken.IsCancellationRequested)
+        {
+            // Execution authority remains held during this bounded, cancellation-independent write.
+            await CompleteDrainedCancellationAsync(journalRunKey, drained).ConfigureAwait(false);
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The claimed run stays claimed and restart recovery settles it as interrupted.
@@ -340,6 +352,13 @@ public sealed partial class LocalAutomationRunnerService(
             occurrence.Definition.DefinitionId,
             occurrence.Definition.TriggerKind.ToString(),
             execution.Outcome.ToString());
+    }
+
+    private async Task CompleteDrainedCancellationAsync(string journalRunKey, LocalAutomationDrainedCancellationException drained)
+    {
+        using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await store.CompleteDrainedRunAsync(journalRunKey, drained.Execution.Outcome, drained.Execution.Detail,
+            drained.CompletedAtUtc, completion.Token).ConfigureAwait(false);
     }
 
     /// <summary>

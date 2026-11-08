@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 internal sealed record CustomScriptSandboxResult(string Status, int? ExitCode, long StdoutBytes, long StderrBytes);
 
 /// <summary>
-/// A deliberately small Linux runtime: dash builtins and sleep, system libc/loader, private proc/dev,
+/// A static POSIX interpreter with an enforced syscall allowlist, private proc/dev,
 /// no host directories, network namespace, capabilities, inherited environment or published files.
 /// </summary>
 internal static class LinuxCustomScriptSandbox
@@ -18,29 +18,52 @@ internal static class LinuxCustomScriptSandbox
     private const string SystemdRun = "/usr/bin/systemd-run";
     private const string Prlimit = "/usr/bin/prlimit";
 
-    internal static bool Probe()
+    internal static bool Probe() => ProbeUnavailableReason() is null;
+
+    internal static string? ProbeUnavailableReason()
     {
-        if (!OperatingSystem.IsLinux() || !FilesAvailable() || IsRoot()) return false;
+        if (!OperatingSystem.IsLinux()) return "script.sandbox-linux-required";
+        if (!FilesAvailable()) return "script.sandbox-tools-required";
+        if (IsRoot()) return "script.sandbox-nonroot-required";
+        if (!HasProtectedCgroupMount(File.ReadAllText("/proc/self/mountinfo"))) return "script.sandbox-nsdelegate-required";
+        if (!IsStaticElf(File.ReadAllBytes("/usr/bin/busybox"))) return "script.sandbox-static-shell-required";
         var result = ExecuteAsync(new() { Id = "probe", Content = ":", TimeoutSeconds = 3 }, CancellationToken.None)
             .AsTask().GetAwaiter().GetResult();
-        return result.Status == "completed" && result.ExitCode == 0;
+        return result.Status == "completed" && result.ExitCode == 0 ? null : "script.sandbox-probe-failed";
     }
 
     internal static async ValueTask<CustomScriptSandboxResult> ExecuteAsync(CustomScriptRegistration script,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!HasProtectedCgroupMount(await File.ReadAllTextAsync("/proc/self/mountinfo", cancellationToken).ConfigureAwait(false)))
+            return new("isolation-unavailable", null, 0, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(script.TimeoutSeconds));
         using var outputLimit = new CancellationTokenSource();
         using var launchFailure = new CancellationTokenSource();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token, outputLimit.Token, launchFailure.Token);
         using var process = new Process { StartInfo = BuildStartInfo(script) };
-        try
+        var launched = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reaped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // PDEATHSIG is tied to the forking thread, not merely the .NET process. Keep it alive.
+        var launchThread = new Thread(() =>
         {
-            if (!process.Start()) return new("launch-failed", null, 0, 0);
-        }
-        catch (Exception exception) when (exception is Win32Exception or IOException or InvalidOperationException)
+            try
+            {
+                if (!process.Start()) { launched.TrySetResult(false); return; }
+                launched.TrySetResult(true);
+                process.WaitForExit();
+            }
+            catch (Exception exception) when (exception is Win32Exception or IOException or InvalidOperationException)
+            {
+                launched.TrySetResult(false);
+            }
+            finally { reaped.TrySetResult(); }
+        }) { IsBackground = true, Name = "HVO script lifetime" };
+        launchThread.Start();
+        if (!await launched.Task.ConfigureAwait(false))
         {
+            await reaped.Task.ConfigureAwait(false);
             return new("launch-failed", null, 0, 0);
         }
         long total = 0;
@@ -63,9 +86,9 @@ internal static class LinuxCustomScriptSandbox
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             await input.ConfigureAwait(false);
             await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
+            await reaped.Task.ConfigureAwait(false);
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return new(launchFailure.IsCancellationRequested ? "launch-failed" : outputLimit.IsCancellationRequested ? "output-limit" : timeout.IsCancellationRequested ? "timeout" : "completed",
+        return new(cancellationToken.IsCancellationRequested ? "cancelled" : launchFailure.IsCancellationRequested ? "launch-failed" : outputLimit.IsCancellationRequested ? "output-limit" : timeout.IsCancellationRequested ? "timeout" : process.ExitCode == 0 ? "completed" : "process-failed",
             process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
 
         async Task<long> DrainAsync(Stream stream)
@@ -86,7 +109,7 @@ internal static class LinuxCustomScriptSandbox
         {
             try
             {
-                var unit = process.StartInfo.ArgumentList.Single(static argument => argument.StartsWith("--unit=", StringComparison.Ordinal))[7..] + ".scope";
+                var unit = process.StartInfo.ArgumentList.First(static argument => argument.StartsWith("--unit=", StringComparison.Ordinal))[7..] + ".scope";
                 var verified = false;
                 // No untrusted content enters stdin until the kernel reports this launch's exact budgets.
                 for (var attempt = 0; attempt < 200 && !process.HasExited; attempt++)
@@ -99,9 +122,9 @@ internal static class LinuxCustomScriptSandbox
                     await launchFailure.CancelAsync().ConfigureAwait(false);
                     return;
                 }
-                await process.StandardInput.WriteAsync(script.Content.AsMemory(), stop.Token).ConfigureAwait(false);
-                await process.StandardInput.WriteLineAsync().ConfigureAwait(false);
-                await process.StandardInput.FlushAsync(stop.Token).ConfigureAwait(false);
+                // Bubblewrap consumes this finite binary policy before exec; script stdin is /dev/null.
+                await process.StandardInput.BaseStream.WriteAsync(CustomScriptSyscallPolicy.Create(), stop.Token).ConfigureAwait(false);
+                await process.StandardInput.BaseStream.FlushAsync(stop.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or OperationCanceledException) { }
             finally
@@ -137,17 +160,18 @@ internal static class LinuxCustomScriptSandbox
         Add("--user", "--scope", "--quiet", "--collect", "--no-ask-password",
             "--unit=hvo-custom-script-" + Guid.NewGuid().ToString("N"),
             "--property=MemoryMax=67108864", "--property=MemorySwapMax=0",
-            "--property=TasksMax=16", "--property=CPUQuota=50%", "--", Prlimit,
+            "--property=TasksMax=16", "--property=CPUQuota=50%", "--property=KillSignal=SIGKILL",
+            "--property=RuntimeMaxSec=" + (script.TimeoutSeconds + 10).ToString(CultureInfo.InvariantCulture), "--", Prlimit,
             "--core=0", "--as=33554432", "--nofile=64", "--fsize=" + script.ScratchBytes,
             "--cpu=" + script.TimeoutSeconds, "--", Bubblewrap,
-            "--unshare-all", "--unshare-user", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
-            "--ro-bind", "/usr/bin/dash", "/bin/sh", "--ro-bind", "/usr/bin/sleep", "/bin/sleep",
-            "--ro-bind", LibcPath, "/lib/libc.so.6", "--ro-bind", LoaderPath, LoaderPath,
+            "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
+            "--ro-bind", "/usr/bin/busybox", "/bin/sh", "--ro-bind", "/usr/bin/busybox", "/bin/sleep",
             "--proc", "/proc", "--remount-ro", "/proc", "--dev-bind", "/dev/null", "/dev/null", "--size", script.ScratchBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "--tmpfs", "/work", "--symlink", "/work", "/tmp", "--chdir", "/work",
             "--clearenv", "--setenv", "PATH", "/bin", "--setenv", "HOME", "/work",
             "--setenv", "TMPDIR", "/work", "--setenv", "LC_ALL", "C",
-            "--remount-ro", "/", "--", "/bin/sh", "-s", "--");
+            "--remount-ro", "/", "--seccomp", "0", "--", "/bin/sh", "-c",
+            "exec 0</dev/null; " + script.Content, "registered-script");
         foreach (var argument in script.Arguments) info.ArgumentList.Add(argument.Value);
         return info;
 
@@ -157,13 +181,28 @@ internal static class LinuxCustomScriptSandbox
         }
     }
 
-    private static string LibcPath => RuntimeInformation.ProcessArchitecture == Architecture.Arm64
-        ? "/lib/aarch64-linux-gnu/libc.so.6" : "/lib/x86_64-linux-gnu/libc.so.6";
-    private static string LoaderPath => RuntimeInformation.ProcessArchitecture == Architecture.Arm64
-        ? "/lib/ld-linux-aarch64.so.1" : "/lib64/ld-linux-x86-64.so.2";
-
     private static bool FilesAvailable() => RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64 &&
-        new[] { "/sys/fs/cgroup/cgroup.controllers", SystemdRun, Bubblewrap, Prlimit, "/usr/bin/dash", "/usr/bin/sleep", LibcPath, LoaderPath }.All(File.Exists);
+        new[] { "/sys/fs/cgroup/cgroup.controllers", SystemdRun, Bubblewrap, Prlimit, "/usr/bin/busybox" }.All(File.Exists);
+
+    internal static bool HasProtectedCgroupMount(string mountInfo) => mountInfo.Split('\n')
+        .Any(static line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries) is var fields &&
+            fields.Length >= 10 && fields[4] == "/sys/fs/cgroup" &&
+            line.Split(" - ", StringSplitOptions.None) is [_, var tail] &&
+            tail.Split(' ', StringSplitOptions.RemoveEmptyEntries) is ["cgroup2", _, var options] &&
+            options.Split(',').Contains("nsdelegate", StringComparer.Ordinal));
+
+    internal static bool IsStaticElf(byte[] bytes)
+    {
+        if (bytes.Length < 64 || bytes[0] != 0x7f || bytes[1] != 'E' || bytes[2] != 'L' || bytes[3] != 'F' ||
+            bytes[4] != 2 || bytes[5] != 1) return false;
+        var offset = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32));
+        var size = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(54));
+        var count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(56));
+        if (size < 56 || count == 0 || offset > (ulong)bytes.Length || (ulong)size * count > (ulong)bytes.Length - offset) return false;
+        for (var i = 0; i < count; i++)
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan((int)offset + i * size)) == 3) return false;
+        return true;
+    }
 
     private static bool HasVerifiedBudget(int processId, string unit)
     {
