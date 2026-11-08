@@ -360,7 +360,7 @@ public sealed class CustomScriptSandboxIntegrationTests
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 8, 12, 0, 0, TimeSpan.Zero));
         var script = CustomScriptTaskAdapterTests.Script("printf abc; sleep 30");
         var adapter = new CustomScriptTaskAdapter(Options.Create(new CustomScriptOptions
-            { Enabled = true, OwnerAuthorized = true, Scripts = [script] }), clock);
+        { Enabled = true, OwnerAuthorized = true, Scripts = [script] }), clock);
         using var registry = new PeriodicRegistryHarness(clock, [adapter]);
         var captures = new StubCaptureSequenceSource();
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });

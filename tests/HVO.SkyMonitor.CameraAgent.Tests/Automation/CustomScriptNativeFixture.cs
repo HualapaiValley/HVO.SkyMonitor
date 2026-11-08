@@ -13,7 +13,9 @@ internal static class CustomScriptNativeFixture
             var output = Path.Combine(root, preload ? "preload.so" : "probe");
             var info = new ProcessStartInfo("/usr/bin/gcc")
             {
-                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
             };
             info.Environment.Clear();
             info.Environment["PATH"] = "/usr/bin:/bin";

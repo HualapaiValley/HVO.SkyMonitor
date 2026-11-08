@@ -59,7 +59,8 @@ internal static class LinuxCustomScriptSandbox
                 launched.TrySetResult(false);
             }
             finally { reaped.TrySetResult(); }
-        }) { IsBackground = true, Name = "HVO script lifetime" };
+        })
+        { IsBackground = true, Name = "HVO script lifetime" };
         launchThread.Start();
         if (!await launched.Task.ConfigureAwait(false))
         {
