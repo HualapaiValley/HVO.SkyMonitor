@@ -52,6 +52,9 @@ public static class NightlyProductContract
     /// <summary>The durable schema version of the nightly product store.</summary>
     public const int CurrentSchemaVersion = 3;
 
+    /// <summary>The supported forward input whose product-kind constraints are extended atomically.</summary>
+    public const int PreviousSchemaVersion = 2;
+
     /// <summary>The schema label of the immutable provenance document written beside every product.</summary>
     public const string ProvenanceSchemaVersion = "hvo-still-product-provenance-v2";
 

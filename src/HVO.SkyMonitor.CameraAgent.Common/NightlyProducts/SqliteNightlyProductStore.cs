@@ -1035,7 +1035,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (version == 2)
+        else if (version == NightlyProductContract.PreviousSchemaVersion)
         {
             await ExtendProductKindsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
