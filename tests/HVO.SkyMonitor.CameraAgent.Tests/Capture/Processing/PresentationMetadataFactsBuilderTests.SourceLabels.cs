@@ -45,7 +45,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.IsTrue(lines.Any(line => line == "MIXED SOURCES"));
         var stationLine = lines.Single(line => line.Contains("MEASURED", StringComparison.Ordinal));
         Assert.IsTrue(stationLine.Contains("SRC ", StringComparison.Ordinal));
-        if (longIdentity) Assert.IsTrue(stationLine.Contains("…", StringComparison.Ordinal));
+        if (longIdentity) Assert.IsTrue(stationLine.Contains('…', StringComparison.Ordinal));
         else Assert.IsTrue(stationLine.Contains("SRC LocalWeatherStation/station", StringComparison.Ordinal));
         Assert.IsTrue(stationLine.Contains("AGE ", StringComparison.Ordinal));
         Assert.IsTrue(stationLine.Contains("MEASURED", StringComparison.Ordinal));
