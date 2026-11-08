@@ -12,6 +12,21 @@ Those four reference files are unchanged in the starting target. The issue's
 retains the delivered #1054 page and requires current real-state acceptance.
 The former #1044 tar-upgrade blocker is superseded; it is not a current blocker.
 
+Pinned illustrated reference (`?date=2026-08-31`):
+[desktop viewport](evidence/issue-1016/reference-1440x900.png),
+[desktop full page](evidence/issue-1016/reference-1440-full.png),
+[phone viewport](evidence/issue-1016/reference-390x844.png), and
+[phone full page](evidence/issue-1016/reference-390-full.png).
+[Reference geometry](evidence/issue-1016/reference-metrics.json) records viewport,
+device scale, panel coordinates and provenance. Native browser images were
+normalized to CSS-pixel dimensions; overlapping viewport captures were stitched
+without changing document geometry. These are prototype images only, with
+illustrative IDs/facts and **no production-ID mapping or production comparison**.
+At 1440px the reference image/facts widths are 929.40/433.72px (ratio 2.143),
+the three cards are 448.11px wide with 10.40px gaps, and the timeline begins at
+y=864.18px. At 390px the image/facts stack before the timeline; the three cards
+are 369.20px wide and appear in one column before events and automations.
+
 ## Measured gaps corrected
 
 - A one-minute bin on a 24-hour period is 0.069444% of the axis. The previous
