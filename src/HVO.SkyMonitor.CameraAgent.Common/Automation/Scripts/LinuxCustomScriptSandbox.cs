@@ -107,8 +107,12 @@ internal static class LinuxCustomScriptSandbox
     {
         var info = new ProcessStartInfo(Prlimit)
         {
-            UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = "/",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = "/",
             StandardInputEncoding = new UTF8Encoding(false)
         };
         info.Environment.Clear();

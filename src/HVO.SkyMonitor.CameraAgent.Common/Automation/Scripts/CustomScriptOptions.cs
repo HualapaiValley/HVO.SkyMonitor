@@ -51,12 +51,23 @@ public sealed class CustomScriptRegistration
     public string Target => string.Concat(Id, ".", CaptureContractJson.ComputeCanonicalJsonSha256(new
     {
         Policy = "hvo-custom-script-linux-v1",
-        Id, Interpreter, Content, Arguments, TimeoutSeconds, ScratchBytes, OutputBytes
+        Id,
+        Interpreter,
+        Content,
+        Arguments,
+        TimeoutSeconds,
+        ScratchBytes,
+        OutputBytes
     }));
 
     internal CustomScriptRegistration Snapshot() => new()
     {
-        Id = Id, Interpreter = Interpreter, Content = Content, Arguments = [.. Arguments],
-        TimeoutSeconds = TimeoutSeconds, ScratchBytes = ScratchBytes, OutputBytes = OutputBytes
+        Id = Id,
+        Interpreter = Interpreter,
+        Content = Content,
+        Arguments = [.. Arguments],
+        TimeoutSeconds = TimeoutSeconds,
+        ScratchBytes = ScratchBytes,
+        OutputBytes = OutputBytes
     };
 }
