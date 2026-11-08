@@ -152,7 +152,7 @@
             }
             else
             {
-                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram; @(VideoNights == 0 ? "time-lapse not yet generated" : $"{VideoNights} time-lapse")@(OtherPeriodNights > 0 ? FormattableString.Invariant($". {OtherPeriodNights} {(OtherPeriodNights == 1 ? "night has" : "nights have")} evaluations under another source period, not counted") : "")</small></article>
+                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram · @NightlyProductCount(NightlyProductKind.DailySummary) daily summary; @(VideoNights == 0 ? "time-lapse not yet generated" : $"{VideoNights} time-lapse")@(OtherPeriodNights > 0 ? FormattableString.Invariant($". {OtherPeriodNights} {(OtherPeriodNights == 1 ? "night has" : "nights have")} evaluations under another source period, not counted") : "")</small></article>
             }
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>
         </section>

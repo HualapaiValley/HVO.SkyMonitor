@@ -69,7 +69,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             product_id TEXT PRIMARY KEY CHECK (length(product_id) = 32),
             output_identity_sha256 TEXT NOT NULL UNIQUE CHECK (length(output_identity_sha256) = 64),
             occurrence_json TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail')),
+            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail', 'DailySummary')),
             scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Rollup', 'Final')),
             observing_date TEXT NOT NULL CHECK (length(observing_date) = 10),
             window_start_utc_ticks INTEGER NOT NULL,
@@ -117,7 +117,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
 
         CREATE TABLE nightly_windows (
             occurrence_identity_sha256 TEXT NOT NULL CHECK (length(occurrence_identity_sha256) = 64),
-            occurrence_json TEXT NOT NULL,            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail')),
+            occurrence_json TEXT NOT NULL,            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail', 'DailySummary')),
             scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Final')),
             window_start_utc_ticks INTEGER NOT NULL,
             window_end_utc_ticks INTEGER NOT NULL CHECK (window_end_utc_ticks > window_start_utc_ticks),
@@ -971,15 +971,42 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
     }
 
     /// <summary>
-    /// Creates or verifies the schema once per process. A database written by a newer schema, or one whose objects
-    /// were altered, is refused rather than migrated in place.
+    /// Extends the schema-2 product-kind constraints atomically, preserving the existing files and references.
     /// </summary>
+    private static async ValueTask ExtendProductKindsAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        foreach (var table in new[] { "nightly_products", "nightly_windows" })
+        {
+            var start = SchemaSql.IndexOf("CREATE TABLE " + table + " (", StringComparison.Ordinal);
+            var end = SchemaSql.IndexOf(") STRICT;", start, StringComparison.Ordinal) + ") STRICT;".Length;
+            var create = SchemaSql[start..end].Replace("CREATE TABLE " + table + " (",
+                "CREATE TABLE " + table + "_v3 (", StringComparison.Ordinal);
+            await ExecuteAsync(connection, transaction, create, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                $"INSERT INTO {table}_v3 SELECT * FROM {table}; DROP TABLE {table}; ALTER TABLE {table}_v3 RENAME TO {table};",
+                cancellationToken).ConfigureAwait(false);
+        }
+        await ExecuteAsync(connection, transaction, """
+            CREATE INDEX nightly_products_by_date ON nightly_products (observing_date, window_start_utc_ticks);
+            CREATE INDEX nightly_windows_by_date ON nightly_windows (observing_date, window_start_utc_ticks);
+            CREATE TRIGGER nightly_products_immutable_update BEFORE UPDATE ON nightly_products
+            BEGIN SELECT RAISE(ABORT, 'Published nightly products are immutable.'); END;
+            CREATE TRIGGER nightly_products_immutable_delete BEFORE DELETE ON nightly_products
+            BEGIN SELECT RAISE(ABORT, 'Published nightly products are immutable.'); END;
+            """, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Creates, upgrades the supported schema-2 input, or verifies schema 3 once per process.</summary>
     private async ValueTask EnsureSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         if (_schemaReady)
         {
             return;
         }
+        // Rebuilding CHECK constraints is SQLite's documented table-rebuild path. Foreign-key enforcement is
+        // restored after the atomic transaction, and every retained reference is checked before commit.
+        await ExecuteAsync(connection, null, "PRAGMA foreign_keys = OFF;", cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var version = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken)
             .ConfigureAwait(false);
@@ -1005,6 +1032,12 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
                 cancellationToken).ConfigureAwait(false);
         }
+        else if (version == 2)
+        {
+            await ExtendProductKindsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
+                cancellationToken).ConfigureAwait(false);
+        }
         else if (version != NightlyProductContract.CurrentSchemaVersion)
         {
             throw new InvalidDataException($"Nightly product schema {version} is unsupported.");
@@ -1022,7 +1055,11 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         {
             throw new InvalidDataException("Nightly product SQLite storage failed its integrity check.");
         }
+        if (await ScalarLongAsync(connection, transaction, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken)
+                .ConfigureAwait(false) != 0)
+            throw new InvalidDataException("Nightly product storage contains invalid references.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
     }
 

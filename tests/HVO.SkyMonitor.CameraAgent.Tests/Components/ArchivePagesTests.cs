@@ -210,7 +210,7 @@ public sealed class ArchivePagesTests
             var summary = cut.Find(".calendar-summary").TextContent;
             StringAssert.Contains(summary, "Nights with nightly products2", StringComparison.Ordinal);
             StringAssert.Contains(summary,
-                "2 star trail · 0 keogram; time-lapse not yet generated. 2 nights have evaluations under another source period, not counted",
+                "2 star trail · 0 keogram · 0 daily summary; time-lapse not yet generated. 2 nights have evaluations under another source period, not counted",
                 StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("Nightly products hidden", StringComparison.Ordinal));
         });
@@ -647,7 +647,7 @@ public sealed class ArchivePagesTests
             StringAssert.StartsWith(ObservingDayPage.OtherPeriodLabel(period), "Site nightly-other version 2 (", StringComparison.Ordinal);
             StringAssert.Contains(ObservingDayPage.OtherPeriodLabel(period), "America/Denver), 2026-10-01 ", StringComparison.Ordinal);
             var facts = note.QuerySelectorAll("li li").Select(static item => item.TextContent.Trim()).ToArray();
-            Assert.HasCount(2, facts);
+            Assert.HasCount(3, facts);
             StringAssert.StartsWith(facts[0], "Star trail: nightly star trail produced · Product detail", StringComparison.Ordinal);
             Assert.AreEqual("Keogram: no nightly keogram evaluation; 1 of 1 hourly keograms produced", facts[1]);
             Assert.AreEqual(NightlyProductLinks.Detail(otherProduct.ProductId), note.QuerySelector("a")!.GetAttribute("href"));
@@ -690,6 +690,26 @@ public sealed class ArchivePagesTests
                 "Nightly product status unavailable. Nightly products are temporarily unavailable.", StringComparison.Ordinal);
             Assert.IsNotNull(unavailable.Find(".day-facts"));
         });
+    }
+
+    [TestMethod]
+    public void DailySummaryCalendarAndDayKeepPartialAndNotProducedStates()
+    {
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        var product = NightlyDayFixture.Product(occurrence, NightlyProductKind.DailySummary);
+        var produced = NightlyDayFixture.Produced(occurrence, product, candidates: 2, admitted: 1);
+        produced = produced with { Status = produced.Status with { ReasonCode = NightlyProductContract.PartialSummaryReasonCode } };
+        var day = new NightlyProductDay(NightlyDayFixture.Date, [produced], [product]);
+        var card = ObservingDayPage.Card(day, NightlyProductKind.DailySummary, occurrence.SourceWindow!.ReportingPeriod, false);
+        Assert.AreEqual(ArchiveCalendarPage.NightlyBadgeState.Partial, card.Badge.State);
+        Assert.AreEqual(product.ProductId, card.Product!.ProductId);
+        Assert.AreEqual("D", card.Badge.Letter);
+        var missing = NightlyDayFixture.Without(occurrence, NightlyProductKind.DailySummary,
+            NightlyProductWindowDisposition.NoSources, candidates: 0);
+        var noProduct = ObservingDayPage.Card(new(NightlyDayFixture.Date, [missing], []), NightlyProductKind.DailySummary,
+            occurrence.SourceWindow.ReportingPeriod, false);
+        Assert.AreEqual(ArchiveCalendarPage.NightlyBadgeState.NotProduced, noProduct.Badge.State);
+        Assert.IsNull(noProduct.Product);
     }
 
     private static void ConfigureFixtureDay(BunitContext context)

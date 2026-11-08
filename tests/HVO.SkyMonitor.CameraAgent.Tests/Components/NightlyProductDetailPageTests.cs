@@ -272,6 +272,29 @@ public sealed class NightlyProductDetailPageTests
         denied.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void DailySummaryShowsRetainedFactsPartialCoverageAndUnknownEvents()
+    {
+        using var context = new BunitContext();
+        var nightly = Configure(context, Closed);
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        var window = occurrence.SourceWindow!;
+        var source = NightlyProductFixture.Frame(41, window.StartUtc.AddHours(12)).Candidate;
+        var facts = DailySummaryProducer.Summarize(window.ReportingPeriod.ReportDate, window.ReportingPeriod.IdentitySha256,
+            window.StartUtc, window.EndUtc, 1,
+            [new(source.ArtifactId, source.CaptureId, source.OutputIdentitySha256, source.ExposureStartedUtc)], [], new Dictionary<string, int>());
+        var presentation = Presentation(occurrence, NightlyProductKind.DailySummary) with { DailySummary = facts };
+        nightly.PresentationHandler = _ => OperatorUiResult<NightlyProductPresentation>.Success(presentation);
+        var cut = context.Render<NightlyProductDetailPage>(parameters => parameters.Add(page => page.ProductId, presentation.Detail.Summary.ProductId));
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll("[data-nightly-section='daily-summary']")));
+        var text = cut.Find("[data-nightly-section='daily-summary']").TextContent;
+        StringAssert.Contains(text, "Partial: sampled coverage has gaps", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Unavailable; no event count was supplied", StringComparison.Ordinal);
+        StringAssert.Contains(text, source.ArtifactId.ToString(), StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("[data-nightly-section='axis']"));
+        StringAssert.Contains(cut.Markup, "Representative exposure", StringComparison.Ordinal);
+    }
+
     private static TestNightlyProductUiService Configure(BunitContext context, DateTimeOffset now, bool previewFailed = false)
     {
         RetainedPreviewImageTestSupport.Configure(context, previewFailed);

@@ -55,7 +55,7 @@ internal sealed record NightlyProductRunReport(
 /// recipe identity and publication, so unchanged retries verify and reuse the same output files. A window exceeding
 /// <see cref="NightlyProductOptions.MaximumSegmentsPerRun"/> recipe executions is rejected before source restoration.
 /// </summary>
-internal sealed class NightlyProductGenerator : IDisposable
+internal sealed partial class NightlyProductGenerator : IDisposable
 {
     internal const string KeogramSegmentVariant = "still-keogram-part-v2";
     internal const string KeogramFinalVariant = "still-keogram-final-v2";
@@ -119,10 +119,12 @@ internal sealed class NightlyProductGenerator : IDisposable
         {
             throw new ArgumentException("A still producer requires a valid retained source-window occurrence.", nameof(occurrence));
         }
-        var expectedSelection = kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
+        var expectedSelection = kind != NightlyProductKind.StarTrail ? LocalAutomationSourceSelection.AllActualSources
             : LocalAutomationSourceSelection.DarkNightActualSources;
         if (sourceWindow.Policy.Selection != expectedSelection)
             throw new ArgumentException("The source selection does not match the still product kind.", nameof(occurrence));
+        if (kind == NightlyProductKind.DailySummary && sourceWindow.Policy.Kind != LocalAutomationSourceWindowKind.SunriseDay)
+            throw new ArgumentException("Daily summaries require a whole sunrise day.", nameof(occurrence));
         var options = _options.NightlyProducts;
         if (!options.Enabled || !NightlyProductPreset.Matches(occurrence.Definition.TaskTarget, kind, options))
         {
@@ -208,6 +210,12 @@ internal sealed class NightlyProductGenerator : IDisposable
                 return await RecordUnlessUnchangedAsync(
                     context, NightlyProductScope.Segment, window, NightlyProductWindowDisposition.NoSources,
                     null, candidateCount, [], admission.Exclusions, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (context.Kind == NightlyProductKind.DailySummary)
+            {
+                await EvaluateDailySummaryAsync(context, window, candidateCount, admission, cancellationToken).ConfigureAwait(false);
+                return false;
             }
 
             if (context.Kind == NightlyProductKind.StarTrail && admission.Admitted.Count > 1 &&

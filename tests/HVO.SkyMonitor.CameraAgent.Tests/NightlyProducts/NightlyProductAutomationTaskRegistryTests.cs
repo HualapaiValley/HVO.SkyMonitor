@@ -19,7 +19,7 @@ public sealed class NightlyProductAutomationTaskRegistryTests
             Assert.IsTrue(descriptor.Available);
             Assert.AreEqual(LocalAutomationTaskKind.StillImageGeneration, descriptor.TaskKind);
             CollectionAssert.AreEqual(new[] { LocalAutomationTriggerKind.SourceWindowClosed }, descriptor.CompatibleTriggers.ToArray());
-            Assert.HasCount(2, descriptor.Targets);
+            Assert.HasCount(3, descriptor.Targets);
             Assert.HasCount(2, descriptor.SupportedSourceWindows);
             Assert.IsTrue(descriptor.Targets.All(target => NightlyProductPreset.TryParseTarget(target, out _)));
         });
@@ -64,6 +64,20 @@ public sealed class NightlyProductAutomationTaskRegistryTests
             Assert.AreEqual(LocalAutomationRunOutcome.Failed, failure.Outcome);
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public void DailySummaryAcceptsOnlyWholeSunriseDaysAndAllActualSources()
+    {
+        WithRegistry((registry, _, _) =>
+        {
+            var daily = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary).Definition;
+            Assert.IsNull(registry.Validate(daily));
+            Assert.IsNotNull(registry.Validate(daily with { SourceWindow = daily.SourceWindow! with
+                { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour } }));
+            Assert.IsNotNull(registry.Validate(daily with { SourceWindow = daily.SourceWindow! with
+                { Selection = LocalAutomationSourceSelection.DarkNightActualSources } }));
+        });
     }
 
     private static void WithRegistry(Action<NightlyProductAutomationTaskRegistry, SqliteNightlyProductStore, InMemoryNightlySourceReader> action)

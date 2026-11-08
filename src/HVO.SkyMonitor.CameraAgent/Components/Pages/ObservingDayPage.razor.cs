@@ -32,7 +32,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         internal NightlyProductSummary? Product => Daily?.FinalProduct;
     }
 
-    private static readonly NightlyProductKind[] ProductKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
+    private static readonly NightlyProductKind[] ProductKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram, NightlyProductKind.DailySummary];
 
     internal sealed record CaptureSegment(DateTimeOffset StartUtc, DateTimeOffset EndUtc, int Count);
 
@@ -115,7 +115,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     internal static string TileId(NightlyProductKind kind) => "product-tile-" + NightlyProductLinks.KindNoun(kind).Replace(' ', '-');
 
-    internal static string KindIcon(NightlyProductKind kind) => kind == NightlyProductKind.StarTrail ? "bi-stars" : "bi-bar-chart-steps";
+    internal static string KindIcon(NightlyProductKind kind) => kind switch { NightlyProductKind.StarTrail => "bi-stars", NightlyProductKind.DailySummary => "bi-journal-text", _ => "bi-bar-chart-steps" };
 
     // A tile opens only when its viewer adds something: the larger image, or the hours behind a missing nightly product.
     private static bool CanOpen(ProductCard card) => card.Product is not null || card.Hours.Count > 0;
@@ -218,7 +218,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
     private string ProductFacts(ProductCard card) => card.Product is { } product
         ? $"Frames {LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)} from " +
-          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} segment products; {product.Width:N0} × {product.Height:N0}.")
+          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} {(card.Kind == NightlyProductKind.DailySummary ? "admitted previews" : "segment products")}; {product.Width:N0} × {product.Height:N0}.")
         : card.Daily is { Status: var status } && card.Badge.State == ArchiveCalendarPage.NightlyBadgeState.NotProduced
             ? $"The period was evaluated: {Outcome(status)}."
             : card.Badge.Description + ".";

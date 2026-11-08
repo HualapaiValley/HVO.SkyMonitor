@@ -99,7 +99,7 @@
                     }
                     <div><dt>Preview frames</dt><dd>@presentation.LineageFrameCount.ToString("N0") in lineage</dd></div>
                     <div><dt>Direct sources</dt><dd>@product.SourceCount.ToString("N0")</dd></div>
-                    <div><dt>Total integration</dt><dd>@FormatIntegration(product.TotalIntegration)</dd></div>
+                    <div><dt>@(presentation.DailySummary is null ? "Total integration" : "Representative exposure")</dt><dd>@FormatIntegration(product.TotalIntegration)</dd></div>
                     <div><dt>Encoded size</dt><dd>@product.Width × @product.Height @product.PixelFormat</dd></div>
                     <div><dt>Recipe</dt><dd>@detail.RecipeName</dd></div>
                     <div><dt>Variant</dt><dd>@detail.Variant</dd></div>
@@ -111,6 +111,35 @@
             </aside>
         </section>
 
+        @if (presentation.DailySummary is { } summary)
+        {
+            <section class="product-detail-panel archive-panel" aria-label="Daily summary" data-nightly-section="daily-summary">
+                <header><div><h2>Daily summary</h2><p>@(summary.Partial ? "Partial: sampled coverage has gaps or sources were excluded." : "Every five-minute bin contains an admitted exposure start.") This is a snapshot of retained sources, not a claim of continuous capture.</p></div></header>
+                <dl class="product-detail-facts">
+                    <div><dt>Captures</dt><dd>@summary.CaptureCount</dd></div>
+                    <div><dt>Admitted previews</dt><dd>@summary.Captures.Count / @summary.CandidateCount candidates</dd></div>
+                    <div><dt>Sampled coverage</dt><dd>@summary.SampledBins / @summary.TotalBins five-minute bins</dd></div>
+                    <div><dt>Representative frame</dt><dd>@summary.RepresentativeArtifactId</dd></div>
+                    <div><dt>Events</dt><dd>Unavailable; no event count was supplied</dd></div>
+                </dl>
+                @foreach (var exclusion in summary.Exclusions)
+                {
+                    <p>@exclusion.Value excluded: @exclusion.Key</p>
+                }
+                @if (summary.Products.Count == 0)
+                {
+                    <p>No other still products were published for this source period when this summary was generated.</p>
+                }
+                else
+                {
+                    <ul>@foreach (var linked in summary.Products)
+                        {
+                            <li><a href="@NightlyProductLinks.Detail(linked.ProductId)">@linked.Kind</a></li>
+                        }</ul>
+                }
+                <p>Download provenance for the canonical summary facts and every source identity.</p>
+            </section>
+        }
         @if (product.Kind == NightlyProductKind.Keogram)
         {
             <section class="product-detail-panel archive-panel" aria-label="Keogram time axis" data-nightly-section="axis">
@@ -172,7 +201,7 @@
         </div>
 
         <section class="product-detail-panel archive-panel" aria-label="Ordered sources" data-nightly-section="sources">
-            <header><div><h2>Ordered sources</h2><p>The direct sources in composition order. A segment's sources are preview frames; a final's are its segments or rollups.</p></div><span class="quiet-label">@Math.Min(detail.Sources.Count, MaximumShownSources) shown / @detail.Sources.Count.ToString("N0") recorded</span></header>
+            <header><div><h2>Ordered sources</h2><p>The direct sources in composition order. Daily summaries name admitted previews and linked products; other finals name their segments or rollups.</p></div><span class="quiet-label">@Math.Min(detail.Sources.Count, MaximumShownSources) shown / @detail.Sources.Count.ToString("N0") recorded</span></header>
             @if (detail.Sources.Count == 0)
             {
                 <p class="unavailable-copy">No ordered sources are recorded.</p>

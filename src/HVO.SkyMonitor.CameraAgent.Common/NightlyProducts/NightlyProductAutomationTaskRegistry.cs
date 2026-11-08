@@ -14,10 +14,11 @@ internal sealed class NightlyProductAutomationTaskRegistry(
         var preset = options.Value.NightlyProducts;
         var enabled = preset.Enabled && Validator.TryValidateObject(preset, new ValidationContext(preset), [], true);
         return new(LocalAutomationTaskKind.StillImageGeneration,
-            "Generates a full planned-window meridian keogram or a dark-night lighten trail from fixed-transfer sources.",
+            "Generates a planned-window keogram, a dark-night star trail, or a sunrise-day summary from fixed-transfer sources.",
             [LocalAutomationTriggerKind.SourceWindowClosed],
             enabled ? [NightlyProductPreset.Target(NightlyProductKind.Keogram, preset),
-                NightlyProductPreset.Target(NightlyProductKind.StarTrail, preset)] : [],
+                NightlyProductPreset.Target(NightlyProductKind.StarTrail, preset),
+                NightlyProductPreset.Target(NightlyProductKind.DailySummary, preset)] : [],
             Available: enabled, UnavailableReason: enabled ? null : "Still generation requires an enabled, pinned source recipe and rig.")
         {
             SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay]
@@ -33,7 +34,9 @@ internal sealed class NightlyProductAutomationTaskRegistry(
             !descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal) ||
             !NightlyProductPreset.TryParseTarget(definition.TaskTarget, out var kind))
             return new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget");
-        var expected = kind == NightlyProductKind.Keogram
+        if (kind == NightlyProductKind.DailySummary && definition.SourceWindow.Kind != LocalAutomationSourceWindowKind.SunriseDay)
+            return new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.kind");
+        var expected = kind != NightlyProductKind.StarTrail
             ? LocalAutomationSourceSelection.AllActualSources : LocalAutomationSourceSelection.DarkNightActualSources;
         return definition.SourceWindow.Selection == expected ? null
             : new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.selection");

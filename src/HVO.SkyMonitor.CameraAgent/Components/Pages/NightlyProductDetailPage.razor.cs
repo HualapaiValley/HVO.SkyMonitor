@@ -65,7 +65,7 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
     };
 
     internal static string Title(NightlyProductDetail detail) => detail.Summary.Scope == NightlyProductScope.Final
-        ? $"{Scope(detail)} {NightlyProductLinks.KindNoun(detail.Summary.Kind)}"
+        ? detail.Summary.Kind == NightlyProductKind.DailySummary ? "Daily summary" : $"{Scope(detail)} {NightlyProductLinks.KindNoun(detail.Summary.Kind)}"
         : FormattableString.Invariant(
             $"{NightlyProductLinks.KindLabel(detail.Summary.Kind)} {(detail.Summary.Scope == NightlyProductScope.Rollup ? "rollup" : "segment")} part {detail.Summary.PartOrdinal + 1}");
 

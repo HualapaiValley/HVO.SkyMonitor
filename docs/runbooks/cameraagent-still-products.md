@@ -111,8 +111,11 @@ lighten composition of actual eligible frames, preserving any missing interval.
 | Presentation lineage | Distinct preview frames, at most the 4,096 window-candidate bound; excess fails explicitly |
 | Other outputs for one span | 1,024; larger listings fail explicitly |
 
-The still store has schema version 2. Earlier, newer or corrupt stores fail
-closed; installed-state migration is outside this change. Packed payload,
+The still store has schema version 3. Schema 2 upgrades atomically by extending
+the product-kind constraints; existing product rows, lineage, pointers and files
+are preserved and foreign keys are checked before commit. An interrupted upgrade
+rolls back as one SQLite transaction. Other earlier, newer or corrupt stores fail
+closed. Packed payload,
 JPEG rendition and canonical provenance are durably written before the SQLite
 publication transaction. Immutable product IDs bind recipe and occurrence.
 Ordered lineage identifies actual preview outputs and intermediate products.
@@ -249,3 +252,35 @@ source I/O and synthetic whole-day W1 monochrome/W2 RGB24 composition. Synthetic
 and must not be represented as actual sky images. Follow the canonical
 [performance evidence rules](../planning/performance-validation.md), including
 baseline/after attribution and the actual measured build configuration.
+
+## Daily summaries (#1713)
+
+With the same enabled and pinned `NightlyProducts` settings, select the registered
+`daily-summary:<preset SHA-256>` target, `SourceWindowClosed`, `SunriseDay` and
+`AllActualSources`. Hourly or dark-night-only definitions are rejected. Allow
+settlement after other still-product automations if their links should appear.
+No physical camera is required; VirtualSky previews use the ordinary path.
+
+The host-neutral Processing producer emits `hvo-daily-summary-v1`: canonical JSON
+in `recipe.descriptor.options.parameters` of the checksummed provenance document,
+paired with the actual preview nearest the period midpoint (artifact ID breaks
+ties). The JSON retains report date, exact UTC bounds and period identity,
+candidate count, admitted preview/capture identities and output hashes, exclusions,
+and immutable links/hashes to current final keograms and star trails of the
+identical retained period and span. Missing products are explicitly absent at
+snapshot time; time-lapse and event summaries are outside this version. Event
+count is null and presented as unavailable, never as zero.
+
+Coverage counts five-minute bins containing an admitted exposure start, including
+a possible shorter final bin. This measures sampling, not continuous exposure,
+expected cadence or quality. Missing bins or excluded sources make the produced
+summary Partial in all archive views. Empty admission records Not produced with
+no substitute image. Every bin populated is Produced, without a claim of
+continuous capture. The representative exposure duration is labeled separately.
+
+Only the representative payload is restored; metadata is bounded at 4,096
+candidates and 1,024 linked products. Capture and linked-product identities form
+the ordered immediate lineage. Facts, sources and occurrence bind the output
+identity. Unchanged retries verify the immutable publication; changed captures,
+exclusions or linked products publish a new identity while preserving prior
+outputs. A link is a snapshot of a published product, not a mutable latest pointer.
