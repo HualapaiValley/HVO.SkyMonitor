@@ -63,7 +63,8 @@ internal sealed partial class SqliteTimeLapseStore
                     await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : new DateTimeOffset(reader.GetInt64(4), TimeSpan.Zero),
                     await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
                     await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : new(Guid.ParseExact(reader.GetString(6), "N"), date,
-                        reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9) != 0), reader.GetInt32(10) != 0));
+                        reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9) != 0), reader.GetInt32(10) != 0)
+                { GenerationEnabled = options.Value.TimeLapses.Enabled });
             }
         if (entries.Any(static entry => entry.JobState == CameraAgentTimeLapseState.Produced && entry.Product is null))
             throw new InvalidDataException("A produced daily video has no published catalog entry.");

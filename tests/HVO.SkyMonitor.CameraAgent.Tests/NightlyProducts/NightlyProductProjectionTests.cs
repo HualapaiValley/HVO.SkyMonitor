@@ -558,6 +558,12 @@ public sealed class NightlyProductProjectionTests
         var evaluatedFailure = completed with { Outcome = LocalAutomationRunOutcome.Failed };
         Assert.AreEqual(expected, (await harness.Store.ListLibraryAsync(query with { State = null },
             CancellationToken.None, [evaluatedFailure])).Entries.Single().State);
+        var olderFailure = Progress(NightlyProductFixture.Occurrence(kind, definitionId: "older-failed-definition"),
+            LocalAutomationRunOutcome.Failed) with
+        { StartedAtUtc = harness.Clock.UtcNow.AddMinutes(-2), CompletedAtUtc = harness.Clock.UtcNow.AddMinutes(-1) };
+        Assert.AreEqual(expected, (await harness.Store.ListLibraryAsync(query with { State = null },
+            CancellationToken.None, [olderFailure])).Entries.Single().State,
+            "An older failure from another definition must not hide a newer settled daily evaluation.");
         Assert.AreEqual(expected == NightlyProductLibraryState.Produced, terminal.Product is not null);
         Assert.IsEmpty((await harness.Store.ListLibraryAsync(query, CancellationToken.None, [completed])).Entries);
     }
@@ -572,8 +578,13 @@ public sealed class NightlyProductProjectionTests
             observingDate: NightlyProductFixture.ObservingDate.AddDays(-1));
         var runs = new[] { Progress(first, LocalAutomationRunOutcome.Interrupted), Progress(second, LocalAutomationRunOutcome.Running),
             Progress(older, LocalAutomationRunOutcome.Queued) };
+        // Another retained period can have only hourly evaluations; its identity must still be disclosed.
+        await harness.Run(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail,
+            windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour,
+            site: NightlyProductFixture.OtherSite));
         var page = await harness.Store.ListLibraryAsync(new(1), CancellationToken.None, runs);
         Assert.HasCount(2, page.Entries);
+        Assert.IsTrue(page.Entries.Single(entry => entry.Summary.Kind == NightlyProductKind.StarTrail).OtherPeriodRecorded);
         Assert.AreEqual(NightlyProductFixture.ObservingDate, page.NextBefore);
         Assert.AreEqual(NightlyProductLibraryState.Stalled, page.Entries.Single(entry => entry.Summary.Kind == NightlyProductKind.Keogram).State);
         var next = await harness.Store.ListLibraryAsync(new(1, Before: page.NextBefore), CancellationToken.None, runs);

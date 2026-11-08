@@ -119,6 +119,11 @@ public sealed class GeneratedTimeLapsePagesTests
         StringAssert.Contains(item.TextContent, window.ReportingPeriod.Site.TimeZoneId, StringComparison.Ordinal);
         Assert.AreEqual(ArchiveCalendarPage.DayUrl(window.ReportingPeriod.ReportDate), item.QuerySelector("a")!.GetAttribute("href"));
         Assert.IsFalse(item.TextContent.Contains("Produced", StringComparison.Ordinal));
+        service.VideoLibrary = new([service.VideoLibrary!.Entries.Single() with { GenerationEnabled = false }], null, null);
+        var disabled = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "stalled"));
+        Assert.AreEqual("stalled", disabled.Find("li").GetAttribute("data-video-state"));
+        StringAssert.Contains(disabled.Find("li").TextContent, "Generation disabled", StringComparison.Ordinal);
     }
 
     private sealed class CurrentSite : IObservingDayCalendarProvider

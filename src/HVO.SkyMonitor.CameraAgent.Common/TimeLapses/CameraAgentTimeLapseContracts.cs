@@ -99,8 +99,11 @@ public sealed record CameraAgentTimeLapseLibraryEntry(Guid JobId, DateOnly Repor
     LocalAutomationSourceWindow Window, CameraAgentTimeLapseState JobState, DateTimeOffset? StartedUtc,
     string? ReasonCode, CameraAgentTimeLapseSummary? Product, bool HasHourlyProducts)
 {
+    /// <summary>Disabled generation cannot present retained pending work as executing on this host.</summary>
+    public bool GenerationEnabled { get; init; } = true;
+
     public NightlyProductLibraryState State => JobState is CameraAgentTimeLapseState.Queued or CameraAgentTimeLapseState.Working
-        ? NightlyProductLibraryState.Running
+        ? GenerationEnabled ? NightlyProductLibraryState.Running : NightlyProductLibraryState.Stalled
         : Product is not null ? NightlyProductLibraryState.Produced
         : HasHourlyProducts ? NightlyProductLibraryState.Partial : NightlyProductLibraryState.NotProduced;
 }

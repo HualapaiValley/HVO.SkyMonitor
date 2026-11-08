@@ -43,6 +43,13 @@ public sealed class SqliteTimeLapseStoreTests
                 var running = (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single();
                 Assert.AreEqual(CameraAgentTimeLapseState.Working, running.JobState);
                 Assert.AreEqual(started, running.StartedUtc);
+                using var disabled = new SqliteTimeLapseStore(Microsoft.Extensions.Options.Options.Create(
+                    new CameraAgentHostOptions { RawIngressRoot = root, TimeLapses = new() { Enabled = false } }), clock);
+                Assert.IsEmpty((await disabled.ListLibraryAsync(query, CancellationToken.None)).Entries,
+                    "A restarted host with video generation disabled must not claim an old Working row is running.");
+                var stopped = (await disabled.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Stalled }, CancellationToken.None)).Entries.Single();
+                Assert.AreEqual(CameraAgentTimeLapseState.Working, stopped.JobState);
+                Assert.AreEqual(started, stopped.StartedUtc);
                 Assert.IsEmpty((await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Produced }, CancellationToken.None)).Entries);
             }
             clock.UtcNow = clock.UtcNow.AddMinutes(15);

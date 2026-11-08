@@ -54,15 +54,17 @@ public sealed partial class TimeLapseLibraryView : ComponentBase, IDisposable
         _loading = false;
     }
 
-    private static string Progress(CameraAgentTimeLapseLibraryEntry entry) => entry.JobState switch
-    {
-        CameraAgentTimeLapseState.Queued => entry.ReasonCode is "timelapse.recovering" or "timelapse.explicit-retry" ? "Retrying (queued)" : "Queued",
-        CameraAgentTimeLapseState.Working => "Running",
-        CameraAgentTimeLapseState.Failed => "Generation failed",
-        CameraAgentTimeLapseState.Unavailable => "Generation unavailable",
-        CameraAgentTimeLapseState.NoSources => "No admitted images",
-        _ => entry.State.ToString()
-    };
+    private static string Progress(CameraAgentTimeLapseLibraryEntry entry) => entry.State == NightlyProductLibraryState.Stalled
+        ? $"Generation disabled; recorded job state: {entry.JobState}"
+        : entry.JobState switch
+        {
+            CameraAgentTimeLapseState.Queued => entry.ReasonCode is "timelapse.recovering" or "timelapse.explicit-retry" ? "Retrying (queued)" : "Queued",
+            CameraAgentTimeLapseState.Working => "Running",
+            CameraAgentTimeLapseState.Failed => "Generation failed",
+            CameraAgentTimeLapseState.Unavailable => "Generation unavailable",
+            CameraAgentTimeLapseState.NoSources => "No admitted images",
+            _ => entry.State.ToString()
+        };
 
     public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); GC.SuppressFinalize(this); }
 }

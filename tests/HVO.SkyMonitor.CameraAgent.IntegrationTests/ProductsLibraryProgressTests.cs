@@ -49,11 +49,16 @@ public sealed class ProductsLibraryProgressTests
                 Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
                 var queued = await store.BackfillAsync(new("daily", date, null, 1, "backfill", "fixture", "virtual backfill"), CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(LocalAutomationCommandStatus.Applied, queued.Status);
+                var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+                for (var index = 0; index <= LocalAutomationContract.MaximumProjectedRuns; index++)
+                    await store.RecordTerminalRunAsync(entry, "noise-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        clock.GetUtcNow(), LocalAutomationRunOutcome.Missed, "Unrelated recent history", null, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs
+                    .Any(static run => run.Outcome == LocalAutomationRunOutcome.Queued), "The recent-history page no longer contains the active job.");
                 var runs = await store.ListNightlyProductRunsAsync(query, CancellationToken.None).ConfigureAwait(false);
                 var queuedCard = (await catalog.ListLibraryAsync(query, CancellationToken.None, runs).ConfigureAwait(false)).Entries.Single();
                 Assert.AreEqual(window, queuedCard.SourceWindow);
                 Assert.IsNull(queuedCard.Generation!.StartedAtUtc);
-                var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
                 var claimed = await store.TryClaimQueuedAsync(entry, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(claimed);
                 started = claimed.StartedAtUtc;

@@ -170,10 +170,15 @@ internal sealed partial class SqliteNightlyProductStore
                     entry.Summary.Kind == group.Key.Kind && entry.Summary.ReportingPeriodSha256 == group.Key.IdentitySha256);
                 var run = group.OrderByDescending(static run => run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
                     .ThenByDescending(static run => run.Sequence).First();
-                // A final evaluation settles that attempt. Active attempts always win, including during publication.
+                // Exact-attempt evaluations settle that attempt; newer finals also retire historical failures.
                 if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
-                    previous?.Daily is { } evaluated && evaluated.Status.Occurrence.IdentitySha256 == run.Occurrence!.IdentitySha256 &&
-                    evaluated.Status.EvaluatedUtc >= run.StartedAtUtc) continue;
+                    run.StartedAtUtc is { } started && rows.Any(evaluated =>
+                        evaluated.Date == group.Key.ReportDate && evaluated.Kind == group.Key.Kind &&
+                        evaluated.ReportingPeriodSha256 == group.Key.IdentitySha256 &&
+                        evaluated.WindowKind == LocalAutomationSourceWindowKind.SunriseDay &&
+                        (evaluated.OccurrenceIdentitySha256 == run.Occurrence!.IdentitySha256
+                            ? evaluated.EvaluatedUnixMs >= started.ToUnixTimeMilliseconds()
+                            : evaluated.EvaluatedUnixMs > (run.CompletedAtUtc ?? started).ToUnixTimeMilliseconds()))) continue;
                 if (previous is not null) entries.Remove(previous);
                 var summary = summaries.SingleOrDefault(summary => summary.ObservingDate == group.Key.ReportDate &&
                     summary.Kind == group.Key.Kind && summary.ReportingPeriodSha256 == group.Key.IdentitySha256)
@@ -182,7 +187,9 @@ internal sealed partial class SqliteNightlyProductStore
             }
             entries = entries.Select(entry => entry with
             {
-                OtherPeriodRecorded = entries.Any(other =>
+                OtherPeriodRecorded = summaries.Any(other =>
+                    other.ObservingDate == entry.Summary.ObservingDate && other.Kind == entry.Summary.Kind &&
+                    other.ReportingPeriodSha256 != entry.Summary.ReportingPeriodSha256) || entries.Any(other =>
                 other.Summary.ObservingDate == entry.Summary.ObservingDate && other.Summary.Kind == entry.Summary.Kind &&
                 other.Summary.ReportingPeriodSha256 != entry.Summary.ReportingPeriodSha256)
             }).ToList();
@@ -305,7 +312,8 @@ internal sealed partial class SqliteNightlyProductStore
                     WHERE pointer.occurrence_identity_sha256 = state.occurrence_identity_sha256
                       AND pointer.kind = state.kind AND pointer.scope = state.scope
                       AND pointer.window_start_utc_ticks = state.window_start_utc_ticks
-                      AND product.scope = 'Final')
+                      AND product.scope = 'Final'),
+                   state.occurrence_identity_sha256
             FROM nightly_windows AS state
             {filter}
             LIMIT $limit;
@@ -332,7 +340,7 @@ internal sealed partial class SqliteNightlyProductStore
                 reader.GetInt64(6),
                 reader.GetString(7),
                 await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
-                    ? null : Guid.ParseExact(reader.GetString(8), "N")));
+                    ? null : Guid.ParseExact(reader.GetString(8), "N"), reader.GetString(9)));
         }
         if (rows.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
             throw new InvalidDataException("The evaluation summary exceeds its declared bound; it cannot represent full coverage.");
@@ -586,5 +594,6 @@ internal sealed partial class SqliteNightlyProductStore
         string? ReasonCode,
         long EvaluatedUnixMs,
         string ReportingPeriodSha256,
-        Guid? ProductId);
+        Guid? ProductId,
+        string OccurrenceIdentitySha256);
 }
