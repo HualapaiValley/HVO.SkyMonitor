@@ -25,6 +25,7 @@ public sealed class CameraAgentAutomationPreviewTests
         var invalid = await fixture.Service.PreviewWindowAsync(request, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
         Assert.Contains("source selection", invalid.Message!, StringComparison.Ordinal);
+        Assert.Contains("Dark-night actual sources", invalid.Message!, StringComparison.Ordinal);
         fixture.Registry.Available = false;
         var unavailable = await fixture.Service.PreviewWindowAsync(request, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OperatorUiResultKind.Invalid, unavailable.Kind);

@@ -57,7 +57,8 @@ qualification.
 
 Remaining #1133 work includes richer per-task parameters, additional approved
 calendar/solar trigger presets, run-history product links and supported UI
-run/cancel/backfill controls, plus broader performance and operator qualification.
+run/cancel/backfill controls, operator configuration of overlap, timeout,
+retry/missed-run policy and resource lane, plus broader performance and operator qualification.
 Script acceptance belongs to #1137. Protected `development/v1` CI and final
 base synchronization wait for the repository finalization reservation; this draft
 does not authorize merge or release adoption.

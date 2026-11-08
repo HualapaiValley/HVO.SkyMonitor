@@ -525,6 +525,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _windowKindInput = policy.Kind;
             _selectionInput = policy.Selection;
             _settleInput = ((decimal)policy.ProcessingSettleAllowance.Ticks / TimeSpan.TicksPerSecond).ToString("0.#######", Invariant);
+            if (WindowTask && !SourceWindows.Contains(_windowKindInput) && SourceWindows.Count > 0)
+            {
+                ApplyWindowDefaults();
+                SetCommandMessage($"The recorded source period is no longer supported. {SourceWindowLabel(_windowKindInput)} is selected; review it before recording a new revision.", error: false);
+            }
         }
         _intervalInput = definition.Definition.TriggerInterval.ToString(Invariant);
         _enabledInput = definition.Definition.Enabled;
@@ -536,6 +541,10 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private async Task BeginSaveAsync()
     {
+        if (_busy)
+        {
+            return;
+        }
         _commandMessage = null;
         if (_editTargetRemoved)
         {
@@ -1053,9 +1062,14 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         get
         {
             if (_automation is not { } state) return [];
-            return state.Calendar.Where(entry => state.Definitions.Any(item =>
-                item.Definition.DefinitionId == entry.DefinitionId && item.Definition.TaskKind == entry.TaskKind &&
-                string.Equals(item.Definition.TaskTarget, entry.TaskTarget, StringComparison.Ordinal) && IsDefinitionRunnable(item))).ToArray();
+            // The store calendar is already capped and may be filled by retired targets. Definitions retain
+            // every next occurrence, so filter that complete projection before applying the display limit.
+            return state.Definitions.Where(item => IsDefinitionRunnable(item) && item.NextRunUtc is not null)
+                .OrderBy(static item => item.NextRunUtc)
+                .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)
+                .Select(static item => new LocalAutomationCalendarEntry(item.Definition.DefinitionId,
+                    item.Definition.Name, item.Definition.TaskKind, item.Definition.TaskTarget, item.NextRunUtc!.Value)
+                { Occurrence = item.NextOccurrence }).ToArray();
         }
     }
 

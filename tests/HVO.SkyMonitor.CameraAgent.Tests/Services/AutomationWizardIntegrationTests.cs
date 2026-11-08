@@ -14,6 +14,75 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class AutomationWizardIntegrationTests
 {
     [TestMethod]
+    public async Task Schedule_RetiredTargetsCannotHideALaterRunnableDefinitionBeyondTheStoreCalendarLimit()
+    {
+        using var fixture = new AutomationWizardFixture();
+        fixture.Clock.Advance(TimeSpan.FromMinutes(30));
+        await fixture.Store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        for (var index = 0; index < LocalAutomationContract.MaximumProjectedCalendarEntries; index++)
+        {
+            var request = AutomationWizardFixture.Request($"retired-{index}", LocalAutomationSourceWindowKind.CompletedCivilHour);
+            var result = await fixture.Service.SaveAsync(request with
+            { SourceWindow = request.SourceWindow! with { ProcessingSettleAllowance = TimeSpan.Zero } }, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(result.IsSuccess);
+        }
+        fixture.Registry.Targets.Add("current-keogram");
+        var current = await fixture.Service.SaveAsync(AutomationWizardFixture.Request("current", LocalAutomationSourceWindowKind.CompletedCivilHour)
+            with
+        { TaskTarget = "current-keogram", Name = "Current preset" }, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(current.IsSuccess);
+        fixture.Registry.Targets.Remove("keogram");
+        var state = await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(26, state.Definitions);
+        Assert.HasCount(LocalAutomationContract.MaximumProjectedCalendarEntries, state.Calendar);
+        Assert.IsFalse(state.Calendar.Any(entry => entry.DefinitionId == "current"), "Reproduce truncation before the page filters availability.");
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 12, 11, 15, 0, TimeSpan.Zero),
+            state.Definitions.Single(item => item.Definition.DefinitionId == "current").NextRunUtc);
+
+        using var context = Context(fixture);
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-definition-current");
+        var rail = cut.FindAll(".ops-status-rail > div");
+        Assert.AreEqual("1", rail[0].QuerySelector("strong")!.TextContent);
+        Assert.AreEqual("11:15 +00:00", rail[1].QuerySelector("strong")!.TextContent);
+        Assert.AreEqual("Current preset", rail[1].QuerySelector("small")!.TextContent);
+        await cut.FindAll(".automation-tabs button")[1].ClickAsync(new()).ConfigureAwait(false);
+        var upcoming = cut.FindAll(".automation-upcoming li").Single();
+        Assert.AreEqual("Current preset", upcoming.QuerySelector("span")!.TextContent);
+        Assert.AreEqual("current-keogram", upcoming.QuerySelector("small")!.TextContent);
+        Assert.Contains("11:15 +00:00", upcoming.QuerySelector("strong")!.TextContent, StringComparison.Ordinal);
+        Assert.HasCount(1, cut.FindAll(".automation-run-tick"));
+        Assert.AreEqual("Current preset", cut.Find(".automation-run-marker small").TextContent);
+        Assert.DoesNotContain("No available enabled automation is due", cut.Find("#automation-schedule").TextContent);
+    }
+
+    [TestMethod]
+    public async Task Wizard_SelectionMismatchNamesTheAcceptedChoiceAndCanBeCorrectedBeforeSave()
+    {
+        using var fixture = new AutomationWizardFixture();
+        await fixture.Store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        using var context = Context(fixture);
+        var cut = context.Render<AutomationsPage>();
+        AutomationWindowWizardTests.Start(cut, "trail");
+        await cut.Find("#automation-back-task").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("#automation-target").ChangeAsync(new ChangeEventArgs { Value = "star-trail" }).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("Dark-night actual sources", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        Assert.IsEmpty((await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions);
+        await cut.Find("#automation-source-selection").ChangeAsync(new ChangeEventArgs
+        { Value = LocalAutomationSourceSelection.DarkNightActualSources.ToString() }).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForElement("#automation-window-preview");
+        await cut.Find("#automation-confirm").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForElement("#automation-edit-trail");
+        var definition = (await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions.Single();
+        Assert.AreEqual("star-trail", definition.Definition.TaskTarget);
+        Assert.AreEqual(LocalAutomationSourceSelection.DarkNightActualSources, definition.Definition.SourceWindow!.Selection);
+        Assert.AreEqual("wizard-owner", definition.Actor);
+    }
+
+    [TestMethod]
     public async Task Wizard_CreateHourlyAndDailyThenEditAndRestart_PreservesIndependentRevisionsAndActor()
     {
         using var fixture = new AutomationWizardFixture();

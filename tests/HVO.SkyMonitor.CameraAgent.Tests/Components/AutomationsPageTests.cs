@@ -217,8 +217,7 @@ public sealed class AutomationsPageTests
         var rail = cut.FindAll(".ops-status-rail > div");
         Assert.AreEqual("1", rail[0].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("of 1 definition", rail[0].QuerySelector("small")!.TextContent.Trim());
-        // Without the schedule calendar the page falls back to UTC, so the next run is 04:00.
-        Assert.AreEqual("04:00 +00:00", rail[1].QuerySelector("strong")!.TextContent.Trim());
+        Assert.AreEqual("Capture 420", rail[1].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("Sky temperature", rail[1].QuerySelector("small")!.TextContent.Trim());
         Assert.AreEqual("0", rail[2].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("1 / 1", rail[3].QuerySelector("strong")!.TextContent.Trim());
@@ -719,7 +718,7 @@ public sealed class AutomationsPageTests
     public void ScheduleView_DrawsTheCaptureWindowNowAndDueRunsInSiteTime()
     {
         using var context = CreateContext();
-        Register(context, Automation(), Calendar());
+        Register(context, WithPeriodic(Automation()), Calendar());
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement(".automation-tabs");
 
@@ -735,7 +734,7 @@ public sealed class AutomationsPageTests
         Assert.AreEqual("Now 20:00 -07:00", cut.Find(".automation-now small").TextContent.Trim());
         var marker = cut.Find(".automation-run-marker");
         Assert.AreEqual("21:00 -07:00", marker.QuerySelector("strong")!.TextContent.Trim());
-        Assert.AreEqual("Sky temperature", marker.QuerySelector("small")!.TextContent.Trim());
+        Assert.AreEqual("Hourly temperature", marker.QuerySelector("small")!.TextContent.Trim());
         // The card is clamped inside the track; its tick stays at the exact time.
         Assert.Contains("left:11%", marker.GetAttribute("style")!, StringComparison.Ordinal);
         Assert.Contains("left:4.17%", cut.Find(".automation-run-tick").GetAttribute("style")!, StringComparison.Ordinal);
@@ -745,7 +744,7 @@ public sealed class AutomationsPageTests
         Assert.AreEqual("Fri 4 Sep 21:00 -07:00", upcoming[0].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("At capture sequence 420", upcoming[1].QuerySelector("strong")!.TextContent.Trim());
         Assert.Contains("Capture relative.", cut.Find(".ops-validation-list").TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("1 of 32", FactText(cut, "Definitions"));
+        Assert.AreEqual("2 of 32", FactText(cut, "Definitions"));
         Assert.IsEmpty(cut.FindAll(".automation-utc"));
     }
 
@@ -811,7 +810,7 @@ public sealed class AutomationsPageTests
     public void ScheduleView_WhenTheCalendarFails_ShowsTimesInUtcAndSaysSo()
     {
         using var context = CreateContext();
-        Register(context, Automation());
+        Register(context, WithPeriodic(Automation()));
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?view=schedule");
 
         var cut = context.Render<AutomationsPage>();
@@ -1322,6 +1321,20 @@ public sealed class AutomationsPageTests
             $"{outcome} detail",
             410);
 
+    private static LocalAutomationOperatorState WithPeriodic(LocalAutomationOperatorState state)
+    {
+        var definition = new LocalAutomationDefinition("hourly-temperature", "Hourly temperature", true,
+            LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition, "virtual-sky-temperature",
+            LocalAutomationTriggerKind.Periodic, 3600, Instant);
+        var due = Instant.AddHours(1);
+        return state with
+        {
+            Definitions = [.. state.Definitions, new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
+                Instant, "owner", null, due, null, null, [])],
+            Calendar = [new(definition.DefinitionId, definition.Name, definition.TaskKind, definition.TaskTarget, due)]
+        };
+    }
+
     private static LocalAutomationOperatorState Automation(
         IReadOnlyList<LocalAutomationDefinitionState>? definitions = null,
         IReadOnlyList<LocalAutomationCalendarEntry>? calendar = null,
@@ -1379,15 +1392,7 @@ public sealed class AutomationsPageTests
                         : "Environmental acquisition is disabled in this CameraAgent's startup configuration.")
             ],
             Definitions: definitions ?? [state],
-            Calendar: calendar ??
-            [
-                new LocalAutomationCalendarEntry(
-                    "sky-temperature",
-                    "Sky temperature",
-                    LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition,
-                    "virtual-sky-temperature",
-                    Instant.AddHours(1))
-            ],
+            Calendar: calendar ?? [],
             Runs: runs ?? [state.LastRun!]);
     }
 

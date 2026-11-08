@@ -149,20 +149,30 @@ public sealed class AutomationWindowWizardTests
     }
 
     [TestMethod]
-    public void Definition_WithAReplacedTargetCanBeRepairedThroughTheVersionedEditor()
+    [DataRow("target", LocalAutomationSourceWindowKind.SunriseDay)]
+    [DataRow("source", LocalAutomationSourceWindowKind.CompletedCivilHour)]
+    public void Definition_WithUnsupportedSettingsCanBeRepairedThroughTheVersionedEditor(string mismatch, LocalAutomationSourceWindowKind expectedKind)
     {
-        using var context = RetainedContext("target", out var service);
+        using var context = RetainedContext(mismatch, out var service);
         var cut = context.Render<AutomationsPage>();
         cut.Find("#automation-edit-daily").Click();
-        cut.Find("#automation-target").Change("new-preset");
+        if (mismatch == "target")
+        {
+            cut.Find("#automation-target").Change("new-preset");
+        }
+        else
+        {
+            Assert.Contains("recorded source period is no longer supported", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        }
         cut.Find("#automation-save").Click();
+        Assert.AreEqual(expectedKind.ToString(), cut.Find("#automation-source-window").GetAttribute("value"));
         cut.Find("#automation-save").Click();
         cut.Find("#automation-confirm").Click();
         var request = service.SaveRequests.Single();
         Assert.AreEqual("daily", request.DefinitionId);
-        Assert.AreEqual("new-preset", request.TaskTarget);
+        Assert.AreEqual(mismatch == "target" ? "new-preset" : "old-preset", request.TaskTarget);
         Assert.AreEqual(1, request.ExpectedVersion);
-        Assert.AreEqual(LocalAutomationSourceWindowKind.SunriseDay, request.SourceWindow!.Kind);
+        Assert.AreEqual(expectedKind, request.SourceWindow!.Kind);
     }
 
     private static BunitContext RetainedContext(string mismatch, out AutomationsPageTests.AutomationUiService service)

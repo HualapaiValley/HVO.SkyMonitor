@@ -70,7 +70,7 @@ internal sealed class CameraAgentAutomationUiService(
             {
                 return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(OperatorUiResultKind.Invalid,
                     invalid.FieldPath == "definition.sourceWindow.selection"
-                        ? "The source selection does not match this task target. Choose the selection required by its producer."
+                        ? DescribeSourceSelectionMismatch(definition)
                         : DescribeFailure(new(LocalAutomationCommandStatus.Invalid, invalid.ReasonCode,
                             invalid.FieldPath, LocalAutomationOperatorState.Empty)));
             }
@@ -90,6 +90,18 @@ internal sealed class CameraAgentAutomationUiService(
             return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(
                 OperatorUiResultKind.Unavailable, "The source-window preview is unavailable. Try again.");
         }
+    }
+
+    private string DescribeSourceSelectionMismatch(LocalAutomationDefinition definition)
+    {
+        var accepted = Enum.GetValues<LocalAutomationSourceSelection>()
+            .Where(selection => registry.Validate(definition with
+            { SourceWindow = definition.SourceWindow! with { Selection = selection } }) is null)
+            .Select(static selection => selection == LocalAutomationSourceSelection.DarkNightActualSources
+                ? "Dark-night actual sources" : "All actual sources").ToArray();
+        return accepted.Length == 0
+            ? "No source selection is currently accepted by this task target. Choose a current producer target."
+            : $"The source selection does not match this task target. Choose {string.Join(" or ", accepted)} for this producer.";
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
