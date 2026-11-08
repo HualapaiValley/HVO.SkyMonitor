@@ -58,7 +58,12 @@ public sealed class HorizonObstructionEvaluator
             if (delta > 0 && distance < 0) distance += 360;
             if (delta < 0 && distance > 0) distance -= 360;
             var fraction = distance / delta;
-            if (fraction > 0 && fraction < 1) cuts.Add(fraction);
+            if (fraction > 0 && fraction < 1)
+            {
+                var altitude = from.AltitudeDegrees + fraction * (to.AltitudeDegrees - from.AltitudeDegrees);
+                if (sample.ElevationDegrees is not { } elevation || altitude <= elevation) return false;
+                cuts.Add(fraction);
+            }
         }
         cuts.Sort();
         for (var i = 0; i < cuts.Count - 1; i++)
@@ -91,10 +96,12 @@ public sealed class HorizonObstructionEvaluator
         if (samples.Count < 2) return null;
         var left = samples[high < 0 ? samples.Count - 1 : high];
         var right = samples[low == samples.Count ? 0 : low];
-        var gap = (right.AzimuthDegrees - left.AzimuthDegrees + 360) % 360;
+        var gap = right.AzimuthDegrees - left.AzimuthDegrees;
+        if (gap < 0) gap += 360;
         if (gap > Profile.MaximumInterpolationGapDegrees || left.ElevationDegrees is not { } a ||
             right.ElevationDegrees is not { } b) return null;
-        var distance = (az - left.AzimuthDegrees + 360) % 360;
-        return a + (b - a) * distance / gap;
+        var distance = az - left.AzimuthDegrees;
+        if (distance < 0) distance += 360;
+        return a + (b - a) * (distance / gap);
     }
 }

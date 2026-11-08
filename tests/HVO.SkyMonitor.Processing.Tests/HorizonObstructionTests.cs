@@ -37,6 +37,9 @@ public sealed class HorizonObstructionTests
         Assert.AreEqual(HorizonObstructionEligibility.Clear, evaluator.Evaluate(new(20.001, 0)));
         Assert.AreEqual(HorizonObstructionEligibility.Unknown, evaluator.Evaluate(new(80, 180)));
         Assert.AreEqual(HorizonObstructionEligibility.Obstructed, evaluator.Evaluate(new(-1, 180)));
+        var tiny = new HorizonObstructionEvaluator(Profile(rig, [new(0, 80), new(1e-15, 80)]), rig, Observer);
+        Assert.AreEqual(80d, tiny.HorizonElevation(5e-16));
+        Assert.AreEqual(HorizonObstructionEligibility.Obstructed, tiny.Evaluate(new(50, 5e-16)));
     }
 
     [TestMethod]
