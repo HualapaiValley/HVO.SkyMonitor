@@ -69,7 +69,7 @@ public sealed class VirtualMeasuredStarQualificationTests
         {
             foreach (var profile in VirtualAstrometryFixture.Profiles(seed))
             {
-                var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+                var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
                 await using var lifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
                 var utc = new DateTimeOffset(2026, month, day, 8, 0, 0, TimeSpan.Zero);
