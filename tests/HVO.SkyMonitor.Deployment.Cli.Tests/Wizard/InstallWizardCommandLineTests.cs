@@ -71,7 +71,7 @@ public sealed class InstallWizardCommandLineTests
             "cameraagent", "install", "--instance-id", WizardHost.InstanceId.ToString("D"), "--owner-email", "admin@example.test",
             "--bind-address", "127.0.0.1", "--port", "5140", "--acknowledge-plaintext-http", "--latitude", "35.2",
             "--longitude", "-114.1", "--elevation", "1300", "--time-zone", "UTC", "--cpus", "3", "--memory", "6g",
-            "--replay-profile", "local-runner", "--password-file", "/srv/hvo/password", "--release", Release,
+            "--replay-profile", "local-runner", "--illumination-mode", "ControlledNight", "--password-file", "/srv/hvo/password", "--release", Release,
             "--image-source", "registry", "--catalog-bundle", Catalog, "--no-download"
         ];
 
@@ -98,7 +98,7 @@ public sealed class InstallWizardCommandLineTests
     {
         using var host = new WizardHost();
         Directory.CreateDirectory(Path.GetDirectoryName(host.AnswersPath)!);
-        await File.WriteAllTextAsync(host.AnswersPath, $$"""{"schemaVersion":1,"instanceId":"{{WizardHost.InstanceId:D}}","friendlyName":"Saved Camera","release":"/srv/hvo/older-release","imageSource":"Registry","catalogBundle":"/srv/hvo/older.bundle"}""");
+        await File.WriteAllTextAsync(host.AnswersPath, $$"""{"schemaVersion":1,"instanceId":"{{WizardHost.InstanceId:D}}","friendlyName":"Saved Camera","release":"/srv/hvo/older-release","imageSource":"Registry","catalogBundle":"/srv/hvo/older.bundle","illuminationMode":"ControlledNight"}""");
         string[] args = ["cameraagent", "install", "--release", Release, "--catalog-bundle", Catalog, .. givenSource is null ? Array.Empty<string>() : ["--image-source", givenSource]];
 
         var (exitCode, _, error) = await InstallWizardRunnerTests.RunAsync(host, args, driver =>
@@ -116,6 +116,7 @@ public sealed class InstallWizardCommandLineTests
         Assert.AreEqual(Enum.Parse<ReleaseImageSource>(expected), applied.ImageSource);
         Assert.AreEqual(Release, applied.Release, "the release given replaces the saved one");
         Assert.AreEqual(Catalog, applied.CatalogBundle);
+        Assert.AreEqual("ControlledNight", applied.IlluminationMode);
     }
 
     private static InstallRequest Request(WizardHost host, string[] arguments)
