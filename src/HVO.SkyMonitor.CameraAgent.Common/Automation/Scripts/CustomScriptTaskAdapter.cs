@@ -12,7 +12,13 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
     public CustomScriptTaskAdapter(IOptions<CustomScriptOptions> options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        var value = options.Value;
+        CustomScriptOptions value;
+        try { value = options.Value; }
+        catch (Exception exception) when (exception is InvalidOperationException or OptionsValidationException)
+        {
+            // Optional script configuration must neither stop acquisition nor log rejected values.
+            return;
+        }
         if (!value.Enabled || !value.OwnerAuthorized || value.Scripts is not { Count: > 0 and <= 16 } ||
             value.Scripts.Any(static script => script is null || !script.IsValid()) ||
             value.Scripts.Select(static script => script.Id).Distinct(StringComparer.Ordinal).Count() != value.Scripts.Count)

@@ -2,6 +2,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
@@ -89,7 +90,7 @@ public sealed class CustomScriptTaskAdapterTests
     }
 
     [TestMethod]
-    public void DuplicateRegistrationsAndAnEmptyAllowlistAreUnavailable()
+    public void DuplicateEmptyAndMalformedStartupRegistrationsAreUnavailable()
     {
         foreach (var scripts in new[] { Array.Empty<CustomScriptRegistration>(), new[] { Script(), Script() } })
         {
@@ -97,6 +98,21 @@ public sealed class CustomScriptTaskAdapterTests
             { Enabled = true, OwnerAuthorized = true, Scripts = [.. scripts] }));
             Assert.IsFalse(adapter.Describe().Available);
         }
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Enabled"] = "true",
+            ["OwnerAuthorized"] = "true",
+            ["Scripts:0:Id"] = "bound-script",
+            ["Scripts:0:Content"] = "exit 0",
+            ["Scripts:0:Interpreter"] = "synthetic-sensitive-invalid-value"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddOptions<CustomScriptOptions>().Bind(configuration);
+        using var provider = services.BuildServiceProvider();
+        var malformed = new CustomScriptTaskAdapter(provider.GetRequiredService<IOptions<CustomScriptOptions>>());
+        Assert.IsFalse(malformed.Describe().Available);
+        Assert.IsEmpty(malformed.Describe().Targets);
+        Assert.IsFalse(malformed.Describe().UnavailableReason!.Contains("synthetic-sensitive", StringComparison.Ordinal));
     }
 
     [TestMethod]
