@@ -8,6 +8,14 @@ internal sealed partial class NightlyProductGenerator
     private async ValueTask EvaluateDailySummaryAsync(RunContext context, NightlyProductWindow window, int candidateCount,
         NightlyProductAdmissionResult admission, CancellationToken cancellationToken)
     {
+        if (admission.Admitted.Count == 0)
+        {
+            await RecordUnlessUnchangedAsync(context, NightlyProductScope.Final, window,
+                NightlyProductWindowDisposition.NoSources, null, candidateCount, [], admission.Exclusions,
+                cancellationToken).ConfigureAwait(false);
+            context.FinalsRecorded++;
+            return;
+        }
         var period = context.Occurrence.SourceWindow!.ReportingPeriod;
         var day = await _store.GetDayAsync(window.ObservingDate, cancellationToken).ConfigureAwait(false);
         var links = new List<DailySummaryProductV1>();

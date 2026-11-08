@@ -160,6 +160,23 @@ class ImageReproducibility(unittest.TestCase):
                                             env=dict(os.environ, PATH=f'{temporary}:{os.environ["PATH"]}'))
                     self.assertEqual(result.returncode, 64, result.stderr)
 
+    def test_arm64_identity_assertion_accepts_current_dockerfile_labels(self):
+        dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
+        script = (ROOT / 'scripts/test:cameraagent-arm64-ci').read_text()
+        assertions = re.findall(r"^\s*'(\.\[0\]\.Os == .*)' \\\s*$", script, re.M)
+        self.assertEqual(len(assertions), 1)
+        labels = dict(re.findall(r'(io\.hvo\.skymonitor\.[a-z-]+)="([^"]*)"', dockerfile))
+        revision = '1' * 40
+        labels.update({'org.opencontainers.image.revision': revision, 'org.opencontainers.image.version': ''})
+        image = [{'Os': 'linux', 'Architecture': 'arm64', 'Config': {'Labels': labels}}]
+        for compatible in (True, False):
+            with self.subTest(compatible=compatible):
+                if not compatible:
+                    labels['io.hvo.skymonitor.minimum-compatible-revision'] = '0' * 40
+                result = subprocess.run(['jq', '-e', '--arg', 'revision', revision, assertions[0]],
+                                        input=json.dumps(image), text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, compatible, result.stderr + result.stdout)
+
     def test_source_epoch_is_declared_after_all_restores_before_publish(self):
         dockerfile = (ROOT / 'src/HVO.SkyMonitor.CameraAgent/Dockerfile').read_text()
         build = dockerfile.split('AS build\n', 1)[1].split('FROM scratch', 1)[0]

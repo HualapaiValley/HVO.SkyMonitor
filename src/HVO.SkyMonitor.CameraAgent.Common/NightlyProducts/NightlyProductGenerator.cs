@@ -205,17 +205,17 @@ internal sealed partial class NightlyProductGenerator : IDisposable
                     NightlyProductWindowDisposition.Rejected, "nightly.source-byte-bound", candidateCount, [],
                     admission.Exclusions, cancellationToken).ConfigureAwait(false);
             }
+            if (context.Kind == NightlyProductKind.DailySummary)
+            {
+                await EvaluateDailySummaryAsync(context, window, candidateCount, admission, cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+
             if (admission.Admitted.Count == 0)
             {
                 return await RecordUnlessUnchangedAsync(
                     context, NightlyProductScope.Segment, window, NightlyProductWindowDisposition.NoSources,
                     null, candidateCount, [], admission.Exclusions, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (context.Kind == NightlyProductKind.DailySummary)
-            {
-                await EvaluateDailySummaryAsync(context, window, candidateCount, admission, cancellationToken).ConfigureAwait(false);
-                return false;
             }
 
             if (context.Kind == NightlyProductKind.StarTrail && admission.Admitted.Count > 1 &&

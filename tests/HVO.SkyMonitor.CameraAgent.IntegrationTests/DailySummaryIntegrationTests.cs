@@ -116,6 +116,35 @@ public sealed class DailySummaryIntegrationTests : IDisposable
     }
 
     [TestMethod]
+    public async Task AllExcludedDayRetainsFinalDiagnosticsWithoutProducingAnArtifact()
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10), new string('0', 64)));
+        using (var harness = Create())
+        {
+            var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FinalsRecorded);
+            var day = await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
+            var final = day.Daily(NightlyProductKind.DailySummary, occurrence.SourceWindow.ReportingPeriod.IdentitySha256)!;
+            Assert.AreEqual(NightlyProductWindowDisposition.NoSources, final.Status.Disposition);
+            Assert.AreEqual(1, final.Status.CandidateCount);
+            Assert.AreEqual(0, final.Status.AdmittedCount);
+            Assert.AreEqual(1, final.Status.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
+            Assert.IsEmpty(day.Products);
+            var entry = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(NightlyProductLibraryState.NotProduced, entry.State);
+            Assert.AreEqual(1, entry.Daily.Status.CandidateCount);
+            Assert.AreEqual(1, entry.Daily.Status.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
+            Assert.IsNull(entry.Product);
+        }
+        using var restarted = Create();
+        var retry = await restarted.Generator.RunAsync(occurrence, CancellationToken.None);
+        Assert.AreEqual(1, retry.WindowsUnchanged);
+        Assert.AreEqual(0, retry.ProductsPublished);
+        Assert.AreEqual(0, _reader.Restores);
+    }
+
+    [TestMethod]
     public async Task SchemaTwoUpgradePreservesPublishedFilesLineagePointersAndImmutability()
     {
         _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
