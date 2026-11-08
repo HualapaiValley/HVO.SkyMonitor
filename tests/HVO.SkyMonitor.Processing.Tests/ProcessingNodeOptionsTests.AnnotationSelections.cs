@@ -3,6 +3,23 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed partial class ProcessingNodeOptionsTests
 {
     [TestMethod]
+    public void ChoiceCollectionValidatesNonemptyDefaultsAndPreservesTheEmptyDefaultOverload()
+    {
+        string[] allowed = ["utc", "catalog"];
+        string[] defaults = ["catalog", "utc"];
+        var legacy = ProcessingOptionDescriptor.ChoiceCollection("tokens", "tokens", "Tokens", "Existing choices.", allowed, 2);
+        Assert.IsEmpty(legacy.DefaultValue.AsCollection().Items);
+        var preset = ProcessingOptionDescriptor.ChoiceCollection("tokens", "tokens", "Tokens", "Existing preset.", allowed, defaults, 2);
+        CollectionAssert.AreEqual(defaults, preset.DefaultValue.AsCollection().Items.ToArray());
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingOptionDescriptor.ChoiceCollection(
+            "tokens", "tokens", "Tokens", "Invalid preset.", allowed, ["unknown"], 2));
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingOptionDescriptor.ChoiceCollection(
+            "tokens", "tokens", "Tokens", "Too many defaults.", allowed, defaults, 1));
+        Assert.ThrowsExactly<ArgumentException>(() => ProcessingOptionDescriptor.ChoiceCollection(
+            "tokens", "tokens", "Tokens", "Repeated defaults.", allowed, ["utc", "utc"], 2, uniqueItemIdentity: static item => item));
+    }
+
+    [TestMethod]
     public void AnnotationSelectionDefaultsDescribeTheExistingCornerPresets()
     {
         var descriptor = AnnotationOptionDescriptors.Descriptor;
@@ -44,6 +61,9 @@ public sealed partial class ProcessingNodeOptionsTests
 
     [TestMethod]
     [DataRow("{\"topLeftTokens\":null}")]
+    [DataRow("{\"topRightTokens\":null}")]
+    [DataRow("{\"bottomLeftTokens\":null}")]
+    [DataRow("{\"bottomRightTokens\":null}")]
     [DataRow("{\"topRightTokens\":[\"undefined\"]}")]
     [DataRow("{\"bottomLeftTokens\":[\"utc\",\"utc\"]}")]
     [DataRow("{\"bottomRightTokens\":[1]}")]

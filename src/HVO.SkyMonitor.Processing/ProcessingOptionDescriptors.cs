@@ -447,16 +447,25 @@ public sealed class ProcessingOptionDescriptor
     public static ProcessingOptionDescriptor ChoiceCollection(
         string key, string member, string label, string help, IEnumerable<string> allowedValues, int maximumItems,
         Func<string, string>? uniqueItemIdentity = null, string? emptyCollectionLabel = null, string? clearCollectionLabel = null)
+        => ChoiceCollection(key, member, label, help, allowedValues, [], maximumItems,
+            uniqueItemIdentity, emptyCollectionLabel, clearCollectionLabel);
+
+    /// <summary>A bounded ordered choice collection with the consumer's absent-member default.</summary>
+    public static ProcessingOptionDescriptor ChoiceCollection(
+        string key, string member, string label, string help, IEnumerable<string> allowedValues,
+        IEnumerable<string> defaultValue, int maximumItems,
+        Func<string, string>? uniqueItemIdentity = null, string? emptyCollectionLabel = null, string? clearCollectionLabel = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumItems);
         ArgumentNullException.ThrowIfNull(allowedValues);
+        ArgumentNullException.ThrowIfNull(defaultValue);
         var choices = allowedValues.ToImmutableArray();
         if (choices.IsEmpty || choices.Length > MaximumAllowedValues ||
             choices.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > MaximumNameLength) ||
             choices.Distinct(StringComparer.Ordinal).Count() != choices.Length)
             throw new ArgumentException("A choice collection needs distinct, bounded, nonblank supported values.", nameof(allowedValues));
         return new(key, ProcessingOptionKind.ChoiceCollection, label, help, [member],
-            ProcessingOptionValue.FromChoiceCollection([]), allowedValues: choices, maximumItems: maximumItems,
+            ProcessingOptionValue.FromChoiceCollection(defaultValue), allowedValues: choices, maximumItems: maximumItems,
             uniqueItemIdentity: uniqueItemIdentity, emptyCollectionLabel: emptyCollectionLabel, clearCollectionLabel: clearCollectionLabel);
     }
 

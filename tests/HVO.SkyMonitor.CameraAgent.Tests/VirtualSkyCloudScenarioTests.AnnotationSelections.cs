@@ -13,7 +13,6 @@ using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -36,7 +35,8 @@ public sealed partial class VirtualSkyCloudScenarioTests
                 Pipeline = new([
                     new("ProjectedScene", "scene", 10, DependsOn: ["$raw"]),
                     new("Preview", "preview", 20, JsonSerializer.SerializeToElement(new { outputEncoding = "Packed" }), ["$raw"]),
-                    new("Annotation", "annotation", 30, JsonSerializer.SerializeToElement(new { drawMetadataCorners = true, topLeftTokens = InitialVirtualAnnotationTokens }), ["scene", "preview"])
+                    new("Annotation", "annotation", 30, JsonSerializer.SerializeToElement(new
+                    { drawMetadataCorners = true, requireProjectedSceneDependency = true, topLeftTokens = InitialVirtualAnnotationTokens }), ["scene", "preview"])
                 ])
             };
             var module = Module();
@@ -91,7 +91,6 @@ public sealed partial class VirtualSkyCloudScenarioTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }

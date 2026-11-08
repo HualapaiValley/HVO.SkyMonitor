@@ -42,6 +42,13 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Assert.AreEqual(option.Value, runtime.Get(option.Descriptor.Key).Value, option.Descriptor.Key);
                 if (option.Descriptor.Kind == ProcessingOptionKind.Toggle) continue;
+                if (option.Descriptor.Kind == ProcessingOptionKind.ChoiceCollection)
+                {
+                    CollectionAssert.AreEquivalent(AnnotationMetadataTokens.Allowed.ToArray(), option.Descriptor.AllowedValues.ToArray());
+                    Assert.AreEqual(8, option.Descriptor.MaximumItems);
+                    continue;
+                }
+                if (option.Descriptor.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection) continue;
                 foreach (var member in option.Descriptor.Members)
                 {
                     var property = typeof(AnnotationProcessingStepOptions).GetProperties().Single(property => string.Equals(property.Name, member, StringComparison.OrdinalIgnoreCase));

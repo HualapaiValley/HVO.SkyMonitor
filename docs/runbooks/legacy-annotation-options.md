@@ -1,4 +1,4 @@
-# Existing legacy Annotation styling
+# Existing legacy Annotation styling and content
 
 In CameraAgent, use **Current Sky → Edit legacy Annotation styling**, or open
 **Operations → Pipeline → Named graphs**, select a retained revision and choose
@@ -33,6 +33,23 @@ algorithm identities change when opening the panel.
 | `drawCardinalDirections`, `cardinalValue`, `cardinalScale` | `false`, `255`, `2` | Existing N/E/S/W visibility, intensity 0–255 and bitmap scale 1–8; requires projection landmarks. |
 | `drawMetadataCorners`, `metadataValue`, `metadataScale` | `false`, `255`, `1` | Existing corner lines' visibility, intensity 0–255 and bitmap scale 1–4. |
 | `metadataInset`, `metadataLineSpacing` | `4`, `2` | Inset 0–64 px and additional line spacing 0–16 px. Existing token content and environment association remain authoritative. |
+| `constellationIds` | `[]` | Empty draws all retained constellation figures. Up to 256 nonblank IDs of 16 characters; unknown IDs, duplicates and order are preserved. |
+| Four corner token lists | Existing presets below | Zero to eight unique allowlisted tokens, with no more than eight expanded lines per corner. Add, remove, reorder or clear a corner. |
+| `environmentalKinds` | AirTemperature, RelativeHumidity, AtmosphericPressure, WindSpeed, RainState, CloudCover | Up to eight unique defined observation kinds; selection uses retained associations and does not enable a sensor or provider. |
+
+The code's absent-member corner presets are:
+
+- Top left: agent identity, capture sequence and UTC.
+- Top right: schedule profile, exposure, cadence, gain, offset and sensor setpoint.
+- Bottom left: environment.
+- Bottom right: catalog, calibration, stack and processing profile.
+
+Each dropdown offers the existing retained-fact tokens. The `environment` token
+expands to one line per selected environmental kind, or one unavailable line
+for an empty selection. The complete corner must fit eight lines: environment
+with six selected kinds leaves room for two other tokens. Invalid combinations
+clear the compiled preview and prevent save. Explicitly clearing a corner stores
+an empty selection; opening an absent list shows its preset without writing it.
 
 This inventory follows `AnnotationCaptureProcessingStep.ProcessAsync`,
 `AnnotationRecipe.CreateAnnotationOptions` and `AnnotationRenderer`:
@@ -55,16 +72,16 @@ This inventory follows `AnnotationCaptureProcessingStep.ProcessAsync`,
   curated deep-sky labels retain their separate existing rules.
 
 Pipeline JSON stays authoritative. The shared descriptor/codec changes only
-edited scalar tokens, preserving member case, whitespace, numeric spelling,
-unknown fields, protected collections and identity settings. Missing options
+edited values, preserving member case, whitespace, numeric spelling,
+unknown fields, unchanged collections and identity settings. Existing numeric
+enum tokens and equivalent enum spellings survive unchanged saves. Missing options
 display code defaults without writing them. A restored value keeps its source
 bytes; unchanged drafts cannot be saved as new revisions. Explicit nulls are
-preserved untouched; null for a described scalar is invalid and is reported
+preserved untouched; null for a described field is invalid and is reported
 rather than silently treated as its default.
 
-`TopLeftTokens`, `TopRightTokens`, `BottomLeftTokens`, `BottomRightTokens`,
-`EnvironmentalKinds`, `ConstellationIds`, `RecipeVersion`, `OutputVariant`,
-`RequireProjectedSceneDependency` and `ExpectedPositionDiagnostics` remain
+`RecipeVersion`, `OutputVariant`, `RequireProjectedSceneDependency` and
+`ExpectedPositionDiagnostics` remain
 preserved JSON settings. No templates, fonts, glyphs, rich text, new renderer,
 qualification change or automatic conversion to
 layered presentation/Frame Facts is included. The same shared recipe remains
