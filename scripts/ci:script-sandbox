@@ -15,7 +15,8 @@ esac
 for executable in bwrap busybox prlimit gcc systemd-run; do
   command -v "$executable" >/dev/null || { printf 'Script qualification prerequisite missing: %s\n' "$executable" >&2; exit 1; }
 done
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export XDG_RUNTIME_DIR
 systemctl --user show-environment >/dev/null
 findmnt -n -t cgroup2 -o FS-OPTIONS --target /sys/fs/cgroup | tr ',' '\n' | grep -qx nsdelegate
 printf 'Script sandbox qualification prerequisites present; Integration setup must also execute the complete kernel-policy probe.\n'
