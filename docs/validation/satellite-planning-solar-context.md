@@ -21,6 +21,12 @@ solar context, while the unresolved-anchor guard passed (10 cases). The original
 red TRX and log are retained under `/tmp/kepler-satellite-evidence/regression-red`
 and `/tmp/kepler-satellite-evidence/regression-red.log` on `home-dev-02`.
 
+The ten added Unit cases increase CameraAgent's inventory from 7,549 to 7,559.
+Discovery also verified an existing Processing inventory discrepancy: 1,168 Unit
+cases were present against 1,167 declared. This PR corrects that count without
+changing Processing code or tests. The resulting declared total is 14,974 Unit
+and 1,007 Integration cases.
+
 `SatellitePassArcTests` uses the existing retained canonical ISS and two Starlink
 arcs in `satellite-planning-v1/samples/`, plus explicitly synthetic equatorial
 anchor times for day, twilight and night. The tests verify original observer and
