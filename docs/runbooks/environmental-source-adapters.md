@@ -180,3 +180,9 @@ sharing a prefix remain independent. Before-capture acquisition has its own time
 budget, distinct from host cancellation, and records timeout before association.
 Physical device freshness uses actual receipt time, while deterministic simulated
 readings retain the scheduled clock.
+
+Coalesced triggers accepted during a bounded before-capture acquisition move to a
+bounded deferred queue drained by the same hosted acquisition service. Queue
+capacity refusal is recorded explicitly; a regime-change request does not need
+a later capture or periodic trigger to make progress. Host shutdown owns worker
+cancellation.

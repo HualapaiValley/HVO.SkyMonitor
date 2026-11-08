@@ -177,6 +177,65 @@ public sealed class EnvironmentalAdapterReviewIntegrationTests
         finally { Delete(root); }
     }
 
+    [TestMethod]
+    public async Task CoalescedRegimeChangeAfterBudgetedCaptureRunsWithoutAnotherTrigger()
+    {
+        var root = Root();
+        try
+        {
+            var device = new BarrierDevice();
+            using var store = new SqliteEnvironmentalObservationOutbox();
+            var source = new EnvironmentalSourceConfiguration
+            {
+                Id = "sqm",
+                Type = "SkyQualityMeter",
+                Kind = EnvironmentalObservationKind.SkyQuality,
+                Required = false,
+                Triggers = [EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionTrigger.RegimeChange],
+                Options = JsonSerializer.SerializeToElement(new EnvironmentalDeviceOptions("sqm"), JsonOptions)
+            };
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                EnvironmentalAcquisition = new()
+                { Enabled = true, BeforeCaptureWaitMilliseconds = 1000, Sources = [source] }
+            });
+            using var provider = new ServiceCollection().AddSingleton<IEnvironmentalDevice>(device).BuildServiceProvider();
+            using var coordinator = new EnvironmentalAcquisitionCoordinator(new EnvironmentalSourceFactory(provider, EnvironmentalAdapterPipelineTests.Registrations()),
+                new Publisher(store, root), new LocationStore(), options, TimeProvider.System, store);
+            using var telemetry = new EnvironmentalAcquisitionTelemetry();
+            using var service = new EnvironmentalAcquisitionService(coordinator, store, store, telemetry, TimeProvider.System, options, NullLogger<EnvironmentalAcquisitionService>.Instance);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                var bridge = new EnvironmentalCaptureTriggerBridge(coordinator, service, store, options);
+                var before = bridge.BeforeCaptureAsync(Epoch, CancellationToken.None).AsTask();
+                await device.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var queued = await coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.RegimeChange, Epoch.AddSeconds(1)).ConfigureAwait(false);
+                Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, queued.Disposition);
+                device.Release.TrySetResult();
+                await before.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await WaitFor(async () => (await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false))
+                    .Any(attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.RegimeChange && attempt.Disposition == EnvironmentalAcquisitionDisposition.Produced)).ConfigureAwait(false);
+                Assert.AreEqual(2, device.Calls);
+            }
+            finally { device.Release.TrySetResult(); await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
+        }
+        finally { Delete(root); }
+    }
+
+    private sealed class BarrierDevice : IEnvironmentalDevice
+    {
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int Calls { get; private set; }
+        public async ValueTask<EnvironmentalDeviceSample> ReadAsync(string deviceId, string command, DateTimeOffset receivedAtUtc, CancellationToken cancellationToken)
+        {
+            if (++Calls == 1) { Started.TrySetResult(); await Release.Task.WaitAsync(cancellationToken).ConfigureAwait(false); }
+            return new(Encoding.UTF8.GetBytes(EnvironmentalHardwareAdapterTests.Sqm), receivedAtUtc, false, ReceivedAtUtc: receivedAtUtc);
+        }
+    }
+
     private static EnvironmentalSourceConfiguration OnlineConfiguration(string id, EnvironmentalObservationKind kind, int period)
         => new()
         {

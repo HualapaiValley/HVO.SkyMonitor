@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading.Channels;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
@@ -44,6 +45,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     private readonly Dictionary<string, PendingAcquisition?> _pending;
     private readonly object _pendingGate = new();
     private readonly SemaphoreSlim _globalGate;
+    private readonly Channel<DeferredEnvironmentalSourceRequest> _deferred;
 
     public EnvironmentalAcquisitionCoordinator(
         EnvironmentalSourceFactory factory,
@@ -79,6 +81,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             static _ => (PendingAcquisition?)null,
             StringComparer.Ordinal);
         _globalGate = new SemaphoreSlim(_options.MaximumConcurrency, _options.MaximumConcurrency);
+        _deferred = Channel.CreateBounded<DeferredEnvironmentalSourceRequest>(new BoundedChannelOptions(_options.QueueCapacity)
+        { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait, AllowSynchronousContinuations = false });
         _telemetry?.SetSourceCount(sources.Count);
     }
 
@@ -156,7 +160,26 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             LogReceipt(source.Descriptor, first);
             await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
-            if (acquisitionBudgetMilliseconds.HasValue) return first;
+            if (acquisitionBudgetMilliseconds.HasValue)
+            {
+                PendingAcquisition? deferred;
+                lock (_pendingGate)
+                {
+                    deferred = _pending[sourceId];
+                    _pending[sourceId] = null;
+                    sourceGate.Release();
+                    ownsSourceGate = false;
+                }
+                if (deferred is not null && !_deferred.Writer.TryWrite(new(sourceId, deferred.Trigger,
+                    deferred.ObservedAtUtc, deferred.CaptureSequence, deferred.CaptureId)))
+                {
+                    var rejected = Receipt(sourceId, deferred.Trigger, EnvironmentalAcquisitionDisposition.Failed,
+                        "pending-queue-capacity", null, _timeProvider.GetUtcNow());
+                    await RecordAttemptAsync(source.Descriptor, rejected, deferred.CaptureSequence, deferred.CaptureId, cancellationToken).ConfigureAwait(false);
+                    LogReceipt(source.Descriptor, rejected);
+                }
+                return first;
+            }
             while (true)
             {
                 PendingAcquisition? pending;
@@ -332,6 +355,12 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             source.Descriptor.Id, trigger, observedAtUtc, acquisitionBudgetMilliseconds,
             captureSequence, captureId, cancellationToken).AsTask())).ConfigureAwait(false);
     }
+
+    internal IAsyncEnumerable<DeferredEnvironmentalSourceRequest> ReadDeferredAsync(CancellationToken cancellationToken)
+        => _deferred.Reader.ReadAllAsync(cancellationToken);
+
+    internal sealed record DeferredEnvironmentalSourceRequest(string SourceId, EnvironmentalAcquisitionTrigger Trigger,
+        DateTimeOffset ObservedAtUtc, long? CaptureSequence, Guid? CaptureId);
 
     private EnvironmentalAcquisitionReceipt Receipt(
         string sourceId,

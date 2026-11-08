@@ -54,7 +54,27 @@ public sealed partial class EnvironmentalAcquisitionService(
             .Select(source => RunPeriodicAsync(source, stoppingToken));
         return Task.WhenAll(periodic
             .Append(DrainRequestsAsync(stoppingToken))
+            .Append(DrainDeferredAsync(stoppingToken))
             .Append(RunRetentionAsync(stoppingToken)));
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Deferred coalesced source failures are owned by the hosted worker and cannot stop independent acquisition.")]
+    private async Task DrainDeferredAsync(CancellationToken cancellationToken)
+    {
+        await foreach (var request in coordinator.ReadDeferredAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                await coordinator.AcquireSourceAsync(request.SourceId, request.Trigger, request.ObservedAtUtc,
+                    request.CaptureSequence, request.CaptureId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
