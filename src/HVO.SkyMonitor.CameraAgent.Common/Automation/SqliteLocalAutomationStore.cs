@@ -304,7 +304,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 SET outcome = 'Interrupted',
                     completed_unix_ms = $now,
                     detail = 'The CameraAgent stopped while this run was claimed.'
-                WHERE outcome = 'Running' AND claimant <> $claimant;
+                WHERE outcome = 'Running' AND claimant <> $claimant
+                  AND COALESCE(json_extract(occurrence_json, '$.definition.taskKind'), '') <> 'ScheduledCameraAgentRestart';
                 """,
                 cancellationToken,
                 ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant)).ConfigureAwait(false);

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using System.Text;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
@@ -122,13 +123,17 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private bool _awaitingEvidenceRecovery;
     private bool _disposed;
 
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The DI container owns the lifecycle intent store.")]
+    private readonly CameraAgentControlStore? _lifecycleControls;
+
     public CaptureAdmissionCoordinator(
         IRawCaptureIngress rawCaptureIngress,
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         CaptureControlTelemetry telemetry,
         FleetRuntimeState? fleetRuntimeState = null,
-        CaptureMaintenanceGate? maintenanceGate = null)
+        CaptureMaintenanceGate? maintenanceGate = null,
+        CameraAgentControlStore? lifecycleControls = null)
     {
         ArgumentNullException.ThrowIfNull(rawCaptureIngress);
         ArgumentNullException.ThrowIfNull(options);
@@ -138,6 +143,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
         _maintenance = maintenanceGate;
+        _lifecycleControls = lifecycleControls;
         var configured = options.Value;
         _pauseFreshOnStartup = configured.ProvisioningStartupGate.Enabled;
         _store = new SqliteCaptureControlStore(
@@ -385,6 +391,9 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             {
                 throw new CaptureAdmissionUnavailableException("Capture admission requires verified restart recovery.");
             }
+            if (target == CaptureControlTarget.Running && _lifecycleControls is not null &&
+                !await _lifecycleControls.MayResumeAsync(actor, cancellationToken).ConfigureAwait(false))
+                throw new CaptureControlConflictException("An installer lifecycle operation is pending; wait for its terminal receipt before resuming.");
             var prior = Snapshot;
             if (target == CaptureControlTarget.Paused)
             {

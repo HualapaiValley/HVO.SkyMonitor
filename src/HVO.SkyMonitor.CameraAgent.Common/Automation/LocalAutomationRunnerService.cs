@@ -330,6 +330,11 @@ public sealed partial class LocalAutomationRunnerService(
                 LocalAutomationRunOutcome.Failed,
                 string.Concat("The registered task threw ", exception.GetType().Name, "."));
         }
+        if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.ScheduledCameraAgentRestart &&
+            execution.Outcome == LocalAutomationRunOutcome.Running)
+        {
+            return; // Only the independent installer's terminal receipt completes this delegated occurrence.
+        }
         var elapsed = Stopwatch.GetElapsedTime(started);
         activity?.SetTag("outcome", execution.Outcome.ToString());
         await store.CompleteRunAsync(journalRunKey, execution.Outcome, execution.Detail, cancellationToken)
