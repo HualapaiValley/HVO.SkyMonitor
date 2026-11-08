@@ -766,7 +766,8 @@ public sealed class ReleaseAssetsToolTests
             "cloud producer from v4 to v5", "environment producer from v5 to v6",
             "without a scene-overlay node", "0.9.1-dev.1 through dev.5", "v11/v12", "v13",
             "active-revision-superseded", "Raw capture and upload continue",
-            "processing.plan-superseded", "new revision", "fresh replay"
+            "processing.plan-superseded", "new revision", "fresh replay",
+            "ASP.NET Core runtime images use 10.0.14", "self-contained ProcessingRunner runtime remain at 10.0.13"
         })
         {
             StringAssert.Contains(string.Join(" ", note.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), expected, StringComparison.Ordinal);
