@@ -6,6 +6,38 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CaptureScalarOptionsEditorTests
 {
     [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public void RollingPanelsKeepSceneDeepLinksDistinctWithRepeatedNodes(string sceneAlias)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "RollingCombination", null);
+        var source = service.RevisionDetail!.Pipeline.Steps[0];
+        service.StepAliases = ["RollingCombination", sceneAlias];
+        service.RevisionDetail = service.RevisionDetail with
+        {
+            Pipeline = service.RevisionDetail.Pipeline with
+            {
+                Steps = [source with { Id = "rolling", Order = 10 },
+                    source with { Type = sceneAlias, Id = "scene", Order = 20 },
+                    source with { Id = "second-rolling", Order = 30 }]
+            }
+        };
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+
+        var ids = cut.FindAll("[id]").Select(static element => element.Id).ToArray();
+        Assert.AreEqual(ids.Length, ids.Distinct(StringComparer.Ordinal).Count(),
+            "Rolling controls must not capture the constellation deep link.");
+        Assert.IsNotNull(cut.Find("#constellations #node-options-1-constellationLineThickness"));
+        Assert.IsNotNull(cut.Find("#scene-overlay"));
+        Assert.IsNotNull(cut.Find("#rolling-combination #node-options-0-windowSize"));
+        Assert.IsNotNull(cut.Find("#rolling-combination-2 #node-options-2-windowSize"));
+        Assert.IsEmpty(service.Created);
+        Assert.IsEmpty(service.Commands);
+    }
+
+    [TestMethod]
     public void RollingPanelPreservesSourceAndEditsFractionalNullableLimits()
     {
         using var context = new BunitContext();
