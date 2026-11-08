@@ -12,15 +12,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Environmental Latest readings and observatory summaries keep primary station values visible when newer IR lineage inputs arrive. #1089
-- Waiting environmental delivery avoids repeated overflow counts and retry writes within one pass. #1090
-- Virtual-only and co-located local readings no longer show an unnecessary mixed-source overlay or Environment badge. #1092
-
-- Station readings remain available alongside IR derivation inputs, and coalesced triggers cannot revive evidence from a failed environmental source. #1089
-- IR cloud delivery waits for acknowledged lineage inputs, unresolved projections allow independent progress, and simulated cloud estimates retain Simulated provenance. #1090
-- LogicHost retains v3 device-receipt and SQM diagnostic metadata without breaking content hashes; the canonical unreleased schema is updated, and SQM frequency mode has an explicit unavailable state. #1091
-- Environmental overlays preserve source, age and mixed-source labels within their line limits; online weather recovers startup schedule faults and refreshes correctly at native cadence and freshness boundaries. #1092
-
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
 - Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
@@ -47,10 +38,13 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Configure a local weather-station adapter with deterministic simulated devices and explicit sensor/freshness failures; physical station qualification remains held. #1089
-- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage and drying-state handling; physical sensor qualification remains held. #1090
-- Configure an SQM adapter with capture association, real integration intervals and sensor-temperature metadata; physical meter qualification remains held. #1091
-- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff and explicit source priority. #1092
+- Configure a local weather-station adapter with deterministic simulated devices, explicit sensor/freshness failures and primary station readings retained alongside IR inputs; failed acquisitions cannot reuse an old value. Physical station qualification remains held. #1089
+- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, bounded outage retries and drying-state handling; simulated clouds retain Simulated provenance. Physical sensor qualification remains held. #1090
+- Configure an SQM adapter with capture association, integration intervals, explicit frequency-mode unavailability and sensor-temperature metadata preserved through LogicHost. Physical meter qualification remains held. #1091
+- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed labels distinguish environmental origins. #1092
+
+- CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
+
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
