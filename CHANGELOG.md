@@ -38,6 +38,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, and durable cancellation outcomes. Wizard integration remains pending. #1137
 
 - CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
