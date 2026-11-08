@@ -61,7 +61,7 @@ public sealed class VirtualStellarExposureResourceTests
             new("VirtualSky", JsonSerializer.SerializeToElement(options, VirtualAstrometryFixture.JsonOptions)), rig,
             CapturePipelineConfig.Empty, "virtual-stellar-exposure-resource");
         var catalog = new MeasuredCatalog(snapshot.Catalog, label == "after");
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         using var process = Process.GetCurrentProcess();

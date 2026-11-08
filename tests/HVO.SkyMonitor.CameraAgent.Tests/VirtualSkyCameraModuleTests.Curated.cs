@@ -20,7 +20,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         foreach (var enabled in new[] { false, true })
         {
             var staging = new RecordingProjectedSceneStagingStore();
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(), stagingStore: staging);
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(), stagingStore: staging);
             await using var lifetime = module.ConfigureAwait(false);
             var config = CreateConfig(format, 64, 64) with
             {
@@ -58,7 +58,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         var staging = new RecordingProjectedSceneStagingStore();
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System, new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+            ExposureTestTimeProvider.ForRendering(), new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         await using var lifetime = module.ConfigureAwait(false);
         var config = CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
         {
@@ -95,7 +95,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         var staging = new RecordingProjectedSceneStagingStore();
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System, new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+            ExposureTestTimeProvider.ForRendering(), new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         await using var lifetime = module.ConfigureAwait(false);
         var config = CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
         {

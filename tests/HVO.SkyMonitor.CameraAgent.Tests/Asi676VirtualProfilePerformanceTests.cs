@@ -128,7 +128,7 @@ public sealed class Asi676VirtualProfilePerformanceTests
     }
 
     private static VirtualSkyCameraModule CreateModule()
-        => new(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        => new(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
 
     private static Task<CaptureResult> CaptureAsync(
         VirtualSkyCameraModule module,
