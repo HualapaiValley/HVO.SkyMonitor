@@ -49,12 +49,12 @@ public sealed partial class LifecycleContractTests
     public void Diagnostic1499_ControlWorkerDiagnosticsUseSharedOutputFormatting()
     {
         var message = CameraAgentLifecycleManager.FormatControlWorkerDiagnostic(
-            "stage=lifecycle-worker\toperation=probe\nforged-line token=\"a " + Diagnostic1499Secret + " b\"");
+            "stage=lifecycle-worker\toperation=probe token=\"a " + Diagnostic1499Secret + " b\"\nforged-line");
         Assert.IsFalse(message.Contains(Diagnostic1499Secret, StringComparison.Ordinal));
         Assert.IsFalse(message.Any(char.IsControl), message);
         StringAssert.Contains(message, "stage=lifecycle-worker", StringComparison.Ordinal);
         StringAssert.Contains(message, "\\t", StringComparison.Ordinal);
-        StringAssert.Contains(message, "\\n", StringComparison.Ordinal);
+        Assert.IsFalse(message.Contains("forged-line", StringComparison.Ordinal), "The shared diagnostic contract emits only the first line.");
     }
 
     [TestMethod]
