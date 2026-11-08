@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes and partial-history disclosure, and shows a failed representative preview without substituting another image. Product cards stack on phones and timeline candidate controls support keyboard focus and 44px targets. #1016
+
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
 - Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
