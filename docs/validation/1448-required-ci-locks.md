@@ -33,8 +33,11 @@ removed through the local Docker socket, and the private connection file deleted
 The uncommitted fixture naming/port overlay was reversed and the worktree checked
 clean. A subsequent replay encountered a local port-binding collision and was
 stopped; its cascading fixture failures are excluded. The temporary harness then
-reserved unused allowed ports until the corresponding container start. These
-harness changes are not part of the PR and changed no host networking settings.
+reserved unused allowed ports until the corresponding container start. Native
+fixture overlays changed container ports, names and labels, and used Redis tmpfs
+storage. These harness changes are not part of the PR and changed no host
+networking settings. Overlays were restored after each completed run; their
+results are local diagnostic evidence, not protected-CI qualification.
 
 ## Completed local reproductions
 
@@ -147,8 +150,9 @@ session 51 in the failing CI observations. The XML and DMV hash agree. This
 establishes at least 21 of the 30 seconds spent waiting for an execution-memory
 grant, with no row-lock blocker in those samples. The final approximately nine
 seconds are unobserved; execution cost during that interval is not ruled out.
-The exception originated in the subject, not observer draining. The empty controlled database needed no execution grant; it validates the
-hash mapping, not the CI memory requirement or starvation cause. Evidence is in
+The exception originated in the subject, not observer draining. The empty
+controlled database needed no execution grant; it validates the hash mapping,
+not the CI memory requirement or starvation cause. Evidence is in
 `/tmp/t3-1448-42158642535-integration/hash-lifecycle.log`,
 `invalidation-hash-proof.xml`, `requests-summary.json`, and `grants-summary.json`.
 The memory pressure's source (SQL target/budget, host pressure, or resource-pool
@@ -173,10 +177,14 @@ queue on the next occurrence. SQL Server on Linux exposes memory figures through
 its platform abstraction; these views cannot establish actual runner-host free
 memory or swapping. The local probe reported 2,000 MB total system memory and
 4,096 MB process memory under a 1,024 MB SQL budget and 3 GB container limit.
-Semaphore/configuration observations describe SQL grant capacity; attributing
-pressure to the host still requires independent host-memory evidence.
-These sources do not join other DMVs, change SQL
-configuration or allocate grants for an application query. Row limits, fresh
+The memory-configuration source reports explicit SQL min/max settings, not the
+effective Linux memory limit: `max server memory` remained at its default
+2,147,483,647 MB despite `MSSQL_MEMORY_LIMIT_MB=1024`. Only the semaphore
+`max_target_memory_kb` reflected that budget in this probe. Semaphore targets
+describe effective grant capacity; default configuration values do not establish
+unlimited actual capacity. Attributing pressure to the host still requires
+independent host-memory evidence. These sources do not join other DMVs, change
+SQL configuration or allocate grants for an application query. Row limits, fresh
 sessions, two-second opening/read limits, five-minute overall cap and passive
 subject-outcome handling remain unchanged. Tests verify every catalog source
 runs in every cycle despite another source failing. The live deliberate-blocker
@@ -252,20 +260,28 @@ A new Integration guard starts and disposes three real derived hosts in separate
 Task flows, verifies both framework limiters were captured, and requires all
 three service providers to become unreachable. Disabling limiter disposal in a
 baseline mutation makes that exact weak-reference assertion fail. Restoring
-cleanup passes. A repeated twelve-host probe now retains **0/6 shared-derived
-and 0/6 independently created** service providers, versus **6/6 and 6/6**
-before correction. Managed bytes after full collections were about 58/84 MB
-versus 108/184 MB in the corresponding baseline checkpoints. These are small
-controlled probes, not measurements of the full CI suite's final heap.
+cleanup passes. The repeated twelve-host probe's retained after-correction log,
+`/tmp/t3-1448-lifetime-fixed-heap.log`, records **0/6 shared-derived and 0/6
+independently created** service providers and 58,468,456 / 84,281,328 managed
+bytes after full collections. The earlier baseline figures (**6/6 and 6/6**,
+about 108/184 MB) came from unretained console output: its raw `probe.log` was
+overwritten, so those exact before figures cannot be independently replayed
+from the retained logs. The retained heap/root investigation separately proves
+stopped-host retention qualitatively, and the exact baseline mutation assertion
+remains retained. The direct guard and twelve-host probes suppressed recurring
+workers. These are small controlled probes, not measurements of the full CI
+suite's final heap. Current-head native 5/5 and combined 24/24 checks used normal
+recurring workers; they are local diagnostic evidence, not CI qualification.
 A Unit regression also covers cyclic/shared delegate paths, live behavior before
 shutdown, disposal of both limiters and repeated cleanup.
 
 Evidence is host-local: `/tmp/t3-1448-42166525862/`,
 `/tmp/t3-1448-42166525862-runner.txt`, `/tmp/t3-1448-retention-roots.log`,
 `/tmp/t3-1448-retention-heap.log`, `/tmp/t3-1448-lifetime-baseline-error.txt`,
-`/tmp/t3-1448-lifetime-fixed-guard.log`, and
-`/tmp/t3-1448-lifetime-fixed-heap-lifecycle.log`. The private heap dump remains
-local and is not uploaded. Probe containers, private connection files and port
+`/tmp/t3-1448-lifetime-fixed-guard.log`,
+`/tmp/t3-1448-lifetime-fixed-heap.log` (after-correction counts/bytes), and
+`/tmp/t3-1448-lifetime-fixed-heap-lifecycle.log` (lifecycle status only). The
+private heap dump remains local and is not uploaded. Probe containers, private connection files and port
 locks were cleaned. The affected warning-clean build and Docker-disabled Unit
 selection pass (39/39). Inventory is now Unit 14,862 / Integration 1,006,
 including LogicHost mixed assembly 39/594. Full native replay and replacement
