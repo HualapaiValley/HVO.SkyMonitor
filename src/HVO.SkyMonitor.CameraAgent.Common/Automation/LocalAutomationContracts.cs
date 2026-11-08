@@ -5,8 +5,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 /// <summary>
 /// Bounds, fixed labels, and reason codes of the versioned durable local automation contract. The
-/// contract only ever names a registered task kind and a registered trigger kind; it can express no
-/// command, script, or executable path.
+/// contract names registered task/trigger kinds. Custom scripts name an owner-registered immutable
+/// invocation identity; definitions never contain command text or executable paths.
 /// </summary>
 public static class LocalAutomationContract
 {
@@ -149,8 +149,8 @@ public static class LocalAutomationContract
 
 /// <summary>
 /// The registered task kinds an automation definition may name. Every value maps to an existing
-/// operator-triggerable local operation; there is deliberately no value that names a command,
-/// script, or arbitrary endpoint.
+/// operator-triggerable local operation. CustomScript selects a separately authorized sandbox adapter;
+/// no task target is interpreted as command text, a path, or an arbitrary endpoint.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter<LocalAutomationTaskKind>))]
 public enum LocalAutomationTaskKind
@@ -180,7 +180,10 @@ public enum LocalAutomationTaskKind
     /// Refreshes the managed Earth-orientation and leap-second pair at most daily through an explicitly
     /// registered periodic task adapter. Appended only: the stored text spelling of every earlier value is unchanged.
     /// </summary>
-    TimeDataRefresh
+    TimeDataRefresh,
+
+    /// <summary>An owner-registered, digest-pinned invocation in the restricted script sandbox.</summary>
+    CustomScript
 }
 
 /// <summary>

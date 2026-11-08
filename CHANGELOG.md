@@ -38,6 +38,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with isolated environments, bounded scratch/output/runtime, recorded exit outcomes and cancellation cleanup. Wizard integration remains pending. #1137
+
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663

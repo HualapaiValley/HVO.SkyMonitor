@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -242,6 +243,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAssociationService>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
+        services.AddOptions<CustomScriptOptions>().Bind(configuration.GetSection("CameraAgent:CustomScripts"));
+        services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, CustomScriptTaskAdapter>();
         services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
         services.AddSingleton<ILocalAutomationTaskRegistry, LocalAutomationTaskRegistry>();
         services.AddSingleton<LocalAutomationWindowPlanner>();
