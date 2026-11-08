@@ -115,7 +115,7 @@
         {
             <section class="product-detail-panel archive-panel" aria-label="Daily summary" data-nightly-section="daily-summary">
                 <header><div><h2>Daily summary</h2><p>@(summary.Partial ? "Partial: sampled coverage has gaps or sources were excluded." : "Every five-minute bin contains an admitted exposure start.") This is a snapshot of retained sources, not a claim of continuous capture.</p></div></header>
-                <dl class="product-detail-facts">
+                <dl class="product-provenance">
                     <div><dt>Captures</dt><dd>@summary.CaptureCount</dd></div>
                     <div><dt>Admitted previews</dt><dd>@summary.Captures.Count / @summary.CandidateCount candidates</dd></div>
                     <div><dt>Sampled coverage</dt><dd>@summary.SampledBins / @summary.TotalBins five-minute bins</dd></div>
@@ -132,10 +132,12 @@
                 }
                 else
                 {
-                    <ul>@foreach (var linked in summary.Products)
+                    <ul>
+                        @foreach (var linked in summary.Products)
                         {
                             <li><a href="@NightlyProductLinks.Detail(linked.ProductId)">@linked.Kind</a></li>
-                        }</ul>
+                        }
+                    </ul>
                 }
                 <p>Download provenance for the canonical summary facts and every source identity.</p>
             </section>
