@@ -385,7 +385,11 @@ public sealed class CameraAgentAutomationUiServiceTests
             new StubAuthenticationStateProvider(principal),
             authorization,
             store,
-            logger ?? NullLogger<CameraAgentAutomationUiService>.Instance);
+            logger ?? NullLogger<CameraAgentAutomationUiService>.Instance,
+            new Automation.StubAutomationTaskRegistry(),
+            new LocalAutomationWindowPlanner(new Common.Gallery.FixedObservingDayCalendarProvider(
+                Common.Gallery.ObservingDayCalendar.ForDeployment(Automation.LocalAutomationWindowTests.Site()))),
+            TimeProvider.System);
 
     private sealed class StubAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {
