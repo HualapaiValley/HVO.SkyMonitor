@@ -27,7 +27,6 @@ public sealed class OnlineWeatherSource : IEnvironmentalSource
         Descriptor = descriptor;
         this.options = options;
         this.client = client;
-        client.Register(options, descriptor);
     }
     public EnvironmentalSourceDescriptor Descriptor { get; }
 

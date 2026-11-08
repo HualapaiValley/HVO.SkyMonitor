@@ -1086,6 +1086,8 @@ public sealed class EnvironmentalSourceConfiguration : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Id.StartsWith("__weather-provider-", StringComparison.Ordinal))
+            yield return new ValidationResult("The environmental source identifier uses a reserved provider-schedule namespace.", [nameof(Id)]);
         if (Id != Id.Trim() || Type != Type.Trim() || RigId is not null && RigId != RigId.Trim())
         {
             yield return new ValidationResult("Environmental source identities must be trimmed.");

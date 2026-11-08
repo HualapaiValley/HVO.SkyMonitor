@@ -131,7 +131,8 @@ limited to 64 KiB and JSON depth to 12. A 304 preserves the provider sample time
 a stale cached sample remains stale. 429 uses bounded Retry-After, failures clear
 current availability, and no last value is relabelled current. The body cache restarts
 cold; provider Retry-After and minimum polling times survive restart in the
-existing durable source schedule, alongside observation history; no provider secret store is needed by these two key-free adapters.
+existing durable source runtime store under reserved `__weather-provider-<digest>`
+rows, independently from each reading's cadence, alongside observation history; no provider secret store is needed by these two key-free adapters.
 
 HVO corrected barometer values are `SeaLevelPressure`, never
 `AtmosphericPressure`; 1 inHg = 3386.37526 Pa. Gust, rain rate and cloud cover are
@@ -169,3 +170,13 @@ parsing regressions. Integration tests use the real factory, coordinator,
 SQLite history/attempt store, capture association and fake HTTP handlers. No
 hardware, live API credentials or live provider availability is needed. See PR
 validation for exact ranges, test counts and qualification holds.
+
+Provider transport state is keyed only by provider/request identity; optional
+station display metadata cannot create another request or backoff budget.
+Completed same-kind capture associations retain their original selection policy
+when source priority changes; the new ordering applies to new captures. Synthetic
+IR inputs identify their acquiring source explicitly in provenance; source aliases
+sharing a prefix remain independent. Before-capture acquisition has its own time
+budget, distinct from host cancellation, and records timeout before association.
+Physical device freshness uses actual receipt time, while deterministic simulated
+readings retain the scheduled clock.

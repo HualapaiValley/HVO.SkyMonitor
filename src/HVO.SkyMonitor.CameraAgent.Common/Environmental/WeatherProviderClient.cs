@@ -14,18 +14,22 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
     IEnvironmentalAcquisitionStateStore? scheduleStore = null, string? root = null) : IDisposable
 {
     private readonly BoundedHttpClient transport = new(httpClient, timeProvider, SwpcSource.UserAgent);
-    private readonly ConcurrentDictionary<OnlineWeatherSourceOptions, State> states = new();
+    private readonly ConcurrentDictionary<string, State> states = new(StringComparer.Ordinal);
 
-    internal void Register(OnlineWeatherSourceOptions options, EnvironmentalSourceDescriptor descriptor)
-    {
-        var state = states.GetOrAdd(options, static _ => new());
-        state.Sources.TryAdd(descriptor.Id, descriptor);
-    }
+    internal static string RequestIdentity(OnlineWeatherSourceOptions options)
+        => HVO.SkyMonitor.AgentCore.CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            options.Provider,
+            Station = options.Provider == WeatherProvider.Nws ? options.StationId.ToUpperInvariant() : null,
+            Endpoint = options.Provider == WeatherProvider.Hvo ? options.HvoEndpoint?.AbsoluteUri : null
+        });
+
+    private static string ScheduleId(OnlineWeatherSourceOptions options) => "__weather-provider-" + RequestIdentity(options);
 
     public async ValueTask<WeatherProviderSample> ReadAsync(OnlineWeatherSourceOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
-        var state = states.GetOrAdd(options, static _ => new());
+        var state = states.GetOrAdd(RequestIdentity(options), _ => new State(options));
         await state.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var updateSchedule = false;
         DateTimeOffset? persistedSchedule = null;
@@ -36,8 +40,7 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
                 if (scheduleStore is not null && root is not null)
                 {
                     var prior = await scheduleStore.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
-                    state.NextAttempt = prior.Where(source => state.Sources.ContainsKey(source.SourceId))
-                        .Select(source => source.NextPollUtc ?? DateTimeOffset.MinValue).DefaultIfEmpty().Max();
+                    state.NextAttempt = prior.SingleOrDefault(source => source.SourceId == state.Schedule.Id)?.NextPollUtc ?? DateTimeOffset.MinValue;
                 }
                 state.Initialized = true;
             }
@@ -104,8 +107,7 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
     private async ValueTask SaveScheduleAsync(State state, CancellationToken cancellationToken)
     {
         if (scheduleStore is not null && root is not null)
-            foreach (var source in state.Sources.Values)
-                await scheduleStore.UpdateSourceScheduleAsync(root, source, state.NextAttempt, cancellationToken).ConfigureAwait(false);
+            await scheduleStore.UpdateSourceScheduleAsync(root, state.Schedule, state.NextAttempt, cancellationToken).ConfigureAwait(false);
     }
 
     private static WeatherProviderSample Fail(State state, string reason)
@@ -119,9 +121,12 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
         httpClient.Dispose();
         foreach (var state in states.Values) state.Gate.Dispose();
     }
-    private sealed class State
+    private sealed class State(OnlineWeatherSourceOptions options)
     {
-        internal ConcurrentDictionary<string, EnvironmentalSourceDescriptor> Sources { get; } = new(StringComparer.Ordinal);
+        internal EnvironmentalSourceDescriptor Schedule { get; } = new(ScheduleId(options), "OnlineWeatherProviderSchedule",
+            HVO.SkyMonitor.Processing.EnvironmentalObservationKind.AirTemperature, false, [EnvironmentalAcquisitionTrigger.Periodic],
+            DateTimeOffset.UnixEpoch, options.Provider == WeatherProvider.Nws ? 300 : 60, 1, 7200, 5400, null,
+            JsonSerializer.SerializeToElement(new { }));
         internal bool Initialized { get; set; }
         internal SemaphoreSlim Gate { get; } = new(1, 1);
         internal DateTimeOffset NextAttempt { get; set; }

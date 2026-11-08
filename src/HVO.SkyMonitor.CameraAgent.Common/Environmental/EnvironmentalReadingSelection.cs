@@ -16,6 +16,11 @@ public static class EnvironmentalReadingSelection
         return fact.Source.Provider + "/" + identity;
     }
 
+    private static string Owner(EnvironmentalObservationFactV1 fact)
+        => fact.Source.Provenance.Parameters.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            fact.Source.Provenance.Parameters.TryGetProperty("acquisitionSourceId", out var owner) && owner.ValueKind == System.Text.Json.JsonValueKind.String
+            ? owner.GetString()! : fact.Source.SourceId;
+
     public static IReadOnlyList<LocalEnvironmentalObservationRecord> Select(
         IReadOnlyList<LocalEnvironmentalObservationRecord> candidates, EnvironmentalAcquisitionOptions options,
         IReadOnlyList<EnvironmentalSourceRuntimeState> states, EnvironmentalObservationKind kind,
@@ -28,8 +33,7 @@ public static class EnvironmentalReadingSelection
             state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
             .Where(state => options.Sources.Any(source => source.Id == state.SourceId && source.Type is "LocalWeatherStation" or "InfraredSky" or "SkyQualityMeter" or "OnlineWeather"))
             .Select(state => state.SourceId).ToArray();
-        var available = candidates.Where(candidate => !unavailable.Any(id => candidate.Fact.Source.SourceId == id ||
-            candidate.Fact.Source.SourceId.StartsWith(id + "-", StringComparison.Ordinal))).ToArray();
+        var available = candidates.Where(candidate => !unavailable.Contains(Owner(candidate.Fact), StringComparer.Ordinal)).ToArray();
         if (options.WeatherSourcePriority.Count == 0 || !options.Sources.Any(source => source.Type == "OnlineWeather" && source.Kind == kind))
             return available;
         foreach (var id in options.WeatherSourcePriority)

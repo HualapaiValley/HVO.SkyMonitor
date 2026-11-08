@@ -54,9 +54,11 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
             });
         if (!sample.Simulated && sample.ReceivedAtUtc is null) return Unavailable("device-receipt-missing");
         if (sample.Payload.Length > 16_384) return Unavailable("device-oversized");
+        var received = sample.ReceivedAtUtc ?? context.ObservedAtUtc;
+        if (received == default || received.Offset != TimeSpan.Zero) return Unavailable("device-receipt-invalid");
         if (sample.SampledAtUtc == default || sample.SampledAtUtc.Offset != TimeSpan.Zero ||
-            sample.SampledAtUtc > context.ObservedAtUtc.AddSeconds(120)) return Unavailable("device-clock-skew");
-        if (sample.SampledAtUtc.AddSeconds(Descriptor.StaleAfterSeconds) <= context.ObservedAtUtc)
+            sample.SampledAtUtc > received.AddSeconds(120)) return Unavailable("device-clock-skew");
+        if (sample.SampledAtUtc.AddSeconds(Descriptor.StaleAfterSeconds) <= received)
             return Unavailable("device-stale");
         try { return await ParseAsync(sample, context, cancellationToken).ConfigureAwait(false); }
         catch (Exception exception) when (exception is JsonException or FormatException or InvalidOperationException or OverflowException or KeyNotFoundException)
@@ -80,6 +82,7 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
         {
             protocol = Descriptor.Type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
             deviceGroup = DeviceOptions.DeviceId,
+            acquisitionSourceId = Descriptor.Id,
             DeviceOptions.ModelVersion,
             DeviceOptions.ClearDeltaCelsius,
             DeviceOptions.CloudyDeltaCelsius

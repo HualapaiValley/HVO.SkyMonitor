@@ -37,10 +37,13 @@ public sealed class EnvironmentalAssociationService(
         var root = options.Value.RawIngressRoot;
         var expectedKinds = kinds.Distinct().Order().ToArray();
         var policyIdentity = PolicyIdentity(expectedKinds);
-        var persisted = (await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false))
-            .Where(association => string.Equals(
-                association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal))
-            .ToArray();
+        var retained = await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false);
+        var compatible = retained.GroupBy(association => association.PolicyIdentitySha256, StringComparer.Ordinal)
+            .Where(group => group.Select(association => association.Kind).Order().SequenceEqual(expectedKinds)).ToArray();
+        if (compatible.Length > 1) throw new EnvironmentalObservationIdentityConflictException("Multiple retained environmental policies satisfy this capture.");
+        var persisted = compatible.Length == 1 ? compatible[0].ToArray() : retained
+            .Where(association => string.Equals(association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal)).ToArray();
+        if (compatible.Length == 1) policyIdentity = compatible[0].Key;
         ValidatePersisted(
             persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
         if (persisted.Length == expectedKinds.Length)
@@ -111,9 +114,7 @@ public sealed class EnvironmentalAssociationService(
             if (expectedKinds.Except(configuredKinds).Any())
                 throw new EnvironmentalObservationIdentityConflictException(
                     "The requested environmental kinds are not part of the configured association policy.");
-            var configuredPolicyIdentity = PolicyIdentity(configuredKinds);
             candidateSets = candidateSets.Where(group =>
-                string.Equals(group[0].PolicyIdentitySha256, configuredPolicyIdentity, StringComparison.Ordinal) &&
                 group.Select(static association => association.Kind).Order().SequenceEqual(configuredKinds)).ToArray();
         }
         if (candidateSets.Length > 1)

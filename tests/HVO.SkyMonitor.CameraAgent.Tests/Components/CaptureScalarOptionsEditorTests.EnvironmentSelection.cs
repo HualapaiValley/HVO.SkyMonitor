@@ -18,7 +18,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         const string id = "#node-options-0-environmentalKinds";
         string[] expected = ["AirTemperature", "RelativeHumidity", "AtmosphericPressure", "WindSpeed", "RainState", "CloudCover"];
         CollectionAssert.AreEqual(expected, cut.FindAll(id + " select").Select(static select => select.GetAttribute("value")!).ToArray());
-        Assert.HasCount(12, cut.Find(id + "-0").Children);
+        Assert.HasCount(Enum.GetValues<HVO.SkyMonitor.Processing.EnvironmentalObservationKind>().Length, cut.Find(id + "-0").Children);
         Assert.IsNotEmpty(cut.Find("label[for='node-options-0-environmentalKinds-0']").TextContent);
         Assert.AreEqual("node-options-0-environmentalKinds-help", cut.Find(id).GetAttribute("aria-describedby"));
         Assert.DoesNotContain("Maximum", cut.Find(id + "-help").TextContent, StringComparison.Ordinal);
