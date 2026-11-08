@@ -5,6 +5,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -16,6 +17,118 @@ public sealed class SatellitePassArcTests
     private static readonly ProjectionContext Hemisphere = new(ProjectionModel.EquidistantFisheye,
         256, 256, 480 / Math.PI, 480 / Math.PI, 512, 512, ProjectionAperture.Circular, 240);
     private static readonly OrbitalPassArcV1 RetainedArc = LoadArc();
+
+    [TestMethod]
+    [DataRow("iss-25544")]
+    [DataRow("starlinks-56838")]
+    [DataRow("starlinks-65283")]
+    public void Render_SolarContextUsesEachOriginalAnchorAndRetainsPredictionGeometry(string fixture)
+    {
+        var arc = LoadArc(fixture);
+        var originalBytes = OrbitalPassArcJson.Serialize(arc);
+        var ephemeris = new RecordingEphemeris();
+        using var context = new BunitContext();
+        context.Services.AddSingleton<IPlanetEphemeris>(ephemeris);
+        var cut = Render(context, arc, Hemisphere);
+        var facts = cut.FindAll(".anchor-solar-context");
+        Assert.HasCount(3, facts);
+        var indices = new[] { arc.Anchors.StartSampleIndex!.Value, arc.Anchors.PeakSampleIndex!.Value, arc.Anchors.EndSampleIndex!.Value };
+        CollectionAssert.AreEqual(indices.Select(index => arc.Samples[index].Utc).ToArray(), ephemeris.Calls.ToArray());
+        for (var i = 0; i < indices.Length; i++)
+        {
+            var altitude = SolarAltitudeClassifier.DirectionAt(new AstronomyEnginePlanetEphemeris(), arc.Samples[indices[i]].Utc,
+                arc.Pass.Observer.LatitudeDegrees, arc.Pass.Observer.LongitudeDegrees).AltitudeDegrees;
+            Assert.Contains($"Sun geometric altitude {Number(altitude)}°", facts[i].TextContent, StringComparison.Ordinal);
+        }
+        Assert.Contains(ephemeris.ModelVersion, cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+        Assert.Contains("does not establish satellite sunlight or optical visibility", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+        Assert.Contains("sunlight Unknown", cut.Find(".anchor-facts").TextContent, StringComparison.Ordinal);
+        var paths = cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray();
+        cut.Render(parameters => parameters.Add(component => component.ShowLabels, false).Add(component => component.ShowPath, false));
+        Assert.HasCount(3, cut.FindAll(".anchor-solar-context"));
+        Assert.HasCount(3, ephemeris.Calls, "Presentation toggles must not repeat ephemeris work.");
+        cut.Render(parameters => parameters.Add(component => component.ShowPath, true));
+        CollectionAssert.AreEqual(paths, cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray());
+        CollectionAssert.AreEqual(originalBytes, OrbitalPassArcJson.Serialize(arc));
+    }
+
+    [TestMethod]
+    [DataRow(0, "Night")]
+    [DataRow(6, "Twilight")]
+    [DataRow(12, "Day")]
+    public void Render_SyntheticEquatorialAnchorsDistinguishSolarRegimes(int hour, string regime)
+    {
+        var utc = new DateTimeOffset(2026, 3, 20, hour, 0, 0, TimeSpan.Zero);
+        // Presentation-only synthetic directions/times; no satellite propagation or visibility oracle is implied.
+        var arc = RetainedArc with
+        {
+            Pass = RetainedArc.Pass with { Observer = new(0, 0, 0) },
+            Samples = [RetainedArc.Samples[0] with { Utc = utc }],
+            Segments = [new(0, 1)],
+            Anchors = new(0, null, null)
+        };
+        using var context = new BunitContext();
+        context.Services.AddSingleton<IPlanetEphemeris>(new AstronomyEnginePlanetEphemeris());
+        var cut = Render(context, arc, Hemisphere);
+        Assert.Contains(regime, cut.Find(".anchor-solar-context").TextContent, StringComparison.Ordinal);
+        Assert.Contains("0°", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+        Assert.Contains("−18°", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Render_MissingEphemerisKeepsSolarContextExplicitlyUnknown()
+    {
+        using var context = new BunitContext();
+        var cut = Render(context, RetainedArc, Hemisphere);
+        Assert.HasCount(3, cut.FindAll(".anchor-solar-context"));
+        Assert.IsTrue(cut.FindAll(".anchor-solar-context").All(element => element.TextContent.Contains("Unknown", StringComparison.Ordinal)));
+        Assert.Contains("ephemeris unavailable", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+        Assert.HasCount(1, cut.FindAll(".satellite-arc > svg polyline"));
+    }
+
+    [TestMethod]
+    public void Render_UnresolvedAnchorDoesNotEvaluateSolarContextOrInventATimestamp()
+    {
+        var arc = Partial([new(1, 1)]);
+        var ephemeris = new RecordingEphemeris();
+        using var context = new BunitContext();
+        context.Services.AddSingleton<IPlanetEphemeris>(ephemeris);
+        var cut = Render(context, arc, Hemisphere);
+        Assert.IsEmpty(ephemeris.Calls);
+        Assert.IsEmpty(cut.FindAll(".anchor-solar-context"));
+        Assert.HasCount(3, cut.FindAll(".anchor-facts dd"));
+        Assert.IsTrue(cut.FindAll(".anchor-facts dd").All(element => element.TextContent.Contains("Unresolved", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("nonfinite")]
+    public void Render_UnavailableSolarPositionNeverBecomesTwilightOrHidesTheArc(string failure)
+    {
+        using var context = new BunitContext();
+        var ephemeris = new RecordingEphemeris { Failure = failure };
+        context.Services.AddSingleton<IPlanetEphemeris>(ephemeris);
+        var cut = Render(context, RetainedArc, Hemisphere);
+        Assert.HasCount(3, cut.FindAll(".anchor-solar-context"));
+        Assert.IsTrue(cut.FindAll(".anchor-solar-context").All(element => element.TextContent.Contains("Unknown", StringComparison.Ordinal)));
+        Assert.HasCount(1, cut.FindAll(".satellite-arc > svg polyline"));
+        Assert.DoesNotContain("private failure detail", cut.Markup, StringComparison.Ordinal);
+    }
+
+    private sealed class RecordingEphemeris : IPlanetEphemeris
+    {
+        private readonly AstronomyEnginePlanetEphemeris _inner = new();
+        public string ModelVersion => _inner.ModelVersion;
+        internal List<DateTimeOffset> Calls { get; } = [];
+        internal string? Failure { get; init; }
+        public SolarSystemPosition GetPosition(SolarSystemBody body, DateTimeOffset utc)
+        {
+            Assert.AreEqual(SolarSystemBody.Sun, body);
+            Calls.Add(utc);
+            if (Failure == "missing") throw new KeyNotFoundException("private failure detail");
+            return Failure == "nonfinite" ? new(new(double.NaN, 0), 0) : _inner.GetPosition(body, utc);
+        }
+    }
 
     [TestMethod]
     public void Render_NarrowRigShowsOneRetainedNonAnchorPredictionPointWithoutPolyline()
@@ -282,12 +395,12 @@ public sealed class SatellitePassArcTests
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
-    private static OrbitalPassArcV1 LoadArc()
+    private static OrbitalPassArcV1 LoadArc(string fixture = "iss-25544")
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, "HVO.SkyMonitor.v9.slnx"))) root = root.Parent;
         Assert.IsNotNull(root, "Repository fixture root must be available for the consumer test.");
         return OrbitalPassArcJson.Parse(File.ReadAllBytes(Path.Combine(root.FullName, "docs", "validation",
-            "satellite-planning-v1", "samples", "iss-25544-arc.json")));
+            "satellite-planning-v1", "samples", fixture + "-arc.json")));
     }
 }
