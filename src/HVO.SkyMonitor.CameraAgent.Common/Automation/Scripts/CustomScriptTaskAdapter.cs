@@ -11,7 +11,7 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
     private readonly TimeProvider _timeProvider;
     private string? _unavailableReason;
     private static readonly Action<ILogger, string, Exception?> Unavailable = LoggerMessage.Define<string>(
-        LogLevel.Information, new EventId(7410, "ScriptUnavailable"), "Custom script availability: {ReasonCode}");
+        LogLevel.Information, new EventId(7430, "ScriptUnavailable"), "Custom script availability: {ReasonCode}");
     private int _executing;
 
     public CustomScriptTaskAdapter(IOptions<CustomScriptOptions> options, TimeProvider? timeProvider = null,
