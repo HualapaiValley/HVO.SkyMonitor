@@ -220,7 +220,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         for (var index = 0; index < count; index++)
         {
             var profile = VirtualAstrometryFixture.Profiles(seed + 1000 * index).Single(p => p.Name == name);
-            var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
             await using var lifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
             var captured = await module.CaptureAsync(VirtualAstrometryQualificationTests.Request(
@@ -289,7 +289,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         var origin = new DateTimeOffset(2026, month, day, 0, 0, 0, TimeSpan.Zero);
         async Task<(OpticalCalibrationFrame Frame, VirtualAstrometryPixels Pixels, DateTimeOffset SceneUtc)> CaptureAsync(string readout, double hours)
         {
-            var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
             await using var lifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(template.Config with { Rig = VirtualOpticalCalibrationQualificationTests.WithReadout(truthRig, readout) }, CancellationToken.None).ConfigureAwait(false);
             var captured = await module.CaptureAsync(VirtualAstrometryQualificationTests.Request(origin.AddHours(hours)), CancellationToken.None).ConfigureAwait(false);

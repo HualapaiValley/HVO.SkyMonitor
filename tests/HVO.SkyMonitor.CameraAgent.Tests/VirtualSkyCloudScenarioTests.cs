@@ -176,7 +176,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
         Assert.AreEqual(format, result.Frame!.PixelFormat);
         Assert.IsNotNull(result.Frame.Metadata.Scene!.CloudScenario);
         Assert.AreEqual(FixtureUtc, result.AcquisitionTiming!.ExposureStartedUtc);
-        Assert.AreEqual(FixtureUtc, result.AcquisitionTiming.ExposureEndedUtc);
+        Assert.AreEqual(FixtureUtc.AddSeconds(2), result.AcquisitionTiming.ExposureEndedUtc);
         Assert.AreEqual(FixtureUtc.AddSeconds(2), result.Frame.Metadata.Scene.CloudScenario.IntegrationEndUtc);
     }
 
@@ -403,7 +403,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
     };
 
     private static VirtualSkyCameraModule Module()
-        => new(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        => new(new ExposureTestTimeProvider(FixtureUtc, true), new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
 
     private static CameraModuleConfig Config(
         CameraPixelFormat format,
