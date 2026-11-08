@@ -36,7 +36,8 @@ internal sealed partial class SqliteTimeLapseStore
             WITH ranked AS (
                 SELECT job_id, report_date, window_json, state, updated_ticks, reason, product_id,
                     ROW_NUMBER() OVER(PARTITION BY report_date, json_extract(window_json,'$.reportingPeriod.identitySha256')
-                        ORDER BY (state IN ('Queued','Working')) DESC, updated_ticks DESC, job_id DESC) AS rank
+                        ORDER BY (state IN ('Queued','Working')) DESC, (product_id IS NOT NULL) DESC,
+                            updated_ticks DESC, job_id DESC) AS rank
                 FROM jobs WHERE report_date IN (SELECT value FROM json_each($dates))
                   AND json_extract(window_json,'$.policy.kind')='SunriseDay')
             SELECT job.job_id, job.report_date, job.window_json, job.state,

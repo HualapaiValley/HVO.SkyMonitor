@@ -216,5 +216,5 @@ public interface INightlyProductCatalog
 
     /// <summary>Lists daily evaluations and a bounded retained automation snapshot, newest report date first.</summary>
     ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken,
-        IReadOnlyList<LocalAutomationRun>? generationRuns = null);
+        IReadOnlyList<NightlyProductGenerationAttempt>? generationRuns = null);
 }

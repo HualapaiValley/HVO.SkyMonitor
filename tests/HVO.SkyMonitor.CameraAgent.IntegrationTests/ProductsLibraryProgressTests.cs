@@ -90,6 +90,64 @@ public sealed class ProductsLibraryProgressTests
         finally { Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    [DataRow(NightlyProductKind.Keogram, true)]
+    [DataRow(NightlyProductKind.StarTrail, true)]
+    [DataRow(NightlyProductKind.Keogram, false)]
+    [DataRow(NightlyProductKind.StarTrail, false)]
+    public async Task DisabledGenerationProjectsQueuedStillWorkAsStalled(NightlyProductKind kind, bool disableDefinition)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-library-disabled", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var site = DeploymentLocationSnapshot.Create("virtual-library-disabled", 1, "test", null,
+                new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.5599378, -113.9119818, 520, "America/Phoenix");
+            var calendar = new FixedObservingDayCalendarProvider(ObservingDayCalendar.ForDeployment(site));
+            var planner = new LocalAutomationWindowPlanner(calendar);
+            var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion,
+                LocalAutomationSourceWindowKind.SunriseDay,
+                kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources : LocalAutomationSourceSelection.DarkNightActualSources,
+                TimeSpan.Zero);
+            var date = new DateOnly(2026, 10, 1);
+            var window = planner.ResolveWindows(date, policy).Single();
+            var clock = new FixtureClock(DateTimeOffset.FromUnixTimeMilliseconds(window.EarliestFinalUtc.AddMinutes(10).ToUnixTimeMilliseconds()));
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var target = NightlyProductContract.TargetFor(kind) + ":" + new string('A', 64);
+            using (var store = new SqliteLocalAutomationStore(new FixtureRegistry(), new CaptureSequence(), options, clock,
+                NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner))
+            {
+                var saved = await store.SaveAsync(new("daily", "Virtual daily", true, LocalAutomationTaskKind.StillImageGeneration,
+                    target, LocalAutomationTriggerKind.SourceWindowClosed, 1, 0, "save", "fixture", "virtual progress", policy), CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
+                var queued = await store.BackfillAsync(new("daily", date, null, 1, "backfill", "fixture", "virtual backfill"), CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, queued.Status);
+                if (disableDefinition)
+                {
+                    var disabled = await store.SaveAsync(new("daily", "Virtual daily", false, LocalAutomationTaskKind.StillImageGeneration,
+                        target, LocalAutomationTriggerKind.SourceWindowClosed, 1, 1, "disable", "fixture", "disabled fixture", policy), CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(LocalAutomationCommandStatus.Applied, disabled.Status);
+                }
+            }
+            using var catalog = new SqliteNightlyProductStore(options, clock);
+            using var reader = new SqliteLocalAutomationStore(new FixtureRegistry(), new CaptureSequence(),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, Automation = new() { Enabled = disableDefinition } }), clock,
+                NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner);
+            var query = new NightlyProductLibraryQuery(1, kind, ObservingDate: date);
+            var runs = await reader.ListNightlyProductRunsAsync(query, CancellationToken.None).ConfigureAwait(false);
+            var page = await catalog.ListLibraryAsync(query, CancellationToken.None, runs).ConfigureAwait(false);
+            var stalled = page.Entries.Single();
+            Assert.AreEqual(NightlyProductLibraryState.Stalled, stalled.State);
+            Assert.AreEqual(LocalAutomationRunOutcome.Queued, stalled.Generation!.Outcome);
+            Assert.IsTrue(stalled.Occurrence.Definition.Enabled, "Current availability must not rewrite the retained definition snapshot.");
+            Assert.IsNull(stalled.Generation.StartedAtUtc);
+            Assert.AreEqual(window, stalled.SourceWindow);
+            Assert.IsEmpty((await catalog.ListLibraryAsync(query with { State = NightlyProductLibraryState.Running }, CancellationToken.None, runs).ConfigureAwait(false)).Entries);
+            Assert.HasCount(1, (await catalog.ListLibraryAsync(query with { State = NightlyProductLibraryState.Stalled }, CancellationToken.None, runs).ConfigureAwait(false)).Entries);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private sealed class FixtureClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

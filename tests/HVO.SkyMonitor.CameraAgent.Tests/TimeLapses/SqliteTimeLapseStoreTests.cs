@@ -1,12 +1,18 @@
 using System.Diagnostics.CodeAnalysis;
+using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Components.Presentation;
+using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
@@ -15,6 +21,59 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class SqliteTimeLapseStoreTests
 {
+    [TestMethod]
+    [DataRow(CameraAgentTimeLapseState.NoSources)]
+    [DataRow(CameraAgentTimeLapseState.Failed)]
+    [DataRow(CameraAgentTimeLapseState.Unavailable)]
+    public async Task Library_LaterNonProducedOccurrenceKeepsPublishedVideoAndProducedLink(CameraAgentTimeLapseState outcome)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-library-published");
+        try
+        {
+            var options = Options(root);
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            using var store = new SqliteTimeLapseStore(options, clock);
+            using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
+            var occurrence = Occurrence(options.Value.TimeLapses, LocalAutomationSourceWindowKind.SunriseDay);
+            var hours = Windows(NightlyProductFixture.ObservingDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            var preset = options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration());
+            await store.EnqueueAsync(occurrence, preset, hours, CancellationToken.None);
+            for (var index = 0; index < hours.Count; index++)
+                await FinishAsync(store, clock, root, await ClaimAsync(store, clock), CameraAgentTimeLapseState.NoSources);
+            var publishedJob = await ClaimAsync(store, clock);
+            await FinishAsync(store, clock, root, publishedJob, CameraAgentTimeLapseState.Produced);
+            await RecordLibraryProductAsync(root, publishedJob);
+            var query = new Common.NightlyProducts.NightlyProductLibraryQuery(1);
+            var original = (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single().Product!;
+
+            clock.UtcNow = clock.UtcNow.AddMinutes(1);
+            var later = Occurrence(options.Value.TimeLapses, occurrence.SourceWindow!, "later-video-definition");
+            await store.EnqueueAsync(later, preset, hours, CancellationToken.None);
+            var active = (await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Running }, CancellationToken.None)).Entries.Single();
+            Assert.IsNull(active.Product, "A new active occurrence must still take precedence over the published video.");
+            Assert.IsEmpty((await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Produced }, CancellationToken.None)).Entries);
+            for (var index = 0; index < hours.Count; index++)
+                await FinishAsync(store, clock, root, await ClaimAsync(store, clock), CameraAgentTimeLapseState.NoSources);
+            var laterJob = await ClaimAsync(store, clock);
+            await FinishAsync(store, clock, root, laterJob, outcome);
+
+            var retained = (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(Common.NightlyProducts.NightlyProductLibraryState.Produced, retained.State);
+            Assert.AreEqual(publishedJob.JobId, retained.JobId);
+            Assert.AreEqual(original.ProductId, retained.Product!.ProductId);
+            var produced = await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Produced }, CancellationToken.None);
+            Assert.AreEqual(original.ProductId, produced.Entries.Single().Product!.ProductId);
+            Assert.IsEmpty((await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.NotProduced }, CancellationToken.None)).Entries);
+            using var context = new BunitContext();
+            context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(new TestNightlyProductUiService { VideoLibrary = produced });
+            var cut = context.Render<TimeLapseLibraryView>(parameters => parameters
+                .Add(page => page.Type, "time-lapse").Add(page => page.Status, "produced"));
+            Assert.AreEqual("produced", cut.Find("li").GetAttribute("data-video-state"));
+            Assert.AreEqual(TimeLapseLinks.Detail(original.ProductId), cut.Find("li a").GetAttribute("href"));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [TestMethod]
     public async Task Library_QueuedWorkingAndRestartRecoveryRetainActualStartAndWindow()
     {

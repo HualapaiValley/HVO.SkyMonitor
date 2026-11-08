@@ -8,8 +8,9 @@ public sealed partial class SqliteLocalAutomationStore
     /// <summary>
     /// Reads retained daily still attempts for one bounded library scan. The journal, rather than recent operator
     /// history or the current definition, supplies the state, start time and immutable source window.
+    /// Current enabled flags are separate availability metadata; they never rewrite the retained occurrence.
     /// </summary>
-    public async ValueTask<IReadOnlyList<LocalAutomationRun>> ListNightlyProductRunsAsync(
+    public async ValueTask<IReadOnlyList<NightlyProductGenerationAttempt>> ListNightlyProductRunsAsync(
         NightlyProductLibraryQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -38,7 +39,9 @@ public sealed partial class SqliteLocalAutomationStore
                 dates AS (SELECT DISTINCT report_date FROM pending ORDER BY report_date DESC LIMIT $dates)
                 SELECT sequence, definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
                        started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
-                       occurrence_json, attempt, occurrence_id, preparation_json
+                       occurrence_json, attempt, occurrence_id, preparation_json,
+                       COALESCE((SELECT enabled FROM automation_definitions AS definition
+                           WHERE definition.definition_id = pending.definition_id), 0) AS definition_enabled
                 FROM pending WHERE report_date IN (SELECT report_date FROM dates)
                 ORDER BY sequence DESC LIMIT $limit;
                 """;
@@ -47,10 +50,11 @@ public sealed partial class SqliteLocalAutomationStore
             command.Parameters.AddWithValue("$before", query.Before is { } before ? before.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : (object)DBNull.Value);
             command.Parameters.AddWithValue("$dates", (query.State is null ? query.DateCount : NightlyProductProjectionContract.MaximumLibraryScannedDates) + 1);
             command.Parameters.AddWithValue("$limit", NightlyProductProjectionContract.MaximumSummarizedWindows + 1);
-            var runs = new List<LocalAutomationRun>();
+            var runs = new List<NightlyProductGenerationAttempt>();
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                runs.Add(await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false));
+                runs.Add(new(await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false),
+                    _options.Automation.Enabled && reader.GetInt64(15) != 0));
             if (runs.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
                 throw new InvalidDataException("The generation projection exceeds its declared bound.");
             return runs;

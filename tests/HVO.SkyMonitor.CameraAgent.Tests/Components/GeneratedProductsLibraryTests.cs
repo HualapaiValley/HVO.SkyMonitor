@@ -66,6 +66,32 @@ public sealed class GeneratedProductsLibraryTests
     }
 
     [TestMethod]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Queued)]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Running)]
+    public void Library_DisabledGenerationCardsShowStalledWithoutPublishedMedia(Common.Automation.LocalAutomationRunOutcome outcome)
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var previous = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced);
+        var occurrence = previous.Occurrence;
+        var run = new Common.Automation.LocalAutomationRun(1, occurrence.Definition.DefinitionId,
+            occurrence.RunKey, occurrence.RevisionSha256, occurrence.Definition.TriggerKind, occurrence.ScheduledForUtc,
+            outcome == Common.Automation.LocalAutomationRunOutcome.Queued ? null : occurrence.ScheduledForUtc,
+            null, outcome, "", null)
+        { Occurrence = occurrence };
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(
+            new([previous with { Generation = run, GenerationEnabled = false }], null, null));
+        var cut = Render(context, "/archive/products?status=stalled");
+        var card = cut.Find(".library-card");
+        Assert.AreEqual("stalled", card.GetAttribute("data-nightly-state"));
+        StringAssert.Contains(card.TextContent, "Stalled: generation is disabled", StringComparison.Ordinal);
+        Assert.IsNull(card.QuerySelector("img"));
+        Assert.IsNull(card.QuerySelector("a.library-card__media"));
+        Assert.IsFalse(card.TextContent.Contains("Queued for generation", StringComparison.Ordinal));
+        Assert.IsFalse(card.TextContent.Contains("Running generation", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void Library_ShowsEachDailyFinalAsACardWithItsIdentitySourcesSpanAndAutomation()
     {
         using var context = new BunitContext();

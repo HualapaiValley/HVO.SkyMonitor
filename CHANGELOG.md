@@ -12,8 +12,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
-
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
 
 - Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
@@ -41,6 +39,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 - Edit legacy Annotation constellation selections, corner fact lines and environmental kinds in graph drafts, with bounded validation and explicit activation. #1386

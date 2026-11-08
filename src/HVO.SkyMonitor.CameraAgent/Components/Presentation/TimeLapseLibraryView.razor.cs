@@ -40,6 +40,7 @@ public sealed partial class TimeLapseLibraryView : ComponentBase, IDisposable
         _products = [];
         _message = null;
         _olderBefore = null;
+        _searchedThrough = null;
         _visible = notice is null && query is not null &&
             (string.IsNullOrEmpty(Type) || string.Equals(Type, "time-lapse", StringComparison.Ordinal));
         if (!_visible || query is null) return;

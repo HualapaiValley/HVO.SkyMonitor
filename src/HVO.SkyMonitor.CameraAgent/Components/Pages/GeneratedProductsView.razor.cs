@@ -313,13 +313,15 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         : ObservingDayPage.ChipClass(Badge(entry).State);
 
     internal static string Description(NightlyProductLibraryEntry entry) => entry.Generation is { } run
-        ? run.Outcome switch
-        {
-            Common.Automation.LocalAutomationRunOutcome.Queued => run.Attempt > 1 ? $"Retrying: attempt {run.Attempt} queued" : "Queued for generation",
-            Common.Automation.LocalAutomationRunOutcome.Running => run.Attempt > 1 ? $"Running: retry attempt {run.Attempt}" : "Running generation",
-            Common.Automation.LocalAutomationRunOutcome.Interrupted => "Stalled: generation was interrupted; an explicit retry is required",
-            _ => "Stalled: generation failed; open the observing day or automation history for details"
-        }
+        ? !entry.GenerationEnabled && (run.Outcome is Common.Automation.LocalAutomationRunOutcome.Queued or Common.Automation.LocalAutomationRunOutcome.Running)
+            ? "Stalled: generation is disabled"
+            : run.Outcome switch
+            {
+                Common.Automation.LocalAutomationRunOutcome.Queued => run.Attempt > 1 ? $"Retrying: attempt {run.Attempt} queued" : "Queued for generation",
+                Common.Automation.LocalAutomationRunOutcome.Running => run.Attempt > 1 ? $"Running: retry attempt {run.Attempt}" : "Running generation",
+                Common.Automation.LocalAutomationRunOutcome.Interrupted => "Stalled: generation was interrupted; an explicit retry is required",
+                _ => "Stalled: generation failed; open the observing day or automation history for details"
+            }
         : Badge(entry).Description;
 
     internal static string Started(NightlyProductLibraryEntry entry) => entry.Generation?.StartedAtUtc is { } started

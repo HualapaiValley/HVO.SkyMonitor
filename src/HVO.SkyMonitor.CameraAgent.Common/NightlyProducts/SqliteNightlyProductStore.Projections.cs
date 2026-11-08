@@ -111,7 +111,7 @@ internal sealed partial class SqliteNightlyProductStore
     public async ValueTask<NightlyProductLibraryPage> ListLibraryAsync(
         NightlyProductLibraryQuery query,
         CancellationToken cancellationToken,
-        IReadOnlyList<LocalAutomationRun>? generationRuns = null)
+        IReadOnlyList<NightlyProductGenerationAttempt>? generationRuns = null)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (query.DateCount is < 1 or > NightlyProductProjectionContract.MaximumLibraryDates)
@@ -129,14 +129,14 @@ internal sealed partial class SqliteNightlyProductStore
         var kind = (object?)query.Kind?.ToString() ?? DBNull.Value;
         if (generationRuns?.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
             throw new InvalidDataException("The generation projection exceeds its declared bound.");
-        var progress = (generationRuns ?? []).Where(run => run.Occurrence?.SourceWindow is { } window &&
+        var progress = (generationRuns ?? []).Where(attempt => attempt.Run.Occurrence?.SourceWindow is { } window &&
                 window.Policy.Kind == LocalAutomationSourceWindowKind.SunriseDay &&
                 window.ReportingPeriod.ReportDate >= firstDate && window.ReportingPeriod.ReportDate <= lastDate &&
-                NightlyProductPreset.TryParseTarget(run.Occurrence.Definition.TaskTarget, out var productKind) &&
+                NightlyProductPreset.TryParseTarget(attempt.Run.Occurrence.Definition.TaskTarget, out var productKind) &&
                 (query.Kind is null || query.Kind == productKind))
-            .GroupBy(static run => run.Occurrence!.IdentitySha256)
-            .Select(static group => group.MaxBy(static run => run.Sequence)!)
-            .Where(static run => run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running
+            .GroupBy(static attempt => attempt.Run.Occurrence!.IdentitySha256)
+            .Select(static group => group.MaxBy(static attempt => attempt.Run.Sequence)!)
+            .Where(static attempt => attempt.Run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running
                 or LocalAutomationRunOutcome.Interrupted or LocalAutomationRunOutcome.Failed).ToList();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -145,7 +145,7 @@ internal sealed partial class SqliteNightlyProductStore
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             var candidates = await ReadLibraryDatesAsync(connection, firstDate, lastDate, kind, scan + 1, cancellationToken)
                 .ConfigureAwait(false);
-            candidates = candidates.Concat(progress.Select(static run => run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
+            candidates = candidates.Concat(progress.Select(static attempt => attempt.Run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
                 .Distinct().OrderDescending().Take(scan + 1).ToList();
             var truncated = candidates.Count > scan;
             if (truncated) candidates.RemoveAt(scan);
@@ -161,15 +161,21 @@ internal sealed partial class SqliteNightlyProductStore
             var entries = await ReadLibraryEntriesAsync(connection, summaries,
                 [.. summaries.Where(static summary => summary.DailyDisposition is not null)], kind, cancellationToken)
                 .ConfigureAwait(false);
-            foreach (var group in progress.Where(run => candidates.Contains(run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
-                .GroupBy(static run => (run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate,
-                    run.Occurrence.SourceWindow.ReportingPeriod.IdentitySha256,
-                    Kind: NightlyProductPreset.TryParseTarget(run.Occurrence.Definition.TaskTarget, out var parsed) ? parsed : default)))
+            foreach (var group in progress.Where(attempt => candidates.Contains(attempt.Run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
+                .GroupBy(static attempt => (attempt.Run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate,
+                    attempt.Run.Occurrence.SourceWindow.ReportingPeriod.IdentitySha256,
+                    Kind: NightlyProductPreset.TryParseTarget(attempt.Run.Occurrence.Definition.TaskTarget, out var parsed) ? parsed : default)))
             {
                 var previous = entries.SingleOrDefault(entry => entry.Summary.ObservingDate == group.Key.ReportDate &&
                     entry.Summary.Kind == group.Key.Kind && entry.Summary.ReportingPeriodSha256 == group.Key.IdentitySha256);
-                var run = group.OrderByDescending(static run => run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
-                    .ThenByDescending(static run => run.Sequence).First();
+                var attempt = group.OrderByDescending(static attempt => attempt.Enabled &&
+                        (attempt.Run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))
+                    .ThenByDescending(static attempt => attempt.Run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
+                    .ThenByDescending(static attempt => attempt.Run.Sequence).First();
+                var run = attempt.Run;
+                // Active work wins; a later failed occurrence cannot retire a still-current published final.
+                if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
+                    previous?.Product is not null) continue;
                 // Exact-attempt evaluations settle that attempt; newer finals also retire historical failures.
                 if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
                     run.StartedAtUtc is { } started && rows.Any(evaluated =>
@@ -183,7 +189,8 @@ internal sealed partial class SqliteNightlyProductStore
                 var summary = summaries.SingleOrDefault(summary => summary.ObservingDate == group.Key.ReportDate &&
                     summary.Kind == group.Key.Kind && summary.ReportingPeriodSha256 == group.Key.IdentitySha256)
                     ?? new(group.Key.ReportDate, group.Key.Kind, group.Key.IdentitySha256, null, null, null, 0, 0);
-                entries.Add(new(summary, previous?.Daily, previous?.OtherPeriodRecorded ?? false) { Generation = run });
+                entries.Add(new(summary, previous?.Daily, previous?.OtherPeriodRecorded ?? false)
+                { Generation = run, GenerationEnabled = attempt.Enabled });
             }
             entries = entries.Select(entry => entry with
             {
