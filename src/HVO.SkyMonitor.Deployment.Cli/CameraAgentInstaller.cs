@@ -1230,10 +1230,10 @@ internal sealed partial class CameraAgentInstaller
                retainedSha256,
                ComputeRequestSha256(request, instanceId, release),
                StringComparison.Ordinal) ||
-           // The legacy identity predates replay profiles, container limits and releases, so a request using any of them
-           // never matches it.
+           // The legacy identity predates replay profiles, explicit illumination, container limits and releases,
+           // so a request using any of them never matches it.
            release is null && request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null &&
-           request.Memory is null &&
+           request.Memory is null && request.IlluminationMode is null &&
            string.Equals(
                retainedSha256,
                ComputeLegacyRequestSha256(request, instanceId),

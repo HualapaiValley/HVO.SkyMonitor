@@ -444,7 +444,11 @@ selects simulated night lighting, while celestial time still advances normally.
 Omitting the setting preserves the historical `LegacyScalarSolar` default and the
 existing generated configuration and request identities. All three named modes
 can be explicit; values are case-sensitive and misspellings are usage errors.
-Repeat the installed baseline choice when re-running an install. Changing the
+Omission and explicit `LegacyScalarSolar` select the same lighting but have
+different configuration and request identities. Keep the setting omitted when
+resuming or re-running an installation begun without it, including interrupted
+installations with a legacy request hash. An explicit lighting choice cannot
+resume a legacy journal that never bound that choice. Changing the
 baseline lighting of a completed installation through a re-run is refused, just
 as other camera configuration changes are.
 

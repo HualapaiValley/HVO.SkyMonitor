@@ -11,6 +11,7 @@ public sealed class IlluminationModeTests
 {
     private static readonly Guid ApplicationIdentity = Guid.Parse("65c0dd43-6490-4f10-b972-0f68c79e45a8");
     private static readonly Guid InstanceId = Guid.Parse("e8260a29-0717-4730-a9ea-7780b3a8d377");
+    private static readonly string?[] Modes = [null, "LegacyScalarSolar", "SolarDriven", "ControlledNight"];
     private static readonly string[] Arguments =
     [
         "cameraagent", "install", "--friendly-name", "Camera", "--catalog-bundle", "/srv/catalog.bundle",
@@ -80,6 +81,36 @@ public sealed class IlluminationModeTests
 
         Assert.AreNotEqual(legacy, night);
         Assert.AreNotEqual(solar, night);
+    }
+
+    [TestMethod]
+    [DataRow(null, true)]
+    [DataRow("LegacyScalarSolar", false)]
+    [DataRow("SolarDriven", false)]
+    [DataRow("ControlledNight", false)]
+    public void LegacyResumeIdentity_MatchesOnlyOmittedIllumination(string? mode, bool expected)
+    {
+        var legacy = CameraAgentInstaller.ComputeLegacyRequestSha256(Request(null), InstanceId);
+
+        Assert.AreEqual(expected, CameraAgentInstaller.RequestIdentityMatches(legacy, Request(mode), InstanceId));
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("LegacyScalarSolar")]
+    [DataRow("SolarDriven")]
+    [DataRow("ControlledNight")]
+    public void CurrentResumeIdentity_MatchesOnlyTheRecordedIllumination(string? mode)
+    {
+        var request = Request(mode);
+        var retained = CameraAgentInstaller.ComputeRequestSha256(request, InstanceId);
+
+        Assert.IsTrue(CameraAgentInstaller.RequestIdentityMatches(retained, request with { Resume = true }, InstanceId));
+        foreach (var differentMode in Modes.Where(candidate => candidate != mode))
+        {
+            Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(retained, Request(differentMode), InstanceId),
+                $"A request recorded with {mode ?? "omitted"} lighting must refuse {differentMode ?? "omitted"} lighting.");
+        }
     }
 
     [TestMethod]
