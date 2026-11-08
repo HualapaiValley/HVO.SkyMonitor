@@ -40,6 +40,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, and durable cancellation outcomes. Wizard integration remains pending. #1137
 
+- CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
+
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
