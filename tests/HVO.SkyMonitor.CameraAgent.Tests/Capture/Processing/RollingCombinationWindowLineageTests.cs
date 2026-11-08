@@ -597,7 +597,7 @@ public sealed class RollingCombinationWindowLineageTests
         CameraModuleConfig configuration)
     {
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             provider.GetRequiredService<ICelestialCatalog>(),
             provider.GetRequiredService<IProjectedSceneStore>(),
             provider.GetRequiredService<IConstellationTopology>(),

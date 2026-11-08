@@ -45,7 +45,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         // The installer rig declares maximumResults 2000 while a night query selects 8,920 HYG stars; this is the
         // same shape at fixture scale. The exhaustive opt-out keeps refusing, which is how every capture failed.
         var catalog = CreateSceneLimitCatalog(40);
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await using var moduleLifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(CreateSceneLimitConfig(maximumResults: 10), CancellationToken.None).ConfigureAwait(false);
 
@@ -59,7 +59,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.AreEqual("10", extra["stellarAdmittedCount"]);
         CollectionAssert.AreEquivalent(SceneLimitStarIds(10), frame.Metadata.Scene!.Objects!.Select(static item => item.Id).ToArray());
 
-        var exhaustive = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var exhaustive = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await using var exhaustiveLifetime = exhaustive.ConfigureAwait(false);
         await exhaustive.InitializeAsync(CreateSceneLimitConfig(maximumResults: 10, exhaustive: true), CancellationToken.None)
             .ConfigureAwait(false);
@@ -72,7 +72,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     public async Task SceneObjectLimit_OperatorChangeAppliesToTheNextCaptureInEitherDirection()
     {
         var bound = new MutableSceneObjectBound(3);
-        var module = new VirtualSkyCameraModule(TimeProvider.System, CreateSceneLimitCatalog(40), new ProjectedSceneStore(),
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), CreateSceneLimitCatalog(40), new ProjectedSceneStore(),
             sceneObjectBound: bound);
         await using var moduleLifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(CreateSceneLimitConfig(maximumResults: 10), CancellationToken.None).ConfigureAwait(false);
@@ -107,7 +107,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             [SolarSystemBody.Jupiter] = new(new(zenith.RightAscensionHours - .3, zenith.DeclinationDegrees + 3), -2)
         });
         var topology = new InMemoryConstellationTopology([new ConstellationSegment("TST", "901", "902")]);
-        var module = new VirtualSkyCameraModule(TimeProvider.System, CreateSceneLimitCatalog(40, figureStars: true),
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), CreateSceneLimitCatalog(40, figureStars: true),
             new ProjectedSceneStore(), topology, ephemeris, sceneObjectBound: new MutableSceneObjectBound(1));
         await using var moduleLifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(CreateSceneLimitConfig(maximumResults: 10, figures: true), CancellationToken.None)
@@ -130,7 +130,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var catalog = CreateSceneLimitCatalog(8);
         async Task<CameraFrame> CaptureAsync(bool exhaustive, ISceneObjectBound? bound)
         {
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(),
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(),
                 sceneObjectBound: bound);
             await using var lifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(CreateSceneLimitConfig(maximumResults: 10, exhaustive), CancellationToken.None)
@@ -239,7 +239,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         async Task<CameraFrame> CaptureAsync(CameraModuleConfig config, string operatorLimit)
         {
             configuration[SkyMapOptions.MaximumObjectsKey] = operatorLimit;
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(),
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(),
                 sceneObjectBound: bound);
             await using var lifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
