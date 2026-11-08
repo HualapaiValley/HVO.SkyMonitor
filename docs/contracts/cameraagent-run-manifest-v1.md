@@ -16,7 +16,12 @@ uses its producer's output identity; its descriptor hash is null when not record
 Current dependency inputs are resolved from this run's immutable output source IDs;
 historical window positions come from retained pins. Calibration master entries
 come from the frozen normalization plan, with kind `CalibrationMaster`, payload
-hashes and null capture/window identities rather than an invented single capture. No later replay's mutable
+hashes and null capture/window identities rather than an invented single capture.
+Ordinary reference-calibration masters are resolved by the produced output's source
+IDs against retained immutable library metadata, in the same snapshot; today's
+active library selection is never substituted. This scalar projection is bounded
+by the source/row limits and the schema's fixed kinds and 64-character hashes.
+No later replay's mutable
 node cache supplies input bindings. These are journal facts at download time;
 an active run may acquire later attempts.
 They never refer to the currently active graph definition.

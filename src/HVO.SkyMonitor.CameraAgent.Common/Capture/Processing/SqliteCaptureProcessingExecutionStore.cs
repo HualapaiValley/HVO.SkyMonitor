@@ -1086,7 +1086,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                     };
                 }).ToArray();
                 frozenPlans.TryGetValue(row.NodeId, out var normalization);
-                var masters = normalization?.Plan.Inputs.Where(static input => input.Masters is not null)
+                IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> masters = normalization?.Plan.Inputs.Where(static input => input.Masters is not null)
                     .SelectMany(static input => input.Masters!).DistinctBy(static master => master.ArtifactId)
                     .Select(static master => new ProcessingGraphExecutionCalibrationInputState(master.ArtifactId, master.PayloadSha256, master.Kind))
                     .ToArray() ?? [];
@@ -1096,6 +1096,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                     var completedInputs = await CompleteRunManifestInputsAsync(
                         connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
                     inputs = completedInputs.Inputs;
+                    masters = completedInputs.Masters;
                     bindingsRetained = completedInputs.Complete;
                 }
                 var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
