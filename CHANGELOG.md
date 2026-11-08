@@ -43,6 +43,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Configure an SQM adapter with capture association, integration intervals, explicit frequency-mode unavailability and sensor-temperature metadata preserved through LogicHost. Physical meter qualification remains held. #1091
 - Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed labels distinguish environmental origins. #1092
 
+- New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
+
 - CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
