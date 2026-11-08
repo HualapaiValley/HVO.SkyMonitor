@@ -1,7 +1,7 @@
 # Virtual horizon-obstruction acceptance (#1394)
 
-Production source candidate: `a49eafe96f92a100e254ff9c6f9f4878dc4e2f6a`.
-This fresh complete local gate includes the curated-composition correction (R7).
+Production source candidate: `4778f508c385f5999f88378f6743db47eeaba686`.
+This fresh complete local gate includes all operator-requested draft pre-review corrections.
 Initial target/merge base: `7d5ec63b09a67ab4b675ba6a29641013df1247d8` (`development/v1`).
 Tier C; protected profile `development-v1`. Final synchronization and protected CI
 are held behind the operator's #1727 reservation/queue. Merge is not authorized.
@@ -52,7 +52,7 @@ bound and computes truncation from eligible stars.
 | Wrap, gaps, crossings, models, transforms, revisions | All five projector families; crop/bin/mirror/quarter rotations; numerical roundtrip ≤1e-8 pixel; peaks and unknown gaps cannot bridge clear endpoints; SQLite rollback and publication fault |
 | Bounded generation/caching and full-resolution evidence | Measurements below; exact packed-mask equality/checksums, cancellation and area-limit tests; no retained cache |
 
-The change adds 87 Unit cases, 5 Integration cases and 1 Manual measurement case.
+The change adds 110 Unit cases, 5 Integration cases and 1 Manual measurement case.
 All are virtual/software evidence; physical survey accuracy and camera/ARM cadence
 qualification are outside this acceptance.
 
@@ -75,9 +75,9 @@ not authorize the full protected workflow for the v1 target.
 - Whole-solution `dotnet format --no-restore --verify-no-changes`: passed.
 - Package audit, Bash syntax, CI classification, coordination and PR-review guards: passed.
 - Operations documentation audit: passed.
-- Full Docker-disabled Unit selection with coverage: 15,113 passed, 3 conditional skips, 0 failures (15,116 selected), all on the production source above.
+- Full Docker-disabled Unit selection with coverage: 15,136 passed, 3 conditional skips, 0 failures (15,139 selected), all on the production source above.
 - Full Integration selection with coverage: 1,012 passed, 0 skips/failures.
-- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Aggregate line 89.6887%, branch 75.7763%; VisibleScene line 98.07%, branch 91.01%; BuiltInProcessingRecipes line 96.81%, branch 92.67%.
+- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Aggregate line 89.7174%, branch 75.8080%; all enforced per-file floors passed.
 - Manual full-resolution measurement: 1 passed (retained unchanged-path evidence).
 
 Unit ran with `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock` and the approved local
@@ -90,7 +90,7 @@ canceled after source changes and is not credited.
 Commands are the complete Tier C block in AGENTS.md; tests use
 `--no-build --configuration Release` with separate `--filter "TestCategory=Unit"`
 and `--filter "TestCategory=Integration"` selections, `tests/coverage.runsettings`, and XPlat Code Coverage.
-Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/r7/`
+Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/fixup/`
 (ignored). `summary.json` records all current project/category results. The exact
 23-slot canonical coverage manifest records original report paths and byte-identical
 literal copies (avoiding wildcard interpretation of bracketed filenames);
@@ -104,9 +104,10 @@ result roots and is superseded for the changed source by this fresh complete run
 
 Initial deep review of `7d5ec63b..eca14076` requested six corrections. Independent
 correction review 1/3 of `eca14076..deb102f1` verified R1–R6 corrected and found R7
-in downstream curated composition. The R7 correction and its complete local gate
-are recorded here; independent verification of the next immutable range is tracked
-in the append-only PR ledger, not inferred from green tests.
+in downstream curated composition. Correction review 2/3 verified R1–R7 corrected on `deb102f1..6fca2458`.
+The operator's subsequent full draft pre-reviews on `6fca2458` reopened convergence;
+the fixes below have fresh local evidence, with the next exact-range correction
+verification tracked in the append-only PR ledger.
 
 | Finding | Correction and regression evidence |
 | --- | --- |
@@ -117,6 +118,72 @@ in the append-only PR ledger, not inferred from green tests.
 | R5, filtering after truncation | Apply eligibility inside the scene builder before the magnitude/result bound, retaining existing candidate work bounds. A limit-one regression returns the dimmer clear star behind two brighter blocked stars and derives truncation only from the eligible population. |
 | R6, registered/native alignment | Validate complete retained projection and calibration against effective/native/native-ROI geometry and configured crop/binning. Five cases each exercise all mirror/quarter rotations, including refraction, through archived flattened annotation. Explicit calibration, pose, parity, readout and observer mismatch cases reject reuse. |
 | R7, curated deep-sky bypass | Both layered aliases and actual flattened composition consume a source-bound immutable selection, capped at 128 IDs. Known footprints require clear points/segments and glyphs require an eligible source position. Canonical auxiliary JSON carries the selection into archived processing and binds recipe identity without changing retained scene bytes. Twelve host cases cover four states in both live/archived execution through both aliases and the real flattened executor; seven Processing cases cover transport/freeze/identity, source/object/hash/schema/missing-source failures and bounds. Legacy actual-output compatibility cases also pass. |
+
+## Operator draft pre-review corrections
+
+Both full reports are retained on PR #1734: Opus review 5818887039 and Sol review
+5818887787. This correction adds 23 Unit cases (declared total 15,139) and retains
+the original five horizon Integration cases. All 58 focused interaction/regression
+cases passed, followed by the complete fresh candidate gate above.
+
+- Opus B1: both layer aliases and flattened annotation resolve exposure-time
+  location from protected history. Tests serialize real receipt-bearing contexts
+  through the redacted lane envelope, including archived execution, ordinary
+  stars, constellation segments and curated objects through the actual flattened
+  executor. Missing history explicitly refuses processing; current coordinates
+  never replace capture-time evidence.
+- Opus H1: central masks refuse any rig containing a horizon, under legacy and
+  swept policies. The existing executor publishes MaskEvidenceUnavailable /
+  NeedsReview. Four new cases ensure obstructed and unknown terrain cannot run
+  through central detection with only legacy masks. This supported limitation is
+  documented; no central visibility/detection confirmation is claimed.
+- Opus M1: the transient runtime generates directly at detector resolution and
+  keeps at most one geometry/site/profile/transform-bound set within a window.
+  Numerical tests check every detector pixel against the inverse source transform
+  for Mono16 and RGGB, prove same-binding object reuse, changed-profile regeneration,
+  and terminal rejection of incompatible geometry. No global cache is retained.
+- Opus M2: active, selected and pending rig views report horizon compatibility;
+  quick geometry editing warns before stage. A real-store test stages/initializes
+  the horizon, stages changed geometry, checks pending status, then initializes
+  and checks active status. Component regressions cover all three displayed states.
+  Runtime tests require the non-retryable revalidation reason.
+- Sol M1 / Opus L4: the shared footprint rule checks all edges including closed
+  last-to-first. Eight Sun/Moon cases put a peak or unknown knot between clear
+  limb samples on ordinary and closing edges; both flattened overloads and
+  layered output withhold the footprint and label.
+- Sol M2: form/selection generations discard stale preview responses. Four
+  delayed-response component cases change samples, installation, gap or selected
+  version in flight; Save cannot reappear with stale evidence.
+- Opus L1: the real frozen-data ISS planner searches and produces arc eligibility
+  using a compatible versioned-site horizon; Clear samples must exist and no
+  sample may be Incompatible.
+- Opus L2: retain the deliberate conservative frozen v1 sensor/readout fingerprint,
+  including levels/packing. Narrowing it needs a versioned compatibility decision;
+  no unsafe reuse is permitted. The new revalidation warnings expose its effect.
+- Opus L3: document that mask generation, legacy fallback and sky-map inputs are
+  geometric/unrefracted. Explicitly refracted retained scenes use the existing
+  source-bound refraction inversion. Apparent directions are outside the
+  geometric-only input contract.
+
+Transient-mask work is now bounded by the detector grid and one retained set for
+an identical window binding. For a three-frame causal 4096x4096 RGGB window,
+full-source horizon evaluations decrease from 3 x 16,777,216 to one 4,194,304-pixel
+detector pass; three detector-sized packed planes occupy exactly 1,572,864 bytes.
+A five-frame centered window likewise uses one pass instead of five. These are
+exact work/storage counts, not measured end-to-end timings or a cadence claim.
+RGGB eligibility now samples detector cell centres consistently with existing
+geometric masks; its new algorithm identity and difference from the former
+four-source-centre union are explicit in the shared contract. Existing rectangular
+exclusions are unchanged. The standalone full-resolution generator measured below
+is unchanged; no redundant component performance run is credited.
+
+Fresh raw TRX and coverage reside under `TestResults/issue-1394/fixup/`.
+Exactly 23 canonical reports are copied byte-identically to literal paths before
+merging. The source above is the test/build candidate; later report-only commits
+are identified in the PR ledger. The target remains unchanged at the initial SHA,
+so no synchronization was needed. Finalization, protected CI, reviewed-head status
+and merge remain held; the PR stays draft. Earlier unsuccessful inner-loop builds
+and fixture runs are not credited as final validation.
 
 ## Full-resolution numerical and cost evidence
 
