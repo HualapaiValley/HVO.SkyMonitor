@@ -3,25 +3,30 @@ using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal sealed record InstallerControlJournalState(int SchemaVersion, IReadOnlyList<CameraAgentControlReceipt> Receipts,
+internal sealed record InstallerControlJournalState(int SchemaVersion, Guid WorkerId, IReadOnlyList<CameraAgentControlReceipt> Receipts,
     IReadOnlyList<Guid> Unpublished);
 
 /// <summary>Owner-only installer authority, outside CameraAgent's state mounts; synced before acknowledging effects.</summary>
 internal sealed class InstallerControlJournal(string path)
 {
-    private InstallerControlJournalState _state = new(1, [], []);
+    private InstallerControlJournalState _state = new(1, Guid.NewGuid(), [], []);
+    internal Guid WorkerId => _state.WorkerId;
     internal IReadOnlyList<CameraAgentControlReceipt> Receipts => _state.Receipts;
     internal IEnumerable<CameraAgentControlReceipt> Unpublished => _state.Receipts.Where(item => _state.Unpublished.Contains(item.Request.OperationId));
 
     internal async Task LoadAsync(CancellationToken cancellationToken)
     {
         SafeFileSystem.EnsureSafeExistingAncestors(path);
-        if (!File.Exists(path)) return;
+        if (!File.Exists(path))
+        {
+            await WriteAsync(_state).ConfigureAwait(false);
+            return;
+        }
         if (new FileInfo(path).Length > 1024 * 1024) throw new InstallerException("Installer lifecycle journal exceeds its bound.");
         using var stream = SafeFileSystem.OpenOwnerFileRead(path);
         _state = await JsonSerializer.DeserializeAsync(stream, DeploymentJsonContext.Default.InstallerControlJournalState,
             cancellationToken).ConfigureAwait(false) ?? throw new InstallerException("Installer lifecycle journal is empty.");
-        if (_state.SchemaVersion != 1 || _state.Receipts is null || _state.Unpublished is null || _state.Receipts.Count > 100 ||
+        if (_state.SchemaVersion != 1 || _state.WorkerId == Guid.Empty || _state.Receipts is null || _state.Unpublished is null || _state.Receipts.Count > 100 ||
             _state.Receipts.Any(item => !item.IsValid()) ||
             _state.Receipts.Select(item => item.Request.OperationId).Distinct().Count() != _state.Receipts.Count ||
             _state.Unpublished.Any(id => !_state.Receipts.Any(item => item.Request.OperationId == id)))
@@ -38,7 +43,7 @@ internal sealed class InstallerControlJournal(string path)
             retained.RemoveAt(discard);
         }
         retained.Add(receipt);
-        var next = new InstallerControlJournalState(1, retained,
+        var next = new InstallerControlJournalState(1, _state.WorkerId, retained,
             _state.Unpublished.Append(receipt.Request.OperationId).Distinct().ToArray());
         await WriteAsync(next).ConfigureAwait(false);
     }
@@ -49,8 +54,11 @@ internal sealed class InstallerControlJournal(string path)
     internal async Task RecoverInterruptedAsync(DateTimeOffset utc)
     {
         foreach (var incomplete in _state.Receipts.Where(item => !item.IsTerminal).ToArray())
-            await SaveAsync(incomplete with { Phase = CameraAgentControlPhase.Failed,
-                Events = [.. incomplete.Events, new(CameraAgentControlPhase.Failed, utc, "lifecycle.installer-interrupted")] })
+            await SaveAsync(incomplete with
+            {
+                Phase = CameraAgentControlPhase.Failed,
+                Events = [.. incomplete.Events, new(CameraAgentControlPhase.Failed, utc, "lifecycle.installer-interrupted")]
+            })
                 .ConfigureAwait(false);
     }
 

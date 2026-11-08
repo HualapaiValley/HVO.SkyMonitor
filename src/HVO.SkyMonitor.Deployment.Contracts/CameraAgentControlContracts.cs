@@ -28,7 +28,8 @@ public sealed record CameraAgentControlEvent(CameraAgentControlPhase Phase, Date
 /// <summary>The installer journal is authoritative; CameraAgent retains a read projection of these receipts.</summary>
 public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request, CameraAgentControlPhase Phase,
     IReadOnlyList<CameraAgentControlEvent> Events, Guid? OriginalProcessId = null, Guid? VerifiedProcessId = null,
-    long? PausedVersion = null, long? DrainedCaptureSequence = null, bool ResumeAfterVerification = false, DateTimeOffset? VerificationDeadlineUtc = null)
+    long? PausedVersion = null, long? DrainedCaptureSequence = null, bool ResumeAfterVerification = false, DateTimeOffset? VerificationDeadlineUtc = null,
+    bool ResumeRequested = false)
 {
     public bool IsTerminal => Phase is CameraAgentControlPhase.Succeeded or CameraAgentControlPhase.Failed or
         CameraAgentControlPhase.Cancelled or CameraAgentControlPhase.Skipped;
@@ -37,14 +38,14 @@ public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request
     {
         if (Request is null || !Request.IsValid() || !Enum.IsDefined(Phase) || Events is not { Count: > 0 and <= 10 } ||
             Events[0].Phase != CameraAgentControlPhase.Queued || Events[^1].Phase != Phase ||
-            Events.Any(item => item is null || !Enum.IsDefined(item.Phase) || item.Utc < Request.RequestedUtc ||
+            Events.Any(item => item is null || !Enum.IsDefined(item.Phase) || item.Utc == default || item.Utc.Offset != TimeSpan.Zero ||
                 item.Code is not { Length: > 0 and <= 96 } || !item.Code.All(character => char.IsAsciiLetterLower(character) || character is '.' or '-')))
             return false;
         for (var index = 1; index < Events.Count; index++)
         {
             var prior = Events[index - 1];
             var next = Events[index];
-            if (next.Utc < prior.Utc || prior.Phase >= CameraAgentControlPhase.Succeeded ||
+            if (prior.Phase >= CameraAgentControlPhase.Succeeded ||
                 next.Phase < CameraAgentControlPhase.Succeeded && (int)next.Phase != (int)prior.Phase + 1)
                 return false;
         }
@@ -68,6 +69,3 @@ public sealed record CameraAgentControlView(bool Available, IReadOnlyList<Camera
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentControlRestart(Guid WorkerId, Guid OperationId, long ExpectedCaptureVersion);
-
-/// <summary>Persisted before each effect, including the deadline that survives an installer-worker crash.</summary>
-public sealed record CameraAgentControlJournal(int SchemaVersion, IReadOnlyList<CameraAgentControlReceipt> Receipts);

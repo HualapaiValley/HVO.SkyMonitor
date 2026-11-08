@@ -41,7 +41,7 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    **Draining** before pausing acquisition with the expected version. The current
    exposure must finish through durable ingress. Accepted raw, lane, processing
    and artifact-delivery pending/leased counts must all reach zero within two
-   minutes. A required quarantined or offline-delivery backlog can time out;
+   minutes using a monotonic elapsed-time budget. A required quarantined or offline-delivery backlog can time out;
    this command does not purge, acknowledge or bypass it. Explicit archived
    replay retains the existing installer checkpoint semantics: pinned queued
    replay is preserved and interrupted claims recover, rather than blocking drain.
@@ -62,12 +62,16 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    CameraAgent stops only itself; its existing supervisor starts it again.
    A lost acknowledgement is ambiguous and leads to verification, never a second
    restart request.
-6. The independent installer journals **Verifying** and allows two minutes for a
+6. The independent installer journals **Verifying** and allows two monotonic minutes for a
    different CameraAgent process identity, initialized capture control, the same
    durable pause version, a nondecreasing durable capture sequence, and the
    drained queue boundary. Only then may it restore the prior running state,
    fenced by the exact pause version. An originally paused agent stays paused.
-   Local resume is fenced while a lifecycle request is active, including after
+   Capture admission stays fenced from Draining until terminal receipt publication,
+   including while a verified resume awaits acknowledgement. If that acknowledgement
+   is lost, terminal failure publication first restores the pause; replaying the
+   receipt cannot undo a later explicit owner resume. Local resume is fenced while
+   a lifecycle request is active, including after
    CameraAgent restarts. Terminal failure/cancellation releases that fence for
    an explicit authorized resume; it never automatically resumes capture.
 
@@ -76,7 +80,7 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
 The installer writes its authoritative, atomically published and synchronized
 journal to `<product-root>/operations/control-worker-<uuid>.json`, outside the
 CameraAgent state mounts. It retains up to 100 receipts and never discards
-unpublished evidence to make room. The journal includes every phase, UTC times,
+unpublished evidence to make room. The journal includes ordered phases, observed UTC times (which may reflect clock corrections),
 request actor/reason, original/verified process identity, pause version, durable
 capture sequence, deadline and terminal code. The file is owner-only. Installer
 credentials never appear in requests or receipts.

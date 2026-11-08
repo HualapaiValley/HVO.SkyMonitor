@@ -33,8 +33,11 @@ public sealed partial class CameraAgentSystemUiServiceTests
         var queued = result.Value!;
         Assert.AreEqual("owner", queued.Request.Actor);
         Assert.AreEqual("maintenance", queued.Request.Reason);
-        await fixture.Controls.ExchangeAsync(new(worker, queued with { Phase = CameraAgentControlPhase.Failed,
-            Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, fixture.Clock.GetUtcNow(), "drain.timeout")] }), CancellationToken.None).ConfigureAwait(false);
+        await fixture.Controls.ExchangeAsync(new(worker, queued with
+        {
+            Phase = CameraAgentControlPhase.Failed,
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, fixture.Clock.GetUtcNow(), "drain.timeout")]
+        }), CancellationToken.None).ConfigureAwait(false);
         var receipt = (await fixture.Service.GetControlReceiptsAsync(25, CancellationToken.None).ConfigureAwait(false)).Value!
             .Single(item => item.Kind == SystemControlReceiptKind.Drain);
         Assert.AreEqual(SystemControlActor.LocalOwner, receipt.Actor);

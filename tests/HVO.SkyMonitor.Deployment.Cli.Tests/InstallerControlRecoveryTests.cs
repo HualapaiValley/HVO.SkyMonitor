@@ -30,6 +30,7 @@ public sealed class InstallerControlRecoveryTests
             await recovered.AcknowledgeAsync(request.OperationId);
             var reloaded = new InstallerControlJournal(path);
             await reloaded.LoadAsync(CancellationToken.None);
+            Assert.AreEqual(recovered.WorkerId, reloaded.WorkerId, "The process lock fences a durable worker identity across restarts.");
             Assert.IsEmpty(reloaded.Unpublished);
             Assert.IsTrue(reloaded.Receipts.Single().IsTerminal);
         }

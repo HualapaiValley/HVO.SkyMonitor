@@ -77,6 +77,19 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
+    public async Task BackwardWallClockCorrectionCannotExtendVerificationWindow()
+    {
+        using var fixture = new Fixture();
+        var clock = new CorrectedClock();
+        fixture.Client.NeverReturns = true;
+        fixture.Client.AfterDrain = () => clock.Corrected = true;
+        var receipt = await fixture.RunAsync(Budgets with { Verify = TimeSpan.FromMilliseconds(50), Read = TimeSpan.FromMilliseconds(10) }, clock: clock);
+        Assert.AreEqual("restart.verification-timeout", receipt.Events[^1].Code);
+        Assert.IsTrue(receipt.IsValid(), "Observed UTC corrections do not invalidate ordered phase evidence.");
+        await fixture.ReloadAndAssertAsync(receipt);
+    }
+
+    [TestMethod]
     public async Task LostRestartAcknowledgement_VerifiesSuccessAndNeverSendsSecondRestart()
     {
         using var fixture = new Fixture();
@@ -218,11 +231,12 @@ public sealed class InstallerControlVerifierTests
             };
         }
 
-        internal async Task<CameraAgentControlReceipt> RunAsync(InstallerControlBudgets? budgets = null, CancellationToken cancellationToken = default)
+        internal async Task<CameraAgentControlReceipt> RunAsync(InstallerControlBudgets? budgets = null, TimeProvider? clock = null,
+            CancellationToken cancellationToken = default)
         {
             var journal = new InstallerControlJournal(JournalPath);
             await journal.SaveAsync(_queued);
-            return await new InstallerControlVerifier(Client, journal.SaveAsync, TimeProvider.System, budgets ?? Budgets)
+            return await new InstallerControlVerifier(Client, journal.SaveAsync, clock ?? TimeProvider.System, budgets ?? Budgets)
                 .ExecuteAsync(_queued, cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
         }
 
@@ -238,6 +252,12 @@ public sealed class InstallerControlVerifierTests
         }
 
         public void Dispose() => Root.Delete(true);
+    }
+
+    private sealed class CorrectedClock : TimeProvider
+    {
+        internal bool Corrected;
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UtcNow - (Corrected ? TimeSpan.FromHours(1) : TimeSpan.Zero);
     }
 
     private sealed class FakeClient : IInstallerControlClient
@@ -287,8 +307,11 @@ public sealed class InstallerControlVerifierTests
         public Task<LifecycleContinuity> ConfirmDrainedAsync(CancellationToken cancellationToken)
         {
             Effects.Add("verify");
-            return Task.FromResult(Boundary() with { CaptureSequence = Failure == "sequence-rewind" ? 41 : 42,
-                LaneLeased = Failure == "verification-backlog" ? 1 : 0 });
+            return Task.FromResult(Boundary() with
+            {
+                CaptureSequence = Failure == "sequence-rewind" ? 41 : 42,
+                LaneLeased = Failure == "verification-backlog" ? 1 : 0
+            });
         }
 
         public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)

@@ -42,8 +42,11 @@ public sealed class InstallerControlDrainClientTests
             var state = new
             {
                 captureControl = new { value = new { state = "Paused", version = 9L, isInitialized = true } },
-                captureSequence = 42L, rawIngress = Section("rawIngress"), captureLanes = Section("captureLanes"),
-                captureProcessing = Section("captureProcessing"), artifactOutbox = Section("artifactOutbox")
+                captureSequence = 42L,
+                rawIngress = Section("rawIngress"),
+                captureLanes = Section("captureLanes"),
+                captureProcessing = Section("captureProcessing"),
+                artifactOutbox = Section("artifactOutbox")
             };
             return new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(state), Encoding.UTF8, "application/json") };
         }

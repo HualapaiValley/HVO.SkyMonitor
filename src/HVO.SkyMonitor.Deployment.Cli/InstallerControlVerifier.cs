@@ -33,7 +33,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     public async Task<CameraAgentControlReceipt> ExecuteAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(receipt);
-        if (!receipt.Request.IsValid() || receipt.Phase != CameraAgentControlPhase.Queued)
+        if (!receipt.IsValid() || receipt.Phase != CameraAgentControlPhase.Queued)
             throw new ArgumentException("Only a queued immutable lifecycle request may execute.", nameof(receipt));
         var stage = "lifecycle";
         try
@@ -65,6 +65,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             if (!beforeRestart.RestartWindowSafe || beforeRestart.CaptureState != "Paused" ||
                 beforeRestart.CaptureVersion != drained.CaptureVersion || beforeRestart.ProcessId != initial.ProcessId)
                 return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.boundary-changed").ConfigureAwait(false);
+            var verificationStarted = timeProvider.GetTimestamp();
             var verificationDeadline = timeProvider.GetUtcNow() + _budgets.Verify;
             receipt = receipt with { VerificationDeadlineUtc = verificationDeadline };
             receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Restarting, "restart.requesting").ConfigureAwait(false);
@@ -85,10 +86,10 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             }
             receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Verifying, "restart.verifying").ConfigureAwait(false);
             stage = "verify";
-            while (timeProvider.GetUtcNow() < verificationDeadline)
+            while (timeProvider.GetElapsedTime(verificationStarted) < _budgets.Verify)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var remaining = verificationDeadline - timeProvider.GetUtcNow();
+                var remaining = _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted);
                 try
                 {
                     var returned = await BoundedAsync(token => client.ExchangeAsync(receipt, token),
@@ -99,7 +100,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                         if (returned.ProcessId == Guid.Empty || returned.CaptureState != "Paused" || returned.CaptureVersion != drained.CaptureVersion)
                             return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.pause-not-preserved").ConfigureAwait(false);
                         var verified = await BoundedAsync(client.ConfirmDrainedAsync,
-                            Min(_budgets.Read, verificationDeadline - timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
+                            Min(_budgets.Read, _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted)), cancellationToken).ConfigureAwait(false);
                         if (verified.CaptureVersion != drained.CaptureVersion || verified.CaptureSequence < drained.CaptureSequence)
                             return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.continuity-failed").ConfigureAwait(false);
                         if (!Drained(verified)) throw new HttpRequestException("CameraAgent queue observations are not ready for restart verification.");
@@ -109,16 +110,19 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                         // The exact pause version fences a later operator command. An originally paused agent stays paused.
                         if (receipt.ResumeAfterVerification)
                         {
+                            receipt = receipt with { ResumeRequested = true };
+                            await persist(receipt).ConfigureAwait(false);
+                            ThrowIfCancelled(await ReadAsync(receipt, cancellationToken).ConfigureAwait(false));
                             await BoundedAsync(async token => { await client.ResumeAsync(receipt, token).ConfigureAwait(false); return true; },
-                                Min(_budgets.Read, verificationDeadline - timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
+                                Min(_budgets.Read, _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted)), cancellationToken).ConfigureAwait(false);
                         }
                         return await FinishAsync(receipt, CameraAgentControlPhase.Succeeded,
                             receipt.ResumeAfterVerification ? "restart.verified-resumed" : "restart.verified-paused").ConfigureAwait(false);
                     }
                 }
-                catch (HttpRequestException) { }
-                catch (TimeoutException) { }
-                remaining = verificationDeadline - timeProvider.GetUtcNow();
+                catch (HttpRequestException) when (!receipt.ResumeRequested) { }
+                catch (TimeoutException) when (!receipt.ResumeRequested) { }
+                remaining = _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted);
                 if (remaining > TimeSpan.Zero)
                     await Task.Delay(Min(_budgets.Poll, remaining), timeProvider, cancellationToken).ConfigureAwait(false);
             }
@@ -137,7 +141,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             return await FinishAsync(receipt, CameraAgentControlPhase.Failed, stage switch
             {
                 "drain" => "drain.failed-check-capture",
-                "verify" => "restart.verification-failed",
+                "verify" => receipt.ResumeRequested ? "restart.resume-unconfirmed" : "restart.verification-failed",
                 _ => "lifecycle.failed-check-capture"
             }).ConfigureAwait(false);
         }

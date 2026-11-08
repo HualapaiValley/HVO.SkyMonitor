@@ -31,6 +31,23 @@ internal static partial class CameraAgentControlLifecycleEndpoints
         if (!CameraAgentLifecycleEndpoints.IsAuthorized(context, configuration)) return Results.Unauthorized();
         try
         {
+            var newReceipt = await controls.ValidateReceiptAsync(exchange, cancellationToken).ConfigureAwait(false);
+            if (newReceipt && exchange.Receipt is { IsTerminal: true, ResumeRequested: true } failed &&
+                failed.Phase != CameraAgentControlPhase.Succeeded)
+            {
+                // Admission is still fenced by the nonterminal projection. Settle an ambiguously acknowledged
+                // installer resume before publishing failure; replayed receipts must never undo a later owner resume.
+                if (capture.Snapshot.State == CaptureAdmissionState.Running)
+                {
+                    if (failed.PausedVersion is not { } paused || capture.Snapshot.Version != checked(paused + 1))
+                        return Results.Conflict();
+                    await capture.PauseAsync($"lifecycle-settlement:{failed.Request.OperationId:D}", capture.Snapshot.Version,
+                        $"installer-lifecycle:{failed.Request.OperationId:D}", "Unconfirmed lifecycle resume; preserve paused admission",
+                        cancellationToken).ConfigureAwait(false);
+                }
+                if (capture.Snapshot.State != CaptureAdmissionState.Paused)
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
             var (current, cancelled) = await controls.ExchangeAsync(exchange, cancellationToken).ConfigureAwait(false);
             if (exchange.Receipt is { IsTerminal: true } receipt)
                 await automations.CompleteInstallerLifecycleAsync(receipt, cancellationToken).ConfigureAwait(false);

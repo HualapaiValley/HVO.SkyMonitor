@@ -103,6 +103,32 @@ public sealed class InstallerLifecycleControlIntegrationTests
     }
 
     [TestMethod]
+    public async Task LostResumeResponseKeepsAdmissionFenced_RestoresPauseAndCannotUndoLaterExplicitResume()
+    {
+        var fixture = new Fixture(false) { LoseResumeResponse = true };
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token",
+            Guid.NewGuid(), fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Restart, "owner", "maintenance",
+            fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow);
+        var queued = await fixture.Controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var verifier = new InstallerControlVerifier(client, _ => Task.CompletedTask, TimeProvider.System,
+            new(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(5)));
+        var terminal = await verifier.ExecuteAsync(queued, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(terminal.ResumeRequested);
+        Assert.IsTrue(fixture.ResumeFenceHeld, "No exposure may start between a native resume and installer terminal publication.");
+        Assert.AreEqual(CameraAgentControlPhase.Failed, terminal.Phase);
+        Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+        Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        await fixture.Capture.ResumeAsync("owner-resume-after-failure", fixture.Capture.Snapshot.Version, "owner", "checked receipt",
+            CancellationToken.None).ConfigureAwait(false);
+        await client.ExchangeAsync(terminal, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Running, fixture.Capture.Snapshot.State, "A receipt replay cannot rewind a later owner resume.");
+    }
+
+    [TestMethod]
     public async Task ActiveLifecycleFencesResumeUntilTerminalFailure_ExistingExplicitResumeStillWorks()
     {
         var fixture = new Fixture(false);
@@ -117,8 +143,11 @@ public sealed class InstallerLifecycleControlIntegrationTests
         await Assert.ThrowsAsync<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlConflictException>(() =>
             fixture.Capture.ResumeAsync("blocked-resume", fixture.Capture.Snapshot.Version, "owner", "resume", CancellationToken.None)).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
-        await fixture.Controls.ExchangeAsync(new(worker, queued with { Phase = CameraAgentControlPhase.Failed,
-            Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "drain.timeout")] }), CancellationToken.None).ConfigureAwait(false);
+        await fixture.Controls.ExchangeAsync(new(worker, queued with
+        {
+            Phase = CameraAgentControlPhase.Failed,
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "drain.timeout")]
+        }), CancellationToken.None).ConfigureAwait(false);
         await fixture.Capture.ResumeAsync("explicit-resume", fixture.Capture.Snapshot.Version, "owner", "checked failure", CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Running, fixture.Capture.Snapshot.State);
     }
@@ -130,6 +159,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
         internal CaptureAdmissionCoordinator Capture { get; private set; } = null!;
         internal HttpMessageHandler Handler => _handler ??= new EndpointHandler(this);
         internal int RestartCalls;
+        internal bool LoseResumeResponse, ResumeFenceHeld;
         private readonly List<WebApplication> _hosts = [];
         private readonly List<IDisposable> _owned = [];
         private EndpointHandler? _handler;
@@ -214,6 +244,18 @@ public sealed class InstallerLifecycleControlIntegrationTests
                 using var output = new MemoryStream();
                 context.Response.Body = output;
                 await endpoint.RequestDelegate!(context).ConfigureAwait(false);
+                if (owner.LoseResumeResponse && request.RequestUri!.AbsolutePath.EndsWith("/resume", StringComparison.Ordinal))
+                {
+                    owner.LoseResumeResponse = false;
+                    using var admissionCancellation = new CancellationTokenSource();
+                    var admission = owner.Capture.EnterAsync(admissionCancellation.Token).AsTask();
+                    owner.ResumeFenceHeld = !admission.IsCompleted;
+                    await admissionCancellation.CancelAsync().ConfigureAwait(false);
+                    if (owner.ResumeFenceHeld)
+                        await Assert.ThrowsAsync<OperationCanceledException>(() => admission).ConfigureAwait(false);
+                    else (await admission.ConfigureAwait(false)).Dispose();
+                    throw new HttpRequestException("Simulated loss after durable resume acknowledgement.");
+                }
                 return new((HttpStatusCode)context.Response.StatusCode) { Content = new ByteArrayContent(output.ToArray()) };
             }
         }

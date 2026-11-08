@@ -350,11 +350,11 @@ internal sealed class CameraAgentSystemUiService(
         if (controls is null) return OperatorUiResult<CameraAgentControlView>.Success(new(false, []));
         try
         {
-        var view = await controls.ReadAsync(cancellationToken).ConfigureAwait(false);
-        var principal = (await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false)).User;
-        var canMutate = (await authorizationService.AuthorizeAsync(principal,
-            CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded;
-        return OperatorUiResult<CameraAgentControlView>.Success(view with { Available = view.Available && canMutate });
+            var view = await controls.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var principal = (await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false)).User;
+            var canMutate = (await authorizationService.AuthorizeAsync(principal,
+                CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded;
+            return OperatorUiResult<CameraAgentControlView>.Success(view with { Available = view.Available && canMutate });
         }
         catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
         {
@@ -406,6 +406,7 @@ internal sealed class CameraAgentSystemUiService(
         CameraAgentControlPhase.Succeeded when receipt.Request.Kind == CameraAgentControlKind.Drain => "Drained; capture remains paused until explicitly resumed.",
         CameraAgentControlPhase.Succeeded => receipt.ResumeAfterVerification ? "Restart verified; prior running state restored." : "Restart verified; prior paused state preserved.",
         CameraAgentControlPhase.Skipped => "Restart skipped: capture window or supervisor requirements were not met.",
+        _ when receipt.ResumeRequested => "Resume was not confirmed; capture was paused before this failure receipt was published. " + receipt.Events[^1].Code,
         _ => "Lifecycle did not complete. No automatic resume was issued; check capture state and the installer receipt. " + receipt.Events[^1].Code
     };
 

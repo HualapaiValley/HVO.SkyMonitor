@@ -15,8 +15,12 @@ internal sealed class InstallerControlHttpClient : IInstallerControlClient, IDis
     {
         _token = token;
         _workerId = workerId;
-        _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false,
-            CheckCertificateRevocationList = true }, disposeHandler: handler is null)
+        _http = new HttpClient(handler ?? new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            CheckCertificateRevocationList = true
+        }, disposeHandler: handler is null)
         { BaseAddress = address, Timeout = TimeSpan.FromSeconds(10), MaxResponseContentBufferSize = 1024 * 1024 };
         _http.DefaultRequestHeaders.Add("X-HVO-Installation-Token", token);
         _lifecycle = new CameraAgentLifecycleClient(address, handler);

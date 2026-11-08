@@ -101,8 +101,11 @@ public sealed class CameraAgentControlStoreTests
         {
             await RegisterAsync(controls).ConfigureAwait(false);
             var queued = await controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
-            terminal = queued with { Phase = CameraAgentControlPhase.Failed,
-                Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, _clock.GetUtcNow(), "drain.timeout")] };
+            terminal = queued with
+            {
+                Phase = CameraAgentControlPhase.Failed,
+                Events = [.. queued.Events, new(CameraAgentControlPhase.Failed, _clock.GetUtcNow(), "drain.timeout")]
+            };
             await controls.ExchangeAsync(new(Worker, terminal), CancellationToken.None).ConfigureAwait(false);
             await controls.ExchangeAsync(new(Worker, terminal), CancellationToken.None).ConfigureAwait(false);
             await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ExchangeAsync(new(Worker,
@@ -124,8 +127,11 @@ public sealed class CameraAgentControlStoreTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ExchangeAsync(new(Worker,
             queued with { Request = queued.Request with { Actor = "forged" } }), CancellationToken.None)).ConfigureAwait(false);
         await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ExchangeAsync(new(Worker,
-            queued with { Phase = CameraAgentControlPhase.Succeeded,
-                Events = [.. queued.Events, new(CameraAgentControlPhase.Succeeded, _clock.GetUtcNow(), "restart.verified")] }), CancellationToken.None)).ConfigureAwait(false);
+            queued with
+            {
+                Phase = CameraAgentControlPhase.Succeeded,
+                Events = [.. queued.Events, new(CameraAgentControlPhase.Succeeded, _clock.GetUtcNow(), "restart.verified")]
+            }), CancellationToken.None)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -134,9 +140,13 @@ public sealed class CameraAgentControlStoreTests
         using var controls = Create();
         await RegisterAsync(controls).ConfigureAwait(false);
         var queued = await controls.SubmitAsync(Request() with { Kind = CameraAgentControlKind.Restart }, CancellationToken.None).ConfigureAwait(false);
-        var restarting = queued with { Phase = CameraAgentControlPhase.Restarting, PausedVersion = 9,
+        var restarting = queued with
+        {
+            Phase = CameraAgentControlPhase.Restarting,
+            PausedVersion = 9,
             Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
-                new(CameraAgentControlPhase.Restarting, _clock.GetUtcNow(), "restart.requesting")] };
+                new(CameraAgentControlPhase.Restarting, _clock.GetUtcNow(), "restart.requesting")]
+        };
         await controls.ExchangeAsync(new(Worker, restarting), CancellationToken.None).ConfigureAwait(false);
         var command = new CameraAgentControlRestart(Worker, queued.Request.OperationId, 9);
         Assert.IsTrue(await controls.MayRestartAsync(command, 9, CancellationToken.None).ConfigureAwait(false));

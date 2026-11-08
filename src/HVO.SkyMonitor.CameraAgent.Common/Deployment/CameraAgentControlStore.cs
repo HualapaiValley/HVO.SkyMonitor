@@ -19,9 +19,21 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private State? _state;
     private Guid _worker;
     private DateTimeOffset _leaseUntil;
+    private int _admissionHeld;
+    private TaskCompletionSource _admissionReleased = ReleasedSignal();
 
     public Guid ProcessId { get; } = Guid.NewGuid();
     public bool Available => _worker != Guid.Empty && timeProvider.GetUtcNow() < _leaseUntil;
+    public bool AdmissionHeld => Volatile.Read(ref _admissionHeld) != 0;
+    public Task WaitForAdmissionReleaseAsync(CancellationToken cancellationToken) =>
+        Volatile.Read(ref _admissionReleased).Task.WaitAsync(cancellationToken);
+
+    private static TaskCompletionSource ReleasedSignal()
+    {
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        signal.SetResult();
+        return signal;
+    }
 
     public async Task<CameraAgentControlView> ReadAsync(CancellationToken cancellationToken)
     {
@@ -83,7 +95,26 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             var active = state.Receipts.FirstOrDefault(item => !item.IsTerminal);
             return active is null || active.Phase == CameraAgentControlPhase.Verifying &&
                 active.VerifiedProcessId == ProcessId && state.CancelledOperationId != active.Request.OperationId &&
+                active.ResumeRequested &&
                 actor == $"installer-lifecycle:{active.Request.OperationId:D}";
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Checks a proposed installer update before an endpoint performs any failure-settlement effect.</summary>
+    public async Task<bool> ValidateReceiptAsync(CameraAgentControlExchange exchange, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(exchange);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (exchange.WorkerId == Guid.Empty || Available && _worker != exchange.WorkerId)
+                throw new InvalidOperationException("The installer worker does not own this exchange.");
+            var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
+            if (exchange.Receipt is not { } next) return false;
+            var prior = state.Receipts.FirstOrDefault(item => item.Request.OperationId == next.Request.OperationId);
+            if (prior is null || !IsValidSuccessor(prior, next)) throw new InvalidOperationException("The lifecycle receipt is invalid.");
+            return !Same(prior, next);
         }
         finally { _gate.Release(); }
     }
@@ -142,12 +173,13 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
 
     private static bool IsValidSuccessor(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
         next.IsValid() && next.Request == prior.Request &&
+        (!prior.ResumeRequested || next.ResumeRequested) &&
         (prior.OriginalProcessId is null || next.OriginalProcessId == prior.OriginalProcessId) &&
         (prior.PausedVersion is null || next.PausedVersion == prior.PausedVersion) &&
         (prior.VerificationDeadlineUtc is null || next.VerificationDeadlineUtc == prior.VerificationDeadlineUtc) && next.Events is { Count: > 0 and <= 10 } &&
         Enum.IsDefined(next.Phase) && next.Events.Count >= prior.Events.Count &&
         next.Events.Take(prior.Events.Count).SequenceEqual(prior.Events) && next.Events[^1].Phase == next.Phase &&
-        next.Events.All(item => Enum.IsDefined(item.Phase) && item.Utc >= next.Request.RequestedUtc &&
+        next.Events.All(item => Enum.IsDefined(item.Phase) && item.Utc != default && item.Utc.Offset == TimeSpan.Zero &&
             item.Code is { Length: > 0 and <= 96 } && item.Code.All(character => char.IsAsciiLetterLower(character) || character is '.' or '-')) &&
         (!prior.IsTerminal || Same(prior, next));
 
@@ -161,11 +193,12 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var state = await JsonSerializer.DeserializeAsync<State>(stream, Json, cancellationToken).ConfigureAwait(false);
         if (state is null || state.SchemaVersion != 1 || state.Receipts is null || state.Receipts.Length > RetainedReceipts ||
-            state.Receipts.Count(item => !item.IsTerminal) > 1 || state.Receipts.Any(item =>
-                !item.Request.IsValid() || !IsValidSuccessor(item, item)) ||
+            state.Receipts.Any(item => item is null || !item.IsValid()) ||
+            state.Receipts.Count(item => !item.IsTerminal) > 1 ||
             state.Receipts.Select(item => item.Request.OperationId).Distinct().Count() != state.Receipts.Length)
             throw new InvalidDataException("Lifecycle state is invalid.");
-        return _state = state;
+        ApplyState(state);
+        return state;
     }
 
     private async Task SaveAsync(State state, CancellationToken cancellationToken)
@@ -176,6 +209,22 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
                 UnixFileMode.UserRead | UnixFileMode.UserWrite);
             await JsonSerializer.SerializeAsync(stream, state, Json, token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
+        ApplyState(state);
+    }
+
+    private void ApplyState(State state)
+    {
+        var held = state.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued);
+        if (held && !AdmissionHeld)
+        {
+            Volatile.Write(ref _admissionReleased, new(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(ref _admissionHeld, 1);
+        }
+        else if (!held && AdmissionHeld)
+        {
+            Volatile.Write(ref _admissionHeld, 0);
+            _admissionReleased.TrySetResult();
+        }
         _state = state;
     }
 

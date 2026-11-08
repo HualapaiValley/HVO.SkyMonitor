@@ -60,11 +60,13 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 
     private string CaptureState => _view?.Summary.CaptureControl.Value.State ?? "Unknown";
 
-    private bool CanPause => CaptureState == "Running";
+    private bool LifecycleActive => _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true;
 
-    private bool CanResume => CaptureState == "Paused";
+    private bool CanPause => CaptureState == "Running" && !LifecycleActive;
 
-    private string? CaptureUnavailableReason => _view is null
+    private bool CanResume => CaptureState == "Paused" && !LifecycleActive;
+
+    private string? CaptureUnavailableReason => LifecycleActive ? "Wait for the installer lifecycle terminal receipt before changing capture admission." : _view is null
         ? "The capture state could not be read. Refresh to try again."
         : CaptureState switch
         {
@@ -74,14 +76,16 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             _ => "Capture control is unavailable on this host.",
         };
 
-    private Banner StateBanner => CaptureState switch
-    {
-        "Running" => new Banner("success", "Capture is not paused.", "The schedule and the other admission checks decide when each exposure starts."),
-        "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing and delivery of accepted work continue."),
-        "PauseRequested" => new Banner("running", "Capture is pausing.", "The current exposure finishes through durable ingress before capture stops."),
-        "Initializing" => new Banner("running", "Capture control is starting.", "Pause and resume become available once the durable state is read."),
-        _ => new Banner("failure", "Capture control is unavailable.", "Pause and resume are disabled; see Health & diagnostics."),
-    };
+    private Banner StateBanner => _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true
+        ? new Banner("running", "Capture admission is held for installer lifecycle control.", "Accepted work remains durable. Wait for the terminal receipt before resuming.")
+        : CaptureState switch
+        {
+            "Running" => new Banner("success", "Capture is not paused.", "The schedule and the other admission checks decide when each exposure starts."),
+            "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing and delivery of accepted work continue."),
+            "PauseRequested" => new Banner("running", "Capture is pausing.", "The current exposure finishes through durable ingress before capture stops."),
+            "Initializing" => new Banner("running", "Capture control is starting.", "Pause and resume become available once the durable state is read."),
+            _ => new Banner("failure", "Capture control is unavailable.", "Pause and resume are disabled; see Health & diagnostics."),
+        };
 
     private string RestartDetail => _restart switch
     {
@@ -90,7 +94,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         _ => "Restart availability could not be read.",
     };
 
-    private string? RestartUnavailableReason => _restarting
+    private string? RestartUnavailableReason => LifecycleActive ? "An installer lifecycle operation is in progress." : _restarting
         ? "A restart is already in progress."
         : _restart switch
         {

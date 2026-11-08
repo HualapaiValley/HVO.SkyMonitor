@@ -13,9 +13,12 @@ public sealed partial class AutomationsPageTests
     {
         using var context = CreateContext();
         var state = Automation(definitions: [], calendar: [], runs: []);
-        var service = Register(context, state with { Registry = [.. state.Registry,
+        var service = Register(context, state with
+        {
+            Registry = [.. state.Registry,
             new(LocalAutomationTaskKind.ScheduledCameraAgentRestart, "Installer lifecycle", [LocalAutomationTriggerKind.Periodic],
-                ["installed-cameraagent"], true, null)] });
+                ["installed-cameraagent"], true, null)]
+        });
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=restart");
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement("#restart-setup-guide");

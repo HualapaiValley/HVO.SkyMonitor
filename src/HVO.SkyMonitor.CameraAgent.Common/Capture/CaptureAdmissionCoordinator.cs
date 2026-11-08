@@ -176,6 +176,8 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                 return;
             }
 
+            if (_lifecycleControls is not null)
+                await _lifecycleControls.ReadAsync(cancellationToken).ConfigureAwait(false);
             var evidenceReady = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
             if (!evidenceReady && Volatile.Read(ref _awaitingEvidenceRecovery)) return;
             var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken).ConfigureAwait(false);
@@ -482,12 +484,12 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
     private bool TryEnter()
     {
-        if (Volatile.Read(ref _gateState) != GateRunning)
+        if (Volatile.Read(ref _gateState) != GateRunning || _lifecycleControls?.AdmissionHeld == true)
         {
             return false;
         }
         Interlocked.Increment(ref _inFlight);
-        if (Volatile.Read(ref _gateState) == GateRunning)
+        if (Volatile.Read(ref _gateState) == GateRunning && _lifecycleControls?.AdmissionHeld != true)
         {
             return true;
         }
@@ -509,6 +511,8 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                     continue;
                 }
             }
+            if (_lifecycleControls?.AdmissionHeld == true)
+                await _lifecycleControls.WaitForAdmissionReleaseAsync(cancellationToken).ConfigureAwait(false);
             var signal = Volatile.Read(ref _runningSignal).Task;
             if (TryEnter())
             {

@@ -29,7 +29,8 @@ internal sealed record LifecycleWorkerRequest(Guid InstanceId, string ProductRoo
         }
         if (!Guid.TryParse(values.GetValueOrDefault("--instance-id"), out var id)) throw new InstallUsageException("--instance-id is required.");
         var result = new LifecycleWorkerRequest(id, values.GetValueOrDefault("--product-root") ?? production,
-            flags.Contains("--once"), flags.Contains("--json")) { AllowTestProductRoot = allowTest, ProductionProductRoot = production };
+            flags.Contains("--once"), flags.Contains("--json"))
+        { AllowTestProductRoot = allowTest, ProductionProductRoot = production };
         result.Validate();
         return result;
     }
@@ -56,12 +57,12 @@ internal sealed partial class CameraAgentLifecycleManager
         using var workerLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, $"control-worker-{request.InstanceId:D}.lock"),
             TimeSpan.Zero, cancellationToken);
         var journal = new InstallerControlJournal(Path.Combine(paths.OperationsRoot, $"control-worker-{request.InstanceId:D}.json"));
-        var workerId = Guid.NewGuid();
+        await journal.LoadAsync(cancellationToken).ConfigureAwait(false);
+        var workerId = journal.WorkerId;
         // The installation manifest owns the local listener; neither UI nor automation supplies an address.
         var address = IPAddress.TryParse(manifest.BindAddress, out var binding) && IPAddress.Any.Equals(binding)
             ? new Uri($"http://127.0.0.1:{manifest.Port}") : result.Url;
         using var client = new InstallerControlHttpClient(address, token, workerId);
-        await journal.LoadAsync(cancellationToken).ConfigureAwait(false);
         // An interrupted installer never reissues an ambiguously acknowledged pause/restart. Settle its retained
         // operation as failed, preserve capture state, and deliver the actual failure when CameraAgent is reachable.
         await journal.RecoverInterruptedAsync(DateTimeOffset.UtcNow).ConfigureAwait(false);
@@ -85,18 +86,21 @@ internal sealed partial class CameraAgentLifecycleManager
                     {
                         try
                         {
-                        using var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"),
-                            TimeSpan.Zero, cancellationToken);
-                        var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-                        if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation))
-                            throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
-                        var verifier = new InstallerControlVerifier(client, journal.SaveAsync, TimeProvider.System);
-                        await verifier.ExecuteAsync(current, cancellationToken).ConfigureAwait(false);
+                            using var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"),
+                                TimeSpan.Zero, cancellationToken);
+                            var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+                            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation))
+                                throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
+                            var verifier = new InstallerControlVerifier(client, journal.SaveAsync, TimeProvider.System);
+                            await verifier.ExecuteAsync(current, cancellationToken).ConfigureAwait(false);
                         }
                         catch (InstallerException)
                         {
-                            var failed = current with { Phase = CameraAgentControlPhase.Failed,
-                                Events = [.. current.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "lifecycle.installer-busy")] };
+                            var failed = current with
+                            {
+                                Phase = CameraAgentControlPhase.Failed,
+                                Events = [.. current.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "lifecycle.installer-busy")]
+                            };
                             await journal.SaveAsync(failed).ConfigureAwait(false);
                             await client.ExchangeAsync(failed, cancellationToken).ConfigureAwait(false);
                         }
