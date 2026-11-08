@@ -104,3 +104,35 @@ schema or payload identity fails closed; an empty selection draws no catalog
 objects or object labels. The scientific caption remains. Retained scene bytes,
 source identity and raw pixels are preserved, and no-profile output identities
 remain unchanged.
+
+
+Durable presentation resolves the capture's location provenance through protected
+history; redacted lane/replay coordinates and the current site are never substitutes.
+Missing history refuses processing explicitly. The active and candidate rig views
+report compatibility; geometry edits retain the old horizon but warn that detection
+is quarantined and overlays withheld until explicit revalidation and activation.
+
+Central transient validation currently cannot authenticate the edge horizon mask
+set. A rig containing a horizon therefore returns MaskEvidenceUnavailable and
+NeedsReview centrally; it never runs detection with only the legacy masks. This is
+an explicit fail-closed supported result, including for an active empty profile.
+
+Transient masks sample at detector pixel centres using the validated
+SourceToDetectorTransform (Mono16 or 2x2 RGGB cell centres), consistently with
+existing geometric masks. Their algorithm identity is horizon-detector-pixel-centres-v1.
+At most one geometry/site/profile/transform-bound set is retained locally during
+one window evaluation and discarded afterward; identical adjacent sources share
+that set. It is independent of source pixels; each temporal source retains its own
+input identity and mask checksums. A changed binding regenerates; incompatible
+profiles refuse before reuse. RGGB samples detector cell centres rather than the
+former union of four full-resolution centre samples; masks are eligibility samples,
+not a proof of complete angular coverage inside the cell.
+
+Mask generation, the legacy annotation fallback and sky-map projections consume
+geometric, unrefracted directions. Agent-produced sky maps and fallback scenes
+are unrefracted; retained scenes with explicit refraction use the shared source-bound
+view that removes it. Callers must not pass apparent angles to geometric-only paths.
+The v1 geometry fingerprint deliberately includes the complete sensor/readout
+contract (including levels/packing): non-geometric changes conservatively request
+revalidation. Narrowing this already-frozen identity would need a versioned
+compatibility/migration decision; it is not silently changed in this correction.

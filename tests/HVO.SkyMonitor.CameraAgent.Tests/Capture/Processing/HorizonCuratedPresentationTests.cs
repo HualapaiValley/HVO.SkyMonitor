@@ -1,4 +1,8 @@
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -28,19 +32,23 @@ public sealed class HorizonCuratedPresentationTests
     public async Task CuratedGlyphsFootprintsAndLabelsUseHorizonThroughBothAliasesAndArchivedExecution(string alias, string mode)
     {
         var fixture = await FixtureAsync(mode).ConfigureAwait(false);
+        using var services = Services(fixture);
         var retained = ProjectedSceneJson.Serialize(fixture.Scene).ToArray();
         string? identity = null;
         foreach (var replay in new[] { false, true })
         {
             var context = Context(fixture, replay);
             ScenePresentationLayerCaptureProcessingStep step = alias == "ScenePresentationLayer"
-                ? new ScenePresentationLayerCaptureProcessingStep(new("layer", alias, 1), new())
-                : new SceneStylePresentationCaptureProcessingStep(new("layer", alias, 1), new());
+                ? new ScenePresentationLayerCaptureProcessingStep(new("layer", alias, 1), new() { DrawMarkers = true, DrawConstellationLines = true }, services)
+                : new SceneStylePresentationCaptureProcessingStep(new("layer", alias, 1), new() { DrawMarkers = true, DrawConstellationLines = true }, services);
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
             var product = context.ProcessingOutcomes.Single().Products[0];
             var payload = PresentationLayerPayloadJson.Parse(product.Payload).Payload!;
             Assert.AreEqual(mode == "clear", payload.Segments.Count > 0, "Both catalog footprints and glyph strokes are excluded.");
             Assert.AreEqual(mode == "clear", payload.TextBlocks.Count > 1, "Only the scientific caption remains when no object is eligible.");
+            Assert.AreEqual(mode == "clear", payload.Markers.Count > 0, "Ordinary stars must survive the redacted lane only when eligible.");
+            var constellation = PresentationLayerPayloadJson.Parse(context.ProcessingOutcomes.Single().Products[3].Payload).Payload!;
+            Assert.AreEqual(mode == "clear", constellation.Segments.Count > 0, "Constellations use the same capture-time site.");
             Assert.AreEqual(fixture.Scene.SceneIdentitySha256, payload.SourceIdentitySha256);
             if (identity is not null) Assert.AreEqual(identity, product.OutputIdentitySha256);
             identity = product.OutputIdentitySha256;
@@ -57,6 +65,7 @@ public sealed class HorizonCuratedPresentationTests
     public async Task ActualFlattenedExecutorFiltersCuratedCompositionInLiveAndArchivedExecution(string mode)
     {
         var fixture = await FixtureAsync(mode).ConfigureAwait(false);
+        using var services = Services(fixture);
         var retained = ProjectedSceneJson.Serialize(fixture.Scene).ToArray();
         byte[]? first = null;
         foreach (var replay in new[] { false, true })
@@ -71,7 +80,7 @@ public sealed class HorizonCuratedPresentationTests
                 DrawConstellationLines = false,
                 DrawLabels = true
             }, new ProjectedSceneStore(), new NeverGenerateScene(),
-                new(new ProcessingRecipeExecutor()));
+                new(new ProcessingRecipeExecutor()), services);
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
             var outcome = context.ProcessingOutcomes.Single();
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, $"{outcome.ReasonCode}: {outcome.Field}");
@@ -94,12 +103,15 @@ public sealed class HorizonCuratedPresentationTests
     {
         var manifest = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono8, 484, 304, 484, new byte[484 * 304]);
         var epoch = manifest.Descriptor.Timing.ExposureStartedUtc;
+        var location = DeploymentLocationSnapshot.Create("retained-site", 4, "synthetic", null,
+            epoch.AddDays(-1), null, 35, -114, 1200, "UTC");
+        manifest = manifest with { Descriptor = manifest.Descriptor with { Location = location.ToProvenance() } };
         var rig = new CameraRigConfig(new("virtual", 484, 304, 2, SensorColorMode.Mono, CameraPixelFormat.Mono8),
             new("Perspective", 0, 100, 0, LensKind.Rectilinear, PrincipalPointX: 242, PrincipalPointY: 152,
                 FocalLengthXPixels: 120, FocalLengthYPixels: 120, CalibrationVersion: "curated-v1"),
             new(60, 0, 0), new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 100));
         var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "curated-horizon", 1,
-            "virtual-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(35, -114, mode == "incompatible" ? 1300 : 1200),
+            "virtual-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(35, -114, mode == "incompatible" ? 1300 : 1200, location.ToProvenance()),
             HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
             mode == "unknown" ? [] : Enumerable.Range(0, 4).Select(i => new HorizonObstructionSample(i * 90,
                 mode == "blocked" ? 90 : 0)).ToArray());
@@ -107,9 +119,19 @@ public sealed class HorizonCuratedPresentationTests
         var request = new VisibleSceneRequest(epoch, new(35, -114, 1200), RigProjectionContextFactory.Create(rig),
             new CatalogQuery(6, 10), new("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "1"),
             projectionVersion: RigProjectionContextFactory.AlgorithmVersion);
-        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(request).ConfigureAwait(false);
         EquatorialPoint Position(double altitude, double azimuth) => EquatorialPrecession.PrecessToJ2000(
             CoordinateTransforms.HorizontalToEquatorial(new(altitude, azimuth), epoch, 35, -114), epoch);
+        var starA = Position(60, 0);
+        var starB = Position(58, 5);
+        var catalog = new InMemoryCelestialCatalog([
+            new("star-a", "Star A", starA.RightAscensionHours, starA.DeclinationDegrees, 1, HipparcosId: "1"),
+            new("star-b", "Star B", starB.RightAscensionHours, starB.DeclinationDegrees, 1, HipparcosId: "2")]);
+        var topology = new InMemoryConstellationTopology([new("TST", "1", "2")],
+            new("fixture", "1", new Uri("https://example.test/topology"), new string('D', 64), "test", "1"));
+        request = new VisibleSceneRequest(epoch, request.Observer, request.Projection, request.CatalogQuery,
+            request.CatalogMetadata, projectionVersion: request.ProjectionVersion, constellationIds: ["TST"]);
+        var visible = await new VisibleSceneBuilder(catalog, topology).BuildAsync(request).ConfigureAwait(false);
+        Assert.IsNotEmpty(visible.Segments);
         var a = Position(60, 0);
         var b = Position(50, 20);
         var c = Position(45, 340);
@@ -136,7 +158,7 @@ public sealed class HorizonCuratedPresentationTests
         Assert.HasCount(3, scene.DeepSky!.Objects);
         Assert.IsNotEmpty(scene.ResolvedFootprints!);
         Assert.IsTrue(scene.DeepSky.Objects.Any(static item => item.Representation == DeepSkyRepresentation.UnknownExtentGlyph));
-        return new(new(new(35, -114, 1200, "UTC"), new("VirtualSky"), rig, CapturePipelineConfig.Empty), manifest, scene);
+        return new(new(new(35, -114, 1200, "UTC"), new("VirtualSky"), rig, CapturePipelineConfig.Empty) { DeploymentLocation = location }, manifest, scene);
     }
 
     private static CaptureProcessingContext Context(Fixture fixture, bool replay)
@@ -151,7 +173,12 @@ public sealed class HorizonCuratedPresentationTests
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, fixture.Manifest,
             new StoredFrameReference("raw.bin", "/virtual/raw.bin", raw.TimestampUtc, FrameArtifactRole.Raw),
             CaptureContractJson.ComputeManifestSha256(fixture.Manifest));
-        var context = new CaptureProcessingContext(fixture.Config, submission, receipt, null,
+        var envelope = CaptureLaneEnvelopeSerializer.Serialize(fixture.Config, submission);
+        var config = CaptureLaneEnvelopeSerializer.Deserialize(envelope.Json, envelope.Sha256).Configuration;
+        Assert.IsTrue(config.DeploymentLocationRedacted);
+        Assert.AreEqual(0, config.Observatory.LatitudeDegrees);
+        Assert.IsNull(config.DeploymentLocation);
+        var context = new CaptureProcessingContext(config, submission, receipt, null,
             replay ? new(Guid.NewGuid(), ProcessingGraphExecutionClass.Replay, "archived", new string('F', 64), false, 1, "lease") : null);
         context.BeginNode("preview", []);
         var previewRecipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.FixedPreview,
@@ -172,6 +199,24 @@ public sealed class HorizonCuratedPresentationTests
         { Kind = ProcessingProductKind.Metadata, SchemaVersion = fixture.Scene.SchemaVersion, ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256 });
         context.BeginNode("presentation", ["scene", "preview"]);
         return context;
+    }
+
+    private static ServiceProvider Services(Fixture fixture)
+    {
+        var location = fixture.Config.DeploymentLocation!;
+        var store = new Mock<IDeploymentLocationStore>(MockBehavior.Strict);
+        store.Setup(s => s.Resolve(location.ToProvenance(), fixture.Manifest.Descriptor.Timing.ExposureStartedUtc))
+            .Returns(location);
+        return new ServiceCollection().AddSingleton(store.Object).BuildServiceProvider();
+    }
+
+    [TestMethod]
+    public async Task RedactedCaptureWithoutHistoryRefusesRatherThanSubstitutingCurrentCoordinates()
+    {
+        var fixture = await FixtureAsync("clear").ConfigureAwait(false);
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await new ScenePresentationLayerCaptureProcessingStep(new("layer", "ScenePresentationLayer", 1), new())
+                .ProcessAsync(Context(fixture, true), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     private sealed class NeverGenerateScene : IAnnotationSceneProvider

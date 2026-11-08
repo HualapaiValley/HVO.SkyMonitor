@@ -71,9 +71,7 @@ public sealed class HorizonObstructionSceneEligibility
         {
             if (item.Pixel is { } pixel && !IsClear(pixel)) return false;
             if (!footprints.TryGetValue(item.Id, out var footprint)) return item.Pixel is not null;
-            return footprint.Parts.All(part => part.Points.All(IsClear) &&
-                Enumerable.Range(0, part.Closed ? part.Points.Count : part.Points.Count - 1)
-                    .All(i => IsSegmentClear(part.Points[i], part.Points[(i + 1) % part.Points.Count])));
+            return footprint.Parts.All(part => HorizonObstructionAnnotation.IsPartClear(part, IsClear, IsSegmentClear));
         }
         var ids = (scene.DeepSky?.Objects ?? []).Where(Eligible).Select(static item => item.Id)
             .Order(StringComparer.Ordinal).ToArray();

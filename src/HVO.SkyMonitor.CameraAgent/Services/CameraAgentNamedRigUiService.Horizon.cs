@@ -9,6 +9,18 @@ internal sealed record HorizonObstructionPreview(string ActiveRevisionId, long S
 
 internal sealed partial class CameraAgentNamedRigUiService
 {
+    private string HorizonCompatibility(CameraRigConfig rig)
+    {
+        if (rig.HorizonObstruction is not { } profile) return "No obstruction profile is active.";
+        var snapshot = runtime.Snapshot;
+        if (snapshot is null) return "Horizon compatibility unavailable; revalidate before use.";
+        var site = snapshot.Configuration.ResolveObservatory(timeProvider.GetUtcNow());
+        var evaluator = new HorizonObstructionEvaluator(profile, rig,
+            new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), snapshot.Location);
+        return evaluator.IsCompatible ? "Horizon compatible with this rig and the current site." :
+            "Horizon revalidation required. Detection is quarantined and sky overlays are withheld after activation until a revalidated horizon is explicitly activated.";
+    }
+
     public ValueTask<OperatorUiResult<HorizonObstructionPreview>> PreviewHorizonAsync(string activeRevisionId, long version,
         string installationId, double maximumGap, IReadOnlyList<HorizonObstructionSample> samples, CancellationToken token)
         => MutateAsync(async _ =>

@@ -19,6 +19,8 @@ public sealed partial class HorizonObstructionEditor : ComponentBase
     private HorizonObstructionPreview? _preview;
     private bool _busy;
     private string? _message;
+    private long _generation;
+    [Parameter] public string? Compatibility { get; set; }
 
     protected override void OnParametersSet()
     {
@@ -33,7 +35,7 @@ public sealed partial class HorizonObstructionEditor : ComponentBase
         Invalidate();
     }
 
-    private void Invalidate() { _preview = null; _message = null; }
+    private void Invalidate() { _generation++; _preview = null; _message = null; }
     private static string Number(double value) => value.ToString("G17", CultureInfo.InvariantCulture);
 
     private async Task PreviewAsync()
@@ -41,6 +43,7 @@ public sealed partial class HorizonObstructionEditor : ComponentBase
         if (_busy || ActiveRevision is null) return;
         _busy = true;
         _preview = null;
+        var generation = _generation;
         try
         {
             var lines = _samples.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -55,6 +58,7 @@ public sealed partial class HorizonObstructionEditor : ComponentBase
             }).ToArray();
             var result = await RigService.PreviewHorizonAsync(ActiveRevision.RevisionId, SelectionVersion,
                 _installation, _gap, samples, CancellationToken.None);
+            if (generation != _generation) return;
             _preview = result.IsSuccess ? result.Value : null;
             _message = result.IsSuccess ? "Preview ready. Review before saving." : result.Message;
         }

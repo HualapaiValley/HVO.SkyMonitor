@@ -207,7 +207,7 @@ public static class PresentationLayerProducers
         var allFootprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene);
         var excludedFootprints = allFootprints.Where(item => horizon is not null &&
             (!horizon.IsClear(ProjectedSceneAnnotation.FootprintAnchor(item, scene.ImageTransform)) ||
-             !item.Parts.All(part => part.Points.All(horizon.IsClear))))
+             !item.Parts.All(part => HorizonObstructionAnnotation.IsPartClear(part, horizon.IsClear, horizon.IsSegmentClear))))
             .Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
         var annotatedObjects = scene.Objects.Where(item => !excludedFootprints.Contains(item.Id) &&
             (horizon is null || horizon.IsClear(item.Pixel)) && IsNamed(item.Id, item.DisplayName) &&

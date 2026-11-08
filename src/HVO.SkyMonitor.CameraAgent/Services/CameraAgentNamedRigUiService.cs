@@ -50,7 +50,10 @@ internal interface ICameraAgentNamedRigUiService
 }
 
 internal sealed record NamedRigUiCatalog(NamedRigSelection Selection, IReadOnlyList<NamedRigRevision> Revisions,
-    string? PendingRuntimeFailure, string? ActiveRuntimeFailure);
+    string? PendingRuntimeFailure, string? ActiveRuntimeFailure)
+{
+    public IReadOnlyDictionary<string, string> HorizonCompatibility { get; init; } = new Dictionary<string, string>();
+}
 
 /// <summary>
 /// The operator-editable subset of the active rig. Optics carry the horizontal flip, field of view and focal length;
@@ -150,7 +153,10 @@ internal sealed partial class CameraAgentNamedRigUiService(
                 catalog.Revisions.Select(Sanitize).ToArray(),
                 store.PendingRuntimeFailure is not null && catalog.Selection.PendingRevisionId is not null
                     ? "Pending rig failed to initialize." : null,
-                store.ActiveRuntimeFailure is not null ? "Active camera is unavailable for capture." : null);
+                store.ActiveRuntimeFailure is not null ? "Active camera is unavailable for capture." : null)
+            {
+                HorizonCompatibility = catalog.Revisions.ToDictionary(r => r.RevisionId, r => HorizonCompatibility(r.Rig))
+            };
         });
 
     private static NamedRigRevision Sanitize(NamedRigRevision revision)

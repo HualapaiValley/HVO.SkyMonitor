@@ -89,6 +89,50 @@ public sealed class HorizonObstructionEditorTests
         Assert.HasCount(5, cut.FindAll("circle.horizon"), "Isolated known knots are points, never painted clear intervals.");
     }
 
+    [TestMethod]
+    [DataRow("samples")]
+    [DataRow("installation")]
+    [DataRow("gap")]
+    [DataRow("selection")]
+    public async Task DelayedPreviewCannotRestoreSaveAfterFormOrSelectionChanges(string change)
+    {
+        var active = Active();
+        var pending = new TaskCompletionSource<OperatorUiResult<HorizonObstructionPreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new Mock<ICameraAgentNamedRigUiService>();
+        service.Setup(s => s.PreviewHorizonAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<double>(),
+            It.IsAny<IReadOnlyList<HorizonObstructionSample>>(), It.IsAny<CancellationToken>())).Returns(new ValueTask<OperatorUiResult<HorizonObstructionPreview>>(pending.Task));
+        using var context = new BunitContext();
+        context.Services.AddSingleton(service.Object);
+        var cut = context.Render<HorizonObstructionEditor>(p => p.Add(c => c.ActiveRevision, active).Add(c => c.SelectionVersion, 1));
+        await cut.Find("#horizon-samples").InputAsync(new() { Value = "0,20\n20,20" }).ConfigureAwait(false);
+        var click = cut.Find("#horizon-preview").ClickAsync(new());
+        cut.WaitForAssertion(() => service.Verify(s => s.PreviewHorizonAsync(It.IsAny<string>(), 1, It.IsAny<string>(), It.IsAny<double>(),
+            It.IsAny<IReadOnlyList<HorizonObstructionSample>>(), It.IsAny<CancellationToken>()), Times.Once));
+        switch (change)
+        {
+            case "samples": await cut.Find("#horizon-samples").InputAsync(new() { Value = "0,80\n20,80" }).ConfigureAwait(false); break;
+            case "installation": await cut.Find("#horizon-installation").InputAsync(new() { Value = "moved" }).ConfigureAwait(false); break;
+            case "gap": await cut.Find("#horizon-gap").ChangeAsync(new() { Value = "15" }).ConfigureAwait(false); break;
+            case "selection": await cut.InvokeAsync(() => cut.Render(p => p.Add(c => c.ActiveRevision, active).Add(c => c.SelectionVersion, 2))).ConfigureAwait(false); break;
+        }
+        pending.SetResult(OperatorUiResult<HorizonObstructionPreview>.Success(Preview(active)));
+        await click.ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#horizon-preview").HasAttribute("disabled")));
+        Assert.IsEmpty(cut.FindAll("#horizon-save"));
+        Assert.DoesNotContain("Preview ready", cut.Markup);
+        service.Verify(s => s.SaveHorizonAsync(It.IsAny<HorizonObstructionPreview>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public void ActiveHorizonShowsRevalidationWarning()
+    {
+        using var context = new BunitContext();
+        context.Services.AddSingleton(Mock.Of<ICameraAgentNamedRigUiService>());
+        var cut = context.Render<HorizonObstructionEditor>(p => p.Add(c => c.ActiveRevision, Active())
+            .Add(c => c.Compatibility, "Horizon revalidation required. Detection is quarantined."));
+        Assert.Contains("revalidation required", cut.Find("#horizon-compatibility").TextContent);
+    }
+
     private static NamedRigRevision Active()
     {
         var config = VirtualOpticalCalibrationReviewServiceTests.Configuration("VirtualSky");

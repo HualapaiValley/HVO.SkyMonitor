@@ -193,8 +193,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         HorizonObstructionSceneSelection? curatedHorizon = null;
         if (context.Config.Rig.HorizonObstruction is { } horizon)
         {
-            var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
-            var observer = new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
+            var observer = HorizonCaptureObserver.Resolve(context, serviceProvider);
             var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer,
                 context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance());
             if (projectedScene is not null)

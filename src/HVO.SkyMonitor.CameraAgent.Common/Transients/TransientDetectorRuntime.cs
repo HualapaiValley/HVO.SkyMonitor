@@ -48,6 +48,8 @@ internal sealed class TransientDetectorRuntime(
         }
 
         var output = new Dictionary<int, TransientTemporalSource>();
+        string? obstructionKey = null;
+        HorizonObstructionMaskPlanes? obstructionPlanes = null;
         foreach (var pair in frames.OrderBy(static pair => pair.Key))
         {
             var configuration = configurations[pair.Key];
@@ -142,18 +144,38 @@ internal sealed class TransientDetectorRuntime(
                 var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer, pair.Value.Manifest.Descriptor.Location);
                 if (!evaluator.IsCompatible)
                     throw new TransientWorkerExecutionException("transient-runtime.obstruction-revalidation-required", retryable: false);
-                var binding = HorizonObstructionProducts.Bind(input.Descriptor.InputIdentitySha256, evaluator,
-                    configuration.Rig.Optics.CalibrationVersion,
-                    ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels));
-                var product = HorizonObstructionProducts.CreateMask(evaluator, binding, cancellationToken);
-                Linear16PixelMask Reduce(Linear16PixelMask plane) => width == plane.Width && height == plane.Height ? plane :
-                    Linear16MaskOperations.ReduceRggb16ToDetector(plane, cancellationToken);
+                var key = CaptureContractJson.ComputeCanonicalJsonSha256(new
+                {
+                    profile = profile.ComputeIdentitySha256(),
+                    evaluator.GeometryIdentitySha256,
+                    request.Observer,
+                    pair.Value.Manifest.Descriptor.Location,
+                    projection,
+                    transform,
+                    width,
+                    height
+                });
+                if (key != obstructionKey)
+                {
+                    var detectorTransform = ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels) with
+                    {
+                        BinX = projection.WidthPixels / width,
+                        BinY = projection.HeightPixels / height,
+                        OutputWidthPixels = width,
+                        OutputHeightPixels = height
+                    };
+                    if (transform.OffsetX != 0 || transform.OffsetY != 0 ||
+                        transform.ScaleX != (double)width / projection.WidthPixels ||
+                        transform.ScaleY != (double)height / projection.HeightPixels)
+                        throw new TransientWorkerExecutionException("transient-runtime.obstruction-transform-unsupported", retryable: false);
+                    obstructionPlanes = HorizonObstructionMask.Create(evaluator, detectorTransform, cancellationToken);
+                    obstructionKey = key;
+                }
+                var algorithm = new ProcessingAlgorithmIdentity("horizon-detector-pixel-centres-v1", profile.ComputeIdentitySha256());
                 masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.FixedHorizonObstruction,
-                    new ProcessingAlgorithmIdentity(HorizonObstructionMask.AlgorithmVersion, product.Binding.ProfileIdentitySha256),
-                    Reduce(product.Planes.Obstructed)));
+                    algorithm, obstructionPlanes!.Obstructed));
                 masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.UnknownHorizonObstruction,
-                    new ProcessingAlgorithmIdentity(HorizonObstructionMask.AlgorithmVersion, product.Binding.ProfileIdentitySha256),
-                    Reduce(product.Planes.Unknown)));
+                    algorithm, obstructionPlanes.Unknown));
             }
             output.Add(pair.Key, new TransientTemporalSource(
                 ToPosition(pair.Key), input.CaptureSequence!.Value, input,

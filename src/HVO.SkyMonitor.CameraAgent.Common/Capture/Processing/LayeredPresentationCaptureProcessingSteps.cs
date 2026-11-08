@@ -78,7 +78,7 @@ internal static class PresentationLayerKinds
 
 internal class ScenePresentationLayerCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
-    ScenePresentationLayerProcessingStepOptions options)
+    ScenePresentationLayerProcessingStepOptions options, IServiceProvider? serviceProvider = null)
     : ConfigurableCaptureProcessingStep<ScenePresentationLayerProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
@@ -147,9 +147,8 @@ internal class ScenePresentationLayerCaptureProcessingStep(
         HorizonObstructionSceneEligibility? horizon = null;
         if (context.Config.Rig.HorizonObstruction is { } profile)
         {
-            var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
             horizon = new(new HorizonObstructionEvaluator(profile, context.Config.Rig,
-                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters),
+                HorizonCaptureObserver.Resolve(context, serviceProvider),
                 context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance()), context.Config.Rig, scene);
             context.RecordCanonicalInput("horizon-scene-eligibility", "1", horizon.IdentitySha256);
         }

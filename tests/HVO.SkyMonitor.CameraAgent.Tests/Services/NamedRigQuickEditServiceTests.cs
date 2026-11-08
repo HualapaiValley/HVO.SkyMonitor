@@ -59,6 +59,40 @@ public sealed class NamedRigQuickEditServiceTests
     }
 
     [TestMethod]
+    public async Task ActiveAndStagedGeometryChangesExposeHorizonRevalidationState()
+    {
+        using var harness = await Harness.CreateAsync().ConfigureAwait(false);
+        var (active, version) = await harness.ActiveAsync().ConfigureAwait(false);
+        var preview = await harness.Service.PreviewHorizonAsync(active.RevisionId, version, "installation", 90,
+            [new(0, 0), new(90, 0), new(180, 0), new(270, 0)], CancellationToken.None).ConfigureAwait(false);
+        var saved = await harness.Service.SaveHorizonAsync(preview.Value!, CancellationToken.None).ConfigureAwait(false);
+        var candidate = saved.Value!;
+        var stagePreview = await harness.Named.PreviewAsync(candidate.RevisionId, CancellationToken.None).ConfigureAwait(false);
+        await harness.Named.StageAsync(candidate.RevisionId, version, "stage-horizon", "owner", true,
+            stagePreview.ScheduleRevisionId, stagePreview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+        async Task InitializeAsync(string revision)
+        {
+            var schedule = await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = schedule.PendingRevision!.Profile.ApplyTo(Configuration());
+            var prepared = await harness.Runtime.PrepareStartupAsync(schedule.PendingRevision, configuration, CancellationToken.None).ConfigureAwait(false);
+            await harness.Runtime.CommitPreparedStartupAsync(prepared,
+                token => harness.Named.CommitInitializedAsync(revision, configuration, token), CancellationToken.None).ConfigureAwait(false);
+        }
+        await InitializeAsync(candidate.RevisionId).ConfigureAwait(false);
+        var catalog = (await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.Contains("compatible with", catalog.HorizonCompatibility[candidate.RevisionId]);
+        var edit = await harness.Service.ApplyActiveRigEditAsync(Harness.Request(candidate, catalog.Selection.Version) with { RollAdjustmentDegrees = 1 }, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(ActiveRigEditStatus.Staged, edit.Value!.Status);
+        catalog = (await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        var staged = catalog.Selection.PendingRevisionId!;
+        Assert.Contains("revalidation required", catalog.HorizonCompatibility[staged]);
+        Assert.Contains("Detection is quarantined", catalog.HorizonCompatibility[staged]);
+        await InitializeAsync(staged).ConfigureAwait(false);
+        catalog = (await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.Contains("revalidation required", catalog.HorizonCompatibility[catalog.Selection.ActiveRevisionId!]);
+    }
+
+    [TestMethod]
     public async Task HorizonSaveRejectsGeometryChangedAfterPreview()
     {
         using var harness = await Harness.CreateAsync().ConfigureAwait(false);

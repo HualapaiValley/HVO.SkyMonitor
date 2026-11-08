@@ -2,6 +2,10 @@
 <section class="ops-panel horizon-editor" aria-labelledby="horizon-heading">
     <header class="ops-panel-heading"><div><h2 id="horizon-heading">Site horizon obstructions</h2><p>Review trees, buildings and terrain for this installed rig.</p></div></header>
     <p>Active: @(ActiveRevision?.Rig.HorizonObstruction is { } active ? $"revision {active.Revision}, installation {active.InstallationId}" : "No obstruction profile; terrain coverage unknown.")</p>
+    @if (Compatibility is not null)
+    {
+        <p role="status" id="horizon-compatibility">@Compatibility</p>
+    }
     <p>Use true north = 0°, east = 90°, geometric elevation above the horizontal plane. One azimuth,elevation pair per line, sorted by azimuth. Use ? for unknown terrain. Empty profiles and gaps remain unknown, never clear sky. Clouds and defective pixels are separate.</p>
     <label class="ops-field">Installation ID<input id="horizon-installation" maxlength="128" @bind="_installation" @bind:event="oninput" @bind:after="Invalidate" /></label>
     <p>Change this ID or explicitly revalidate after moving the rig. Preview binds the current site, pointing, readout and calibration.</p>

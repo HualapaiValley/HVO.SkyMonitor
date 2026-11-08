@@ -133,7 +133,7 @@ else
     }
     else
     {
-        <HorizonObstructionEditor ActiveRevision="active" SelectionVersion="_catalog.Selection.Version" Saved="HorizonSavedAsync" />
+        <HorizonObstructionEditor ActiveRevision="active" SelectionVersion="_catalog.Selection.Version" Compatibility="@_catalog.HorizonCompatibility.GetValueOrDefault(active.RevisionId)" Saved="HorizonSavedAsync" />
         var sensor = active.Rig.Sensor;
         var readout = active.Rig.Readout;
         var optics = active.Rig.Optics;
@@ -301,6 +301,14 @@ else
                     <div><dt>Source schedule revision ID</dt><dd><code>@(selected.SourceScheduleRevisionId ?? "Not recorded")</code></dd></div>
                 </dl>
             </details>
+        }
+        @if (_catalog.HorizonCompatibility.GetValueOrDefault(_revisionId) is { } horizonState)
+        {
+            <p role="status" id="selected-horizon-compatibility">@horizonState</p>
+        }
+        @if (pending is not null && _catalog.HorizonCompatibility.GetValueOrDefault(pending.RevisionId) is { } pendingHorizonState)
+        {
+            <p role="status" id="pending-horizon-compatibility">Pending rig: @pendingHorizonState</p>
         }
         <div class="rig-actions">
             <button type="button" class="button secondary" disabled="@(_busy || string.IsNullOrEmpty(_revisionId))" @onclick="PreviewAsync">Preview against active schedule</button>
@@ -548,6 +556,10 @@ else
                         <button type="button" class="button primary" disabled="@(_busy || ProfileNameFixed || string.IsNullOrWhiteSpace(_profileName))" @onclick="SaveProfileAsync">Save rig name</button>
                         break;
                     case RigDialog.ActiveEdit:
+                        @if (_editBasis?.Rig.HorizonObstruction is not null)
+                        {
+                            <p role="status">Geometry changes retain the horizon and require explicit revalidation after restart. Detection is quarantined and sky overlays are withheld until the revalidated horizon is activated.</p>
+                        }
                         <button type="button" id="rig-edit-apply" class="button primary" disabled="@(_busy || _editBasis is null)" @onclick="ApplyActiveEditAsync">Stage for restart</button>
                         break;
                     default:

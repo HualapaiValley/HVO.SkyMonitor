@@ -5,8 +5,8 @@ using HVO.SkyMonitor.Processing;
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed class SceneStylePresentationCaptureProcessingStep(
-    CaptureProcessingStepMetadata metadata, SceneStylePresentationStepOptions options)
-    : ScenePresentationLayerCaptureProcessingStep(metadata, options)
+    CaptureProcessingStepMetadata metadata, SceneStylePresentationStepOptions options, IServiceProvider? serviceProvider = null)
+    : ScenePresentationLayerCaptureProcessingStep(metadata, options, serviceProvider)
 {
     protected override string ProducerVersion => SceneStylePresentation.ProducerVersion;
     public override string? OutputSchemaVersion => PresentationLayerPayloadV1.SceneStyleSchemaVersion;

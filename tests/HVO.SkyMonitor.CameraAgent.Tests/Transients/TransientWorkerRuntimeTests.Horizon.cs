@@ -12,15 +12,29 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 public sealed partial class TransientWorkerRuntimeTests
 {
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task HorizonMasksRetainLegacyRectanglesAndStableTemporalIdentity(bool empty)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task HorizonMasksRetainLegacyRectanglesAndStableTemporalIdentity(bool empty, bool rggb)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-horizon-runtime", Guid.NewGuid().ToString("N"));
         try
         {
             using var provider = CreateProvider(root);
             var configuration = CreateConfiguration();
+            if (rggb) configuration = configuration with
+            {
+                Rig = configuration.Rig with
+                {
+                    Sensor = configuration.Rig.Sensor with
+                    {
+                        PixelFormat = CameraPixelFormat.BayerRggb16,
+                        ColorMode = SensorColorMode.Color,
+                        ResponseMode = SensorResponseMode.BayerRaw
+                    }
+                }
+            };
             var rig = configuration.Rig with
             {
                 ControlPolicy = (configuration.Rig.ControlPolicy ?? new CameraControlPolicy()) with
@@ -43,16 +57,55 @@ public sealed partial class TransientWorkerRuntimeTests
                 new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false);
             var masks = sources[0].Masks;
             var legacy = masks.Single(m => m.Kind == TransientDetectorMaskKind.Obstruction).Mask;
-            Assert.IsTrue(Linear16MaskOperations.IsExcluded(legacy, 2, 3));
-            Assert.IsTrue(Linear16MaskOperations.IsExcluded(legacy, 5, 7));
-            Assert.IsFalse(Linear16MaskOperations.IsExcluded(legacy, 6, 7));
-            Assert.IsFalse(Linear16MaskOperations.IsExcluded(legacy, 5, 8));
+            Assert.AreEqual(rggb ? 32 : 64, legacy.Width);
+            Assert.IsTrue(Linear16MaskOperations.IsExcluded(legacy, rggb ? 1 : 2, rggb ? 2 : 3));
+            if (!rggb)
+            {
+                Assert.IsTrue(Linear16MaskOperations.IsExcluded(legacy, 5, 7));
+                Assert.IsFalse(Linear16MaskOperations.IsExcluded(legacy, 6, 7));
+                Assert.IsFalse(Linear16MaskOperations.IsExcluded(legacy, 5, 8));
+            }
             var fixedMask = masks.Single(m => m.Kind == TransientDetectorMaskKind.FixedHorizonObstruction);
             var unknown = masks.Single(m => m.Kind == TransientDetectorMaskKind.UnknownHorizonObstruction);
-            Assert.AreEqual(!empty, Linear16MaskOperations.IsExcluded(fixedMask.Mask, 32, 24));
-            Assert.AreEqual(empty, Linear16MaskOperations.IsExcluded(unknown.Mask, 32, 24));
+            Assert.AreEqual(!empty, Linear16MaskOperations.IsExcluded(fixedMask.Mask, legacy.Width / 2, legacy.Height / 2));
+            Assert.AreEqual(empty, Linear16MaskOperations.IsExcluded(unknown.Mask, legacy.Width / 2, legacy.Height / 2));
             Assert.AreEqual(fixedMask.MaskIdentitySha256, sources[-1].Masks.Single(m => m.Kind == fixedMask.Kind).MaskIdentitySha256);
             Assert.AreEqual(unknown.MaskIdentitySha256, sources[-1].Masks.Single(m => m.Kind == unknown.Kind).MaskIdentitySha256);
+            Assert.AreSame(fixedMask.Mask, sources[-1].Masks.Single(m => m.Kind == fixedMask.Kind).Mask,
+                "Identical window geometry reuses one bounded mask generation.");
+            var clearProfile = new HorizonObstructionProfile(profile.SchemaVersion, profile.ProfileId, 2, profile.InstallationId,
+                profile.SiteIdentitySha256, profile.GeometryIdentitySha256, profile.Source, 90,
+                [new(0, 0), new(90, 0), new(180, 0), new(270, 0)]);
+            var clearConfig = configuration with { Rig = configuration.Rig with { HorizonObstruction = clearProfile } };
+            var changedSources = await runtime.CreateSourcesAsync(new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = clearConfig },
+                new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false);
+            var clearMask = changedSources[0].Masks.Single(m => m.Kind == fixedMask.Kind);
+            Assert.AreNotSame(changedSources[-1].Masks.Single(m => m.Kind == fixedMask.Kind).Mask, clearMask.Mask,
+                "A different profile must regenerate even within the same temporal window.");
+            Assert.IsFalse(Linear16MaskOperations.IsExcluded(clearMask.Mask, legacy.Width / 2, legacy.Height / 2));
+            var projection = RigProjectionContextFactory.Create(clearConfig.Rig);
+            var projector = ProjectorFactory.Create(projection);
+            var evaluator = new HorizonObstructionEvaluator(clearProfile, clearConfig.Rig,
+                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), frames[0].Manifest.Descriptor.Location);
+            var transform = changedSources[0].Input.Descriptor.SourceToDetectorTransform;
+            for (var y = 0; y < clearMask.Mask.Height; y++)
+                for (var x = 0; x < clearMask.Mask.Width; x++)
+                {
+                    var direction = projector.Unproject(new((x + .5 - transform.OffsetX) / transform.ScaleX,
+                        (y + .5 - transform.OffsetY) / transform.ScaleY));
+                    Assert.AreEqual(direction is { } point && evaluator.Evaluate(point) == HorizonObstructionEligibility.Obstructed,
+                        Linear16MaskOperations.IsExcluded(clearMask.Mask, x, y), "Detector pixels use the validated source transform.");
+                }
+            var changed = configuration with
+            {
+                Rig = configuration.Rig with
+                { Orientation = configuration.Rig.Orientation with { RollAdjustmentDegrees = 1 } }
+            };
+            var rejected = await Assert.ThrowsAsync<TransientWorkerExecutionException>(async () =>
+                await runtime.CreateSourcesAsync(new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = changed },
+                    new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual("transient-runtime.obstruction-revalidation-required", rejected.ReasonCode);
+            Assert.IsFalse(rejected.Retryable);
         }
         finally { Cleanup(root); }
     }
