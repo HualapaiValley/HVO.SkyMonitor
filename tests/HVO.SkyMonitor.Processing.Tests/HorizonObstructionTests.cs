@@ -26,6 +26,55 @@ public sealed class HorizonObstructionTests
         samples ?? [new(0, 30), new(90, 30), new(180, 30), new(270, 30)]);
 
     [TestMethod]
+    [DataRow(-1d)]
+    [DataRow(0d)]
+    [DataRow(10d)]
+    public void RetainedRefractionInversionPreservesGeometricEligibility(double minimumAltitude)
+    {
+        var options = new RefractionOptions(true, minimumAltitude);
+        foreach (var altitude in new[] { 0d, .01, 1, 5, 20, 80, 90 })
+        {
+            var apparent = AtmosphericRefraction.Apply(altitude, options);
+            Assert.AreEqual(altitude, AtmosphericRefraction.RemoveAboveHorizon(apparent, options)!.Value, 1e-10);
+        }
+        Assert.IsNull(AtmosphericRefraction.RemoveAboveHorizon(-1, options));
+        Assert.IsNull(AtmosphericRefraction.RemoveAboveHorizon(double.NaN, options));
+        if (minimumAltitude <= 0) Assert.IsNull(AtmosphericRefraction.RemoveAboveHorizon(0, options));
+    }
+
+    [TestMethod]
+    [DataRow("peak", 2)]
+    [DataRow("negative", 4)]
+    [DataRow("null", 0)]
+    [DataRow("gap", 0)]
+    [DataRow("wrap", 2)]
+    public void PreviewIntervalsMatchEvaluatorAtFractionalKnotsAndNeverBridgeUnknown(string kind, int count)
+    {
+        var rig = Rig();
+        HorizonObstructionSample[] samples = kind switch
+        {
+            "peak" => [new(0, 0), new(.5, 80), new(1, 0)],
+            "negative" => [new(0, -10), new(.5, 10), new(1, -10)],
+            "null" => [new(0, 10), new(.5, null), new(1, 10)],
+            "gap" => [new(0, 10), new(1, 10)],
+            _ => [new(.5, 30), new(359.5, 10)]
+        };
+        var evaluator = new HorizonObstructionEvaluator(Profile(rig, samples, kind == "wrap" ? 1 : .5), rig, Observer);
+        var intervals = evaluator.KnownIntervals();
+        Assert.HasCount(count, intervals);
+        foreach (var interval in intervals)
+            foreach (var fraction in new[] { 0d, .25, .5, .75, 1d })
+            {
+                var az = interval.FromAzimuthDegrees + fraction * (interval.ToAzimuthDegrees - interval.FromAzimuthDegrees);
+                var elevation = interval.FromElevationDegrees + fraction * (interval.ToElevationDegrees - interval.FromElevationDegrees);
+                Assert.AreEqual(elevation, evaluator.HorizonElevation(az)!.Value, 1e-10);
+            }
+        if (kind == "peak") Assert.AreEqual(80d, intervals[0].ToElevationDegrees);
+        if (kind is "gap" or "null") Assert.IsNull(evaluator.HorizonElevation(.5));
+        if (kind == "wrap") Assert.AreEqual(20d, evaluator.HorizonElevation(0));
+    }
+
+    [TestMethod]
     public void NorthWrapAndExactCrossingUseGeometricElevation()
     {
         var rig = Rig();

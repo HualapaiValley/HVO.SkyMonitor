@@ -193,21 +193,20 @@ internal sealed class AnnotationCaptureProcessingStep(
         if (context.Config.Rig.HorizonObstruction is { } horizon)
         {
             var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
-            var observer = projectedScene?.Observer ?? generatedScene?.Scene.Request.Observer ??
-                new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
+            var observer = new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
             var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer,
                 context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance());
-            var imageTransform = projectedScene?.ImageTransform ??
-                ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
-            // A separately registered/measured scene needs its own validated obstruction alignment.
-            if (projectedScene is { Kind: ProjectedSceneKind.ImageRegistered } ||
-                imageTransform.SourceWidthPixels != evaluator.Projection.WidthPixels ||
-                imageTransform.SourceHeightPixels != evaluator.Projection.HeightPixels)
+            if (projectedScene is not null)
             {
-                objects = [];
-                segments = [];
+                var eligibility = new HorizonObstructionSceneEligibility(evaluator, context.Config.Rig, projectedScene);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(eligibility, objects, segments);
+                context.RecordCanonicalInput("horizon-scene-eligibility", "1", eligibility.IdentitySha256);
             }
-            else (objects, segments) = HorizonObstructionAnnotation.Filter(evaluator, imageTransform, objects, segments);
+            else
+            {
+                var imageTransform = ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(evaluator, imageTransform, objects, segments);
+            }
             context.RecordCanonicalInput("horizon-obstruction", HorizonObstructionProfile.CurrentSchemaVersion, horizon.ComputeIdentitySha256());
         }
 

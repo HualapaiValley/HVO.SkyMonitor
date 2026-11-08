@@ -135,14 +135,13 @@ public sealed class CameraAgentSkyMapProjection(
             constellationIds: constellationIds,
             // Bodies are appended by the builder after the star bound, so they never displace a star.
             solarSystemBodies: planetEphemeris is null ? null : SolarSystemBodies);
-        var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
-            .BuildAsync(request, cancellationToken).ConfigureAwait(false);
-
         var horizon = config.Rig.HorizonObstruction is { } profile
             ? new HorizonObstructionEvaluator(profile, config.Rig, request.Observer, location.ToProvenance()) : null;
-        bool Eligible(ProjectedCelestialObject item) => horizon is null ||
-            horizon.Evaluate(item.GeometricHorizontal) == HorizonObstructionEligibility.Clear;
-        var eligibleObjects = scene.Objects.Where(Eligible).ToArray();
+        var builder = new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris);
+        var scene = horizon is null
+            ? await builder.BuildAsync(request, cancellationToken).ConfigureAwait(false)
+            : await builder.BuildWithHorizonAsync(request, horizon, cancellationToken).ConfigureAwait(false);
+        var eligibleObjects = scene.Objects;
         var projector = ProjectorFactory.Create(projection);
         bool EligibleSegment(ProjectedConstellationSegment segment) => horizon is null ||
             projector.Unproject(segment.FromPixel) is { } from && projector.Unproject(segment.ToPixel) is { } to &&

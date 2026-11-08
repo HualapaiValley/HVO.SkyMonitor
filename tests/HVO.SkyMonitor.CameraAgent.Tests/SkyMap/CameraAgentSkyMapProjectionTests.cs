@@ -20,6 +20,37 @@ public sealed class CameraAgentSkyMapProjectionTests
     private static readonly double[] RingAltitudes = [0d, 30d, 60d];
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HorizonFilteringPrecedesBoundAndTruncationCountsOnlyEligibleStars(bool extraClear)
+    {
+        var configuration = CreateConfig();
+        var observer = new ObserverLocation(35, -115, 1000);
+        var stars = new List<CelestialCatalogObject>();
+        foreach (var (id, altitude, magnitude) in new[] { ("bright-1", 40d, 0d), ("bright-2", 45d, 1d), ("clear-1", 75d, 2d) })
+        {
+            var eq = EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(new(altitude, 30), Instant, 35, -115), Instant);
+            stars.Add(new(id, id, eq.RightAscensionHours, eq.DeclinationDegrees, magnitude));
+        }
+        if (extraClear)
+        {
+            var eq = EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(new(80, 30), Instant, 35, -115), Instant);
+            stars.Add(new("clear-2", "clear-2", eq.RightAscensionHours, eq.DeclinationDegrees, 3));
+        }
+        var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "profile", 1, "installation",
+            HorizonObstructionProfile.ComputeSiteIdentitySha256(observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters,
+                configuration.DeploymentLocation!.ToProvenance()), HorizonObstructionProfile.ComputeGeometryIdentitySha256(configuration.Rig),
+            HorizonObstructionSource.Synthetic, 90, [new(0, 60), new(90, 60), new(180, 60), new(270, 60)]);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(configuration with { Rig = configuration.Rig with { HorizonObstruction = profile } });
+        var projection = new CameraAgentSkyMapProjection(accessor, CreateCatalog(stars), TimeProvider.System, maximumObjects: () => 1);
+        var result = await projection.ProjectAsync(Instant, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, result.Objects);
+        Assert.AreEqual("clear-1", result.Objects[0].Id);
+        Assert.AreEqual(extraClear, result.ObjectsAtBound);
+    }
+
+    [TestMethod]
     [DataRow("blocked")]
     [DataRow("unknown")]
     [DataRow("incompatible")]

@@ -165,9 +165,10 @@ public static class PresentationLayerProducers
         bool includeImageCircle = true,
         bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null,
-        bool expectedPositionDiagnostics = false)
+        bool expectedPositionDiagnostics = false,
+        HorizonObstructionSceneEligibility? horizon = null)
     => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
-            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics);
+            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon);
 
     internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
         ProjectedSceneV1 scene,
@@ -179,10 +180,12 @@ public static class PresentationLayerProducers
         bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false,
-        ScenePresentationStyleV1? selectedStyle = null)
+        ScenePresentationStyleV1? selectedStyle = null,
+        HorizonObstructionSceneEligibility? horizon = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
+        horizon?.ValidateScene(scene);
         var sceneStyleIdentity = selectedStyle?.IdentitySha256;
         if (associations is not null &&
             (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
@@ -201,7 +204,13 @@ public static class PresentationLayerProducers
         var segmentColor = style.SegmentColor ?? new(96, 160, 255);
         var imageCircleColor = style.ImageCircleColor ?? new(96, 96, 96);
         var cardinalColor = style.CardinalColor ?? new(255, 255, 255);
-        var annotatedObjects = scene.Objects.Where(item => IsNamed(item.Id, item.DisplayName) &&
+        var allFootprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene);
+        var excludedFootprints = allFootprints.Where(item => horizon is not null &&
+            (!horizon.IsClear(ProjectedSceneAnnotation.FootprintAnchor(item, scene.ImageTransform)) ||
+             !item.Parts.All(part => part.Points.All(horizon.IsClear))))
+            .Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var annotatedObjects = scene.Objects.Where(item => !excludedFootprints.Contains(item.Id) &&
+            (horizon is null || horizon.IsClear(item.Pixel)) && IsNamed(item.Id, item.DisplayName) &&
             (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= style.MaximumLabelMagnitude)).ToArray();
         var width = scene.ImageTransform.OutputWidthPixels;
         var height = scene.ImageTransform.OutputHeightPixels;
@@ -212,7 +221,8 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var footprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var footprints = allFootprints.Where(item => !excludedFootprints.Contains(item.Id))
+            .ToDictionary(static item => item.Id, StringComparer.Ordinal);
         // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
         // the same anchor the raster annotation uses.
         var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
@@ -226,8 +236,8 @@ public static class PresentationLayerProducers
             .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, selectedStyle?.PointGlyph == "Crosshair"))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
                 .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, selectedStyle?.PointGlyph == "Crosshair"))).ToArray() : [];
-        var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
-            style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
+        var segments = includeConstellations ? scene.Segments.Where(item => (horizon is null || horizon.IsSegmentClear(item.FromPixel, item.ToPixel)) &&
+            (style.ConstellationIds.Count == 0 || style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase)))
             .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor))
             .ToList() : [];
         var footprintSegments = new List<PresentationSegmentV1>();

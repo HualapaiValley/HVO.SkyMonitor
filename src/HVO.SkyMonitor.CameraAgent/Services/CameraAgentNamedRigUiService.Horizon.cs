@@ -5,7 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal sealed record HorizonObstructionPreview(string ActiveRevisionId, long SelectionVersion,
-    HorizonObstructionProfile Profile, IReadOnlyList<HorizonObstructionSample> Horizon);
+    HorizonObstructionProfile Profile, IReadOnlyList<HorizonObstructionInterval> Intervals);
 
 internal sealed partial class CameraAgentNamedRigUiService
 {
@@ -19,7 +19,10 @@ internal sealed partial class CameraAgentNamedRigUiService
                 throw new CaptureScheduleStoreConflictException("Rig selection changed.");
             var active = catalog.Revisions.Single(r => r.RevisionId == activeRevisionId);
             var configuration = runtime.Snapshot?.Configuration ?? throw new InvalidOperationException("Rig runtime is unavailable.");
-            if (CameraRigProfileIdentity.ComputeSha256(configuration.Rig) != CameraRigProfileIdentity.ComputeSha256(active.Rig))
+            if (HorizonObstructionProfile.ComputeGeometryIdentitySha256(configuration.Rig) !=
+                    HorizonObstructionProfile.ComputeGeometryIdentitySha256(active.Rig) ||
+                configuration.Rig.HorizonObstruction?.ComputeIdentitySha256() != active.Rig.HorizonObstruction?.ComputeIdentitySha256() ||
+                CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Module) != CaptureContractJson.ComputeCanonicalJsonSha256(active.Module))
                 throw new CaptureScheduleStoreConflictException("Active runtime differs from the reviewed rig.");
             var site = configuration.ResolveObservatory(timeProvider.GetUtcNow());
             var history = await store.GetHistoryAsync(active.ProfileId, 1, null, null, token).ConfigureAwait(false);
@@ -31,9 +34,7 @@ internal sealed partial class CameraAgentNamedRigUiService
                 maximumGap, samples);
             var evaluator = new HorizonObstructionEvaluator(profile, active.Rig,
                 new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), runtime.Snapshot!.Location);
-            var horizon = Array.AsReadOnly(Enumerable.Range(0, 361)
-                .Select(az => new HorizonObstructionSample(az, evaluator.HorizonElevation(az))).ToArray());
-            return new HorizonObstructionPreview(activeRevisionId, version, profile, horizon);
+            return new HorizonObstructionPreview(activeRevisionId, version, profile, evaluator.KnownIntervals());
         });
 
     public ValueTask<OperatorUiResult<NamedRigRevision>> SaveHorizonAsync(HorizonObstructionPreview preview, CancellationToken token)

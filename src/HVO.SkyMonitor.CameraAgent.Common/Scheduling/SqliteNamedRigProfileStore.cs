@@ -545,7 +545,7 @@ public sealed class SqliteNamedRigProfileStore(
     /// <summary>
     /// Retains calibrated optics for the reviewed active rig as a new optics revision and a draft rig revision in one
     /// transaction. The selection must still be at the reviewed version with the reviewed revision active and nothing
-    /// pending. An existing draft of the same profile, camera, mount and optics is returned instead of a duplicate, and
+    /// pending. An existing draft of the same profile, camera, mount, optics and current horizon is returned instead of a duplicate, and
     /// any conflict, failure or cancellation writes nothing.
     /// </summary>
     public async Task<NamedRigRevision> RetainCalibratedOpticsAsync(string activeRevisionId, long expectedVersion,
@@ -581,16 +581,23 @@ public sealed class SqliteNamedRigProfileStore(
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 siblings.Add(reader.GetString(0));
         }
+        string? matchingOpticsRevisionId = null;
+        var currentHorizonIdentity = schedule.ActiveRevision.Profile.Rig.HorizonObstruction?.ComputeIdentitySha256();
         foreach (var id in siblings)
         {
             var sibling = await ReadRevisionAsync(connection, transaction, id, cancellationToken).ConfigureAwait(false);
             if (sibling?.Rig.Optics == optics)
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return sibling;
+                matchingOpticsRevisionId ??= sibling.OpticsRevisionId;
+                if (sibling.Rig.HorizonObstruction?.ComputeIdentitySha256() == currentHorizonIdentity)
+                {
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    return sibling;
+                }
             }
         }
-        var opticsRevisionId = await InsertEquipmentAsync(connection, transaction, "optics", displayName.Trim(), optics,
+        // Reuse the equipment identity, but compose a fresh candidate when the installation horizon changed.
+        var opticsRevisionId = matchingOpticsRevisionId ?? await InsertEquipmentAsync(connection, transaction, "optics", displayName.Trim(), optics,
             timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
         var revision = await ComposeCoreAsync(connection, transaction, schedule, active.ProfileId, active.CameraRevisionId,
             opticsRevisionId, active.MountRevisionId, cancellationToken).ConfigureAwait(false);

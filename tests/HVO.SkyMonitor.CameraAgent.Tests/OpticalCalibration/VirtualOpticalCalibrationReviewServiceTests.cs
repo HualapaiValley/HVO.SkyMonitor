@@ -34,7 +34,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
     private static readonly AstrometricSolverOptions Search = new(MinimumFocalScale: .97, MaximumFocalScale: 1.03);
 
     // Virtual-profile truth: +1.2% focal, a (3.5, -3) px principal-point offset and k1 = -0.006.
-    private static readonly Lazy<OpticalCalibrationResult> Accepted = new(() =>
+    internal static readonly Lazy<OpticalCalibrationResult> Accepted = new(() =>
     {
         var nominal = RigProjectionContextFactory.CreateNative(Configuration("VirtualSky").Rig);
         var truth = nominal with

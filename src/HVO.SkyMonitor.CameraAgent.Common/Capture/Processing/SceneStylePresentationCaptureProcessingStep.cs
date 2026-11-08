@@ -13,7 +13,7 @@ internal sealed class SceneStylePresentationCaptureProcessingStep(
 
     protected override PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
-        MeasuredStellarAssociationsV1? measured, bool expected) => SceneStylePresentation.Create(scene,
+        MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) => SceneStylePresentation.Create(scene,
             new(style with
             {
                 MarkerColor = new(options.MarkerRed, options.MarkerGreen, options.MarkerBlue),
@@ -21,7 +21,7 @@ internal sealed class SceneStylePresentationCaptureProcessingStep(
                 CardinalColor = new(options.CardinalRed, options.CardinalGreen, options.CardinalBlue),
                 ImageCircleColor = new(options.ImageCircleRed, options.ImageCircleGreen, options.ImageCircleBlue)
             }, options.LabelFont, options.CardinalFont, options.PointGlyph),
-            markers, labels, constellations, circle, cardinals, measured, expected);
+            markers, labels, constellations, circle, cardinals, measured, expected, horizon);
 }
 
 internal sealed class SceneStylePresentationStepOptions : ScenePresentationLayerProcessingStepOptions

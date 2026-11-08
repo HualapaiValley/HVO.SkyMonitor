@@ -80,10 +80,4 @@ public sealed partial class HorizonObstructionEditor : ComponentBase
         finally { _busy = false; }
     }
 
-    private static IEnumerable<(int X, double Y1, double Y2)> PreviewSegments(HorizonObstructionPreview preview)
-    {
-        for (var i = 0; i < preview.Horizon.Count - 1; i++)
-            if (preview.Horizon[i].ElevationDegrees is { } a && preview.Horizon[i + 1].ElevationDegrees is { } b)
-                yield return (i, 90 - a, 90 - b);
-    }
 }

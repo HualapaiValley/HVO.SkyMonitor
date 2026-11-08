@@ -7,6 +7,20 @@ namespace HVO.SkyMonitor.Processing;
 public static class HorizonObstructionAnnotation
 {
     public static (IReadOnlyList<ProjectedAnnotationObject> Objects, IReadOnlyList<ProjectedAnnotationSegment> Segments) Filter(
+        HorizonObstructionSceneEligibility eligibility,
+        IReadOnlyList<ProjectedAnnotationObject> objects, IReadOnlyList<ProjectedAnnotationSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(eligibility);
+        ArgumentNullException.ThrowIfNull(objects);
+        ArgumentNullException.ThrowIfNull(segments);
+        if (objects.Count > ProjectedSceneJson.MaximumObjectCount || segments.Count > ProjectedSceneJson.MaximumSegmentCount)
+            throw new ArgumentOutOfRangeException(nameof(objects));
+        return (objects.Where(item => eligibility.IsClear(item.Pixel) &&
+                (item.FootprintParts is null || item.FootprintParts.All(part => part.Points.All(eligibility.IsClear)))).ToArray(),
+            segments.Where(segment => eligibility.IsSegmentClear(segment.FromPixel, segment.ToPixel)).ToArray());
+    }
+
+    public static (IReadOnlyList<ProjectedAnnotationObject> Objects, IReadOnlyList<ProjectedAnnotationSegment> Segments) Filter(
         HorizonObstructionEvaluator evaluator, ProjectedSceneImageTransformV1 transform,
         IReadOnlyList<ProjectedAnnotationObject> objects, IReadOnlyList<ProjectedAnnotationSegment> segments)
     {

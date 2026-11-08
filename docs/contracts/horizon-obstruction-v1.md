@@ -72,3 +72,23 @@ Capture satellite products retain every original track and attach authenticated
 sample and segment eligibility. The current capture overlay conservatively
 withholds an entire track if any sample/segment is ineligible. Planning arcs
 split at ineligible samples/segments and show the profile limitation explicitly.
+
+Star/constellation presentation consumes a source-bound eligibility view of the
+original retained scene. The effective, native sensor, or native ROI projection
+must exactly match the retained calibration and installation geometry. Native
+views must also carry the configured readout crop/bin relationship; recorded
+post-readout mirrors and quarter rotations are inverted before angular testing.
+ImageRegistered scenes are supported when those checks pass. Incompatible views
+remain in retained evidence and provide no eligible annotation. Atmospheric
+refraction is removed over the supported above-horizon domain before eligibility.
+Both scene-layer aliases and flattened annotation use this check during archived
+execution. Layer product identity binds the horizon view even when all primitives
+are excluded. Sky-map star selection applies eligibility before its brightness
+bound, and truncation counts eligible stars.
+
+Editor previews render actual fractional sample knots and only supported linear
+intervals, split at north. Isolated known knots are points; null or oversized
+intervals stay unknown. Capture policy and exposure-envelope edits do not change
+installation geometry or prevent horizon preview/save. Calibration candidate reuse
+requires the current horizon content identity; a new candidate can reuse optics
+equipment while retaining an incompatible horizon for explicit revalidation.

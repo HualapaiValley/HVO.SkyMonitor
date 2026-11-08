@@ -4,6 +4,10 @@ namespace HVO.SkyMonitor.Astronomy;
 
 public enum HorizonObstructionEligibility { Clear, Obstructed, Unknown, OutsideDomain, Incompatible }
 
+/// <summary>A supported linear horizon interval, split at north for an unwrapped 0–360 degree preview.</summary>
+public sealed record HorizonObstructionInterval(double FromAzimuthDegrees, double ToAzimuthDegrees,
+    double FromElevationDegrees, double ToElevationDegrees);
+
 /// <summary>One frozen angular profile, shared by prediction and pixel eligibility.</summary>
 public sealed class HorizonObstructionEvaluator
 {
@@ -11,6 +15,7 @@ public sealed class HorizonObstructionEvaluator
     public HorizonObstructionProfile Profile { get; }
     public bool IsCompatible { get; }
     public ProjectionContext Projection { get; }
+    public ObserverLocation Observer { get; }
     public string CalibrationVersion { get; }
     public string GeometryIdentitySha256 { get; }
 
@@ -21,6 +26,7 @@ public sealed class HorizonObstructionEvaluator
         ArgumentNullException.ThrowIfNull(rig);
         observer.Validate();
         Profile = profile;
+        Observer = observer;
         CalibrationVersion = rig.Optics.CalibrationVersion;
         Projection = RigProjectionContextFactory.Create(rig);
         GeometryIdentitySha256 = HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig);
@@ -76,6 +82,42 @@ public sealed class HorizonObstructionEvaluator
         bool ClearAt(double fraction) => Evaluate(new(
             from.AltitudeDegrees + fraction * (to.AltitudeDegrees - from.AltitudeDegrees),
             from.AzimuthDegrees + fraction * delta)) == HorizonObstructionEligibility.Clear;
+    }
+
+    /// <summary>Returns only supported intervals using the actual knots, without bridging unknown terrain.</summary>
+    public IReadOnlyList<HorizonObstructionInterval> KnownIntervals()
+    {
+        var intervals = new List<HorizonObstructionInterval>();
+        if (!IsCompatible || Profile.Samples.Count < 2) return intervals.AsReadOnly();
+        for (var i = 0; i < Profile.Samples.Count; i++)
+        {
+            var left = Profile.Samples[i];
+            var right = Profile.Samples[(i + 1) % Profile.Samples.Count];
+            var end = right.AzimuthDegrees + (i == Profile.Samples.Count - 1 ? 360 : 0);
+            var gap = end - left.AzimuthDegrees;
+            if (gap > Profile.MaximumInterpolationGapDegrees || left.ElevationDegrees is not { } a ||
+                right.ElevationDegrees is not { } b) continue;
+            if (end <= 360) AddInterval(left.AzimuthDegrees, end, a, b);
+            else
+            {
+                var north = a + (b - a) * ((360 - left.AzimuthDegrees) / gap);
+                AddInterval(left.AzimuthDegrees, 360, a, north);
+                if (right.AzimuthDegrees > 0) AddInterval(0, right.AzimuthDegrees, north, b);
+            }
+        }
+        return intervals.AsReadOnly();
+
+        void AddInterval(double from, double to, double a, double b)
+        {
+            // Split at geometric zero so UI shading can also respect the independent below-horizon exclusion.
+            if (a < 0 && b > 0 || a > 0 && b < 0)
+            {
+                var zero = from + (to - from) * (-a / (b - a));
+                intervals.Add(new(from, zero, a, 0));
+                intervals.Add(new(zero, to, 0, b));
+            }
+            else intervals.Add(new(from, to, a, b));
+        }
     }
 
     /// <summary>Returns null across unsupported gaps. Binary search bounds per-pixel work independently of sample count.</summary>

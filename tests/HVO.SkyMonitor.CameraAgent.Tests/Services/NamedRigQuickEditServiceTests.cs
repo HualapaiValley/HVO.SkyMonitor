@@ -32,6 +32,57 @@ public sealed class NamedRigQuickEditServiceTests
     private const string NothingStaged = "Nothing was staged; the active rig and schedule are unchanged.";
 
     [TestMethod]
+    [DataRow("control")]
+    [DataRow("envelope")]
+    public async Task HorizonPreviewAndSaveAllowActivatedCapturePolicyChanges(string change)
+    {
+        using var harness = await Harness.CreateAsync().ConfigureAwait(false);
+        var (active, version) = await harness.ActiveAsync().ConfigureAwait(false);
+        var schedule = await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var rig = schedule.ActiveRevision.Profile.Rig;
+        var changed = change == "control" ? rig with
+        {
+            ControlPolicy = rig.ControlPolicy! with { GainControl = AutomaticControlOwnership.CameraNative }
+        } : rig with { Pipeline = rig.Pipeline with { Envelope = rig.Pipeline.Envelope! with { TargetAduLevel = 0.25 } } };
+        var staged = await harness.Runtime.StageAsync(schedule.ActiveRevision.Profile with { Rig = changed }, "policy", schedule.Version,
+            "owner", null, CancellationToken.None).ConfigureAwait(false);
+        await harness.Runtime.ActivateAsync(staged.PendingRevision!.RevisionId, "activate-policy", staged.Version,
+            "owner", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreNotEqual(CameraRigProfileIdentity.ComputeSha256(active.Rig),
+            CameraRigProfileIdentity.ComputeSha256(harness.Runtime.Snapshot!.Configuration.Rig));
+        var preview = await harness.Service.PreviewHorizonAsync(active.RevisionId, version, "installation", 30,
+            [new(0, 20), new(20, 25)], CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(preview.IsSuccess, preview.Message);
+        var save = await harness.Service.SaveHorizonAsync(preview.Value!, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(save.IsSuccess, save.Message);
+        Assert.IsNotNull(save.Value!.Rig.HorizonObstruction);
+    }
+
+    [TestMethod]
+    public async Task HorizonSaveRejectsGeometryChangedAfterPreview()
+    {
+        using var harness = await Harness.CreateAsync().ConfigureAwait(false);
+        var (active, version) = await harness.ActiveAsync().ConfigureAwait(false);
+        var preview = await harness.Service.PreviewHorizonAsync(active.RevisionId, version, "installation", 30,
+            [new(0, 20), new(20, 25)], CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(preview.IsSuccess, preview.Message);
+        var edit = await harness.Service.ApplyActiveRigEditAsync(Harness.Request(active, version) with { RollAdjustmentDegrees = 1 },
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(edit.IsSuccess);
+        Assert.AreEqual(ActiveRigEditStatus.Staged, edit.Value!.Status);
+        var schedule = await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var configuration = schedule.PendingRevision!.Profile.ApplyTo(Configuration());
+        var prepared = await harness.Runtime.PrepareStartupAsync(schedule.PendingRevision, configuration, CancellationToken.None).ConfigureAwait(false);
+        await harness.Runtime.CommitPreparedStartupAsync(prepared, async token =>
+        {
+            await harness.Named.CommitInitializedAsync(edit.Value.ComposedRevisionId!, configuration, token).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
+        var save = await harness.Service.SaveHorizonAsync(preview.Value!, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(save.IsSuccess);
+        Assert.AreEqual(OperatorUiResultKind.Conflict, save.Kind);
+    }
+
+    [TestMethod]
     public async Task ApplyActiveRigEdit_ChangedFlipAndMount_CopiesInstalledEquipmentAndStagesOneRevision()
     {
         using var harness = await Harness.CreateAsync().ConfigureAwait(false);
@@ -357,6 +408,7 @@ public sealed class NamedRigQuickEditServiceTests
         public SqliteCaptureScheduleStore Schedule { get; private set; } = default!;
         public SqliteNamedRigProfileStore Named { get; private set; } = default!;
         public CameraAgentNamedRigUiService Service { get; private set; } = default!;
+        public CaptureScheduleRuntimeCoordinator Runtime { get; private set; } = default!;
         public string InitialScheduleRevisionId { get; private set; } = default!;
 
         public static async Task<Harness> CreateAsync(ICameraModuleConfigurationValidator? validator = null,
@@ -382,6 +434,7 @@ public sealed class NamedRigQuickEditServiceTests
                 var named = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule,
                     detachStoreRuntime ? Runtime() : runtime);
                 _ = await named.ImportActiveAsync(active.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
+                harness.Runtime = runtime;
                 harness.Schedule = schedule;
                 harness.Named = named;
                 harness.InitialScheduleRevisionId = active.ActiveRevision.RevisionId;

@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Data.Sqlite;
 
@@ -16,6 +18,57 @@ public sealed class HorizonObstructionStoreIntegrationTests
             VirtualOpticalCalibrationReviewServiceTests.Configuration("VirtualSky").DeploymentLocation!.ToProvenance()),
         HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
         [new(0, 20), new(90, 25), new(180, 0), new(270, null)]);
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReacceptingCalibrationKeepsCurrentHorizonThroughStagingAndInitialization(bool earlierHorizon)
+    {
+        using var harness = await VirtualOpticalCalibrationReviewServiceTests.Harness.CreateAsync("VirtualSky").ConfigureAwait(false);
+        var named = harness.CreateRestartedNamedStore();
+        var configuration = VirtualOpticalCalibrationReviewServiceTests.Configuration("VirtualSky");
+        async Task ActivateAsync(NamedRigRevision candidate)
+        {
+            var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+            var preview = await named.PreviewAsync(candidate.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(preview.Valid, preview.Failure);
+            await named.StageAsync(candidate.RevisionId, catalog.Selection.Version, Guid.NewGuid().ToString("N"), "owner", true,
+                preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+            var pending = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision!;
+            await named.CommitInitializedAsync(candidate.RevisionId, pending.Profile.ApplyTo(configuration), CancellationToken.None).ConfigureAwait(false);
+        }
+        var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var active = catalog.Revisions.Single(r => r.RevisionId == catalog.Selection.ActiveRevisionId);
+        if (earlierHorizon)
+        {
+            await ActivateAsync(await named.RetainHorizonObstructionAsync(active.RevisionId, catalog.Selection.Version,
+                Profile(active.Rig, 2), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        var service = new VirtualOpticalCalibrationReviewService(named);
+        var calibration = VirtualOpticalCalibrationReviewServiceTests.Accepted.Value;
+        var first = await service.AcceptAsync(await service.ReviewAsync(calibration, CancellationToken.None).ConfigureAwait(false),
+            calibration, CancellationToken.None).ConfigureAwait(false);
+        catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        active = catalog.Revisions.Single(r => r.RevisionId == catalog.Selection.ActiveRevisionId);
+        var current = await named.RetainHorizonObstructionAsync(active.RevisionId, catalog.Selection.Version,
+            Profile(active.Rig, catalog.Revisions.Max(r => r.RevisionNumber) + 1), CancellationToken.None).ConfigureAwait(false);
+        await ActivateAsync(current).ConfigureAwait(false);
+        var accepted = await service.AcceptAsync(await service.ReviewAsync(calibration, CancellationToken.None).ConfigureAwait(false),
+            calibration, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreNotEqual(first.CandidateRigRevisionId, accepted.CandidateRigRevisionId);
+        Assert.AreEqual(first.CandidateOpticsRevisionId, accepted.CandidateOpticsRevisionId, "Reuse equipment, not a stale installation candidate.");
+        catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var candidate = catalog.Revisions.Single(r => r.RevisionId == accepted.CandidateRigRevisionId);
+        Assert.AreEqual(current.Rig.HorizonObstruction!.ComputeIdentitySha256(), candidate.Rig.HorizonObstruction!.ComputeIdentitySha256());
+        await ActivateAsync(candidate).ConfigureAwait(false);
+        var installed = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.Profile.Rig;
+        Assert.AreEqual(current.Rig.HorizonObstruction.ComputeIdentitySha256(), installed.HorizonObstruction!.ComputeIdentitySha256());
+        var evaluator = new HorizonObstructionEvaluator(installed.HorizonObstruction, installed, new(35.347, -113.878, 1200),
+            configuration.DeploymentLocation!.ToProvenance());
+        Assert.IsFalse(evaluator.IsCompatible, "Changed calibration retains the horizon requiring explicit revalidation.");
+        Assert.AreEqual(HorizonObstructionEligibility.Incompatible, evaluator.Evaluate(new(80, 0)));
+        Assert.AreEqual(earlierHorizon, catalog.Revisions.Single(r => r.RevisionId == first.CandidateRigRevisionId).Rig.HorizonObstruction is not null);
+    }
 
     [TestMethod]
     public async Task PreviewSaveExplicitActivationAndRollbackPreserveArchivedRevisions()
