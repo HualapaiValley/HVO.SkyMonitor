@@ -144,6 +144,9 @@ public sealed record ProcessingGraphNodeAttemptState(
 public sealed record ProcessingNormalizationInputDiagnostic(
     int WindowPosition, Guid CaptureId, Guid ArtifactId, double Gain, string Disposition, string? ExclusionReason);
 
+public sealed record ProcessingGraphExecutionCalibrationInputState(
+    Guid ArtifactId, string PayloadSha256, string Kind);
+
 public sealed record ProcessingGraphExecutionNodeState(
     string NodeId,
     bool Required,
@@ -161,6 +164,12 @@ public sealed record ProcessingGraphExecutionNodeState(
     public IReadOnlyList<ProcessingNormalizationInputDiagnostic> NormalizationInputs { get; init; } = [];
     public MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
     public string? MixedGainDiagnosticsUnavailableReason { get; init; }
+
+    /// <summary>Safe master identities retained in the execution's frozen normalization plan.</summary>
+    public IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> CalibrationInputs { get; init; } = [];
+
+    /// <summary>Whether the bounded manifest read retained every recorded artifact input binding.</summary>
+    public bool ArtifactBindingsRetained { get; init; } = true;
 
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];

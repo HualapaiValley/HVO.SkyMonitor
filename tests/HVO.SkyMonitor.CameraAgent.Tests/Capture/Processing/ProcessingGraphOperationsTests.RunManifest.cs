@@ -12,7 +12,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    public async Task RunManifestPreservesFrozenEvidenceChecksumsAndLineageAcrossRestart()
+    [DataRow("preview")]
+    [DataRow("preview main")]
+    [DataRow("prévisualisation")]
+    public async Task RunManifestPreservesFrozenEvidenceChecksumsAndLineageAcrossRestart(string previewNodeId)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-run-manifest");
         try
@@ -23,7 +26,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 var configuration = CreateConfiguration() with
                 {
-                    Pipeline = new CapturePipelineConfig([new("Preview", "preview", DependsOn: ["$raw"])],
+                    Pipeline = new CapturePipelineConfig([new("Preview", previewNodeId, DependsOn: ["$raw"])],
                         CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
                 };
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -63,6 +66,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 CollectionAssert.AreEqual(before, after.Payload);
                 using var json = JsonDocument.Parse(after.Payload!);
                 Assert.AreEqual(executionId, json.RootElement.GetProperty("executionId").GetGuid());
+                Assert.AreEqual(previewNodeId, json.RootElement.GetProperty("nodes")[0].GetProperty("nodeId").GetString());
             }
         }
         finally { Directory.Delete(root, recursive: true); }

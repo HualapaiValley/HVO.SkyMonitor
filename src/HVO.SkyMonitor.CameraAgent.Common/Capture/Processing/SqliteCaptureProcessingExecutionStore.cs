@@ -1068,30 +1068,44 @@ internal sealed partial class SqliteCaptureProcessingStore
                 }
                 var durableOutputs = await ReadExecutionOutputsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
-                var published = await ReadExecutionOutputPublicationAsync(
+                var published = await ReadExecutionOutputAssociationsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
                 var inputs = await ReadExecutionInputsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
-                var outputs = durableOutputs.Select((output, ordinal) => new ProcessingGraphExecutionOutputState(
-                    ordinal,
-                    output.OutputIdentitySha256,
-                    output.ArtifactId,
-                    output.Artifact.Role,
-                    output.Artifact.Variant,
-                    output.AvailabilityState,
-                    output.AvailabilityReason,
-                    published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)
+                var outputs = durableOutputs.Select((output, ordinal) =>
                 {
-                    PayloadSha256 = output.Artifact.ChecksumSha256,
-                    SourceArtifactIds = output.Artifact.SourceArtifactIds
+                    (int Ordinal, bool Published) association = published.TryGetValue(output.OutputIdentitySha256, out var saved)
+                        ? saved : (ordinal, false);
+                    return new ProcessingGraphExecutionOutputState(
+                        association.Ordinal, output.OutputIdentitySha256, output.ArtifactId,
+                        output.Artifact.Role, output.Artifact.Variant, output.AvailabilityState,
+                        output.AvailabilityReason, association.Published)
+                    {
+                        PayloadSha256 = output.Artifact.ChecksumSha256,
+                        SourceArtifactIds = output.Artifact.SourceArtifactIds
+                    };
                 }).ToArray();
                 frozenPlans.TryGetValue(row.NodeId, out var normalization);
+                var masters = normalization?.Plan.Inputs.Where(static input => input.Masters is not null)
+                    .SelectMany(static input => input.Masters!).DistinctBy(static master => master.ArtifactId)
+                    .Select(static master => new ProcessingGraphExecutionCalibrationInputState(master.ArtifactId, master.PayloadSha256, master.Kind))
+                    .ToArray() ?? [];
+                var bindingsRetained = true;
+                if (manifestOnly)
+                {
+                    var completedInputs = await CompleteRunManifestInputsAsync(
+                        connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
+                    inputs = completedInputs.Inputs;
+                    bindingsRetained = completedInputs.Complete;
+                }
                 var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
                     : await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken).ConfigureAwait(false);
                 nodes.Add(new ProcessingGraphExecutionNodeState(
                     row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
                     row.Started, row.Completed, inputs, attempts, outputs)
                 {
+                    CalibrationInputs = masters,
+                    ArtifactBindingsRetained = bindingsRetained,
                     NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
                     NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
                         input.WindowPosition, input.CaptureId, input.ArtifactId, input.Gain, input.Disposition,
@@ -1479,7 +1493,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// <c>false</c> for every output however the identity was published. Read separately from the
     /// output rows so the shared output projection stays untouched.
     /// </summary>
-    private static async ValueTask<Dictionary<string, bool>> ReadExecutionOutputPublicationAsync(
+    private static async ValueTask<Dictionary<string, (int Ordinal, bool Published)>> ReadExecutionOutputAssociationsAsync(
         SqliteConnection connection,
         Guid executionId,
         string nodeId,
@@ -1488,18 +1502,19 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT association.output_identity_sha256,
-                   association.published_flag * execution.allow_automatic_publication
+                   association.published_flag * execution.allow_automatic_publication,
+                   association.output_ordinal
             FROM processing_execution_outputs association
             JOIN processing_executions execution ON execution.execution_id = association.execution_id
             WHERE association.execution_id = $execution AND association.node_id = $node;
             """;
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
-        var published = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var published = new Dictionary<string, (int Ordinal, bool Published)>(StringComparer.Ordinal);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            published[reader.GetString(0)] = reader.GetInt64(1) != 0;
+            published[reader.GetString(0)] = (reader.GetInt32(2), reader.GetInt64(1) != 0);
         }
         return published;
     }

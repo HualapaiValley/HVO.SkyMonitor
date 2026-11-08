@@ -24,7 +24,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                 OR (SELECT COUNT(*) FROM (SELECT 1 FROM processing_node_attempts WHERE execution_id = $execution LIMIT $rows)) >= $rows
                 OR (SELECT COUNT(*) FROM (SELECT 1 FROM processing_execution_inputs WHERE execution_id = $execution LIMIT $rows)) >= $rows
                 OR (SELECT COUNT(*) FROM (SELECT 1 FROM processing_execution_output_input_pins WHERE execution_id = $execution LIMIT $rows)) >= $rows
-                OR (SELECT COUNT(*) FROM (SELECT 1 FROM processing_execution_outputs WHERE execution_id = $execution LIMIT $rows)) >= $rows;
+                OR (SELECT COUNT(*) FROM (SELECT 1 FROM processing_execution_outputs WHERE execution_id = $execution LIMIT $rows)) >= $rows
+                OR (SELECT COUNT(*) FROM (
+                    SELECT 1 FROM processing_execution_outputs association
+                    JOIN processing_output_sources source ON source.output_identity_sha256 = association.output_identity_sha256
+                    WHERE association.execution_id = $execution LIMIT $rows)) >= $rows;
+
             """;
         rows.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         rows.Parameters.AddWithValue("$nodes", ProcessingRunManifestBounds.MaximumNodes + 1);
@@ -41,7 +46,13 @@ internal sealed partial class SqliteCaptureProcessingStore
                   WHERE a.execution_id = $execution), 0)
               + COALESCE((SELECT SUM(length(o.descriptor_json))
                   FROM processing_execution_output_input_pins p JOIN processing_outputs o ON o.output_identity_sha256 = p.output_identity_sha256
-                  WHERE p.execution_id = $execution), 0);
+                  WHERE p.execution_id = $execution), 0)
+              + COALESCE((SELECT SUM(length(input.descriptor_json))
+                  FROM processing_execution_outputs association
+                  JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                  JOIN processing_output_sources source ON source.output_identity_sha256 = association.output_identity_sha256
+                  JOIN processing_outputs input ON input.artifact_id = source.source_artifact_id AND input.capture_id = execution.capture_id
+                  WHERE association.execution_id = $execution), 0);
             """;
         bytes.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         if ((long)(await bytes.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! > ProcessingRunManifestBounds.MaximumBytes)

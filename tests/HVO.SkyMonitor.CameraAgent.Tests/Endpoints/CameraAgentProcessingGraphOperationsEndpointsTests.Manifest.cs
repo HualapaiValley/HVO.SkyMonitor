@@ -55,6 +55,8 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
     [DataRow("incomplete", 409)]
     [DataRow("oversized", 409)]
     [DataRow("failure", 500)]
+    [DataRow("retention", 409)]
+    [DataRow("retention-input", 409)]
     public async Task ManifestUnavailableIsSafeAndNeverReturnsPartialJson(string scenario, int expected)
     {
         var detail = ManifestDetail();
@@ -66,6 +68,16 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         {
             "missing" => null,
             "expired" => detail with { Nodes = [], FrozenNodeCount = 1 },
+            "retention-input" => detail with
+            {
+                Nodes = [detail.Nodes[0] with { Outputs = [detail.Nodes[0].Outputs[0] with
+                { SourceArtifactIds = [detail.Execution.PrimaryArtifactId, Guid.NewGuid()] }] }]
+            },
+            "retention" => detail with
+            {
+                Nodes = [detail.Nodes[0] with
+                { Outputs = [], OutputContracts = [new(FrameArtifactRole.Preview, "display", ProcessingProductKind.PixelData)] }]
+            },
             "incomplete" => detail with { Nodes = [detail.Nodes[0] with { Outputs = [detail.Nodes[0].Outputs[0] with { PayloadSha256 = null }] }] },
             _ => detail
         });
@@ -83,10 +95,12 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var detail = ManifestDetail();
         Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason,
             CameraAgentRunManifest.Create(detail with { Nodes = Enumerable.Repeat(detail.Nodes[0], 65).ToArray() }).Reason);
+        var sources = Enumerable.Range(0, 512).Select(_ => Guid.NewGuid()).ToArray();
+        var inputs = sources.Select((id, index) => detail.Nodes[0].Inputs[0] with { ArtifactId = id, Ordinal = index }).ToArray();
         var outputs = Enumerable.Range(0, 120).Select(index => detail.Nodes[0].Outputs[0] with
-        { Ordinal = index, SourceArtifactIds = Enumerable.Repeat(Guid.NewGuid(), 512).ToArray() }).ToArray();
+        { Ordinal = index, SourceArtifactIds = sources }).ToArray();
         Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason,
-            CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { Outputs = outputs }] }).Reason);
+            CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { Inputs = inputs, Outputs = outputs }] }).Reason);
     }
 
     [TestMethod]
@@ -95,7 +109,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var detail = ManifestDetail();
         var result = CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { NodeId = "/private-sentinel?password=secret" }] });
         Assert.IsNull(result.Payload);
-        Assert.AreEqual(CameraAgentRunManifest.IncompleteReason, result.Reason);
+        Assert.AreEqual(CameraAgentRunManifest.IdentifierUnavailableReason, result.Reason);
     }
 
     [TestMethod]
@@ -105,6 +119,22 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         Assert.IsNull(result.Reason);
         using var json = JsonDocument.Parse(result.Payload!);
         Assert.AreEqual(0, json.RootElement.GetProperty("nodes").GetArrayLength());
+    }
+
+    [TestMethod]
+    [DataRow("Skipped")]
+    [DataRow("Completed")]
+    public void ManifestKeepsGenuinelyOutputlessOutcomesAvailable(string status)
+    {
+        var detail = ManifestDetail();
+        var node = detail.Nodes[0] with
+        {
+            Status = status,
+            Outputs = [],
+            OutputContracts = status == "Skipped" ? [new(FrameArtifactRole.Preview, "display", ProcessingProductKind.PixelData)] : [],
+            Attempts = [detail.Nodes[0].Attempts[0] with { Status = status, Outcome = status == "Skipped" ? ProcessingOutcomeStatus.Skipped : null }]
+        };
+        Assert.IsNotNull(CameraAgentRunManifest.Create(detail with { Nodes = [node] }).Payload);
     }
 
     private static ProcessingGraphExecutionDetail ManifestDetail()

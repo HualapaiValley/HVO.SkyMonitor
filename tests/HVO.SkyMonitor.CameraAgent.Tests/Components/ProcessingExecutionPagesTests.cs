@@ -56,6 +56,7 @@ public sealed class ProcessingExecutionPagesTests
     [TestMethod]
     [DataRow(null)]
     [DataRow("The execution's node evidence is no longer retained.")]
+    [DataRow("The execution's artifact input or output evidence is no longer retained.")]
     [DataRow("The retained run evidence exceeds the manifest download limits.")]
     public void DetailPage_ManifestHasDownloadOrSpecificUnavailableReason(string? reason)
     {
