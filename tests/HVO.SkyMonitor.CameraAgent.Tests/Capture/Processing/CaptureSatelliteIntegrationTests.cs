@@ -203,7 +203,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         return path;
     }
 
-    internal static ServiceProvider CreateProvider(string root, CaptureSatelliteFixture f, Clock clock,
+    internal static ServiceProvider CreateProvider(string root, CaptureSatelliteFixture f, TimeProvider clock,
         string? unavailable = null, bool fault = false, bool inputFault = false)
     {
         var services = new ServiceCollection();
@@ -247,7 +247,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
     };
 
     internal static async Task<RawCaptureReceipt> CaptureAsync(ServiceProvider provider, CameraModuleConfig config, CaptureSatelliteFixture f,
-        int sequenceOffset = 0)
+        int sequenceOffset = 0, CaptureLoopSubmission? submission = null)
     {
         var site = f.Configuration.DeploymentLocation!;
         await provider.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationStore>()
@@ -273,7 +273,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
             Assert.AreEqual(OrbitalAdmissionStatus.Admitted, attempt.Status);
             await orbital.PublishAndActivateAsync(attempt.AttemptId!, snapshot, raw, CancellationToken.None).ConfigureAwait(false);
         }
-        return await ingress.AcceptAsync(config, Submission(f, sequenceOffset), CancellationToken.None).ConfigureAwait(false)
+        return await ingress.AcceptAsync(config, submission ?? Submission(f, sequenceOffset), CancellationToken.None).ConfigureAwait(false)
             ?? throw new AssertFailedException("Raw capture admission failed.");
     }
 

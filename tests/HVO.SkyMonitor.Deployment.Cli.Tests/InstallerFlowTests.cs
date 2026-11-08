@@ -1558,7 +1558,10 @@ public sealed partial class InstallerFlowTests
         public int Verifications { get; private set; }
 
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
@@ -1847,7 +1850,10 @@ public sealed partial class InstallerFlowTests
         private int stateCount;
 
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
