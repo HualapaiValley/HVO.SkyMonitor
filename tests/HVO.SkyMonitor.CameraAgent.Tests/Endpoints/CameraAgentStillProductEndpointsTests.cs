@@ -293,7 +293,8 @@ public sealed class CameraAgentStillProductEndpointsTests
             => ValueTask.FromResult(new NightlyProductDay(observingDate, [], []));
         public ValueTask<NightlyProductPresentation?> GetPresentationAsync(Guid productId, CancellationToken cancellationToken)
             => Read<NightlyProductPresentation>();
-        public ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        public ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken,
+            IReadOnlyList<HVO.SkyMonitor.CameraAgent.Common.Automation.LocalAutomationRun>? generationRuns = null)
             => ValueTask.FromResult(new NightlyProductLibraryPage([], null, null));
         private ValueTask<T?> Read<T>() where T : class => Failure is { } failure ? throw failure : ValueTask.FromResult<T?>(null);
     }

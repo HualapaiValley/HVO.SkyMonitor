@@ -11,8 +11,8 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
 /// <summary>
-/// Read-only presentation projections over the published catalog. They read existing rows through the existing date
-/// and key indexes, never write, and fail rather than truncate when a declared bound is exceeded.
+/// Read-only presentation projections over the published catalog and retained automation attempts. They read existing
+/// rows through existing indexes, never write, and fail rather than truncate when a declared bound is exceeded.
 /// </summary>
 internal sealed partial class SqliteNightlyProductStore
 {
@@ -110,7 +110,8 @@ internal sealed partial class SqliteNightlyProductStore
     /// </summary>
     public async ValueTask<NightlyProductLibraryPage> ListLibraryAsync(
         NightlyProductLibraryQuery query,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<LocalAutomationRun>? generationRuns = null)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (query.DateCount is < 1 or > NightlyProductProjectionContract.MaximumLibraryDates)
@@ -126,6 +127,17 @@ internal sealed partial class SqliteNightlyProductStore
         // Without a status filter every report date with a daily evaluation matches, so one date past the page is enough.
         var scan = query.State is null ? query.DateCount : NightlyProductProjectionContract.MaximumLibraryScannedDates;
         var kind = (object?)query.Kind?.ToString() ?? DBNull.Value;
+        if (generationRuns?.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
+            throw new InvalidDataException("The generation projection exceeds its declared bound.");
+        var progress = (generationRuns ?? []).Where(run => run.Occurrence?.SourceWindow is { } window &&
+                window.Policy.Kind == LocalAutomationSourceWindowKind.SunriseDay &&
+                window.ReportingPeriod.ReportDate >= firstDate && window.ReportingPeriod.ReportDate <= lastDate &&
+                NightlyProductPreset.TryParseTarget(run.Occurrence.Definition.TaskTarget, out var productKind) &&
+                (query.Kind is null || query.Kind == productKind))
+            .GroupBy(static run => run.Occurrence!.IdentitySha256)
+            .Select(static group => group.MaxBy(static run => run.Sequence)!)
+            .Where(static run => run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running
+                or LocalAutomationRunOutcome.Interrupted or LocalAutomationRunOutcome.Failed).ToList();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -133,6 +145,8 @@ internal sealed partial class SqliteNightlyProductStore
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             var candidates = await ReadLibraryDatesAsync(connection, firstDate, lastDate, kind, scan + 1, cancellationToken)
                 .ConfigureAwait(false);
+            candidates = candidates.Concat(progress.Select(static run => run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
+                .Distinct().OrderDescending().Take(scan + 1).ToList();
             var truncated = candidates.Count > scan;
             if (truncated) candidates.RemoveAt(scan);
             if (candidates.Count == 0)
@@ -144,21 +158,44 @@ internal sealed partial class SqliteNightlyProductStore
                 $"WHERE state.observing_date IN ({dateFilter}) AND state.scope = 'Final' AND ($kind IS NULL OR state.kind = $kind)",
                 cancellationToken, [.. dateParameters, ("$kind", kind)]).ConfigureAwait(false);
             var summaries = Summarize(rows);
-            var matches = summaries.Where(summary => summary.DailyDisposition is not null &&
-                (query.State is null || NightlyProductLibraryEntry.Classify(summary) == query.State)).ToList();
-            var matchedDates = candidates.Where(date => matches.Any(summary => summary.ObservingDate == date)).ToList();
+            var entries = await ReadLibraryEntriesAsync(connection, summaries,
+                [.. summaries.Where(static summary => summary.DailyDisposition is not null)], kind, cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var group in progress.Where(run => candidates.Contains(run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate))
+                .GroupBy(static run => (run.Occurrence!.SourceWindow!.ReportingPeriod.ReportDate,
+                    run.Occurrence.SourceWindow.ReportingPeriod.IdentitySha256,
+                    Kind: NightlyProductPreset.TryParseTarget(run.Occurrence.Definition.TaskTarget, out var parsed) ? parsed : default)))
+            {
+                var previous = entries.SingleOrDefault(entry => entry.Summary.ObservingDate == group.Key.ReportDate &&
+                    entry.Summary.Kind == group.Key.Kind && entry.Summary.ReportingPeriodSha256 == group.Key.IdentitySha256);
+                var run = group.OrderByDescending(static run => run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
+                    .ThenByDescending(static run => run.Sequence).First();
+                // A final evaluation settles that attempt. Active attempts always win, including during publication.
+                if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running) &&
+                    previous?.Daily is { } evaluated && evaluated.Status.Occurrence.IdentitySha256 == run.Occurrence!.IdentitySha256 &&
+                    evaluated.Status.EvaluatedUtc >= run.StartedAtUtc) continue;
+                if (previous is not null) entries.Remove(previous);
+                var summary = summaries.SingleOrDefault(summary => summary.ObservingDate == group.Key.ReportDate &&
+                    summary.Kind == group.Key.Kind && summary.ReportingPeriodSha256 == group.Key.IdentitySha256)
+                    ?? new(group.Key.ReportDate, group.Key.Kind, group.Key.IdentitySha256, null, null, null, 0, 0);
+                entries.Add(new(summary, previous?.Daily, previous?.OtherPeriodRecorded ?? false) { Generation = run });
+            }
+            entries = entries.Select(entry => entry with
+            {
+                OtherPeriodRecorded = entries.Any(other =>
+                other.Summary.ObservingDate == entry.Summary.ObservingDate && other.Summary.Kind == entry.Summary.Kind &&
+                other.Summary.ReportingPeriodSha256 != entry.Summary.ReportingPeriodSha256)
+            }).ToList();
+            var matches = entries.Where(entry => query.State is null || entry.State == query.State).ToList();
+            var matchedDates = candidates.Where(date => matches.Any(entry => entry.Summary.ObservingDate == date)).ToList();
             var shownDates = matchedDates.Take(query.DateCount).ToHashSet();
             DateOnly? nextBefore = matchedDates.Count > query.DateCount ? matchedDates[query.DateCount - 1]
-                : truncated ? candidates[^1]
-                : null;
+                : truncated ? candidates[^1] : null;
             DateOnly? searchedThrough = truncated && shownDates.Count < query.DateCount ? candidates[^1] : null;
-            if (shownDates.Count == 0)
-            {
-                return new NightlyProductLibraryPage([], nextBefore, searchedThrough);
-            }
-            var entries = await ReadLibraryEntriesAsync(connection, summaries,
-                [.. matches.Where(summary => shownDates.Contains(summary.ObservingDate))], kind, cancellationToken)
-                .ConfigureAwait(false);
+            entries = matches.Where(entry => shownDates.Contains(entry.Summary.ObservingDate))
+                .OrderByDescending(static entry => entry.Summary.ObservingDate).ThenBy(static entry => entry.Summary.Kind)
+                .ThenBy(static entry => entry.SourceWindow.StartUtc)
+                .ThenBy(static entry => entry.Summary.ReportingPeriodSha256, StringComparer.Ordinal).ToList();
             return new NightlyProductLibraryPage(entries, nextBefore, searchedThrough);
         }
         finally
@@ -211,6 +248,7 @@ internal sealed partial class SqliteNightlyProductStore
         object kind,
         CancellationToken cancellationToken)
     {
+        if (shown.Count == 0) return [];
         var (dateFilter, dateParameters) = InList("$date_",
             shown.Select(static summary => summary.ObservingDate).Distinct().Select(FormatDate));
         var windows = await ReadWindowsAsync(connection, $"""
@@ -242,7 +280,7 @@ internal sealed partial class SqliteNightlyProductStore
             })
             .OrderByDescending(static entry => entry.Summary.ObservingDate)
             .ThenBy(static entry => entry.Summary.Kind)
-            .ThenBy(static entry => entry.Daily.ReportingPeriod.StartUtc)
+            .ThenBy(static entry => entry.SourceWindow.ReportingPeriod.StartUtc)
             .ThenBy(static entry => entry.Summary.ReportingPeriodSha256, StringComparer.Ordinal)];
     }
 

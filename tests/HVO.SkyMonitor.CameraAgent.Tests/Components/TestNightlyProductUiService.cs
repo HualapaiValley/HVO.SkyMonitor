@@ -40,6 +40,21 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
     public ValueTask<OperatorUiResult<CameraAgentTimeLapsePresentation>> GetTimeLapseAsync(Guid productId, CancellationToken cancellationToken)
         => ValueTask.FromResult(VideoHandler(productId));
 
+    internal CameraAgentTimeLapseLibraryPage? VideoLibrary { get; set; }
+    public ValueTask<OperatorUiResult<CameraAgentTimeLapseLibraryPage>> ListTimeLapseLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+    {
+        VideoQueries.Add(query.Before);
+        var summaries = VideoSummaries.Where(product => (query.ObservingDate is null || product.ReportDate == query.ObservingDate) &&
+            (query.Before is null || product.ReportDate < query.Before) &&
+            (query.State is null || query.State == NightlyProductLibraryState.Produced)).ToArray();
+        var window = NightlyDayFixture.Daily(NightlyProductKind.Keogram).SourceWindow!;
+        return ValueTask.FromResult(OperatorUiResult<CameraAgentTimeLapseLibraryPage>.Success(VideoLibrary ?? new(
+            summaries.Select(product => new CameraAgentTimeLapseLibraryEntry(Guid.NewGuid(), product.ReportDate,
+                window, CameraAgentTimeLapseState.Produced, null, null, product, false)).ToArray(),
+            summaries.Length == 31 ? summaries[^1].ReportDate : null, null)));
+    }
+
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
     {
         VideoQueries.Add(before);

@@ -10,8 +10,9 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Presentation;
 public sealed partial class TimeLapseLibraryView : ComponentBase, IDisposable
 {
     private readonly CancellationTokenSource _lifetime = new();
-    private IReadOnlyList<CameraAgentTimeLapseSummary> _products = [];
+    private IReadOnlyList<CameraAgentTimeLapseLibraryEntry> _products = [];
     private string? _message;
+    private DateOnly? _searchedThrough;
     private bool _loading;
     private bool _visible;
     private DateOnly? _olderBefore;
@@ -39,26 +40,29 @@ public sealed partial class TimeLapseLibraryView : ComponentBase, IDisposable
         _products = [];
         _message = null;
         _olderBefore = null;
-        // Only published daily products are represented here. Partial hourly periods and generation jobs stay on
-        // the observing-day page; a final with capture gaps is still a produced daily video.
         _visible = notice is null && query is not null &&
             (string.IsNullOrEmpty(Type) || string.Equals(Type, "time-lapse", StringComparison.Ordinal));
         if (!_visible || query is null) return;
-        if (query.State is NightlyProductLibraryState.Partial or NightlyProductLibraryState.NotProduced)
-        {
-            _loading = false;
-            return;
-        }
         _loading = true;
-        var before = query.ObservingDate is { } day ? day < DateOnly.MaxValue ? day.AddDays(1) : (DateOnly?)null : Before;
-        var result = await Products.ListTimeLapsesAsync(before, _lifetime.Token);
+        var videoQuery = query with { DateCount = 31, Before = query.ObservingDate is null ? Before : null };
+        var result = await Products.ListTimeLapseLibraryAsync(videoQuery, _lifetime.Token);
         if (generation != _generation || _lifetime.IsCancellationRequested) return;
-        var products = result.Value ?? [];
-        _products = query.ObservingDate is { } date ? products.Where(product => product.ReportDate == date).ToArray() : products;
-        if (query.ObservingDate is null && products.Count == 31) _olderBefore = products[^1].ReportDate;
+        _products = result.Value?.Entries ?? [];
+        _olderBefore = result.Value?.NextBefore;
+        _searchedThrough = result.Value?.SearchedThrough;
         _message = result.Message;
         _loading = false;
     }
+
+    private static string Progress(CameraAgentTimeLapseLibraryEntry entry) => entry.JobState switch
+    {
+        CameraAgentTimeLapseState.Queued => entry.ReasonCode is "timelapse.recovering" or "timelapse.explicit-retry" ? "Retrying (queued)" : "Queued",
+        CameraAgentTimeLapseState.Working => "Running",
+        CameraAgentTimeLapseState.Failed => "Generation failed",
+        CameraAgentTimeLapseState.Unavailable => "Generation unavailable",
+        CameraAgentTimeLapseState.NoSources => "No admitted images",
+        _ => entry.State.ToString()
+    };
 
     public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); GC.SuppressFinalize(this); }
 }

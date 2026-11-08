@@ -26,6 +26,46 @@ public sealed class GeneratedProductsLibraryTests
     private static readonly string[] NoMatchActions = ["/archive/products", "/archive/day/2026-10-01"];
 
     [TestMethod]
+    public void Library_RunningFilterIsEnabledAndQueriesRecordedProgress()
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var cut = Render(context, "/archive/products?status=running");
+        Assert.IsFalse(cut.Find("#library-status option[value='running']").HasAttribute("disabled"));
+        cut.WaitForAssertion(() => Assert.HasCount(1, nightly.LibraryQueries));
+        Assert.AreEqual("Running", nightly.LibraryQueries[0].State?.ToString());
+        Assert.IsFalse(cut.Markup.Contains("generation progress is not recorded", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Queued, "Queued for generation", "Not started")]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Running, "Running generation", "2026-10-02 19:10:00 UTC")]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Interrupted, "Stalled: generation was interrupted", "2026-10-02 19:10:00 UTC")]
+    public void Library_ProgressCardsShowStateStartAndSourceWindowWithoutPublishedMedia(
+        Common.Automation.LocalAutomationRunOutcome outcome, string description, string started)
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var previous = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced);
+        var occurrence = previous.Occurrence;
+        var run = new Common.Automation.LocalAutomationRun(1, occurrence.Definition.DefinitionId,
+            occurrence.RunKey, occurrence.RevisionSha256, occurrence.Definition.TriggerKind, occurrence.ScheduledForUtc,
+            outcome == Common.Automation.LocalAutomationRunOutcome.Queued ? null : new DateTimeOffset(2026, 10, 2, 19, 10, 0, TimeSpan.Zero),
+            null, outcome, "", null)
+        { Occurrence = occurrence };
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([previous with { Generation = run }], null, null));
+        var cut = Render(context, "/archive/products");
+        var card = cut.Find(".library-card");
+        Assert.AreEqual(outcome == Common.Automation.LocalAutomationRunOutcome.Interrupted ? "stalled" : "running", card.GetAttribute("data-nightly-state"));
+        Assert.IsNull(card.QuerySelector("img"));
+        Assert.IsNull(card.QuerySelector("a.library-card__media"));
+        StringAssert.Contains(card.TextContent, description, StringComparison.Ordinal);
+        StringAssert.Contains(card.TextContent, started, StringComparison.Ordinal);
+        StringAssert.Contains(card.TextContent, "Period", StringComparison.Ordinal);
+        Assert.IsFalse(card.TextContent.Contains("Produced", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void Library_ShowsEachDailyFinalAsACardWithItsIdentitySourcesSpanAndAutomation()
     {
         using var context = new BunitContext();
@@ -176,7 +216,7 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual("partial", cut.Find("#library-status").GetAttribute("value"));
         Assert.AreEqual("2026-10-01", cut.Find("#library-day").GetAttribute("value"));
         // Choices CameraAgent cannot answer truthfully stay visible but disabled, with the reason beside them.
-        foreach (var unrecorded in new[] { "#library-type option[value='daily-summary']", "#library-status option[value='running']" })
+        foreach (var unrecorded in new[] { "#library-type option[value='daily-summary']" })
         {
             Assert.IsTrue(cut.Find(unrecorded).HasAttribute("disabled"), unrecorded);
         }
@@ -201,7 +241,6 @@ public sealed class GeneratedProductsLibraryTests
     [TestMethod]
     [DataRow("type=daily-summary", "Daily summaries are not yet generated")]
     [DataRow("type=fireball", "not a product type CameraAgent generates")]
-    [DataRow("status=running", "Generation progress is not recorded")]
     [DataRow("status=available", "not a recorded product state")]
     [DataRow("day=yesterday", "observing day filter is not a date")]
     [DataRow("before=2026-13-40", "page position is not a date")]

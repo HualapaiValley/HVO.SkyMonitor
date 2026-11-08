@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.Video.FFmpeg;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
@@ -35,6 +36,12 @@ public sealed record CameraAgentTimeLapseJob(
     string? ReasonCode,
     Guid? ProductId)
 {
+    /// <summary>
+    /// The recorded transition into Working, preserved by restart requeue. Other transitions overwrite UpdatedUtc,
+    /// so queued new attempts and terminal jobs do not claim a historical start time.
+    /// </summary>
+    public DateTimeOffset? StartedUtc => State == CameraAgentTimeLapseState.Working ||
+        State == CameraAgentTimeLapseState.Queued && ReasonCode == "timelapse.recovering" ? UpdatedUtc : null;
     public long Revision { get; init; } = 1;
     public IReadOnlyDictionary<string, int> Exclusions { get; init; } = new Dictionary<string, int>();
 }
@@ -87,8 +94,24 @@ public sealed record CameraAgentTimeLapseDateSummary(DateOnly ReportDate, string
 /// <summary>Thin library projection; browsing dates never loads full packet/source provenance.</summary>
 public sealed record CameraAgentTimeLapseSummary(Guid ProductId, DateOnly ReportDate, int Width, int Height, bool HasGaps);
 
+/// <summary>A bounded library row without source plans, presets or packet proofs.</summary>
+public sealed record CameraAgentTimeLapseLibraryEntry(Guid JobId, DateOnly ReportDate,
+    LocalAutomationSourceWindow Window, CameraAgentTimeLapseState JobState, DateTimeOffset? StartedUtc,
+    string? ReasonCode, CameraAgentTimeLapseSummary? Product, bool HasHourlyProducts)
+{
+    public NightlyProductLibraryState State => JobState is CameraAgentTimeLapseState.Queued or CameraAgentTimeLapseState.Working
+        ? NightlyProductLibraryState.Running
+        : Product is not null ? NightlyProductLibraryState.Produced
+        : HasHourlyProducts ? NightlyProductLibraryState.Partial : NightlyProductLibraryState.NotProduced;
+}
+
+public sealed record CameraAgentTimeLapseLibraryPage(IReadOnlyList<CameraAgentTimeLapseLibraryEntry> Entries,
+    DateOnly? NextBefore, DateOnly? SearchedThrough);
+
 public interface ICameraAgentTimeLapseCatalog
 {
+    ValueTask<CameraAgentTimeLapseLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ValueTask.FromResult(new CameraAgentTimeLapseLibraryPage([], null, null));
     ValueTask<CameraAgentTimeLapseDay> GetDayAsync(DateOnly reportDate, CancellationToken cancellationToken);
     ValueTask<CameraAgentTimeLapseProduct?> GetAsync(Guid productId, CancellationToken cancellationToken);
     ValueTask<LocalAutomationSourceWindow?> GetWindowAsync(Guid productId, CancellationToken cancellationToken);

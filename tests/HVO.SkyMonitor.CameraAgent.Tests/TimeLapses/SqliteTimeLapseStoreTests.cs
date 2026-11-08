@@ -16,6 +16,118 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 public sealed class SqliteTimeLapseStoreTests
 {
     [TestMethod]
+    public async Task Library_QueuedWorkingAndRestartRecoveryRetainActualStartAndWindow()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-library");
+        try
+        {
+            var options = Options(root);
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            var daily = Occurrence(options.Value.TimeLapses, LocalAutomationSourceWindowKind.SunriseDay);
+            var hours = Windows(NightlyProductFixture.ObservingDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            var preset = options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration());
+            var query = new Common.NightlyProducts.NightlyProductLibraryQuery(1, State: Common.NightlyProducts.NightlyProductLibraryState.Running);
+            DateTimeOffset started;
+            using (var store = new SqliteTimeLapseStore(options, clock))
+            {
+                await store.EnqueueAsync(daily, preset, hours, CancellationToken.None);
+                var queued = (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single();
+                Assert.AreEqual(CameraAgentTimeLapseState.Queued, queued.JobState);
+                Assert.IsNull(queued.StartedUtc);
+                Assert.AreEqual(daily.SourceWindow, queued.Window);
+                Assert.IsNull(queued.Product);
+                using var worker = await store.AcquireWorkerAsync(CancellationToken.None);
+                while (await store.ClaimAsync(CancellationToken.None) is { ParentJobId: not null } hour)
+                    await store.CompleteAsync(hour.JobId, CameraAgentTimeLapseState.NoSources, "empty", null, CancellationToken.None);
+                started = clock.UtcNow;
+                var running = (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single();
+                Assert.AreEqual(CameraAgentTimeLapseState.Working, running.JobState);
+                Assert.AreEqual(started, running.StartedUtc);
+                Assert.IsEmpty((await store.ListLibraryAsync(query with { State = Common.NightlyProducts.NightlyProductLibraryState.Produced }, CancellationToken.None)).Entries);
+            }
+            clock.UtcNow = clock.UtcNow.AddMinutes(15);
+            using var reopened = new SqliteTimeLapseStore(options, clock);
+            using var lease = await reopened.AcquireWorkerAsync(CancellationToken.None);
+            var retrying = (await reopened.ListLibraryAsync(query, CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(CameraAgentTimeLapseState.Queued, retrying.JobState);
+            Assert.AreEqual("timelapse.recovering", retrying.ReasonCode);
+            Assert.AreEqual(started, retrying.StartedUtc);
+            Assert.AreEqual(daily.SourceWindow, retrying.Window);
+            var claimed = await reopened.ClaimAsync(CancellationToken.None);
+            Assert.AreEqual(clock.UtcNow, claimed!.StartedUtc);
+            await reopened.CompleteAsync(claimed.JobId, CameraAgentTimeLapseState.NoSources, "empty", null, CancellationToken.None);
+            Assert.IsEmpty((await reopened.ListLibraryAsync(query, CancellationToken.None)).Entries);
+            Assert.AreEqual(Common.NightlyProducts.NightlyProductLibraryState.NotProduced,
+                (await reopened.ListLibraryAsync(query with { State = null }, CancellationToken.None)).Entries.Single().State);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    [DataRow(Common.NightlyProducts.NightlyProductLibraryState.Produced)]
+    [DataRow(Common.NightlyProducts.NightlyProductLibraryState.Partial)]
+    [DataRow(Common.NightlyProducts.NightlyProductLibraryState.NotProduced)]
+    public async Task Library_TransitionsFromRunningToTheRecordedPublicationOutcome(Common.NightlyProducts.NightlyProductLibraryState expected)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-library-transition");
+        try
+        {
+            var options = Options(root);
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            using var store = new SqliteTimeLapseStore(options, clock);
+            using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
+            var occurrence = Occurrence(options.Value.TimeLapses, LocalAutomationSourceWindowKind.SunriseDay);
+            var hours = Windows(NightlyProductFixture.ObservingDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            await store.EnqueueAsync(occurrence, options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration()), hours, CancellationToken.None);
+            var query = new Common.NightlyProducts.NightlyProductLibraryQuery(1, State: Common.NightlyProducts.NightlyProductLibraryState.Running);
+            Assert.HasCount(1, (await store.ListLibraryAsync(query, CancellationToken.None)).Entries);
+            for (var index = 0; index < hours.Count; index++)
+            {
+                var child = await ClaimAsync(store, clock);
+                var state = expected == Common.NightlyProducts.NightlyProductLibraryState.Partial && index == 0
+                    ? CameraAgentTimeLapseState.Produced : CameraAgentTimeLapseState.NoSources;
+                await FinishAsync(store, clock, root, child, state);
+                if (state == CameraAgentTimeLapseState.Produced) await RecordLibraryProductAsync(root, child);
+            }
+            var daily = await ClaimAsync(store, clock);
+            Assert.AreEqual(CameraAgentTimeLapseState.Working, (await store.ListLibraryAsync(query, CancellationToken.None)).Entries.Single().JobState);
+            await FinishAsync(store, clock, root, daily, expected == Common.NightlyProducts.NightlyProductLibraryState.Produced
+                ? CameraAgentTimeLapseState.Produced : CameraAgentTimeLapseState.NoSources);
+            if (expected == Common.NightlyProducts.NightlyProductLibraryState.Produced) await RecordLibraryProductAsync(root, daily);
+            Assert.IsEmpty((await store.ListLibraryAsync(query, CancellationToken.None)).Entries);
+            var completed = (await store.ListLibraryAsync(query with { State = expected }, CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(expected, completed.State);
+            Assert.AreEqual(expected == Common.NightlyProducts.NightlyProductLibraryState.Produced, completed.Product is not null);
+            Assert.IsNull(completed.StartedUtc, "A terminal update time is not the historical start.");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static async Task RecordLibraryProductAsync(string root, CameraAgentTimeLapseJob job)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        // Thin catalog fixture; full provenance is deliberately absent to detect eager source/packet loading.
+        command.CommandText = """
+            INSERT INTO products(product_id,output_sha256,job_id,report_date,period_sha256,window_sha256,start_ticks,end_ticks,
+                preset_sha256,is_daily,document_json,document_sha256,payload_path,payload_bytes,created_ticks,width,height,has_gaps)
+            SELECT product_id,lower(hex(randomblob(32))),job_id,report_date,$period,$window,$start,$end,$preset,$daily,
+                '{}',$sha,product_id || '.mp4',1,updated_ticks,640,480,0 FROM jobs WHERE job_id=$id;
+            """;
+        command.Parameters.AddWithValue("$id", job.JobId.ToString("N"));
+        command.Parameters.AddWithValue("$period", job.Window.ReportingPeriod.IdentitySha256);
+        command.Parameters.AddWithValue("$window", job.Window.IdentitySha256);
+        command.Parameters.AddWithValue("$start", job.Window.StartUtc.UtcTicks);
+        command.Parameters.AddWithValue("$end", job.Window.EndUtc.UtcTicks);
+        command.Parameters.AddWithValue("$preset", job.Preset.IdentitySha256);
+        command.Parameters.AddWithValue("$daily", job.Window.Policy.Kind == LocalAutomationSourceWindowKind.SunriseDay ? 1 : 0);
+        command.Parameters.AddWithValue("$sha", new string('A', 64));
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync());
+    }
+
+    [TestMethod]
     public async Task ZeroNineStoredJobReadsRecoversAndCompletesWithoutChangingItsPreset()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-upgrade");
