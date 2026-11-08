@@ -41,6 +41,8 @@ internal sealed record LifecycleWorkerRequest(Guid InstanceId, string ProductRoo
 
 internal sealed partial class CameraAgentLifecycleManager
 {
+    internal static string FormatControlWorkerDiagnostic(string message) => CameraAgentStateDiagnostics.Message(message);
+
     /// <summary>Explicitly started by the operator, never spawned by the web host or by installation.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Both operation locks are using declarations spanning the worker or one entire verified lifecycle.")]
     internal static async Task RunControlWorkerAsync(LifecycleWorkerRequest request, CancellationToken cancellationToken)
@@ -79,6 +81,6 @@ internal sealed partial class CameraAgentLifecycleManager
             catch { deploymentLock.Dispose(); throw; }
         }
         await new InstallerControlWorker(client, journal, AcquireDeploymentAsync, TimeProvider.System,
-            message => Console.Error.WriteLine(message)).RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
+            message => Console.Error.WriteLine(FormatControlWorkerDiagnostic(message))).RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
     }
 }
