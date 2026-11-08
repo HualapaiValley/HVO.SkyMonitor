@@ -26,7 +26,7 @@ internal static class FocusTestModules
         var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("focus-star", "Focus Star", rightAscension, Latitude, magnitude, 0.65)
         ]);
-        return new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore ?? new ProjectedSceneStore());
+        return new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, sceneStore ?? new ProjectedSceneStore());
     }
 
     public static CameraModuleConfig Config(

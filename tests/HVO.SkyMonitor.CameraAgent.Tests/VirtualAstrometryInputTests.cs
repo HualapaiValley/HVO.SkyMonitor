@@ -113,7 +113,7 @@ public sealed class VirtualAstrometryInputTests
         var profiles = VirtualAstrometryFixture.Profiles(1);
         var cfa = profiles.Single(p => p.Name == "cfa-native").Config;
         var catalog = new InMemoryCelestialCatalog([]);
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         var crop = cfa with
         {
