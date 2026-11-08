@@ -13,7 +13,6 @@ using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -99,7 +98,6 @@ public sealed partial class VirtualSkyCloudScenarioTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }
