@@ -27,8 +27,13 @@ public sealed class InstallerLifecycleAutomationTests
             using var registry = new PeriodicRegistryHarness(clock, [adapter]);
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.FullName });
             var sequence = new StubCaptureSequenceSource();
-            SqliteLocalAutomationStore Open() => new(registry.Registry, sequence, options, clock, NullLogger<SqliteLocalAutomationStore>.Instance);
-            using (var store = Open())
+            using var controls = new CameraAgentControlStore(options, clock);
+            await controls.ExchangeAsync(new(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+            SqliteLocalAutomationStore Open(CameraAgentControlStore lifecycle) => new(registry.Registry, sequence, options, clock,
+                NullLogger<SqliteLocalAutomationStore>.Instance, lifecycleControls: lifecycle);
+            var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Restart,
+                "automation:cameraagent-restart", "Scheduled restart", 7, clock.GetUtcNow(), "installer-restart-run");
+            using (var store = Open(controls))
             {
                 await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var saved = await store.SaveAsync(new(CameraAgentRestartAutomationAdapter.DefinitionId, "Scheduled restart", true,
@@ -37,13 +42,14 @@ public sealed class InstallerLifecycleAutomationTests
                 Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
                 var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
                 Assert.IsTrue(await store.TryBeginRunAsync(entry, "installer-restart-run", clock.GetUtcNow(), null, CancellationToken.None).ConfigureAwait(false));
+                await controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
             }
-            using var restarted = Open();
+            using var recoveredControls = new CameraAgentControlStore(options, clock);
+            using var restarted = Open(recoveredControls);
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var run = (await restarted.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
             Assert.AreEqual(LocalAutomationRunOutcome.Running, run.Outcome, "CameraAgent restart must not falsely settle the installer's pending run.");
-            var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Restart,
-                "automation:cameraagent-restart", "Scheduled restart", 7, clock.GetUtcNow(), run.RunKey);
+            Assert.AreEqual(request.AutomationRunKey, run.RunKey);
             var receipt = new CameraAgentControlReceipt(request, phase,
                 [new(CameraAgentControlPhase.Queued, clock.GetUtcNow(), "lifecycle.queued"), new(phase, clock.GetUtcNow(), "installer.terminal")]);
             await restarted.CompleteInstallerLifecycleAsync(receipt, CancellationToken.None).ConfigureAwait(false);
@@ -53,6 +59,46 @@ public sealed class InstallerLifecycleAutomationTests
             // Publication retries cannot rewrite a terminal history row.
             await restarted.CompleteInstallerLifecycleAsync(receipt with { Phase = CameraAgentControlPhase.Failed }, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(expected, (await restarted.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Outcome);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CrashBeforeIntentSubmissionSettlesClaimAsInterrupted_IncludingWhenAnotherRunHasIntent(bool unrelatedIntent)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-1711-unsubmitted-run-");
+        try
+        {
+            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
+            using var registry = new PeriodicRegistryHarness(clock,
+                [new FakePeriodicTaskAdapter(LocalAutomationTaskKind.ScheduledCameraAgentRestart) { MinimumIntervalSeconds = 3600 }]);
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.FullName });
+            using var controls = new CameraAgentControlStore(options, clock);
+            SqliteLocalAutomationStore Open(CameraAgentControlStore lifecycle) => new(registry.Registry, new StubCaptureSequenceSource(),
+                options, clock, NullLogger<SqliteLocalAutomationStore>.Instance, lifecycleControls: lifecycle);
+            using (var store = Open(controls))
+            {
+                await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                await store.SaveAsync(new(CameraAgentRestartAutomationAdapter.DefinitionId, "Scheduled restart", true,
+                    LocalAutomationTaskKind.ScheduledCameraAgentRestart, FakePeriodicTaskAdapter.Target,
+                    LocalAutomationTriggerKind.Periodic, 3600, 0, "save", "owner", null), CancellationToken.None).ConfigureAwait(false);
+                var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+                Assert.IsTrue(await store.TryBeginRunAsync(entry, "crashed-before-submit", clock.GetUtcNow(), null, CancellationToken.None).ConfigureAwait(false));
+                if (unrelatedIntent)
+                {
+                    await controls.ExchangeAsync(new(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+                    await controls.SubmitAsync(new(Guid.NewGuid(), CameraAgentControlKind.Restart, "automation:cameraagent-restart",
+                        "Other run", 0, clock.GetUtcNow(), "different-run"), CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            using var recoveredControls = new CameraAgentControlStore(options, clock);
+            using var restarted = Open(recoveredControls);
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var run = (await restarted.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+            Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, run.Outcome);
+            Assert.IsNotNull(run.CompletedAtUtc);
         }
         finally { root.Delete(true); }
     }

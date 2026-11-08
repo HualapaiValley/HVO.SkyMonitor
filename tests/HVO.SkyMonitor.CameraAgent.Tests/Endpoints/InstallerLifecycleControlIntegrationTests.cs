@@ -204,7 +204,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
             builder.Services.AddSingleton(new DeploymentContinuityReader());
             builder.Services.AddSingleton(options);
             builder.Services.AddSingleton(new SqliteLocalAutomationStore(new StubAutomationTaskRegistry(), new StubCaptureSequenceSource(),
-                options, TimeProvider.System, NullLogger<SqliteLocalAutomationStore>.Instance));
+                options, TimeProvider.System, NullLogger<SqliteLocalAutomationStore>.Instance, lifecycleControls: Controls));
             var app = builder.Build();
             app.MapCameraAgentLifecycleEndpoints();
             app.MapCameraAgentControlLifecycleEndpoints();

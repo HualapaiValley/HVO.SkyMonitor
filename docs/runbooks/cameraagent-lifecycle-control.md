@@ -110,7 +110,9 @@ refused rather than silently reset.
 
 The automation run remains **Running** across CameraAgent restart until its
 matched installer terminal receipt completes it. Only this registered lifecycle
-task delegates run completion; ordinary automation restart recovery and claimant
+task delegates run completion when its exact run has durable installer intent. A crash
+between claiming a run and submitting that intent is recovered as Interrupted; an
+unrelated retained request cannot keep it Running. Ordinary automation restart recovery and claimant
 ownership are unchanged. The installer never rewrites an already terminal run.
 Retaining a new task kind is a forward-only definition change, consistent with
 the other appended registered task kinds; older binaries cannot read it.
