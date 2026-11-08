@@ -10,6 +10,8 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
 public sealed partial class CameraAgentBrowserAcceptanceTests
 {
+    private static readonly string WizardBrowserTarget = "browser-preset:" + new string('a', 64);
+
     [TestMethod]
     public async Task SourceWindowWizardPreviewsSavesAndEditsWithKeyboardFocusAsync()
     {
@@ -45,6 +47,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.WaitForFunctionAsync("() => document.activeElement?.id === 'automation-source-window'").ConfigureAwait(false);
         await page.Locator("#automation-source-window").SelectOptionAsync(nameof(LocalAutomationSourceWindowKind.CompletedCivilHour)).ConfigureAwait(false);
         await page.Locator("#automation-settle").FillAsync("120").ConfigureAwait(false);
+        Assert.IsTrue(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= innerWidth + 1").ConfigureAwait(false));
         await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
         await page.Locator("#automation-window-preview").WaitForAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.activeElement?.id === 'automation-cancel'").ConfigureAwait(false);
@@ -83,11 +86,11 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
     {
         public IReadOnlyList<LocalAutomationTaskDescriptor> Describe() =>
         [new(LocalAutomationTaskKind.StillImageGeneration, "Synthetic browser product", [LocalAutomationTriggerKind.SourceWindowClosed],
-            ["browser-preset"], true, null)
+            [WizardBrowserTarget], true, null)
             { SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay] }];
 
         public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition)
-            => definition.TaskKind == LocalAutomationTaskKind.StillImageGeneration && definition.TaskTarget == "browser-preset" &&
+            => definition.TaskKind == LocalAutomationTaskKind.StillImageGeneration && definition.TaskTarget == WizardBrowserTarget &&
                 definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed && definition.SourceWindow?.IsValid() == true
                 ? null : new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget");
 
