@@ -5,12 +5,15 @@ acceptance only; physical survey accuracy is outside this contract.
 
 AgentCore owns the bounded transport-neutral manual/synthetic angular profile.
 It belongs to an installed rig, never to a lens or a star/orbit catalog. A stable
-installation ID, site-coordinate hash, geometry hash, profile ID and increasing
+installation ID, site/revision hash, geometry hash, profile ID and increasing
 revision identify it. Geometry covers sensor, pointing/roll, optical calibration,
 parity and readout ROI/binning. Moving an installation requires a new installation
 ID or explicit revalidation even if its coordinates are unchanged. Coordinates
 are not embedded in the coordinate-free local profile. Site identity hashes
-latitude, longitude and elevation; time-zone/display-name edits are irrelevant.
+latitude, longitude and elevation together with the retained location ID/version
+when versioned location evidence exists. Replacing a site or advancing its
+revision requires revalidation even at identical coordinates. Explicit legacy or
+standalone synthetic inputs without location history use only the coordinates.
 
 Azimuth is degrees eastward from true north, normalized to [0,360). Samples are
 strictly ordered, unique azimuths; 360 is represented by 0. Elevation is geometric

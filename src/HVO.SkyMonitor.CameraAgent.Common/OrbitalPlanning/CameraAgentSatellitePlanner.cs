@@ -186,7 +186,10 @@ public sealed class CameraAgentSatellitePlanner(
                     Obstruction = session.View.Context.ObstructionRig is { HorizonObstruction: { } profile } rig
                         ? prediction.Products.Select(arc =>
                         {
-                            var evaluator = new HorizonObstructionEvaluator(profile, rig, arc.Pass.Observer);
+                            var evaluator = new HorizonObstructionEvaluator(profile, rig, arc.Pass.Observer,
+                                new(session.View.Context.Observer.LocationId, session.View.Context.Observer.Version,
+                                    session.View.Context.Observer.Source, session.View.Context.Observer.HorizontalAccuracyMeters,
+                                    session.View.Context.Observer.EffectiveFromUtc, session.View.Context.Observer.EffectiveUntilUtc));
                             return HorizonObstructionProducts.Predict(evaluator,
                                 HorizonObstructionProducts.Bind(arc.ProductSha256, evaluator, rig.Optics.CalibrationVersion,
                                     ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels)),

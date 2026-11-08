@@ -195,7 +195,8 @@ internal sealed class AnnotationCaptureProcessingStep(
             var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
             var observer = projectedScene?.Observer ?? generatedScene?.Scene.Request.Observer ??
                 new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
-            var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer);
+            var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer,
+                context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance());
             var imageTransform = projectedScene?.ImageTransform ??
                 ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
             // A separately registered/measured scene needs its own validated obstruction alignment.

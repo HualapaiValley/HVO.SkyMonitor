@@ -139,7 +139,7 @@ internal sealed class TransientDetectorRuntime(
             };
             if (configuration.Rig.HorizonObstruction is { } profile)
             {
-                var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer);
+                var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer, pair.Value.Manifest.Descriptor.Location);
                 if (!evaluator.IsCompatible)
                     throw new TransientWorkerExecutionException("transient-runtime.obstruction-revalidation-required", retryable: false);
                 var binding = HorizonObstructionProducts.Bind(input.Descriptor.InputIdentitySha256, evaluator,

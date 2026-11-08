@@ -14,7 +14,8 @@ public sealed class HorizonObstructionEvaluator
     public string CalibrationVersion { get; }
     public string GeometryIdentitySha256 { get; }
 
-    public HorizonObstructionEvaluator(HorizonObstructionProfile profile, CameraRigConfig rig, ObserverLocation observer)
+    public HorizonObstructionEvaluator(HorizonObstructionProfile profile, CameraRigConfig rig, ObserverLocation observer,
+        CaptureLocationProvenance? location = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(rig);
@@ -25,7 +26,7 @@ public sealed class HorizonObstructionEvaluator
         GeometryIdentitySha256 = HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig);
         IsCompatible = profile.GeometryIdentitySha256 == GeometryIdentitySha256 &&
             profile.SiteIdentitySha256 == HorizonObstructionProfile.ComputeSiteIdentitySha256(
-                observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters);
+                observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, location);
     }
 
     public HorizonObstructionEligibility Evaluate(AltAzPoint direction)

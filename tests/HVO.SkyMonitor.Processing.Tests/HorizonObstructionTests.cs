@@ -19,9 +19,9 @@ public sealed class HorizonObstructionTests
         new(60, 20, 15), new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1));
 
     internal static HorizonObstructionProfile Profile(CameraRigConfig rig,
-        IReadOnlyList<HorizonObstructionSample>? samples = null, double gap = 90, long revision = 1) => new(
+        IReadOnlyList<HorizonObstructionSample>? samples = null, double gap = 90, long revision = 1, CaptureLocationProvenance? location = null) => new(
         HorizonObstructionProfile.CurrentSchemaVersion, "synthetic-profile", revision, "synthetic-installation",
-        HorizonObstructionProfile.ComputeSiteIdentitySha256(Observer.LatitudeDegrees, Observer.LongitudeDegrees, Observer.ElevationMeters),
+        HorizonObstructionProfile.ComputeSiteIdentitySha256(Observer.LatitudeDegrees, Observer.LongitudeDegrees, Observer.ElevationMeters, location),
         HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, gap,
         samples ?? [new(0, 30), new(90, 30), new(180, 30), new(270, 30)]);
 
@@ -127,6 +127,11 @@ public sealed class HorizonObstructionTests
                 ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels)));
         }
         Assert.IsFalse(new HorizonObstructionEvaluator(profile, rig, Observer with { ElevationMeters = 1201 }).IsCompatible);
+        var site = new CaptureLocationProvenance("installed-site", 1, "synthetic", null, DateTimeOffset.UnixEpoch, null);
+        var versioned = Profile(rig, location: site);
+        Assert.IsTrue(new HorizonObstructionEvaluator(versioned, rig, Observer, site).IsCompatible);
+        Assert.IsFalse(new HorizonObstructionEvaluator(versioned, rig, Observer, site with { Version = 2 }).IsCompatible);
+        Assert.IsFalse(new HorizonObstructionEvaluator(versioned, rig, Observer, site with { LocationId = "other-site" }).IsCompatible);
     }
 
     [TestMethod]

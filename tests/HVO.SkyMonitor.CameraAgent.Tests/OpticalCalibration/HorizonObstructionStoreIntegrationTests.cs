@@ -12,7 +12,8 @@ public sealed class HorizonObstructionStoreIntegrationTests
 {
     private static HorizonObstructionProfile Profile(CameraRigConfig rig, long revision) => new(
         HorizonObstructionProfile.CurrentSchemaVersion, "site-horizon", revision, "virtual-installation",
-        HorizonObstructionProfile.ComputeSiteIdentitySha256(35.347, -113.878, 1200),
+        HorizonObstructionProfile.ComputeSiteIdentitySha256(35.347, -113.878, 1200,
+            VirtualOpticalCalibrationReviewServiceTests.Configuration("VirtualSky").DeploymentLocation!.ToProvenance()),
         HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
         [new(0, 20), new(90, 25), new(180, 0), new(270, null)]);
 

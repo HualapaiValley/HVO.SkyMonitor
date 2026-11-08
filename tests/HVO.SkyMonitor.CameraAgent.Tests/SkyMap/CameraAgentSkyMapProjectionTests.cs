@@ -354,7 +354,7 @@ public sealed class CameraAgentSkyMapProjectionTests
         if (horizonMode is not null)
         {
             var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "sky-horizon", 1,
-                "sky-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(35, horizonMode == "incompatible" ? -114 : -115, 1000),
+                "sky-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(35, horizonMode == "incompatible" ? -114 : -115, 1000, configuration.DeploymentLocation!.ToProvenance()),
                 HorizonObstructionProfile.ComputeGeometryIdentitySha256(configuration.Rig), HorizonObstructionSource.Synthetic, 90,
                 horizonMode == "unknown" ? [] : [new(0, 90), new(90, 90), new(180, 90), new(270, 90)]);
             configuration = configuration with { Rig = configuration.Rig with { HorizonObstruction = profile } };

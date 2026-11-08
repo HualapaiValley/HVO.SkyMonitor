@@ -66,12 +66,16 @@ public sealed class HorizonObstructionProfile
         return CaptureContractJson.ComputeCanonicalJsonSha256(new { rig.Sensor, rig.Optics, rig.Orientation, rig.Readout });
     }
 
-    public static string ComputeSiteIdentitySha256(double latitudeDegrees, double longitudeDegrees, double elevationMeters)
+    public static string ComputeSiteIdentitySha256(double latitudeDegrees, double longitudeDegrees, double elevationMeters,
+        CaptureLocationProvenance? location = null)
     {
         if (!double.IsFinite(latitudeDegrees) || latitudeDegrees is < -90 or > 90 ||
             !double.IsFinite(longitudeDegrees) || longitudeDegrees is < -180 or > 180 || !double.IsFinite(elevationMeters))
             throw new ArgumentException("Invalid site coordinates.");
-        return CaptureContractJson.ComputeCanonicalJsonSha256(new { latitudeDegrees, longitudeDegrees, elevationMeters });
+        var coordinatesIdentitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new { latitudeDegrees, longitudeDegrees, elevationMeters });
+        if (location is null) return coordinatesIdentitySha256;
+        if (!location.Validate().IsValid) throw new ArgumentException("Invalid site revision.", nameof(location));
+        return CaptureContractJson.ComputeCanonicalJsonSha256(new { coordinatesIdentitySha256, locationIdentitySha256 = location.IdentitySha256 });
     }
 
     private static bool Bounded(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&

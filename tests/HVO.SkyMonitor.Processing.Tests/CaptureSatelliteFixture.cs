@@ -28,6 +28,8 @@ internal sealed class CaptureSatelliteFixture
                 CalibrationVersion: "satellite-fixture-v1"), new(90, 0, 0),
             new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), 1, 1));
         var observer = track.Observer;
+        var location = DeploymentLocationSnapshot.Create("satellite-site", 1, "fixture", null,
+            DateTimeOffset.UnixEpoch, null, observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC");
         if (horizon is not null)
         {
             var elevation = horizon == "clear" ? -90d : 90d;
@@ -35,7 +37,7 @@ internal sealed class CaptureSatelliteFixture
             {
                 HorizonObstruction = new(HorizonObstructionProfile.CurrentSchemaVersion, "satellite-horizon", 1,
                 "satellite-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(observer.LatitudeDegrees,
-                    observer.LongitudeDegrees, observer.ElevationMeters), HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig),
+                    observer.LongitudeDegrees, observer.ElevationMeters, location.ToProvenance()), HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig),
                 HorizonObstructionSource.Synthetic, 90, horizon == "unknown" ? [] :
                     [new(0, elevation), new(90, elevation), new(180, elevation), new(270, elevation)])
             };
@@ -43,8 +45,7 @@ internal sealed class CaptureSatelliteFixture
         Configuration = new(new(observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC"),
             new("StandaloneFixture"), rig, CapturePipelineConfig.Empty, "satellite-fixture")
         {
-            DeploymentLocation = DeploymentLocationSnapshot.Create("satellite-site", 1, "fixture", null,
-                DateTimeOffset.UnixEpoch, null, observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC")
+            DeploymentLocation = location
         };
         var payload = new byte[640 * 640 * 2];
         var layout = new FrameLayoutDescriptor(640, 640, 1280, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,

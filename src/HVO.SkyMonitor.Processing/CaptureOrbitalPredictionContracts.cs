@@ -292,7 +292,7 @@ public static class CaptureOrbitalPredictionJson
         CaptureOrbitalPredictionInput input, IReadOnlyList<OrbitalExposureTrackV1> tracks)
     {
         if (input.Plan.ObstructionRig is not { HorizonObstruction: { } profile } rig) return null;
-        var evaluator = new HorizonObstructionEvaluator(profile, rig, input.Plan.Observer);
+        var evaluator = new HorizonObstructionEvaluator(profile, rig, input.Plan.Observer, input.Plan.Descriptor.Location);
         return Array.AsReadOnly(tracks.Select(track => HorizonObstructionProducts.Predict(evaluator,
             HorizonObstructionProducts.Bind(track.ProductSha256, evaluator, rig.Optics.CalibrationVersion,
                 input.Plan.Geometry.ImageTransform), track.Samples.Select(static sample => sample.Horizontal).ToArray())).ToArray());

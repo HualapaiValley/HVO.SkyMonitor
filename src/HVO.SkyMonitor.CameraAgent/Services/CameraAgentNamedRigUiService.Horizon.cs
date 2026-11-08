@@ -26,11 +26,11 @@ internal sealed partial class CameraAgentNamedRigUiService
             var number = checked(history.Revisions.Max(static e => e.RevisionNumber) + 1);
             var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion,
                 active.Rig.HorizonObstruction?.ProfileId ?? Guid.NewGuid().ToString("N"), number, installationId,
-                HorizonObstructionProfile.ComputeSiteIdentitySha256(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters),
+                HorizonObstructionProfile.ComputeSiteIdentitySha256(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters, runtime.Snapshot!.Location),
                 HorizonObstructionProfile.ComputeGeometryIdentitySha256(active.Rig), HorizonObstructionSource.Manual,
                 maximumGap, samples);
             var evaluator = new HorizonObstructionEvaluator(profile, active.Rig,
-                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters));
+                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), runtime.Snapshot!.Location);
             var horizon = Array.AsReadOnly(Enumerable.Range(0, 361)
                 .Select(az => new HorizonObstructionSample(az, evaluator.HorizonElevation(az))).ToArray());
             return new HorizonObstructionPreview(activeRevisionId, version, profile, horizon);
@@ -43,7 +43,7 @@ internal sealed partial class CameraAgentNamedRigUiService
             var configuration = runtime.Snapshot?.Configuration ?? throw new InvalidOperationException("Rig runtime is unavailable.");
             var site = configuration.ResolveObservatory(timeProvider.GetUtcNow());
             var evaluator = new HorizonObstructionEvaluator(preview.Profile, configuration.Rig,
-                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters));
+                new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), runtime.Snapshot!.Location);
             if (!evaluator.IsCompatible) throw new CaptureScheduleStoreConflictException("Site or rig changed after preview.");
             return await store.RetainHorizonObstructionAsync(preview.ActiveRevisionId, preview.SelectionVersion,
                 preview.Profile, token).ConfigureAwait(false);

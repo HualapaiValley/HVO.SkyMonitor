@@ -139,7 +139,7 @@ public sealed class CameraAgentSkyMapProjection(
             .BuildAsync(request, cancellationToken).ConfigureAwait(false);
 
         var horizon = config.Rig.HorizonObstruction is { } profile
-            ? new HorizonObstructionEvaluator(profile, config.Rig, request.Observer) : null;
+            ? new HorizonObstructionEvaluator(profile, config.Rig, request.Observer, location.ToProvenance()) : null;
         bool Eligible(ProjectedCelestialObject item) => horizon is null ||
             horizon.Evaluate(item.GeometricHorizontal) == HorizonObstructionEligibility.Clear;
         var eligibleObjects = scene.Objects.Where(Eligible).ToArray();

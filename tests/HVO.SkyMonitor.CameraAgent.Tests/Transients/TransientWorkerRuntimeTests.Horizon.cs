@@ -28,7 +28,7 @@ public sealed partial class TransientWorkerRuntimeTests
             };
             var site = configuration.Observatory;
             var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "test-horizon", 1, "test-installation",
-                HorizonObstructionProfile.ComputeSiteIdentitySha256(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters),
+                HorizonObstructionProfile.ComputeSiteIdentitySha256(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters, configuration.DeploymentLocation?.ToProvenance()),
                 HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
                 empty ? [] : [new(0, 90), new(90, 90), new(180, 90), new(270, 90)]);
             configuration = configuration with { Rig = rig with { HorizonObstruction = profile } };
