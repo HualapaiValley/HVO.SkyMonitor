@@ -10,8 +10,9 @@ integration and qualification gates are complete. No hardware is required.
 Only the host owner, through protected startup configuration, can enable
 `CameraAgent:CustomScripts`, affirm `OwnerAuthorized`, and register script content.
 Both switches default to false. The ordinary authenticated owner automation
-mutation policies and antiforgery checks remain in force for definitions and
-run-now. They grant permission to select an existing registration; they do not
+mutation policies and antiforgery checks remain in force for definitions.
+The durable run-now seam is tested below, but a generic operator script run-now
+endpoint/control is not delivered in this slice. They grant permission to select an existing registration; they do not
 grant permission to upload content, choose an executable, bind a directory,
 change the environment or request a network capability. No new anonymous or
 API-key execution endpoint is introduced. Do not put credentials in content,
@@ -107,8 +108,8 @@ qualification; this slice does not certify hostile-code multi-tenant hosting.
 
 ## Durable execution policy and outcomes
 
-Only fixed-period schedules (60–86,400 seconds) and explicit authenticated
-run-now are supported; no source-window or capture-relative script execution.
+Only fixed-period schedules (60–86,400 seconds) and the durable runner
+run-now integration seam are supported; no source-window or capture-relative script execution.
 The existing sole SQLite execution authority claims an immutable occurrence
 before launch. Scripts use the bounded off-sweep worker, do not occupy capture
 or live processing slots, and a second direct invocation is refused as busy.
@@ -142,8 +143,9 @@ that happened before termination.
   implemented; real subprocess and SQLite regressions qualify this host.
 - Retry/missed policy and failure isolation: reuse the delivered durable runner;
   no exactly-once promise or automatic script retry.
-- Custom wizard step and stop/history UI: pending #1133 integration and a
-  separately qualified running-task stop command; no wizard files changed here.
+- Custom wizard step and run-now/stop/history UI: pending #1133 integration,
+  an authenticated generic script run-now control and a separately qualified
+  running-task stop command; no wizard files changed here.
 - Unit/Integration, independent deep review and selected CI: record actual
   results in the issue/PR ledger. Protected development-v1 Preflight + Build and
   Unit require the finalization reservation and a converged, synchronized head.
