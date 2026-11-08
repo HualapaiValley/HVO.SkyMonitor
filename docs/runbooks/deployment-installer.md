@@ -349,6 +349,10 @@ schema version. The members are those `--config` reads, under the same names:
   `--json` on the command line.
 - No secret is ever an answer. A password is given in its own owner-only file
   (`passwordFile`) or generated (`generatePassword`).
+- `illuminationMode` optionally selects `LegacyScalarSolar`, `SolarDriven` or
+  `ControlledNight` for the VirtualSky module. The direct CLI equivalent is
+  `--illumination-mode ControlledNight`. Put the member in the answers file when
+  using `--answers`; it is not a command-line override beside that file.
 - Only `--cpus`, `--memory`, `--release`, `--image-source`, `--catalog-bundle` and
   `--no-download` may accompany `--answers`. Each replaces the file's member: the
   limits, so a re-run with the same file changes the limits (see
@@ -426,6 +430,33 @@ terminal's own colours with bold, underline and reverse video, and a locale that
 Every page's screenshot, at both sizes and in each fallback, is in [`docs/images/terminal`](../images/terminal). The
 wizard's tests draw them on Terminal.Gui's in-memory driver, Development v1 CI draws them as SVG in Build and Unit and
 keeps them with its evidence, and `scripts/docs:terminal-screenshots` refreshes the folder.
+
+### VirtualSky illumination baseline and active rig
+
+For a fresh virtual-camera installation, add `"illuminationMode": "ControlledNight"`
+to the answers file, or pass `--illumination-mode ControlledNight` to a direct
+`cameraagent install` invocation. The generated `camera-module.json` then explicitly
+sets `module.options.illuminationMode`; its canonical hash is recorded in the
+installation manifest and result. The VirtualAsi174Mm rig, processing graph and
+sunset-to-sunrise schedule keep their existing semantics. `ControlledNight`
+selects simulated night lighting, while celestial time still advances normally.
+
+Omitting the setting preserves the historical `LegacyScalarSolar` default and the
+existing generated configuration and request identities. All three named modes
+can be explicit; values are case-sensitive and misspellings are usage errors.
+Repeat the installed baseline choice when re-running an install. Changing the
+baseline lighting of a completed installation through a re-run is refused, just
+as other camera configuration changes are.
+
+The installer baseline is separate from the active named-rig revision. The
+supported `camera.skyLighting` setting stages a rig revision for the next start;
+it does not rewrite the manifest-bound baseline. Installation verification
+continues to hash that baseline file. Upgrade and reinstall preserve it and its
+canonical identity. Editing `camera-module.json` by hand changes the bound
+identity and causes verification to refuse. A raw-byte file checksum is not the
+canonical JSON checksum: whitespace or property-order differences alone do not
+indicate drift. For existing installations, use the active-rig setting to change
+lighting without editing the baseline or manifest.
 
 ### Re-running an install
 

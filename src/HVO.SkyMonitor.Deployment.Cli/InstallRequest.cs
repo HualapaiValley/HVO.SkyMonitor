@@ -63,6 +63,12 @@ internal sealed record InstallRequest
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     /// <summary>
+    /// An explicit VirtualSky illumination mode. Omission retains the historical camera configuration and request
+    /// identities, including for installations resumed or re-run with an older answers file.
+    /// </summary>
+    public string? IlluminationMode { get; init; }
+
+    /// <summary>
     /// The CameraAgent container's CPU limit the operator set with <c>--cpus</c>, or <see langword="null"/> to leave it
     /// to the installer default.
     /// </summary>
@@ -100,6 +106,10 @@ internal sealed record InstallRequest
 
     public void Validate()
     {
+        if (IlluminationMode is not (null or "LegacyScalarSolar" or "SolarDriven" or "ControlledNight"))
+        {
+            throw new InstallUsageException("--illumination-mode must be LegacyScalarSolar, SolarDriven or ControlledNight.");
+        }
         if (!Enum.IsDefined(ReplayProfile))
         {
             throw new InstallUsageException("--replay-profile must be in-process or local-runner.");

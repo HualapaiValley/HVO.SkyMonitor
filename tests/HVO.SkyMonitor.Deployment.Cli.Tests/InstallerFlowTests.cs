@@ -39,7 +39,9 @@ public sealed partial class InstallerFlowTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
+    [DataRow(null)]
+    [DataRow("ControlledNight")]
+    public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity(string? illuminationMode)
     {
         // Deliberately environment-gated. These contracts install a real catalog bundle, which is
         // too large to check in, so the CI Unit lane restores it from the hyg-v42-contracts artifact
@@ -64,11 +66,20 @@ public sealed partial class InstallerFlowTests
             ProductRoot = root,
             CatalogBundle = bundle,
             ImageReference = imageId,
+            IlluminationMode = illuminationMode,
             Port = SelectFreePort()
         };
         var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
         var probe = new RecordingPortProbe();
-        var owner = new InstallerOwnerClient();
+        var owner = new InstallerOwnerClient
+        {
+            InspectVerification = expectation =>
+            {
+                using var bound = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "cameraagents",
+                    request.InstanceId.Value.ToString("D"), "config", "camera-module.json")));
+                Assert.AreEqual(IlluminationModeTests.CanonicalSha256(bound.RootElement), expectation.ConfigurationSha256);
+            }
+        };
         try
         {
             var first = await CameraAgentInstaller.InstallAsync(
@@ -80,6 +91,18 @@ public sealed partial class InstallerFlowTests
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe);
             Assert.IsTrue(first.OwnerPasswordIsDefault);
+            using (var boundConfiguration = JsonDocument.Parse(await File.ReadAllTextAsync(
+                       Path.Combine(first.ConfigRoot, "camera-module.json"))))
+            {
+                Assert.AreEqual(first.ConfigurationSha256, IlluminationModeTests.CanonicalSha256(boundConfiguration.RootElement));
+                var options = boundConfiguration.RootElement.GetProperty("module").GetProperty("options");
+                Assert.AreEqual(illuminationMode, options.TryGetProperty("illuminationMode", out var mode) ? mode.GetString() : null);
+                var boundManifest = await CameraAgentLifecycleManager.ReadManifestAsync(
+                    Path.Combine(first.InstanceRoot, "instance-manifest.json"), CancellationToken.None);
+                Assert.AreEqual(first.ConfigurationSha256, boundManifest.ConfigurationSha256);
+                Assert.AreEqual(first.RigProfileSha256, boundManifest.RigProfileSha256);
+                Assert.AreEqual(first.ScheduleSha256, boundManifest.ScheduleSha256);
+            }
             CollectionAssert.AreEqual(DefaultPasswordReadTwice, owner.Passwords);
             owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
@@ -192,6 +215,14 @@ public sealed partial class InstallerFlowTests
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
             Assert.AreEqual(2, runner.ComposeUpCount);
             await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
+
+            var changedMode = request with { IlluminationMode = "SolarDriven" };
+            var rejected = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                changedMode, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
+            StringAssert.Contains(rejected.Message, "retained immutable manifest", StringComparison.Ordinal);
+            Assert.AreEqual(legacyInProcessManifestJson, await File.ReadAllTextAsync(manifestPath));
+            Assert.AreEqual(2, runner.ComposeUpCount);
 
             var unsupportedState = JsonNode.Parse(await File.ReadAllTextAsync(statePath))?.AsObject()
                 ?? throw new AssertFailedException("The retained state was not valid JSON.");
@@ -1549,6 +1580,7 @@ public sealed partial class InstallerFlowTests
 
     private sealed class InstallerOwnerClient : IOwnerBootstrapClient
     {
+        public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         private int stateReadCount;
         public string CurrentInstallationState { get; set; } = "owner-password-change-required";
         public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
@@ -1589,6 +1621,7 @@ public sealed partial class InstallerFlowTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Verifications++;
+            InspectVerification?.Invoke(expectation);
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);

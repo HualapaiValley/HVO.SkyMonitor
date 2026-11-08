@@ -17,7 +17,7 @@ internal static class CommandLine
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
         "--product-root", "--catalog-bundle", "--release", "--image-source", "--image-ref", "--image-archive",
         "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
-        "--elevation", "--time-zone", "--replay-profile", "--cpus", "--memory"
+        "--elevation", "--time-zone", "--replay-profile", "--illumination-mode", "--cpus", "--memory"
     ];
 
     internal static readonly string[] InstallFlags =
@@ -172,6 +172,7 @@ internal static class CommandLine
         ["--elevation"] = ("<metres>", "The camera's elevation (default 0)."),
         ["--time-zone"] = ("<zone>", "The camera's IANA time zone (default UTC)."),
         ["--replay-profile"] = ("<profile>", "Where archived replay runs: in-process (default) or local-runner."),
+        ["--illumination-mode"] = ("<mode>", "VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight."),
         ["--cpus"] = ("<count>", "The container's CPU limit."),
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
@@ -566,6 +567,7 @@ internal static class CommandLine
                 ElevationMeters = ParseDouble(Get(values, "--elevation"), 0, "--elevation"),
                 TimeZoneId = Get(values, "--time-zone") ?? "UTC",
                 ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile")),
+                IlluminationMode = Get(values, "--illumination-mode"),
                 Cpus = ParseCpus(Get(values, "--cpus")),
                 Memory = Get(values, "--memory")
             };

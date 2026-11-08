@@ -157,6 +157,7 @@ internal sealed partial class InstallWizardSession
             AcknowledgePlaintextHttp = Given("--acknowledge-plaintext-http") ? true : IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
             GeneratePassword = a.Password == OwnerPasswordChoice.Generate ? true : null,
             ReplayProfile = a.ReplayProfile,
+            IlluminationMode = a.IlluminationMode,
             Cpus = Blank(a.Cpus) is { } cpus ? decimal.Parse(cpus, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) : null,
             Memory = Given("--memory") ? GivenValue("--memory") : Blank(a.Memory)
         };
@@ -497,6 +498,7 @@ internal sealed partial class InstallWizardSession
             Cpus = Text("--cpus", saved?.Cpus?.ToString(CultureInfo.InvariantCulture), string.Empty),
             Memory = Text("--memory", saved?.Memory, string.Empty),
             ReplayProfile = GivenValue("--replay-profile") is { } profile ? CommandLine.ParseReplayProfile(profile) : saved?.ReplayProfile ?? CameraAgentReplayProfile.InProcess,
+            IlluminationMode = GivenValue("--illumination-mode") ?? saved?.IlluminationMode,
             Password = password,
             PasswordFile = Text("--password-file", saved?.PasswordFile, string.Empty)
         };
@@ -543,6 +545,7 @@ internal sealed class WizardAnswers
     public string Cpus { get; set; } = string.Empty;
     public string Memory { get; set; } = string.Empty;
     public CameraAgentReplayProfile ReplayProfile { get; set; } = CameraAgentReplayProfile.InProcess;
+    public string? IlluminationMode { get; set; }
     public OwnerPasswordChoice Password { get; set; } = OwnerPasswordChoice.Default;
     public string PasswordFile { get; set; } = string.Empty;
 }

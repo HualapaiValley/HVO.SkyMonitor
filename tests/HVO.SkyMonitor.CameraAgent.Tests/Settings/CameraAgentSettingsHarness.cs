@@ -64,7 +64,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         TimeProvider? timeProvider = null,
         Action<ConfigurationManager>? configureOverrides = null,
         bool orbitalInitiallyEnabled = false,
-        bool spaceWeatherInitiallyEnabled = false)
+        bool spaceWeatherInitiallyEnabled = false,
+        string? illuminationMode = null)
     {
         var clock = timeProvider ?? TimeProvider.System;
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
@@ -100,6 +101,16 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 CameraAgentServiceCollectionExtensions.SkyMapObjectBound(configuration));
 
             var camera = Camera(moduleType);
+            if (illuminationMode is not null)
+            {
+                camera = camera with
+                {
+                    Module = camera.Module with
+                    {
+                        Options = System.Text.Json.JsonSerializer.SerializeToElement(new { illuminationMode })
+                    }
+                };
+            }
             var ingress = new JournalInitializer(root);
             var schedule = harness.Own(new SqliteCaptureScheduleStore(ingress, hostOptions, clock));
             var active = await schedule.InitializeAsync(camera, CancellationToken.None).ConfigureAwait(false);

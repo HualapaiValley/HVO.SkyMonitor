@@ -1187,6 +1187,15 @@ internal sealed partial class CameraAgentInstaller
             request.ReplayProfile
         });
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(identity));
+        if (request.IlluminationMode is not null)
+        {
+            // Only explicit lighting joins the identity: omitted lighting must still resume older installations.
+            sha256 = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                request = sha256,
+                request.IlluminationMode
+            })));
+        }
         if (release is not null)
         {
             sha256 = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new

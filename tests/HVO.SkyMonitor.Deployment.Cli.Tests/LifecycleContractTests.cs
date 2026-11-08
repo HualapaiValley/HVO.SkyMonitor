@@ -3749,6 +3749,7 @@ public sealed partial class LifecycleContractTests
 
     private sealed class FakeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
+        public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
@@ -3783,6 +3784,7 @@ public sealed partial class LifecycleContractTests
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
         {
+            InspectVerification?.Invoke(expectation);
             if (RejectNextVerification)
             {
                 RejectNextVerification = false;
