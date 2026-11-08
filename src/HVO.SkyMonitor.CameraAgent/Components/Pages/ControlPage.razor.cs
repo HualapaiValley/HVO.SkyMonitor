@@ -186,6 +186,9 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             }
             _restart = restart.IsSuccess ? restart.Value : null;
             _restarting |= _restart?.Restarting == true;
+            // Terminal publication can restore pause between the initial summary read and the receipt read.
+            // Read admission after the receipt so the page cannot stop polling with an earlier Running snapshot.
+            if (_lifecycle?.Receipts.Count > 0) await ReadStateAsync();
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -221,6 +224,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         _view = null;
         _receipts = null;
         _restart = null;
+        _lifecycle = null;
         _pending = null;
         _message = null;
         _showDialog = false;

@@ -197,15 +197,18 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
-    public async Task JournalRejectsSymlinkAndKeepsOutsideEvidenceUnchanged()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task JournalRejectsSymlinkAndKeepsOutsideEvidenceUnchanged(bool dangling)
     {
         if (!OperatingSystem.IsLinux()) return;
         using var fixture = new Fixture();
         var outside = Path.Combine(fixture.Root.FullName, "outside.json");
-        await File.WriteAllTextAsync(outside, "outside evidence");
+        if (!dangling) await File.WriteAllTextAsync(outside, "outside evidence");
         File.CreateSymbolicLink(fixture.JournalPath, outside);
         await Assert.ThrowsAsync<InstallerException>(() => new InstallerControlJournal(fixture.JournalPath).LoadAsync(CancellationToken.None));
-        Assert.AreEqual("outside evidence", await File.ReadAllTextAsync(outside));
+        if (dangling) Assert.IsFalse(File.Exists(outside));
+        else Assert.AreEqual("outside evidence", await File.ReadAllTextAsync(outside));
     }
 
     private static CameraAgentControlReceipt Queued(CameraAgentControlKind kind = CameraAgentControlKind.Restart)

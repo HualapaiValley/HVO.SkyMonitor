@@ -91,7 +91,16 @@ internal static class Program
             jsonErrors = command.Json;
             if (command is LifecycleWorkerRequest controlWorker)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 await services.ControlWorker(controlWorker, cancellationToken).ConfigureAwait(false);
+                var poll = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["instanceId"] = controlWorker.InstanceId.ToString("D"),
+                    ["status"] = "poll-completed"
+                };
+                await Console.Out.WriteLineAsync(controlWorker.Json ? poll.ToJsonString(SplitHostJson.Options)
+                    : "stage=lifecycle-worker poll=completed").ConfigureAwait(false);
                 return (int)InstallerExitCode.Done;
             }
             if (command is HelpCommand help)

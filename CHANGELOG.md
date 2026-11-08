@@ -10,10 +10,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
-### Added
-
-- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows and retain installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
-
 ### Fixed
 
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
@@ -41,6 +37,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows and retain installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 

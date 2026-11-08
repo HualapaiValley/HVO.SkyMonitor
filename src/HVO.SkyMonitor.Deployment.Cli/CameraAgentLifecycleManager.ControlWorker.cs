@@ -21,11 +21,14 @@ internal sealed record LifecycleWorkerRequest(Guid InstanceId, string ProductRoo
             {
                 if (!flags.Add(args[i])) throw new InstallUsageException("Duplicate lifecycle-worker flag.");
             }
-            else if (args[i] is "--instance-id" or "--product-root" && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            else if (args[i] is "--instance-id" or "--product-root")
             {
-                if (!values.TryAdd(args[i], args[++i])) throw new InstallUsageException("Duplicate lifecycle-worker option.");
+                var option = args[i];
+                if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                    throw new InstallUsageException($"Option '{option}' requires a value.");
+                if (!values.TryAdd(option, args[++i])) throw new InstallUsageException($"Duplicate option '{option}'.");
             }
-            else throw new InstallUsageException("Unsupported lifecycle-worker option.");
+            else throw new InstallUsageException($"Unknown option '{args[i]}'.");
         }
         if (!Guid.TryParse(values.GetValueOrDefault("--instance-id"), out var id)) throw new InstallUsageException("--instance-id is required.");
         var result = new LifecycleWorkerRequest(id, values.GetValueOrDefault("--product-root") ?? production,

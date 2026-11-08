@@ -8,6 +8,28 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class ControlPageTests
 {
     [TestMethod]
+    public void TerminalReceiptRefreshReadsAdmissionAfterPublicationRatherThanKeepingEarlierRunningState()
+    {
+        using var context = new BunitContext();
+        var (operations, system, _) = Configure(context);
+        var state = "Running";
+        operations.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(WithCapture(state, 7)));
+        system.LifecycleHandler = _ =>
+        {
+            state = "Paused"; // Installer settles an ambiguous resume after the first summary was read.
+            var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Restart, "owner", "maintenance", 7, OperatorUiTestData.Now);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(true,
+                [new(request, CameraAgentControlPhase.Failed, [new(CameraAgentControlPhase.Failed, request.RequestedUtc, "restart.resume-unconfirmed")])])));
+        };
+        var cut = context.Render<ControlPage>();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Resume", cut.Find("#control-capture").TextContent);
+            StringAssert.Contains(cut.Markup, "Capture is paused.", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void DrainRequiresRegisteredInstallerAndConfirmedReason_OpeningAndCancellingDoNotMutate()
     {
         using var context = new BunitContext();

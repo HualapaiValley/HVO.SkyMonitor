@@ -454,7 +454,7 @@ internal sealed class CameraAgentLifecycleClient(
         var section = root.GetProperty(name);
         return section.TryGetProperty("freshness", out var freshness) && freshness.GetString() is "fresh" or "disabled" &&
             section.GetProperty("value").TryGetProperty("availability", out var availability) &&
-            availability.GetString() is "Accepting" or "Healthy" or "Degraded" or "Disabled";
+            availability.GetString() is "Accepting" or "Healthy" or "Disabled";
     }
 
     private static JsonElement Value(JsonElement root, string name) => root.GetProperty(name).GetProperty("value");

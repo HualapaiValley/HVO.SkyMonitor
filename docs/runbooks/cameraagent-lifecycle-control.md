@@ -23,7 +23,8 @@ Do not run it as root or inside CameraAgent's process/container. This command is
 not started by installation or by the web application. Arranging a service manager
 to run it is an operator deployment decision.
 
-`--once` performs one poll and any admitted operation, then exits. The worker
+`--once` performs one poll and any admitted operation, then exits. With `--json`,
+it reports `poll-completed`; the durable receipt supplies the actual lifecycle outcome. The worker
 registers through installation-token authentication and refreshes a 30-second
 in-memory lease. Without that lease, System control's drain stays disabled and
 the scheduled-restart task is unavailable. A CameraAgent startup requires a fresh

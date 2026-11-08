@@ -24,7 +24,21 @@ public sealed class InstallerControlDrainClientTests
         Assert.AreEqual(0L, boundary.RawPending + boundary.LanePending + boundary.ProcessingPending + boundary.OutboxPending);
     }
 
-    private sealed class DrainHandler(string pendingSection, Guid operationId) : HttpMessageHandler
+    [TestMethod]
+    [DataRow("Degraded", "fresh")]
+    [DataRow("Healthy", "unknown")]
+    public async Task EmptyCountersWithoutTrustworthyObservationCannotProveDrain(string availability, string freshness)
+    {
+        var id = Guid.NewGuid();
+        using var handler = new DrainHandler("none", id, availability, freshness);
+        var client = new CameraAgentLifecycleClient(new Uri("http://virtual-cameraagent"), handler,
+            new(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(1)));
+        await Assert.ThrowsAsync<InstallerException>(() => client.PauseControlAndDrainAsync(id, 7,
+            "installation-test-token", CancellationToken.None));
+        Assert.IsGreaterThan(0, handler.StateReads);
+    }
+
+    private sealed class DrainHandler(string pendingSection, Guid operationId, string availability = "Healthy", string freshness = "fresh") : HttpMessageHandler
     {
         internal int StateReads;
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -38,7 +52,7 @@ public sealed class InstallerControlDrainClientTests
                 return new(HttpStatusCode.OK) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
             }
             StateReads++;
-            object Section(string name) => new { freshness = "fresh", value = new { availability = "Healthy", pendingCount = StateReads == 1 && name == pendingSection ? 1 : 0, leasedCount = 0 } };
+            object Section(string name) => new { freshness, value = new { availability, pendingCount = StateReads == 1 && name == pendingSection ? 1 : 0, leasedCount = 0 } };
             var state = new
             {
                 captureControl = new { value = new { state = "Paused", version = 9L, isInitialized = true } },

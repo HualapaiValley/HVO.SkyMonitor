@@ -17,6 +17,7 @@ internal sealed class InstallerControlJournal(string path)
     internal async Task LoadAsync(CancellationToken cancellationToken)
     {
         SafeFileSystem.EnsureSafeExistingAncestors(path);
+        if (new FileInfo(path).LinkTarget is not null) throw new InstallerException("The installer lifecycle journal must not be a symbolic link.");
         if (!File.Exists(path))
         {
             await WriteAsync(_state).ConfigureAwait(false);
