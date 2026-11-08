@@ -29,14 +29,16 @@ public static class NightlyProductProjectionContract
 }
 
 /// <summary>
-/// The recorded outcome of a whole retained period's daily final, as the archive calendar classifies it: a daily final
-/// product, hourly products without one, or neither.
+/// A retained period's daily generation state or final publication outcome. Active work takes precedence over
+/// published results; interrupted or failed attempts without a settled evaluation are stalled.
 /// </summary>
 public enum NightlyProductLibraryState
 {
     Produced,
     Partial,
-    NotProduced
+    NotProduced,
+    Running,
+    Stalled
 }
 
 /// <summary>
@@ -50,19 +52,38 @@ public sealed record NightlyProductLibraryQuery(
     DateOnly? ObservingDate = null,
     DateOnly? Before = null);
 
+/// <summary>A retained attempt and its current host/definition availability, without changing the durable run.</summary>
+public sealed record NightlyProductGenerationAttempt(LocalAutomationRun Run, bool Enabled)
+{
+    /// <summary>Disabling future claims does not stop an attempt already executing.</summary>
+    public bool IsActive => Run.Outcome == LocalAutomationRunOutcome.Running ||
+        (Enabled && Run.Outcome == LocalAutomationRunOutcome.Queued);
+}
+
 /// <summary>
-/// A recorded daily final evaluation of one kind and retained period, with the summary of that period's finals. Hourly
-/// products and periods without a daily evaluation belong to the observing day, not the library.
+/// One daily evaluation or retained generation attempt of a product kind and source period, with its hourly summary.
+/// Active attempts have no product, even when an earlier evaluation of the period produced one.
 /// </summary>
 public sealed record NightlyProductLibraryEntry(
     NightlyProductDateSummary Summary,
-    NightlyProductWindowRecord Daily,
+    NightlyProductWindowRecord? Daily,
     bool OtherPeriodRecorded)
 {
-    public NightlyProductLibraryState State => Classify(Summary);
+    /// <summary>The retained automation attempt, when generation has not completed an evaluation.</summary>
+    public LocalAutomationRun? Generation { get; init; }
+
+    /// <summary>Whether queued work can be claimed; a durable Running attempt is already executing.</summary>
+    public bool GenerationEnabled { get; init; } = true;
+
+    public LocalAutomationOccurrence Occurrence => Generation?.Occurrence ?? Daily!.Status.Occurrence;
+    public LocalAutomationSourceWindow SourceWindow => Occurrence.SourceWindow!;
+    public NightlyProductLibraryState State => Generation is { } run
+        ? run.Outcome == LocalAutomationRunOutcome.Running || (GenerationEnabled && run.Outcome == LocalAutomationRunOutcome.Queued)
+            ? NightlyProductLibraryState.Running : NightlyProductLibraryState.Stalled
+        : Classify(Summary);
 
     /// <summary>The daily final product, when the evaluation produced one.</summary>
-    public NightlyProductSummary? Product => Daily.FinalProduct;
+    public NightlyProductSummary? Product => Generation is null ? Daily?.FinalProduct : null;
 
     internal static NightlyProductLibraryState Classify(NightlyProductDateSummary summary) =>
         summary.DailyProductId is not null ? NightlyProductLibraryState.Produced
