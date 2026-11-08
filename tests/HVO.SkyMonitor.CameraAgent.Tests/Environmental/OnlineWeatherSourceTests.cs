@@ -13,6 +13,54 @@ public sealed class OnlineWeatherSourceTests
     private const string Hvo = """{"dateTime":1794117600,"outTemp":68,"outHumidity":40,"windSpeed":10,"windDir":180,"barometer":30.0}""";
 
     [TestMethod]
+    public async Task CanceledProviderAttemptInvalidatesCacheAndPreservesMinimumSpacing()
+    {
+        var clock = new Clock();
+        using var handler = new CancelingHandler();
+        using var client = new WeatherProviderClient(new HttpClient(handler), clock);
+        var source = Create(client);
+        Assert.IsNotNull((await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context(), CancellationToken.None).ConfigureAwait(false)).Fact);
+        clock.Now = clock.Now.AddSeconds(300);
+        using (var cancellation = new CancellationTokenSource(30))
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with { ObservedAtUtc = clock.Now }, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+        clock.Now = clock.Now.AddSeconds(1);
+        var result = await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with { ObservedAtUtc = clock.Now }, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(result.Fact);
+        Assert.AreEqual(2, handler.Calls);
+    }
+
+    private sealed class CancelingHandler : HttpMessageHandler
+    {
+        internal int Calls { get; private set; }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (++Calls == 2) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return Response(200, Nws);
+        }
+    }
+
+    [TestMethod]
+    public async Task RetryAfterNeverShortensTheProviderMinimumInterval()
+    {
+        var clock = new Clock();
+        using var handler = new FakeHandler(_ =>
+        {
+            var response = Response(429);
+            response.Headers.Remove("Retry-After");
+            response.Headers.TryAddWithoutValidation("Retry-After", "1");
+            return response;
+        });
+        using var client = new WeatherProviderClient(new HttpClient(handler), clock);
+        var temperature = Create(client);
+        var humidity = Create(client, kind: EnvironmentalObservationKind.RelativeHumidity);
+        await temperature.AcquireAsync(EnvironmentalHardwareAdapterTests.Context(), CancellationToken.None).ConfigureAwait(false);
+        clock.Now = clock.Now.AddSeconds(60);
+        await humidity.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with { ObservedAtUtc = clock.Now }, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, handler.Calls);
+    }
+
+    [TestMethod]
     [DataRow(WeatherProvider.Nws, EnvironmentalObservationKind.AirTemperature, 20)]
     [DataRow(WeatherProvider.Nws, EnvironmentalObservationKind.WindSpeed, 10)]
     [DataRow(WeatherProvider.Hvo, EnvironmentalObservationKind.AirTemperature, 20)]

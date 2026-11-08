@@ -28,6 +28,7 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
         var state = states.GetOrAdd(options, static _ => new());
         await state.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var updateSchedule = false;
+        DateTimeOffset? persistedSchedule = null;
         try
         {
             if (!state.Initialized)
@@ -44,22 +45,30 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
             if (now < state.NextAttempt) return state.Current ?? new(default, default, state.Reason);
             var uri = options.Provider == WeatherProvider.Nws
                 ? new Uri($"https://api.weather.gov/stations/{options.StationId}/observations/latest") : options.HvoEndpoint!;
-            var response = await transport.FetchAsync(uri, 65_536, "application/json", state.Validators, cancellationToken).ConfigureAwait(false);
-            var interval = options.Provider == WeatherProvider.Nws ? 300 : 60;
-            state.NextAttempt = now.AddSeconds(interval);
-            updateSchedule = true;
             var previous = state.Current;
+            var validators = state.Validators;
+            var interval = TimeSpan.FromSeconds(options.Provider == WeatherProvider.Nws ? 300 : 60);
+            state.NextAttempt = now.Add(interval);
             state.Current = null;
+            state.Validators = null;
+            state.Reason = "provider-request-incomplete";
+            // Record minimum spacing before sending: cancellation must not expose an old cache or permit another kind to retry immediately.
+            await SaveScheduleAsync(state, cancellationToken).ConfigureAwait(false);
+            persistedSchedule = state.NextAttempt;
+            updateSchedule = true;
+            var response = await transport.FetchAsync(uri, 65_536, "application/json", validators, cancellationToken).ConfigureAwait(false);
             if (response.Failure != SwpcTransportFailure.None)
                 return Fail(state, response.Failure == SwpcTransportFailure.Timeout ? "provider-timeout" : "provider-network-unavailable");
-            if (response.StatusCode == 429)
+            if (response.StatusCode == 429 || response.StatusCode >= 500 && response.RetryAfter is not null)
             {
-                state.NextAttempt = now.Add(SwpcRetryAfter.Resolve(response.RetryAfter, now));
-                return Fail(state, "provider-rate-limited");
+                var retry = SwpcRetryAfter.Resolve(response.RetryAfter, now);
+                state.NextAttempt = now.Add(retry > interval ? retry : interval);
+                if (response.StatusCode == 429) return Fail(state, "provider-rate-limited");
             }
             if (response.StatusCode == 304)
             {
-                if (previous is null || state.Validators is null) return Fail(state, "provider-unusable-cache");
+                if (previous is null || !response.ValidatorsSent) return Fail(state, "provider-unusable-cache");
+                state.Validators = new(response.EntityTag ?? validators?.EntityTag, response.LastModified ?? validators?.LastModified);
                 return state.Current = previous;
             }
             if (response.StatusCode != 200) return Fail(state, "provider-http-failure");
@@ -86,13 +95,19 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
         {
             try
             {
-                if (updateSchedule && scheduleStore is not null && root is not null)
-                    foreach (var source in state.Sources.Values)
-                        await scheduleStore.UpdateSourceScheduleAsync(root, source, state.NextAttempt, cancellationToken).ConfigureAwait(false);
+                if (updateSchedule && state.NextAttempt != persistedSchedule)
+                    await SaveScheduleAsync(state, CancellationToken.None).ConfigureAwait(false);
             }
             finally { state.Gate.Release(); }
         }
     }
+    private async ValueTask SaveScheduleAsync(State state, CancellationToken cancellationToken)
+    {
+        if (scheduleStore is not null && root is not null)
+            foreach (var source in state.Sources.Values)
+                await scheduleStore.UpdateSourceScheduleAsync(root, source, state.NextAttempt, cancellationToken).ConfigureAwait(false);
+    }
+
     private static WeatherProviderSample Fail(State state, string reason)
     {
         state.Reason = reason;
