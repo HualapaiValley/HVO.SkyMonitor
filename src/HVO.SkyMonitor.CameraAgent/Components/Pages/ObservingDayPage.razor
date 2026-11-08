@@ -209,9 +209,9 @@
                                 <div class="product-slot__media" aria-hidden="true"><i class="bi bi-film"></i></div>
                             }
                             <h3>Night time-lapse</h3>
-                            <p>Time-lapse generation is not yet available. @(sample is null ? "Nothing is substituted for it." : "A configured sample can be played; it was not generated from this night and is not counted as a product.")</p>
+                            <p>@TimeLapseState.Message @(sample is null ? "Nothing is substituted for it." : "A configured sample can be played; it was not generated from this night and is not counted as a product.")</p>
                             <div class="product-slot__chips">
-                                <span class="hvo-chip hvo-chip--neutral">Not yet generated</span>
+                                <span class="hvo-chip hvo-chip--neutral">@TimeLapseState.Label</span>
                                 @if (sample is not null) { <span class="hvo-chip hvo-chip--info">Sample</span> }
                             </div>
                         </article>
@@ -240,8 +240,8 @@
                             @if (viewed is null && sample is not null)
                             {
                                 <div class="product-viewer" data-viewer-kind="time-lapse">
-                                    <p class="product-viewer__state"><span class="hvo-chip hvo-chip--neutral">Not yet generated</span><span class="hvo-chip hvo-chip--info">Sample</span></p>
-                                    <p>Time-lapse generation is not yet available. This configured sample was not generated from this night and is not counted as a product.</p>
+                                    <p class="product-viewer__state"><span class="hvo-chip hvo-chip--neutral">@TimeLapseState.Label</span><span class="hvo-chip hvo-chip--info">Sample</span></p>
+                                    <p>@TimeLapseState.Message This configured sample was not generated from this night and is not counted as a product.</p>
                                     <dl class="product-viewer__facts">
                                         <div><dt>Media type</dt><dd>@sample.MediaType</dd></div>
                                         <div><dt>Declared size</dt><dd>@sample.Width × @sample.Height</dd></div>

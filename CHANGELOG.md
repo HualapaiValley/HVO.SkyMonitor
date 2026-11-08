@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Observing Day reports whether time-lapse generation is disabled, no video was requested, or the time-lapse state could not be read, while keeping configured samples clearly separate from the night's products. #1709
+
 - CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
 
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707

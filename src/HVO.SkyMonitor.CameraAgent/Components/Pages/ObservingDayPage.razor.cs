@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <summary>
 /// One observing day (#988, prototype <c>day.html</c>): representative capture, night facts,
 /// a night timeline of schedule / captures / candidates on one local axis, the recorded nightly
-/// products of a sunrise period (#1138; the time-lapse stays "not yet generated" until #1130),
+/// products of a sunrise period (#1138), generated time-lapses and their current generation state (#1130),
 /// candidates and automation runs. Product cards read only evaluations retained under the displayed
 /// period; another period of the same report date, such as one resolved for an earlier site, is
 /// listed separately under its own site and boundaries. Each product is an equal-sized thumbnail tile
@@ -112,6 +112,13 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         => ProductKinds.Select(kind => Card(day, kind, period, Clock.GetUtcNow() < view.Day.Day.EndUtc)).ToList();
 
     internal const string TimeLapseTileId = "product-tile-time-lapse";
+
+    private (string Label, string Message) TimeLapseState => _nightly switch
+    {
+        null or { TimeLapses: null } => ("State unavailable", "Time-lapse state could not be read."),
+        { TimeLapseGenerationEnabled: true } => ("Not requested", "No time-lapse has been requested for this period."),
+        _ => ("Disabled", "Time-lapse generation is disabled on this CameraAgent.")
+    };
 
     internal static string TileId(NightlyProductKind kind) => "product-tile-" + NightlyProductLinks.KindNoun(kind).Replace(' ', '-');
 
