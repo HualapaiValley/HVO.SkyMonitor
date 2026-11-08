@@ -53,8 +53,12 @@ public sealed partial class VirtualSkyCloudScenarioTests
             var authorization = context.AddAuthorization();
             authorization.SetAuthorized("owner");
             authorization.SetPolicies(CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
-            authorization.SetClaims(new Claim(ClaimTypes.NameIdentifier, "virtual-owner"),
-                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType));
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "virtual-owner"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            Assert.AreEqual("virtual-owner", CameraAgentCredentialAccess.GetOwnerId(owner));
+            context.Services.AddSingleton<AuthenticationStateProvider>(new NodePanelAuthenticationStateProvider(owner));
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(config);
             context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(services => new CameraAgentProcessingGraphUiService(
@@ -98,5 +102,10 @@ public sealed partial class VirtualSkyCloudScenarioTests
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private sealed class NodePanelAuthenticationStateProvider(ClaimsPrincipal owner) : AuthenticationStateProvider
+    {
+        public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(owner));
     }
 }
