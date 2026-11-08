@@ -397,6 +397,11 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
         var pipeline = sample["pipeline"]!.DeepClone().AsObject();
         foreach (var step in pipeline["steps"]!.AsArray().Select(static step => step!.AsObject()))
         {
+            if (step["type"]!.GetValue<string>() is "CloudPresentationLayer" or "EnvironmentPresentationLayer")
+            {
+                step["options"]!["widthPixels"] = source["rig"]!["sensor"]!["widthPixels"]!.DeepClone();
+                step["options"]!["heightPixels"] = source["rig"]!["sensor"]!["heightPixels"]!.DeepClone();
+            }
             if (step["type"]!.GetValue<string>() != "Storage") continue;
             step["options"]!["storageRoot"] = Path.Combine(root, step["id"]!.GetValue<string>() == "LocalStorage" ? "agent" : "archive");
         }

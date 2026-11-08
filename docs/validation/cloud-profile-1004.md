@@ -11,10 +11,12 @@ Before their fixes, the shipped-sample acceptance failed because `CloudAssessmen
 was absent, and the installer-profile acceptance failed for the same reason.
 The quantified-only publication test failed with expected `Skipped`, actual
 `Produced`: an unavailable assessment could otherwise enable a measured-layer
-control. The durable virtual cases then exposed missing linear calibration in
-the sample's retained input descriptor, and rejection of clouds with an explicit
-native-depth full-frame identity readout. Each failure was reproduced before its
-correction. Original red TRX/log files remain under `/tmp/hvo-1004-evidence` on the
+control. An early generic-sensor fixture correctly reported missing calibration after its
+ASI174 response was disabled; the shipped virtual ASI174 already emits linear
+level metadata. The sample now declares those same levels explicitly to match
+the installer profile. The calibrated scenario cases reproduced rejection of
+clouds with an explicit native-depth full-frame identity readout before its
+narrow correction. Original red TRX/log files remain under `/tmp/hvo-1004-evidence` on the
 implementation host.
 
 The implementation reuses the delivered analyzer, mask/label producer, gallery
@@ -89,3 +91,25 @@ presentation endpoint access. Its final result, complete relevant Unit evidence,
 Release build, formatting, classifier selection and required Development v1 CI
 are recorded on the PR ledger. No installed instance, live profile or network
 configuration is changed by this evidence.
+
+## Local candidate before target synchronization
+
+On source tree `8a12393e0cd95b37f18e342a28d5191c7bb6fe46`, the warning-clean
+Release solution build and full format verification passed. All four CI-control
+guards and the operations documentation audit passed. All 403 relevant
+Integration cases passed without skips (CameraAgent processing/storage 325,
+CameraAgent authenticated host 35, acceptance 19, combined 24).
+
+The complete positive Unit selection ran with an invalid Docker endpoint:
+14968 discovered, 14844 passed, zero failed and 124 existing environment/platform
+skips. CameraAgent contributed 7551 passed and one macOS-only skip. All 18 added
+cases passed. Processing reports 1168 Unit cases versus its unchanged inventory's
+1167; no Processing source/test paths changed in this PR. This is recorded as an
+unrelated inventory discrepancy, not full category qualification. The v1 profile
+does not run the exhaustive category audit.
+
+A small manual benchmark-fixture adjustment carries presentation dimensions into
+its selected full-frame workload. Its affected test-project Release build passed
+with zero warnings/errors and its format check passed; no long benchmark was
+claimed. These results precede synchronization with #1708; the final target,
+clock interaction checks and final-head CI evidence are in the PR ledger.
