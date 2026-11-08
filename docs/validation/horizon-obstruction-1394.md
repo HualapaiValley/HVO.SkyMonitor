@@ -77,7 +77,7 @@ not authorize the full protected workflow for the v1 target.
 - Operations documentation audit: passed.
 - Full Docker-disabled Unit selection with coverage: 15,136 passed, 3 conditional skips, 0 failures (15,139 selected), all on the production source above.
 - Full Integration selection with coverage: 1,012 passed, 0 skips/failures.
-- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Aggregate line 89.7174%, branch 75.8080%; all enforced per-file floors passed.
+- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Enforced aggregate line 89.6962%, branch 75.7977%; all enforced per-file floors passed.
 - Manual full-resolution measurement: 1 passed (retained unchanged-path evidence).
 
 Unit ran with `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock` and the approved local
