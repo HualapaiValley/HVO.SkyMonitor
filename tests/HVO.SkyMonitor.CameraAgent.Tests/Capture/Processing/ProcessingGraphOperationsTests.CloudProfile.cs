@@ -200,11 +200,12 @@ public sealed partial class ProcessingGraphOperationsTests
 
             async Task<RawCaptureReceipt> CaptureAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
             {
-                var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, provider.GetRequiredService<IProjectedSceneStore>(),
+                var requested = DateTimeOffset.Parse("2026-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture).AddSeconds(ordinal * 25);
+                var clock = new ExposureTestTimeProvider(requested, autoAdvance: true, elapseRealTime: true);
+                var module = new VirtualSkyCameraModule(clock, catalog, provider.GetRequiredService<IProjectedSceneStore>(),
                     planetEphemeris: new AstronomyEnginePlanetEphemeris(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
                 await using var moduleLifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(cameraConfig, CancellationToken.None).ConfigureAwait(false);
-                var requested = DateTimeOffset.Parse("2026-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture).AddSeconds(ordinal * 25);
                 var request = new CaptureRequest(requested, TimeSpan.FromSeconds(25), CaptureMode.Still,
                     new CaptureSetpoint(TimeSpan.FromSeconds(differentExposure ? 10 : 20), 1, null, null));
                 var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
