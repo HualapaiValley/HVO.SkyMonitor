@@ -265,7 +265,9 @@ public sealed class InstallerLifecycleControlIntegrationTests
     }
 
     [TestMethod]
-    public async Task UnclaimedScheduledIntentCanBeCancelledWithoutWorker_RejectsLateClaimAndAllowsOwnerResume()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UnclaimedScheduledIntentCanBeCancelledWithoutWorker_RejectsLateClaimAndAllowsOwnerResume(bool restartBeforeHistoryRead)
     {
         var fixture = new Fixture(false);
         await using var owned = fixture.ConfigureAwait(false);
@@ -277,7 +279,18 @@ public sealed class InstallerLifecycleControlIntegrationTests
         await fixture.Controls.CancelAsync(queued.Request.OperationId, CancellationToken.None, "owner", "Worker unavailable").ConfigureAwait(false);
         var cancelled = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
         Assert.AreEqual(CameraAgentControlPhase.Cancelled, cancelled.Phase);
-        await fixture.Automations.CompleteInstallerLifecycleAsync(cancelled, CancellationToken.None).ConfigureAwait(false);
+        // Simulate a crash/IO failure between durable local cancellation and the separate SQLite completion.
+        // No test-side claim or terminal-history mutation repairs the real runner's pending run.
+        if (restartBeforeHistoryRead) await fixture.ReloadAsync().ConfigureAwait(false);
+        else _ = await fixture.Automations.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        using (var inspection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(fixture.Root.FullName, ".automation", "local-automations.db")};Mode=ReadOnly;Pooling=False"))
+        {
+            await inspection.OpenAsync().ConfigureAwait(false);
+            using var command = inspection.CreateCommand();
+            command.CommandText = "SELECT outcome FROM automation_runs WHERE run_key = $key;";
+            command.Parameters.AddWithValue("$key", queued.Request.AutomationRunKey);
+            Assert.AreEqual("Interrupted", await command.ExecuteScalarAsync().ConfigureAwait(false));
+        }
         await Assert.ThrowsAsync<InstallerControlRefusalException>(() => client.ExchangeAsync(queued with
         {
             Phase = CameraAgentControlPhase.Draining,
@@ -419,6 +432,13 @@ public sealed class InstallerLifecycleControlIntegrationTests
             _hosts.Add(app);
         }
 
+        internal async Task ReloadAsync()
+        {
+            Automations.Dispose();
+            _owned.Remove(Automations);
+            await InitializeAsync().ConfigureAwait(false);
+        }
+
         internal async Task<CameraAgentControlReceipt> RunScheduledOccurrenceAsync()
         {
             var saved = await Automations.SaveAsync(new(CameraAgentRestartAutomationAdapter.DefinitionId, "Scheduled restart", true,
@@ -450,9 +470,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
                 {
                     if (owner._neverReturns) throw new HttpRequestException("Simulated CameraAgent never returned.");
                     owner._stopped = false;
-                    owner.Automations.Dispose();
-                    owner._owned.Remove(owner.Automations);
-                    await owner.InitializeAsync().ConfigureAwait(false);
+                    await owner.ReloadAsync().ConfigureAwait(false);
                 }
                 if (request.RequestUri!.AbsolutePath.EndsWith("/pause", StringComparison.Ordinal) && owner.BeforePause is { } beforePause)
                     await beforePause().ConfigureAwait(false);

@@ -229,6 +229,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: true, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -344,6 +345,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginRead(connection);
@@ -424,6 +426,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             using var transaction = BeginRead(connection);
             var progress = await ReadProgressAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             var definitions = await ReadDefinitionsAsync(connection, transaction, cancellationToken)
