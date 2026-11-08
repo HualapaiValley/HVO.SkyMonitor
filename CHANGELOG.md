@@ -26,6 +26,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
+- Move the CameraAgent and LogicHost runtime images to ASP.NET Core 10.0.14, a security release addressing CVE-2026-111497, CVE-2026-70197, CVE-2026-102870 and CVE-2026-114148. SDK 10.0.402 and its bundled .NET runtime remain at 10.0.13. #1667
+
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
@@ -51,9 +53,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
+
 - CameraAgent images declare approved-catalog contract `hvo-approved-catalogs-v2` and catalog manifest version 3. An upgraded instance keeps a verified manifest 2 HYG catalog, and can install and select the verified HYG 4.4 + OpenNGC manifest 3 catalog. Curated deep-sky expected positions stay off until `curatedAnnotations` is enabled. Checksums and manifests stay required. #1388
 
-- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
+- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. #1683 #1669
 
 - Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
 
@@ -440,7 +444,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   any other version is refused. A build given no version is its development build, `0.9.0-dev`:
   `hvo-sky-install --version` prints `0.9.0-dev+<commit>` rather than `0.0.0-dev+<commit>`, and a development
   CameraAgent image's version label is empty. (#1310)
-- Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
+- Container builds and local development use .NET SDK 10.0.402, which bundles .NET runtime 10.0.13. (#1336, #1337)
 - OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,
   the startup log line, telemetry `service.version`, and the `org.opencontainers.image.version` image label. That label
