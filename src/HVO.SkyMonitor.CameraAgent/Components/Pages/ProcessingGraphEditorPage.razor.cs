@@ -188,6 +188,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
             "Calibration" => "calibration",
+            "RollingCombination" => "rolling-combination",
             "ProjectedScene" => "projected-scene",
             "Annotation" => "legacy-annotation",
             "OverlayManifest" => "overlay-manifest",
