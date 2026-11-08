@@ -64,8 +64,9 @@ registration publishes an unavailable descriptor with no selectable targets.
 ## Execution boundary
 
 The qualified implementation requires non-root Linux x64 or arm64 with
-`/usr/bin/bwrap`, `/usr/bin/prlimit`, `/usr/bin/dash`, `/usr/bin/sleep` and the
-standard glibc/loader paths. It probes the complete launch boundary before
+`/usr/bin/systemd-run`, `/usr/bin/bwrap`, `/usr/bin/prlimit`, `/usr/bin/dash`,
+`/usr/bin/sleep`, the standard glibc/loader paths, and a systemd user manager
+with delegated cgroup v2 memory, CPU and process controllers. It probes the complete launch boundary before
 publishing availability. No unsafe execution fallback exists. Stock runtime
 images without these prerequisites remain unavailable; this PR changes no
 installer, packages or deployment topology. The implemented arm64 path is not
@@ -81,8 +82,9 @@ external network is shared. Host networking and firewall configuration are never
 changed. The script can use shell builtins and `sleep`; other tools and language
 runtimes require a separately reviewed future execution policy.
 
-The launch environment is cleared before even the launcher starts. The script
-receives only `PATH=/bin`, `HOME=/work`, `TMPDIR=/work` and `LC_ALL=C`.
+The launch environment is cleared; only the non-secret `XDG_RUNTIME_DIR` user-bus
+locator is supplied to the scope launcher. Bubblewrap clears that locator too.
+The script receives only `PATH=/bin`, `HOME=/work`, `TMPDIR=/work` and `LC_ALL=C`.
 The working directory is a private size-limited `/work` tmpfs; `/tmp` points to
 it. The remaining filesystem is read-only. Scratch capacity is shared across
 files and defaults to 1 MiB (4 KiB–8 MiB allowed). Scratch disappears with the
@@ -98,13 +100,17 @@ Two fixed 4 KiB buffers drain/discard the streams. Raw output retention is
 operator history/log text. Only fixed outcome labels, exit code and byte counts
 are returned. No exception message or script/argument text is logged.
 
-`prlimit` sets zero core bytes, 32 MiB address space per process, 64 descriptors,
-512 real-UID processes/threads, file size no larger than scratch capacity, and
-CPU seconds no larger than the wall timeout. The process ceiling is shared with
-other activity under the real host UID, so a busy host can refuse execution.
-This is a hard ceiling, not a reserved allowance or a cgroup aggregate memory/CPU
-budget. Host service resource controls remain necessary for deployment
-qualification; this slice does not certify hostile-code multi-tenant hosting.
+Every launch first enters its own transient systemd user scope: 64 MiB aggregate
+memory (including charged kernel/scratch metadata), zero swap, 16 processes/threads
+including launchers, and 50% of one CPU. These cgroup budgets apply only to that
+script tree and cannot be raised from inside the sandbox. The host verifies the exact scope membership and kernel memory, swap, process
+and CPU limit files before sending any script content to stdin. A failed scope/budget
+setup cannot fall back to an unbudgeted process. The scope is collected after its
+tree exits; no persistent service configuration is changed. `prlimit` additionally
+sets zero core bytes, 32 MiB address space per process, 64 descriptors, file size
+no larger than scratch capacity, and CPU seconds no larger than wall timeout.
+Deployment qualification still owns host capacity and supported service-manager
+topology; this slice does not certify hostile-code multi-tenant hosting.
 
 ## Durable execution policy and outcomes
 

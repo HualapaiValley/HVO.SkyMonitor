@@ -17,7 +17,7 @@ public sealed class CustomScriptSandboxIntegrationTests
     public void RequireSandbox()
     {
         if (!LinuxCustomScriptSandbox.Probe())
-            Assert.Inconclusive("Requires non-root Linux x64/arm64 with qualified Bubblewrap namespaces, dash and prlimit.");
+            Assert.Inconclusive("Requires non-root Linux x64/arm64 with qualified Bubblewrap, dash, prlimit and a systemd user manager with cgroup v2 budgets.");
     }
 
     [TestMethod]
@@ -52,7 +52,7 @@ public sealed class CustomScriptSandboxIntegrationTests
         try
         {
             var script = CustomScriptTaskAdapterTests.Script("""
-                [ -z "${HVO_SCRIPT_TEST_SENTINEL+x}" ] || exit 81
+                [ -z "${HVO_SCRIPT_TEST_SENTINEL+x}" ] && [ -z "${XDG_RUNTIME_DIR+x}" ] || exit 81
                 [ "$HOME" = /work ] && [ "$PATH" = /bin ] || exit 82
                 [ ! -e "$1" ] && [ ! -e /etc/passwd ] && [ ! -e /sys ] && [ ! -e /dev/sda ] || exit 83
                 [ ! -e /proc/1/root/home/roys ] || exit 84
@@ -265,6 +265,40 @@ public sealed class CustomScriptSandboxIntegrationTests
             if (!process.HasExited) process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync().ConfigureAwait(false);
         }
+    }
+
+    [TestMethod]
+    public async Task ProcessFanoutFailsInsideItsOwnBudgetAndTheNextTaskSucceeds()
+    {
+        var script = CustomScriptTaskAdapterTests.Script("""
+            i=0
+            while [ "$i" -lt 100 ]; do
+                sleep 200 &
+                i=$((i + 1))
+            done
+            wait
+            """);
+        script.TimeoutSeconds = 5;
+        var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Status, "The process ceiling must reject fanout before wall timeout.");
+        Assert.AreNotEqual(0, result.ExitCode);
+        var next = CustomScriptTaskAdapterTests.Script();
+        Assert.AreEqual(0, (await LinuxCustomScriptSandbox.ExecuteAsync(next, default).ConfigureAwait(false)).ExitCode);
+    }
+
+    [TestMethod]
+    public async Task MemoryPressureIsTerminatedWithinTheSandboxBudget()
+    {
+        var script = CustomScriptTaskAdapterTests.Script("""
+            value=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+            while :; do value=$value$value$value$value; done
+            """);
+        script.TimeoutSeconds = 5;
+        var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Status, "The memory limit must fail allocation before wall timeout.");
+        Assert.AreNotEqual(0, result.ExitCode);
+        Assert.AreEqual(0, (await LinuxCustomScriptSandbox.ExecuteAsync(CustomScriptTaskAdapterTests.Script(), default)
+            .ConfigureAwait(false)).ExitCode);
     }
 
     private static int[] SleepProcesses() => Process.GetProcessesByName("sleep").Select(process =>

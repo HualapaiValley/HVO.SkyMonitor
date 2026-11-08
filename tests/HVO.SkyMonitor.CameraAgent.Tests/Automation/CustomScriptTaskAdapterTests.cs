@@ -100,17 +100,21 @@ public sealed class CustomScriptTaskAdapterTests
     }
 
     [TestMethod]
-    public void LaunchUsesAnEmptyEnvironmentAndLiteralArgvWithMandatoryIsolation()
+    public void LaunchUsesOnlyTheUserBusLocatorAndLiteralArgvWithMandatoryIsolation()
     {
         var script = Script();
         script.Arguments = [new(CustomScriptArgumentKind.Text, "$(printf injected); 'a b'")];
         var info = LinuxCustomScriptSandbox.BuildStartInfo(script);
-        Assert.IsEmpty(info.Environment);
+        Assert.HasCount(1, info.Environment);
+        Assert.IsTrue(info.Environment.ContainsKey("XDG_RUNTIME_DIR"));
         Assert.IsFalse(info.UseShellExecute);
         Assert.AreEqual(script.Arguments[0].Value, info.ArgumentList[^1]);
         Assert.Contains("--unshare-all", info.ArgumentList);
         Assert.Contains("--die-with-parent", info.ArgumentList);
-        Assert.Contains("--nproc=512", info.ArgumentList);
+        Assert.Contains("--property=TasksMax=16", info.ArgumentList);
+        Assert.Contains("--property=MemoryMax=67108864", info.ArgumentList);
+        Assert.Contains("--property=CPUQuota=50%", info.ArgumentList);
+        Assert.Contains("--property=MemorySwapMax=0", info.ArgumentList);
         Assert.DoesNotContain("--share-net", info.ArgumentList);
         Assert.DoesNotContain(script.Content, info.ArgumentList);
         Assert.IsTrue(info.RedirectStandardInput && info.RedirectStandardOutput && info.RedirectStandardError);
