@@ -36,7 +36,7 @@ internal sealed record BackupRecord(
 }
 
 /// <summary>An archive a backup began and did not commit, with the bytes it holds.</summary>
-internal sealed record BackupPartial(string Name, long Length);
+internal sealed record BackupPartial(string Name, long Length, bool PublicationStarted = false);
 
 /// <summary>One stream to or from the vault, which <see cref="CompleteAsync"/> finishes and proves finished.</summary>
 internal interface IBackupTransfer : IAsyncDisposable
@@ -226,6 +226,10 @@ internal sealed partial class BackupVaultFiles(string root)
         EnsureFolder(create: false);
         using var gate = Lock();
         if (!File.Exists(partial)) return;
+        if (File.Exists(PathOf(name) + RecordSuffix))
+        {
+            throw InstallerException.Refused("The backup publication record already exists; rerun with --resume instead of --abort to finish publication.");
+        }
         SafeFileSystem.ValidateOwnerFile(partial);
         File.Delete(partial);
         NativeLinux.FlushDirectory(Root);
@@ -262,7 +266,8 @@ internal sealed partial class BackupVaultFiles(string root)
                 .Select(static file => (File: file, Name: file.Name[..^PartialSuffix.Length]))
                 .Where(static entry => IsName(entry.Name) && entry.File.LinkTarget is null)
                 .OrderBy(static entry => entry.Name, StringComparer.Ordinal)
-                .Select(static entry => new BackupPartial(entry.Name, entry.File.Length))
+                .Select(static entry => new BackupPartial(entry.Name, entry.File.Length,
+                    File.Exists(entry.File.FullName[..^PartialSuffix.Length] + RecordSuffix)))
         ];
     }
 
