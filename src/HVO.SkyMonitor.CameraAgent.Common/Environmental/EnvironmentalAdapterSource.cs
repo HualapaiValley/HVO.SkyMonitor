@@ -79,6 +79,7 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
         var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
         {
             protocol = Descriptor.Type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
+            deviceGroup = DeviceOptions.DeviceId,
             DeviceOptions.ModelVersion,
             DeviceOptions.ClearDeltaCelsius,
             DeviceOptions.CloudyDeltaCelsius

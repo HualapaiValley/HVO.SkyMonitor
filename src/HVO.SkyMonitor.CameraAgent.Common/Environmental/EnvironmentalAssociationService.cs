@@ -53,10 +53,10 @@ public sealed class EnvironmentalAssociationService(
         {
             var candidates = await observations.ReadLocalCandidatesAsync(
                 root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
-            if (options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count > 0)
+            if (options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
             {
                 var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
-                candidates = SelectWeatherCandidates(candidates, states, exposureFromUtc, exposureThroughUtc);
+                candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind, exposureFromUtc, exposureThroughUtc);
             }
             var association = CreateAssociation(
                 captureId,
@@ -134,31 +134,12 @@ public sealed class EnvironmentalAssociationService(
     private string PolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> kinds)
         => options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count == 0 ? CreatePolicyIdentity(kinds)
             : CaptureContractJson.ComputeCanonicalJsonSha256(new
-            { Schema = "real-weather-selection-v1", Kinds = kinds, options.Value.EnvironmentalAcquisition.WeatherSourcePriority,
-                OnlineKinds = options.Value.EnvironmentalAcquisition.Sources.Where(source => source.Type == "OnlineWeather").Select(source => source.Kind).Distinct().Order().ToArray() });
-
-    private IReadOnlyList<LocalEnvironmentalObservationRecord> SelectWeatherCandidates(
-        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates, IReadOnlyList<EnvironmentalSourceRuntimeState> states,
-        DateTimeOffset from, DateTimeOffset through)
-    {
-        // Hardware/IR/SQM simulation remains available for qualification. The real-weather fallback policy applies only
-        // to kinds configured with an online feed, and never silently falls back to simulated or stale weather.
-        if (!options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type == "OnlineWeather" &&
-            candidates.Any(candidate => candidate.Fact.Value.Kind == source.Kind))) return candidates;
-        foreach (var id in options.Value.EnvironmentalAcquisition.WeatherSourcePriority)
-        {
-            var state = states.SingleOrDefault(state => state.SourceId == id);
-            if (state is { LastCompletedUtc: { } completed } && completed <= through &&
-                state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
-                continue;
-            var eligible = candidates.Where(candidate => candidate.Fact.Source.SourceId == id &&
-                candidate.Fact.Source.Kind is EnvironmentalObservationSourceKind.Measured or EnvironmentalObservationSourceKind.Imported &&
-                candidate.Fact.Value.Quality is EnvironmentalObservationQuality.Good or EnvironmentalObservationQuality.Unknown &&
-                candidate.Fact.ValidFromUtc <= from && candidate.Fact.ValidThroughUtc >= through && candidate.Fact.StaleAfterUtc > through).ToArray();
-            if (eligible.Length > 0) return eligible;
-        }
-        return [];
-    }
+            {
+                Schema = "real-weather-selection-v1",
+                Kinds = kinds,
+                options.Value.EnvironmentalAcquisition.WeatherSourcePriority,
+                OnlineKinds = options.Value.EnvironmentalAcquisition.Sources.Where(source => source.Type == "OnlineWeather").Select(source => source.Kind).Distinct().Order().ToArray()
+            });
 
     private static void ValidateRequest(
         Guid captureId,

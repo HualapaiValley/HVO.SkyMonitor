@@ -22,6 +22,32 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
     private static readonly DateTimeOffset Now = new(2026, 9, 30, 4, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    [DataRow("LocalWeatherStation")]
+    [DataRow("InfraredSky")]
+    [DataRow("SkyQualityMeter")]
+    [DataRow("OnlineWeather")]
+    public async Task LatestAdapterReadingsExcludeFailedSourcesWithoutErasingHistory(string type)
+    {
+        var (principal, authorization) = ReadAuthorized();
+        var store = new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict);
+        store.Setup(value => value.ReadLocalPageAsync(Root, It.IsAny<EnvironmentalObservationKind?>(), 1, null, It.IsAny<CancellationToken>()))
+            .Returns<string, EnvironmentalObservationKind?, int, LocalEnvironmentalObservationCursor?, CancellationToken>(
+                (_, kind, _, _, _) => ValueTask.FromResult(new LocalEnvironmentalObservationPage(
+                    kind == EnvironmentalObservationKind.WindSpeed ? [Record(kind.Value, EnvironmentalObservationUnit.MetersPerSecond,
+                        2.8, EnvironmentalObservationSourceKind.Measured)] : [], null)));
+        var states = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
+        states.Setup(value => value.ReadSourceStatesAsync(Root, It.IsAny<CancellationToken>())).ReturnsAsync(
+            [new EnvironmentalSourceRuntimeState("wind-1", EnvironmentalObservationKind.WindSpeed, false,
+                EnvironmentalAcquisitionDisposition.Failed, "device-disconnected", null, Now.AddSeconds(-20), Now.AddMinutes(1),
+                Now.AddSeconds(-1), Now, 1, null)]);
+        var configuration = new EnvironmentalSourceConfiguration { Id = "wind-1", Type = type, Kind = EnvironmentalObservationKind.WindSpeed };
+        var service = CreateService(principal, authorization, configuration, stateStore: states.Object, observationStore: store.Object);
+        var result = await service.GetLatestReadingsAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsEmpty(result.Value!);
+    }
+
+    [TestMethod]
     public async Task GetLatestReadingsAsync_ReadsOneNewestObservationPerKindAndSkipsEmptyKinds()
     {
         var (principal, authorization) = ReadAuthorized();

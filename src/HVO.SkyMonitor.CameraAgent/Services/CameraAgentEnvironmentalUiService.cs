@@ -78,7 +78,8 @@ internal sealed record EnvironmentalUiObservation(
     EnvironmentalObservationQuality Quality,
     string? RigId,
     DateTimeOffset ObservedAtUtc,
-    DateTimeOffset StaleAfterUtc);
+    DateTimeOffset StaleAfterUtc,
+    string? SourceGroup = null, double? StationDistanceKilometers = null, double? StationElevationMeters = null);
 
 internal sealed class CameraAgentEnvironmentalUiService(
     AuthenticationStateProvider authenticationStateProvider,
@@ -280,14 +281,20 @@ internal sealed class CameraAgentEnvironmentalUiService(
         {
             var root = options.Value.RawIngressRoot;
             var latest = new List<EnvironmentalUiObservation>();
+            var configuration = options.Value.EnvironmentalAcquisition;
+            var adapterMode = configuration.Sources.Any(source => source.Type != "VirtualEnvironment");
+            var states = adapterMode ? await stateStore.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false) : [];
+            var now = timeProvider.GetUtcNow();
             foreach (var kind in Enum.GetValues<EnvironmentalObservationKind>())
             {
-                var page = await observationStore.ReadLocalPageAsync(root, kind, 1, null, cancellationToken)
-                    .ConfigureAwait(false);
-                if (page.Items.Count > 0)
-                {
-                    latest.Add(Project(page.Items[0]));
-                }
+                IReadOnlyList<LocalEnvironmentalObservationRecord> readings;
+                if (configuration.WeatherSourcePriority.Count > 0 && configuration.Sources.Any(source => source.Type == "OnlineWeather" && source.Kind == kind))
+                    readings = await observationStore.ReadLocalCandidatesAsync(root, kind, null, now, now.AddMilliseconds(1), 1000, cancellationToken).ConfigureAwait(false);
+                else
+                    readings = (await observationStore.ReadLocalPageAsync(root, kind, 1, null, cancellationToken).ConfigureAwait(false)).Items;
+                if (adapterMode) readings = EnvironmentalReadingSelection.Select(readings, configuration, states, kind, now, now.AddMilliseconds(1));
+                var selected = readings.OrderByDescending(reading => reading.Fact.ObservedAtUtc).FirstOrDefault();
+                if (selected is not null) latest.Add(Project(selected));
             }
             return OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success(latest);
         }
@@ -334,7 +341,14 @@ internal sealed class CameraAgentEnvironmentalUiService(
         item.Fact.Value.Quality,
         item.Fact.RigId,
         item.Fact.ObservedAtUtc,
-        item.Fact.StaleAfterUtc);
+        item.Fact.StaleAfterUtc,
+        EnvironmentalReadingSelection.SourceGroup(item.Fact),
+        ParameterNumber(item.Fact, "stationDistanceKilometers"),
+        ParameterNumber(item.Fact, "stationElevationMeters"));
+
+    private static double? ParameterNumber(EnvironmentalObservationFactV1 fact, string name)
+        => fact.Source.Provenance.Parameters.ValueKind == System.Text.Json.JsonValueKind.Object && fact.Source.Provenance.Parameters.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? value.GetDouble() : null;
 
     private async Task<bool> IsAuthorizedAsync()
     {

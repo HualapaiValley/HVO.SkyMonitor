@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
 public enum WeatherProvider { Nws, Hvo }
 public sealed record OnlineWeatherSourceOptions(WeatherProvider Provider, string StationId,
-    Uri? HvoEndpoint = null, bool HvoStationConfirmed = false);
+    Uri? HvoEndpoint = null, bool HvoStationConfirmed = false, double? StationDistanceKilometers = null, double? StationElevationMeters = null);
 public sealed record WeatherProviderSample(ReadOnlyMemory<byte> Body, DateTimeOffset SampledAtUtc, string Reason);
 
 /// <summary>One bounded fetch per station interval, shared across reading kinds. Failed fetches invalidate availability.</summary>

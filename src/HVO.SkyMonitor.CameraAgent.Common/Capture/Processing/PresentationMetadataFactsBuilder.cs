@@ -59,6 +59,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             throughUtc)).ToArray();
 
         var environment = new List<PresentationEnvironmentalFactV1>(associated.Count);
+        var sourceGroups = new HashSet<string>(StringComparer.Ordinal);
         var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Count) : null;
         foreach (var association in associated)
         {
@@ -82,6 +83,8 @@ internal sealed class PresentationMetadataFactsBuilder(
                 var source = string.Compare(left.SourceIdentitySha256, right.SourceIdentitySha256, StringComparison.Ordinal);
                 return source != 0 ? source : left.Fact.ObservationId.CompareTo(right.Fact.ObservationId);
             });
+            if (observation is not null && EnvironmentalReadingSelection.SourceGroup(observation.Fact) is { } sourceGroup)
+                sourceGroups.Add(sourceGroup);
             var conflicts = conflictRecords.Select(static conflict => new PresentationEnvironmentalConflictV1(
                 conflict.Fact.ObservationId, conflict.SourceIdentitySha256, conflict.ContentSha256)).ToArray();
             environment.Add(new(
@@ -111,6 +114,8 @@ internal sealed class PresentationMetadataFactsBuilder(
                     conflictRecords[index].Fact.SchemaVersion, conflictRecords[index].ContentSha256);
         }
 
+        if (sourceGroups.Count > 1 && environment.Count > 0)
+            environment[0] = environment[0] with { DisplayLine = "MIXED SOURCES / " + environment[0].DisplayLine };
         var schedule = descriptor.CycleEvidence?.ScheduleAdmission;
         var capture = JsonSerializer.SerializeToElement(new
         {
@@ -197,7 +202,9 @@ internal sealed class PresentationMetadataFactsBuilder(
             ? boolean ? "TRUE" : "FALSE"
             : value.NumericValue?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE";
         var age = Math.Max(0, Math.Round((evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds));
-        return $"{kind} {formatted} {value.Unit.ToString().ToUpperInvariant()} {status} {value.Quality.ToString().ToUpperInvariant()} AGE {age.ToString("F0", CultureInfo.InvariantCulture)} S";
+        var sourceLabel = selected.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3
+            ? $" {selected.Fact.Source.Kind.ToString().ToUpperInvariant()} SOURCE {EnvironmentalReadingSelection.SourceGroup(selected.Fact)}" : string.Empty;
+        return $"{kind} {formatted} {value.Unit.ToString().ToUpperInvariant()} {status} {value.Quality.ToString().ToUpperInvariant()} AGE {age.ToString("F0", CultureInfo.InvariantCulture)} S{sourceLabel}";
     }
 
     private static string[] DisplayLines(IEnumerable<string> lines) => lines

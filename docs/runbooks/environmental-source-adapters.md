@@ -145,9 +145,11 @@ weather fallback; values are never averaged. Failed sources are unavailable for
 new associations and history remains intact. The Environment history retains
 separate Imported and Measured facts with source and sample age.
 
-The accepted #1092 broader operator presentation checkpoint (station distance/
-elevation and explicit mixed-source grouping labels) remains tracked in #1092;
-this adapter slice does not claim that checkpoint or close the issue.
+Optional `stationDistanceKilometers` and `stationElevationMeters` describe the
+explicitly pinned station; missing metadata is shown as unknown. The Environment
+page shows the source, age, distance and elevation on each imported reading,
+with a mixed-source label when groups differ. Frame Facts retain source and age
+and label mixed groups. No nearest-station selection or averaging is performed.
 
 ## Contract and evidence
 

@@ -75,6 +75,10 @@ else
         </section>
     }
 
+    @if (_latest?.Where(reading => reading.SourceGroup is not null).Select(reading => reading.SourceGroup).Distinct(StringComparer.Ordinal).Take(2).Count() > 1)
+    {
+        <p class="environment-source-group" role="status">Mixed-source Environment: each reading retains its own source and sample age.</p>
+    }
     <div class="ops-reading-grid" aria-label="Latest readings" role="list">
         @foreach (var slot in ReadingSlots)
         {

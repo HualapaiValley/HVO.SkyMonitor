@@ -16,6 +16,34 @@ public sealed class EnvironmentalPageTests
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void ImportedStationMetadataAndMixedSourceLabelsAreVisible()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var air = Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+            sourceKind: EnvironmentalObservationSourceKind.Imported) with
+        { SourceGroup = "Nws/KIGM", StationDistanceKilometers = 12.5, StationElevationMeters = 1000 };
+        var humidity = Observation(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 40, null,
+            sourceKind: EnvironmentalObservationSourceKind.Measured) with
+        { SourceGroup = "LocalWeatherStation/station" };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([air, humidity])
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Mixed-source Environment", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Nws/KIGM", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "12.5 km", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "elevation 1000 m", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Imported", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Distance unknown", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void SuccessRendersFreshSourceHistoryAttemptsAndLoadsOlderPage()
     {
         using var context = new BunitContext();

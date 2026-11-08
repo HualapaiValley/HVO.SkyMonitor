@@ -14,6 +14,8 @@ public sealed class OnlineWeatherSource : IEnvironmentalSource
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(client);
         if (descriptor.Type != "OnlineWeather" || !Enum.IsDefined(options.Provider) ||
+            options.StationDistanceKilometers is { } distance && (!double.IsFinite(distance) || distance is < 0 or > 20040) ||
+            options.StationElevationMeters is { } elevation && (!double.IsFinite(elevation) || elevation is < -500 or > 10000) ||
             options.StationId is not { Length: >= 1 and <= 32 } || options.StationId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
             descriptor.Triggers.Count != 1 || descriptor.Triggers[0] != EnvironmentalAcquisitionTrigger.Periodic ||
             descriptor.PeriodSeconds < (options.Provider == WeatherProvider.Nws ? 300 : 60) ||
@@ -43,7 +45,14 @@ public sealed class OnlineWeatherSource : IEnvironmentalSource
             var reading = options.Provider == WeatherProvider.Nws ? Nws(json.RootElement) : Hvo(json.RootElement);
             if (reading is null) return EnvironmentalAdapterSource.Unavailable("provider-missing-field");
             var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
-            { provider = options.Provider.ToString(), options.StationId, protocol = "current-weather-v1", attribution = options.Provider == WeatherProvider.Nws ? "NOAA/NWS" : "Hualapai Valley Observatory" }));
+            {
+                provider = options.Provider.ToString(),
+                stationId = options.StationId,
+                stationDistanceKilometers = options.StationDistanceKilometers,
+                stationElevationMeters = options.StationElevationMeters,
+                protocol = "current-weather-v1",
+                attribution = options.Provider == WeatherProvider.Nws ? "NOAA/NWS" : "Hualapai Valley Observatory"
+            }));
             var source = new EnvironmentalObservationSource(options.Provider.ToString(), Descriptor.Id, "adapter-v1",
                 EnvironmentalObservationSourceKind.Imported, new(new("current-weather", "adapter-v1"), parameters,
                     CaptureContractJson.ComputeCanonicalJsonSha256(parameters)));
