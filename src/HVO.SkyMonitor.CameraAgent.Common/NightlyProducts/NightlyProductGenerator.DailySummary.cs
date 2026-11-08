@@ -53,7 +53,8 @@ internal sealed partial class NightlyProductGenerator
                     NightlyProductSourceKind.NightlyProduct, source.ProductId, source.OutputIdentitySha256, null, source.ObservationStartedUtc))];
             existing = await _store.PublishAsync(new NightlyProductPublication(NightlyProductKind.DailySummary,
                 NightlyProductScope.Final, window.ObservingDate, window.StartUtc, window.EndUtc, 0, DailySummaryProducer.RecipeName,
-                product, lineage, context.Options.RenditionJpegQuality) { Occurrence = context.Occurrence }, cancellationToken).ConfigureAwait(false);
+                product, lineage, context.Options.RenditionJpegQuality)
+            { Occurrence = context.Occurrence }, cancellationToken).ConfigureAwait(false);
             context.Published++;
         }
         await RecordAsync(context, NightlyProductScope.Final, window, NightlyProductWindowDisposition.Produced,

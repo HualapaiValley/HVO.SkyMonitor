@@ -73,10 +73,16 @@ public sealed class NightlyProductAutomationTaskRegistryTests
         {
             var daily = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary).Definition;
             Assert.IsNull(registry.Validate(daily));
-            Assert.IsNotNull(registry.Validate(daily with { SourceWindow = daily.SourceWindow! with
-                { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour } }));
-            Assert.IsNotNull(registry.Validate(daily with { SourceWindow = daily.SourceWindow! with
-                { Selection = LocalAutomationSourceSelection.DarkNightActualSources } }));
+            Assert.IsNotNull(registry.Validate(daily with
+            {
+                SourceWindow = daily.SourceWindow! with
+                { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour }
+            }));
+            Assert.IsNotNull(registry.Validate(daily with
+            {
+                SourceWindow = daily.SourceWindow! with
+                { Selection = LocalAutomationSourceSelection.DarkNightActualSources }
+            }));
         });
     }
 
