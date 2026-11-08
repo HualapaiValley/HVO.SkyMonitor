@@ -783,7 +783,18 @@ public sealed class AutomationsPageTests
                 $"run-{minutes}", $"Run {minutes}", LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition,
                 "virtual-sky-temperature", Instant.AddHours(6).AddMinutes(minutes)))
             .ToList();
-        Register(context, Automation(calendar: calendar), Calendar());
+        var automation = Automation(calendar: calendar);
+        automation = automation with
+        {
+            Definitions = [.. automation.Definitions, .. calendar.Select(entry =>
+            {
+                var definition = new LocalAutomationDefinition(entry.DefinitionId, entry.Name, true,
+                    entry.TaskKind, entry.TaskTarget, LocalAutomationTriggerKind.Periodic, 3600, Instant);
+                return new LocalAutomationDefinitionState(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
+                    Instant, "owner", null, entry.DueUtc, null, null, []);
+            })]
+        };
+        Register(context, automation, Calendar());
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?view=schedule");
 
         var cut = context.Render<AutomationsPage>();

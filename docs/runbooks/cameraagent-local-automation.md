@@ -33,6 +33,14 @@ retain the current runner are recorded in the
 [wizard decision](../planning/automation-wizard-1133.md). Run/cancel/backfill UI and
 broader task parameter editors remain follow-up work under #1133.
 
+Changing a pinned producer preset can retire its old target hash. A retained
+definition then shows **Unavailable**, with repair guidance, and contributes no
+enabled count or upcoming run. Unsupported retained triggers and source presets
+are treated the same way. Choose **Edit** and select a currently registered
+target/trigger/period to record a new revision; old definitions in revision history
+and retained occurrences keep their original identities. Enable/disable is
+unavailable until the retained settings are compatible again.
+
 ## What A Definition Can Express
 
 A definition names a registered task, its source policy and trigger, plus its identity:

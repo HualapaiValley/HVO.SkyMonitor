@@ -126,6 +126,70 @@ public sealed class AutomationWindowWizardTests
         Assert.Contains("recorded enablement is on", cut.Find("#automation-definition-daily").TextContent, StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    [DataRow("target", "target is no longer registered")]
+    [DataRow("trigger", "trigger is not supported")]
+    [DataRow("source", "source period is not supported")]
+    public void Definition_WithUnsupportedRetainedSettingsIsUnavailableAcrossCardsAndSchedule(string mismatch, string reason)
+    {
+        using var context = RetainedContext(mismatch, out _);
+        var cut = context.Render<AutomationsPage>();
+        var card = cut.Find("#automation-definition-daily");
+        Assert.AreEqual("Unavailable", card.QuerySelector("header .state-chip")!.TextContent);
+        Assert.Contains(reason, card.TextContent, StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find("#automation-toggle-daily").HasAttribute("disabled"));
+        var rail = cut.FindAll(".ops-status-rail > div");
+        Assert.AreEqual("0", rail[0].QuerySelector("strong")!.TextContent);
+        Assert.AreEqual("None scheduled", rail[1].QuerySelector("strong")!.TextContent);
+        var next = card.QuerySelectorAll("dl > div").Single(item => item.QuerySelector("dt")!.TextContent == "Next run");
+        Assert.AreEqual("Unavailable", next.QuerySelector("dd")!.TextContent);
+        cut.FindAll(".automation-tabs button")[1].Click();
+        Assert.IsEmpty(cut.FindAll(".automation-upcoming li"));
+        Assert.IsEmpty(cut.FindAll(".automation-run-tick"));
+    }
+
+    [TestMethod]
+    public void Definition_WithAReplacedTargetCanBeRepairedThroughTheVersionedEditor()
+    {
+        using var context = RetainedContext("target", out var service);
+        var cut = context.Render<AutomationsPage>();
+        cut.Find("#automation-edit-daily").Click();
+        cut.Find("#automation-target").Change("new-preset");
+        cut.Find("#automation-save").Click();
+        cut.Find("#automation-save").Click();
+        cut.Find("#automation-confirm").Click();
+        var request = service.SaveRequests.Single();
+        Assert.AreEqual("daily", request.DefinitionId);
+        Assert.AreEqual("new-preset", request.TaskTarget);
+        Assert.AreEqual(1, request.ExpectedVersion);
+        Assert.AreEqual(LocalAutomationSourceWindowKind.SunriseDay, request.SourceWindow!.Kind);
+    }
+
+    private static BunitContext RetainedContext(string mismatch, out AutomationsPageTests.AutomationUiService service)
+    {
+        var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var definition = LocalAutomationWindowTests.Definition("daily",
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.SunriseDay)) with
+        { TaskTarget = "old-preset" };
+        var due = definition.TriggerEpochUtc.AddHours(1);
+        var state = LocalAutomationOperatorState.Empty with
+        {
+            ReadAtUtc = definition.TriggerEpochUtc,
+            Registry = [new(LocalAutomationTaskKind.StillImageGeneration, "Available producer",
+                mismatch == "trigger" ? [LocalAutomationTriggerKind.Periodic] : [LocalAutomationTriggerKind.SourceWindowClosed],
+                mismatch == "target" ? ["new-preset"] : [definition.TaskTarget], true, null)
+                { SupportedSourceWindows = mismatch == "source" ? [LocalAutomationSourceWindowKind.CompletedCivilHour] : [LocalAutomationSourceWindowKind.SunriseDay] }],
+            Definitions = [new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
+                definition.TriggerEpochUtc, "owner", null, due, null, null, [])],
+            Calendar = [new(definition.DefinitionId, definition.Name, definition.TaskKind, definition.TaskTarget, due)]
+        };
+        service = new(state);
+        context.Services.AddSingleton<ICameraAgentAutomationUiService>(service);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
+        return context;
+    }
+
     internal static void Start(IRenderedComponent<AutomationsPage> cut, string id = "daily")
     {
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#automation-create").HasAttribute("disabled")));

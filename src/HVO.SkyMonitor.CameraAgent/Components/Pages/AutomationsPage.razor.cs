@@ -1022,6 +1022,43 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private LocalAutomationTaskDescriptor? Descriptor(LocalAutomationTaskKind kind)
         => _automation?.Registry.FirstOrDefault(descriptor => descriptor.TaskKind == kind);
 
+    private string? DefinitionUnavailableReason(LocalAutomationDefinition definition)
+    {
+        var descriptor = Descriptor(definition.TaskKind);
+        if (descriptor is not { Available: true })
+        {
+            return descriptor?.UnavailableReason ?? "This task is not registered on this CameraAgent.";
+        }
+        if (!descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal))
+        {
+            return "The recorded target is no longer registered. Edit this automation to choose a current target.";
+        }
+        if (!descriptor.CompatibleTriggers.Contains(definition.TriggerKind))
+        {
+            return "The recorded trigger is not supported by this task. Edit this automation to choose a supported trigger.";
+        }
+        if (definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed &&
+            (definition.SourceWindow is not { } policy || !policy.IsValid() || !descriptor.SupportedSourceWindows.Contains(policy.Kind)))
+        {
+            return "The recorded source period is not supported by this task. Edit this automation to choose a supported period.";
+        }
+        return null;
+    }
+
+    private bool IsDefinitionRunnable(LocalAutomationDefinitionState item)
+        => item.Definition.Enabled && DefinitionUnavailableReason(item.Definition) is null;
+
+    private IReadOnlyList<LocalAutomationCalendarEntry> RunnableCalendar
+    {
+        get
+        {
+            if (_automation is not { } state) return [];
+            return state.Calendar.Where(entry => state.Definitions.Any(item =>
+                item.Definition.DefinitionId == entry.DefinitionId && item.Definition.TaskKind == entry.TaskKind &&
+                string.Equals(item.Definition.TaskTarget, entry.TaskTarget, StringComparison.Ordinal) && IsDefinitionRunnable(item))).ToArray();
+        }
+    }
+
     private IReadOnlyList<string> Targets() => Descriptor(_taskKindInput)?.Targets ?? [];
 
     private IReadOnlyList<LocalAutomationTriggerKind> CompatibleTriggers()
@@ -1062,6 +1099,10 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             return "Disabled";
         }
+        if (DefinitionUnavailableReason(definition.Definition) is not null)
+        {
+            return "Unavailable";
+        }
         if (definition.NextRunUtc is { } due)
         {
             return DayClock(due);
@@ -1086,15 +1127,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                candidate.Definition.DefinitionId, definitionId, StringComparison.Ordinal))?.Definition.Name
            ?? definitionId;
 
-    private int EnabledCount => _automation?.Definitions.Count(static item => item.Definition.Enabled) ?? 0;
+    private int EnabledCount => _automation?.Definitions.Count(IsDefinitionRunnable) ?? 0;
 
     private int RunningCount => _automation?.RunningRunCount ??
         _automation?.Runs.Count(static run => run.Outcome == LocalAutomationRunOutcome.Running) ?? 0;
 
-    private LocalAutomationCalendarEntry? NextEntry => _automation?.Calendar.MinBy(static entry => entry.DueUtc);
+    private LocalAutomationCalendarEntry? NextEntry => RunnableCalendar.MinBy(static entry => entry.DueUtc);
 
     private LocalAutomationDefinitionState? NextCaptureRelative => _automation?.Definitions
-        .Where(static item => item.Definition.Enabled && item.NextRunCaptureSequence is not null)
+        .Where(item => IsDefinitionRunnable(item) && item.NextRunCaptureSequence is not null)
         .MinBy(static item => item.NextRunCaptureSequence);
 
     /// <summary>Finished runs in the 24 hours before the read, and how many of them succeeded.</summary>
@@ -1200,7 +1241,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return markers;
         }
         var lastCard = Enumerable.Repeat(double.NegativeInfinity, MarkerRows).ToArray();
-        foreach (var entry in _automation.Calendar.Where(item => item.DueUtc >= start && item.DueUtc < end).OrderBy(static item => item.DueUtc))
+        foreach (var entry in RunnableCalendar.Where(item => item.DueUtc >= start && item.DueUtc < end).OrderBy(static item => item.DueUtc))
         {
             var exact = Percent(entry.DueUtc, start, end);
             var card = Math.Clamp(exact, MarkerMinimumPercent, MarkerMaximumPercent);

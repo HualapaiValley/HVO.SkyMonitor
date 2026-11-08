@@ -93,6 +93,38 @@ public sealed class AutomationWizardIntegrationTests
         Assert.AreEqual(OperatorUiResultKind.Conflict, stale.Kind);
     }
 
+    [TestMethod]
+    public async Task Wizard_AReplacedProducerTargetIsUnavailableUntilAnExplicitRevisionRepairsIt()
+    {
+        using var fixture = new AutomationWizardFixture();
+        await fixture.Store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var saved = await fixture.Service.SaveAsync(AutomationWizardFixture.Request(), CancellationToken.None).ConfigureAwait(false);
+        var original = saved.Value!.State.Definitions.Single();
+        var occurrence = original.NextOccurrence!;
+        fixture.Clock.Advance(occurrence.ScheduledForUtc - fixture.Clock.GetUtcNow());
+        fixture.Registry.Targets.Remove("keogram");
+        fixture.Registry.Targets.Add("replacement-keogram");
+        Assert.IsFalse(await fixture.Store.TryBeginOccurrenceAsync(occurrence, CancellationToken.None).ConfigureAwait(false),
+            "The old target must be rejected even when its original window has reached finality.");
+
+        using var context = Context(fixture);
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("Unavailable", cut.Find("#automation-definition-daily header .state-chip").TextContent));
+        await cut.Find("#automation-edit-daily").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("#automation-target").ChangeAsync(new ChangeEventArgs { Value = "replacement-keogram" }).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForElement("#automation-window-preview");
+        await cut.Find("#automation-confirm").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("Enabled", cut.Find("#automation-definition-daily header .state-chip").TextContent));
+        var repaired = (await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions.Single();
+        Assert.AreEqual(2, repaired.Version);
+        Assert.AreEqual("replacement-keogram", repaired.Definition.TaskTarget);
+        Assert.AreEqual("keogram", repaired.History.Single(item => item.Version == 1).Definition.TaskTarget);
+        Assert.AreEqual(original.Definition.SourceWindow, repaired.Definition.SourceWindow);
+        Assert.AreEqual("wizard-owner", repaired.Actor);
+    }
+
     private static BunitContext Context(AutomationWizardFixture fixture)
     {
         var context = new BunitContext();

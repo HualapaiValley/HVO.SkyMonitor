@@ -79,12 +79,13 @@ internal sealed class AutomationWizardFixture : IDisposable
     {
         internal bool Available { get; set; } = true;
         internal bool Throw { get; set; }
+        internal List<string> Targets { get; } = ["keogram", "star-trail"];
         internal List<LocalAutomationOccurrence> Executed { get; } = [];
 
         public IReadOnlyList<LocalAutomationTaskDescriptor> Describe()
             => Throw ? throw new IOException("Synthetic private path") :
             [new(LocalAutomationTaskKind.StillImageGeneration, "Synthetic registered still producer",
-                [LocalAutomationTriggerKind.SourceWindowClosed], ["keogram", "star-trail"], Available,
+                [LocalAutomationTriggerKind.SourceWindowClosed], [.. Targets], Available,
                 Available ? null : "Producer unavailable.")
                 { SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay] }];
 
