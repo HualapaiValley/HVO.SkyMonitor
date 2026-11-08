@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -23,18 +24,24 @@ public sealed partial class TransientWorkerRuntimeTests
         {
             using var provider = CreateProvider(root);
             var configuration = CreateConfiguration();
-            if (rggb) configuration = configuration with
+            if (rggb)
             {
-                Rig = configuration.Rig with
+                var moduleOptions = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(configuration.Module.Options!.Value)!;
+                moduleOptions["asi178Sensor"] = JsonSerializer.SerializeToElement(new { enabled = true, blackLevelContainerAdu = 0d });
+                configuration = configuration with
                 {
-                    Sensor = configuration.Rig.Sensor with
+                    Module = configuration.Module with { Options = JsonSerializer.SerializeToElement(moduleOptions) },
+                    Rig = configuration.Rig with
                     {
-                        PixelFormat = CameraPixelFormat.BayerRggb16,
-                        ColorMode = SensorColorMode.Color,
-                        ResponseMode = SensorResponseMode.BayerRaw
+                        Sensor = configuration.Rig.Sensor with
+                        {
+                            PixelFormat = CameraPixelFormat.BayerRggb16,
+                            ColorMode = SensorColorMode.Color,
+                            ResponseMode = SensorResponseMode.BayerRaw
+                        }
                     }
-                }
-            };
+                };
+            }
             var rig = configuration.Rig with
             {
                 ControlPolicy = (configuration.Rig.ControlPolicy ?? new CameraControlPolicy()) with
