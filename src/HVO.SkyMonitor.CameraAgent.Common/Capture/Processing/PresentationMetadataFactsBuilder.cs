@@ -83,7 +83,8 @@ internal sealed class PresentationMetadataFactsBuilder(
                 var source = string.Compare(left.SourceIdentitySha256, right.SourceIdentitySha256, StringComparison.Ordinal);
                 return source != 0 ? source : left.Fact.ObservationId.CompareTo(right.Fact.ObservationId);
             });
-            if (observation is not null && EnvironmentalReadingSelection.SourceGroup(observation.Fact) is { } sourceGroup)
+            if (observation is not null && EnvironmentalReadingSelection.MixingGroup(observation.Fact.Source.Kind,
+                EnvironmentalReadingSelection.SourceGroup(observation.Fact)) is { } sourceGroup)
                 sourceGroups.Add(sourceGroup);
             var conflicts = conflictRecords.Select(static conflict => new PresentationEnvironmentalConflictV1(
                 conflict.Fact.ObservationId, conflict.SourceIdentitySha256, conflict.ContentSha256)).ToArray();

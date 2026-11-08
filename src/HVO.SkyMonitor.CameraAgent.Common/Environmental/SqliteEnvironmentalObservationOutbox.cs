@@ -370,6 +370,50 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return new LocalEnvironmentalObservationPage(records, next);
     }
 
+    public async ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalLatestPrimaryAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        IReadOnlyList<string> configuredSourceIds,
+        IReadOnlyList<string> unavailableSourceIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configuredSourceIds);
+        ArgumentNullException.ThrowIfNull(unavailableSourceIds);
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        var started = _timeProvider.GetTimestamp();
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            WITH candidates AS (
+                SELECT record_id, observed_at_unix_ms,
+                    json_extract(CAST(payload AS TEXT), '$.source.sourceId') AS source_id,
+                    CASE WHEN json_type(CAST(payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId') = 'text'
+                        THEN json_extract(CAST(payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId')
+                        ELSE json_extract(CAST(payload AS TEXT), '$.source.sourceId') END AS owner_id,
+                    json_extract(CAST(payload AS TEXT), '$.source.provenance.parameters.readingRole') AS reading_role
+                FROM environmental_observation_journal WHERE observation_kind = $kind)
+            SELECT record_id FROM candidates
+            WHERE COALESCE(reading_role, '') != 'lineage-input'
+                AND (owner_id IS source_id OR owner_id IN (SELECT value FROM json_each($configured)))
+                AND owner_id NOT IN (SELECT value FROM json_each($unavailable))
+            ORDER BY observed_at_unix_ms DESC, record_id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$kind", kind.ToString());
+        command.Parameters.AddWithValue("$configured", JsonSerializer.Serialize(configuredSourceIds));
+        command.Parameters.AddWithValue("$unavailable", JsonSerializer.Serialize(unavailableSourceIds));
+        var id = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        var record = id is null ? null : await ReadLocalRecordAsync(connection, transaction,
+            Convert.ToInt64(id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        acquisitionTelemetry?.RecordHistoryQuery(kind, _timeProvider.GetElapsedTime(started));
+        return record;
+    }
+
     public async ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalDetailAsync(
         string root,
         long recordId,
@@ -460,6 +504,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         var projected = 0;
+        var attempted = new HashSet<long>();
         for (var index = 0; index < maximumResults; index++)
         {
             using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
@@ -471,9 +516,11 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 candidate.CommandText = """
                     SELECT local_record_id FROM environmental_observation_central_projection
                     WHERE status = 'waiting'
+                        AND local_record_id NOT IN (SELECT value FROM json_each($attempted))
                     ORDER BY updated_unix_ms, local_record_id
                     LIMIT 1;
                     """;
+                candidate.Parameters.AddWithValue("$attempted", JsonSerializer.Serialize(attempted));
                 var value = await candidate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
                 localRecordId = value is null
                     ? null
@@ -484,6 +531,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 break;
             }
+            attempted.Add(localRecordId.Value);
             var record = await ReadLocalRecordAsync(
                 connection, transaction, localRecordId.Value, cancellationToken).ConfigureAwait(false);
             var result = await EnsureProjectionAsync(connection, transaction, record, cancellationToken)
@@ -491,7 +539,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             if (result.Disposition != EnvironmentalObservationProjectionDisposition.Staged)
             {
-                if (result.Disposition == EnvironmentalObservationProjectionDisposition.Waiting && result.Observation is null)
+                if (result.Disposition == EnvironmentalObservationProjectionDisposition.Waiting && result.WaitingForLineage)
                     continue;
                 break;
             }
@@ -2557,7 +2605,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             rotate.Parameters.AddWithValue("$now", now);
             rotate.Parameters.AddWithValue("$local", record.RecordId);
             await rotate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Waiting, null, null);
+            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Waiting, null, null, WaitingForLineage: true);
         }
 
         var sourceIdentity = EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation);
@@ -3151,7 +3199,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private sealed record ProjectionResult(
         EnvironmentalObservationProjectionDisposition Disposition,
         EnvironmentalObservationV1? Observation,
-        EnvironmentalObservationEnqueueDisposition? EnqueueDisposition);
+        EnvironmentalObservationEnqueueDisposition? EnqueueDisposition,
+        bool WaitingForLineage = false);
 
     private sealed record EnvironmentalSchemaInspection(int SchemaVersion, long SchemaObjectCount);
 

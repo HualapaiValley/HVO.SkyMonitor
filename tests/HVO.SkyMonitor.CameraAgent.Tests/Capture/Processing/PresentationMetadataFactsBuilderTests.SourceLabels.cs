@@ -52,4 +52,46 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.IsTrue(lines.All(line => line.Length <= PresentationLayerPayloadV1.MaximumLineCharacters));
         Assert.HasCount(2, facts.Environment);
     }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OneLocalEnvironmentDoesNotConsumeAMixedSourceOverlayRow(bool measured)
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var air = Fact(Guid.NewGuid(), EnvironmentalObservationKind.AirTemperature, 20, sourceId: "standalone-temperature");
+        air = air with
+        {
+            Source = air.Source with
+            {
+                Provider = measured ? "LocalWeatherStation" : "virtual-environment",
+                Kind = measured ? EnvironmentalObservationSourceKind.Measured : EnvironmentalObservationSourceKind.Simulated
+            }
+        };
+        var humidity = Fact(Guid.NewGuid(), EnvironmentalObservationKind.RelativeHumidity, 45, sourceId: "standalone-humidity");
+        humidity = humidity with
+        {
+            Source = humidity.Source with
+            {
+                Provider = measured ? "InfraredSky" : "virtual-environment",
+                Kind = measured ? EnvironmentalObservationSourceKind.Measured : EnvironmentalObservationSourceKind.Simulated
+            }
+        };
+        await CommitAsync(store, air).ConfigureAwait(false);
+        await CommitAsync(store, humidity).ConfigureAwait(false);
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var kinds = new[] { air.Value.Kind, humidity.Value.Kind };
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        fixture.Context.BeginNode("single-environment", []);
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            kinds, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var layer = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
+        var lines = layer.TextBlocks.Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
+        Assert.IsFalse(lines.Contains("MIXED SOURCES", StringComparer.Ordinal));
+        Assert.IsTrue(lines.Any(line => line.StartsWith("AIR ", StringComparison.Ordinal)));
+        Assert.IsTrue(lines.Any(line => line.StartsWith("RH ", StringComparison.Ordinal)));
+    }
+
 }

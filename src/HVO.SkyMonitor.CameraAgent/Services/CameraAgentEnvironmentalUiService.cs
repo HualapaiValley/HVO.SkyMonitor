@@ -264,8 +264,8 @@ internal sealed class CameraAgentEnvironmentalUiService(
     }
 
     /// <summary>
-    /// Reads the newest retained observation of every kind, one indexed single-row read per kind, so the page can
-    /// show a reading slot without scanning history. A kind with no retained observation is simply absent.
+    /// Reads the newest eligible primary observation of every kind. Adapter eligibility is applied in the store
+    /// before its single-row limit; history continues to retain every derivation input.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
@@ -285,11 +285,19 @@ internal sealed class CameraAgentEnvironmentalUiService(
             var adapterMode = configuration.Sources.Any(source => source.Type != "VirtualEnvironment");
             var states = adapterMode ? await stateStore.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false) : [];
             var now = timeProvider.GetUtcNow();
+            var unavailable = EnvironmentalReadingSelection.UnavailableSources(configuration, states, now.AddMilliseconds(1));
             foreach (var kind in Enum.GetValues<EnvironmentalObservationKind>())
             {
                 IReadOnlyList<LocalEnvironmentalObservationRecord> readings;
                 if (configuration.WeatherSourcePriority.Count > 0 && configuration.Sources.Any(source => source.Type == "OnlineWeather" && source.Kind == kind))
                     readings = await observationStore.ReadLocalCandidatesAsync(root, kind, null, now, now.AddMilliseconds(1), 1000, cancellationToken).ConfigureAwait(false);
+                else if (adapterMode)
+                {
+                    var selectedPrimary = await observationStore.ReadLocalLatestPrimaryAsync(root, kind,
+                        configuration.Sources.Where(source => source.Kind == kind).Select(source => source.Id).ToArray(),
+                        unavailable, cancellationToken).ConfigureAwait(false);
+                    readings = selectedPrimary is null ? [] : [selectedPrimary];
+                }
                 else
                     readings = (await observationStore.ReadLocalPageAsync(root, kind, 1, null, cancellationToken).ConfigureAwait(false)).Items;
                 if (adapterMode) readings = EnvironmentalReadingSelection.Select(readings, configuration, states, kind, now, now.AddMilliseconds(1));

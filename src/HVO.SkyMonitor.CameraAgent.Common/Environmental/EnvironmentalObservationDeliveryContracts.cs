@@ -105,6 +105,14 @@ public interface ILocalEnvironmentalObservationStore
         long recordId,
         CancellationToken cancellationToken);
 
+    /// <summary>Filters primary-source eligibility before selecting the newest retained reading.</summary>
+    ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalLatestPrimaryAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        IReadOnlyList<string> configuredSourceIds,
+        IReadOnlyList<string> unavailableSourceIds,
+        CancellationToken cancellationToken);
+
     ValueTask<IReadOnlyList<LocalEnvironmentalObservationRecord>> ReadLocalCandidatesAsync(
         string root,
         EnvironmentalObservationKind kind,

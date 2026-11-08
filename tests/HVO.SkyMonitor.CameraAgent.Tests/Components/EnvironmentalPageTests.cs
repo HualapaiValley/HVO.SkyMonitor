@@ -16,6 +16,24 @@ public sealed class EnvironmentalPageTests
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void VirtualPerKindSourcesDoNotShowAMixedEnvironmentBadge()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Simulated) with { SourceGroup = "virtual-environment/standalone-temperature" },
+                Observation(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 45, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Simulated) with { SourceGroup = "virtual-environment/standalone-humidity" }])
+        });
+        var page = context.Render<EnvironmentalPage>();
+        page.WaitForAssertion(() => Assert.IsFalse(page.Markup.Contains("Mixed-source Environment", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public void FailedSourceWithRetainedHistoryShowsUnavailableInsteadOfNoObservationYet()
     {
         using var context = new BunitContext();

@@ -12,6 +12,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Environmental Latest readings and observatory summaries keep primary station values visible when newer IR lineage inputs arrive. #1089
+- Waiting environmental delivery avoids repeated overflow counts and retry writes within one pass. #1090
+- Virtual-only and co-located local readings no longer show an unnecessary mixed-source overlay or Environment badge. #1092
+
 - Station readings remain available alongside IR derivation inputs, and coalesced triggers cannot revive evidence from a failed environmental source. #1089
 - IR cloud delivery waits for acknowledged lineage inputs, unresolved projections allow independent progress, and simulated cloud estimates retain Simulated provenance. #1090
 - LogicHost retains v3 device-receipt and SQM diagnostic metadata without breaking content hashes; the canonical unreleased schema is updated, and SQM frequency mode has an explicit unavailable state. #1091

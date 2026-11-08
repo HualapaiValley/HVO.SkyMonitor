@@ -427,6 +427,9 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
+    private bool HasMixedSources => _latest?.Select(reading => EnvironmentalReadingSelection.MixingGroup(
+        reading.SourceKind, reading.SourceGroup)).OfType<string>().Distinct(StringComparer.Ordinal).Take(2).Count() > 1;
+
     private ReadingView Reading(ReadingSlot slot)
     {
         var observation = slot.Kinds

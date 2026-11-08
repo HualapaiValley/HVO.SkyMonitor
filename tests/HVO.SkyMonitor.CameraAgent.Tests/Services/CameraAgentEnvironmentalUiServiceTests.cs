@@ -30,11 +30,12 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
     {
         var (principal, authorization) = ReadAuthorized();
         var store = new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict);
-        store.Setup(value => value.ReadLocalPageAsync(Root, It.IsAny<EnvironmentalObservationKind?>(), 1, null, It.IsAny<CancellationToken>()))
-            .Returns<string, EnvironmentalObservationKind?, int, LocalEnvironmentalObservationCursor?, CancellationToken>(
-                (_, kind, _, _, _) => ValueTask.FromResult(new LocalEnvironmentalObservationPage(
-                    kind == EnvironmentalObservationKind.WindSpeed ? [Record(kind.Value, EnvironmentalObservationUnit.MetersPerSecond,
-                        2.8, EnvironmentalObservationSourceKind.Measured)] : [], null)));
+        store.Setup(value => value.ReadLocalLatestPrimaryAsync(Root, It.IsAny<EnvironmentalObservationKind>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .Returns<string, EnvironmentalObservationKind, IReadOnlyList<string>, IReadOnlyList<string>, CancellationToken>(
+                (_, kind, _, _, _) => ValueTask.FromResult<LocalEnvironmentalObservationRecord?>(
+                    kind == EnvironmentalObservationKind.WindSpeed ? Record(kind, EnvironmentalObservationUnit.MetersPerSecond,
+                        2.8, EnvironmentalObservationSourceKind.Measured) : null));
         var states = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
         states.Setup(value => value.ReadSourceStatesAsync(Root, It.IsAny<CancellationToken>())).ReturnsAsync(
             [new EnvironmentalSourceRuntimeState("wind-1", EnvironmentalObservationKind.WindSpeed, false,
@@ -269,7 +270,8 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         EnvironmentalObservationDeliveryState? deliveryState = null,
         CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled,
         string root = Root,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        CameraAgentHostOptions? hostOptions = null)
     {
         return new CameraAgentEnvironmentalUiService(
             new FixedAuthenticationStateProvider(principal),
@@ -278,7 +280,7 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             observationStore ?? new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict).Object,
             null!,
             deliveryState ?? new EnvironmentalObservationDeliveryState(),
-            Options.Create(new CameraAgentHostOptions
+            Options.Create(hostOptions ?? new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
                 CentralIntegration = new CentralIntegrationOptions { Mode = centralMode },

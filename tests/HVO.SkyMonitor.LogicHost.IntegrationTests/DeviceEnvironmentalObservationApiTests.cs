@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -106,12 +107,14 @@ public sealed class DeviceEnvironmentalObservationApiTests
     public async Task LineageInputRemainsInCentralHistoryWithoutCompetingWithTheStation()
     {
         var device = await SeedDeviceAsync().ConfigureAwait(false);
-        var station = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid());
+        var station = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid()) with
+        { Value = new(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null, EnvironmentalObservationQuality.Good) };
         var parameters = JsonSerializer.SerializeToElement(new { readingRole = "lineage-input", acquisitionSourceId = "ir-cloud" });
         var ambient = station with
         {
             SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
             ObservationId = Guid.NewGuid(),
+            ObservedAtUtc = Epoch.AddSeconds(10),
             Source = station.Source with
             {
                 Provider = "InfraredSky",
@@ -134,6 +137,15 @@ public sealed class DeviceEnvironmentalObservationApiTests
             .ConfigureAwait(false);
         match.Status.Should().Be(EnvironmentalObservationMatchStatus.Fresh);
         match.Observation!.ObservationId.Should().Be(station.ObservationId);
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var reader = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
+        db.ObservatoryMemberships.Add(new ObservatoryMembership
+        { ObservatoryId = device.ObservatoryId, UserId = reader.Id, Role = ObservatoryMembershipRole.Viewer, AddedAtUtc = Epoch });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var detail = await scope.ServiceProvider.GetRequiredService<INetworkOperationsReadService>()
+            .GetObservatoryDetailAsync(reader.Id, device.ObservatoryId).ConfigureAwait(false);
+        detail.Should().NotBeNull();
+        detail!.Environment.Single(item => item.Kind == station.Value.Kind).NumericValue.Should().Be(20);
     }
 
     [TestMethod]

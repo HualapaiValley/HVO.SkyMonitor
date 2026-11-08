@@ -22,6 +22,26 @@ public static class EnvironmentalReadingSelection
             fact.Source.Provenance.Parameters.TryGetProperty("acquisitionSourceId", out var owner) && owner.ValueKind == System.Text.Json.JsonValueKind.String
             ? owner.GetString()! : fact.Source.SourceId;
 
+    /// <summary>Local measured/derived evidence and simulations each describe one environmental origin.</summary>
+    public static string? MixingGroup(EnvironmentalObservationSourceKind kind, string? identity)
+        => identity is null ? null : kind switch
+        {
+            EnvironmentalObservationSourceKind.Measured or EnvironmentalObservationSourceKind.Derived => "local",
+            EnvironmentalObservationSourceKind.Simulated => "simulated",
+            _ => identity
+        };
+
+    public static IReadOnlyList<string> UnavailableSources(EnvironmentalAcquisitionOptions options,
+        IReadOnlyList<EnvironmentalSourceRuntimeState> states, DateTimeOffset through)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(states);
+        return states.Where(state => state.LastCompletedUtc <= through &&
+            state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
+            .Where(state => options.Sources.Any(source => source.Id == state.SourceId && source.Type is "LocalWeatherStation" or "InfraredSky" or "SkyQualityMeter" or "OnlineWeather"))
+            .Select(state => state.SourceId).ToArray();
+    }
+
     public static IReadOnlyList<LocalEnvironmentalObservationRecord> Select(
         IReadOnlyList<LocalEnvironmentalObservationRecord> candidates, EnvironmentalAcquisitionOptions options,
         IReadOnlyList<EnvironmentalSourceRuntimeState> states, EnvironmentalObservationKind kind,
@@ -30,10 +50,7 @@ public static class EnvironmentalReadingSelection
         ArgumentNullException.ThrowIfNull(candidates);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(states);
-        var unavailable = states.Where(state => state.LastCompletedUtc <= through &&
-            state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
-            .Where(state => options.Sources.Any(source => source.Id == state.SourceId && source.Type is "LocalWeatherStation" or "InfraredSky" or "SkyQualityMeter" or "OnlineWeather"))
-            .Select(state => state.SourceId).ToArray();
+        var unavailable = UnavailableSources(options, states, through);
         var available = candidates.Where(candidate => !candidate.Fact.Source.IsLineageInput &&
             !unavailable.Contains(Owner(candidate.Fact), StringComparer.Ordinal) &&
             // Older v3 IR inputs did not carry a readingRole. Their explicit acquisition owner still identifies them.

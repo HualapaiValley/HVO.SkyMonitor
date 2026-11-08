@@ -175,7 +175,11 @@ and label mixed groups. No nearest-station selection or averaging is performed.
 Overlay lines reserve space for source class, `SRC` identity and `AGE`; compact
 units keep them within 64 characters. Long source identifiers are shortened only
 for display; retained identities stay complete. `?` marks non-Good quality.
-The separate `MIXED SOURCES` line counts legacy and v3 source groups without
+Mixed-source markers distinguish local measured/derived evidence, simulations,
+and imported provider/station origins. Per-kind virtual sources describe one
+simulated environment; co-located local devices describe one local environment.
+Full per-reading identities remain visible and retained.
+The separate `MIXED SOURCES` line counts these legacy and v3 origins without
 overwriting a reading's age. History retains all sources; the latest grid shows
 the selected current reading for each kind. Failed slots say `Unavailable`.
 
@@ -223,3 +227,10 @@ inside the hosted recovery loop. Native-period polling also respects completion
 time, avoiding skipped refreshes when scheduling latency shrinks while retaining
 the provider's strict minimum wire spacing. Freshness remains half-open: an
 exposure ending exactly at `StaleAfterUtc` is fresh; a point at that instant is stale.
+
+Current-reading queries filter lineage-only and unavailable sources before selecting
+the newest primary per kind. A newer IR housing or sky input cannot hide a configured
+primary reading; all input evidence remains in history. LogicHost observatory detail
+uses the same lineage-only exclusion. Each waiting-projection pass attempts a row at
+most once and stops at the first outbox-capacity refusal, so an outage cannot multiply
+one refusal into a full batch of overflow counts.
