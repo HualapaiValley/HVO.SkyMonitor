@@ -81,6 +81,8 @@ dialog.action-dialog.automation-dialog { width: min(calc(100% - 2rem), 42rem); }
 /* Element-qualified so these outrank the shared .ops-facts and .ops-note-banner margins. */
 dialog.automation-dialog .automation-confirm-facts { margin: 0 1.1rem; }
 dialog.automation-dialog .automation-confirm-facts dd { overflow-wrap: anywhere; }
+#automation-window-preview { margin-top: 1rem; }
+#automation-window-preview > :is(h3, p) { margin-inline: 1.1rem; }
 dialog.automation-dialog .automation-dialog-message { margin: .9rem 1.1rem 0; }
 /* The editor can be taller than a phone screen; keep its actions in reach while the fields scroll. */
 dialog.automation-dialog footer { position: sticky; bottom: 0; z-index: 1; background: #0c131e; }

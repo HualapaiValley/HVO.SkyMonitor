@@ -164,7 +164,7 @@ public sealed class AutomationsPageTests
     }
 
     [TestMethod]
-    public void SourceWindowDefinition_IsTruthfullyReadOnlyHereAndTogglePreservesItsPolicy()
+    public void SourceWindowDefinition_CanBeEditedAndTogglePreservesItsPolicy()
     {
         using var context = CreateContext();
         var initial = Automation();
@@ -189,9 +189,8 @@ public sealed class AutomationsPageTests
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement(".automation-card");
         Assert.Contains("Sunrise to sunrise / dark-night sources", cut.Markup, StringComparison.Ordinal);
-        Assert.Contains("Source-window settings are read-only", cut.Markup, StringComparison.Ordinal);
-        Assert.IsTrue(cut.Find("#automation-create").HasAttribute("disabled"));
-        Assert.IsTrue(cut.Find("#automation-edit-sky-temperature").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#automation-create").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#automation-edit-sky-temperature").HasAttribute("disabled"));
         Assert.AreEqual("3", cut.FindAll(".ops-status-rail > div")[2].QuerySelector("strong")!.TextContent.Trim());
         cut.Find("#automation-toggle-sky-temperature").Click();
         cut.Find($"#{AutomationsPage.ConfirmId}").Click();
@@ -1388,6 +1387,20 @@ public sealed class AutomationsPageTests
         internal List<LocalAutomationSaveRequest> SaveRequests { get; } = [];
 
         internal List<LocalAutomationRemoveRequest> RemoveRequests { get; } = [];
+
+        internal List<LocalAutomationSaveRequest> PreviewRequests { get; } = [];
+
+        internal OperatorUiResult<CameraAgentAutomationWindowPreview>? PreviewResult { get; set; }
+
+        public ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(
+            LocalAutomationSaveRequest request, CancellationToken cancellationToken)
+        {
+            PreviewRequests.Add(request);
+            var planner = new LocalAutomationWindowPlanner(new Common.Gallery.FixedObservingDayCalendarProvider(
+                Common.Gallery.ObservingDayCalendar.ForDeployment(HVO.SkyMonitor.CameraAgent.Tests.Automation.LocalAutomationWindowTests.Site())));
+            return ValueTask.FromResult(PreviewResult ?? OperatorUiResult<CameraAgentAutomationWindowPreview>.Success(
+                new(Instant, planner.ResolveWindows(new DateOnly(2026, 10, 12), request.SourceWindow!)[0], null)));
+        }
 
         internal OperatorUiResultKind Kind { get; set; } = OperatorUiResultKind.Success;
 
