@@ -164,10 +164,64 @@
             }
         },
         {
+            "id": "CloudAssessment",
+            "type": "CloudAssessment",
+            "order": 60,
+            "required": false,
+            "dependsOn": ["$raw"],
+            "publication": { "persistence": "durable-local" },
+            "options": {
+                "clearReferenceManifestPath": "references/cloud/clear-reference.manifest.json"
+            }
+        },
+        {
+            "id": "ScenePresentation",
+            "type": "ScenePresentationLayer",
+            "order": 70,
+            "dependsOn": ["ProjectedScene"],
+            "publication": { "persistence": "durable-local" },
+            "options": {
+                "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"]
+            }
+        },
+        {
+            "id": "CloudPresentation",
+            "type": "CloudPresentationLayer",
+            "order": 71,
+            "required": false,
+            "dependsOn": ["CloudAssessment"],
+            "publication": { "persistence": "durable-local" },
+            "options": { "widthPixels": 484, "heightPixels": 304, "requireQuantifiedAssessment": true }
+        },
+        {
+            "id": "EnvironmentPresentation",
+            "type": "EnvironmentPresentationLayer",
+            "order": 72,
+            "dependsOn": ["ProjectedScene", "Preview"],
+            "publication": { "persistence": "durable-local" },
+            "options": { "widthPixels": 484, "heightPixels": 304, "stackPreviewVariant": "default" }
+        },
+        {
+            "id": "OverlayManifest",
+            "type": "OverlayManifest",
+            "order": 80,
+            "dependsOn": ["Preview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation"],
+            "publication": { "persistence": "durable-local" },
+            "options": { "basePreviewVariant": "default" }
+        },
+        {
+            "id": "PresentationMaterializer",
+            "type": "PresentationMaterializer",
+            "order": 81,
+            "dependsOn": ["Preview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation", "OverlayManifest"],
+            "publication": { "persistence": "durable-local" },
+            "options": { "basePreviewVariant": "default", "outputVariant": "cloud-profile-annotated" }
+        },
+        {
             "id": "LocalStorage",
             "type": "Storage",
             "order": 100,
-            "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene"],
+            "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
@@ -179,7 +233,7 @@
             "id": "ArchiveStorage",
             "type": "Storage",
             "order": 110,
-            "dependsOn": ["Annotation", "CalibratedPreview", "ProjectedScene"],
+            "dependsOn": ["Annotation", "CalibratedPreview", "ProjectedScene", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
@@ -191,7 +245,7 @@
             "id": "Telemetry",
             "type": "Telemetry",
             "order": 1000,
-            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage"]
+            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"]
         }]
     },
     "schedule": {

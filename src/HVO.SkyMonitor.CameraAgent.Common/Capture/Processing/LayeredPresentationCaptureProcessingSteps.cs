@@ -204,6 +204,11 @@ internal sealed class CloudPresentationLayerCaptureProcessingStep(
         var assessmentProduct = context.GetDependencyProducts().Single();
         var assessment = CloudAssessmentJson.Parse(assessmentProduct.Payload).Assessment
             ?? throw new InvalidDataException("The cloud-assessment dependency is invalid.");
+        if (Options.RequireQuantifiedAssessment && assessment.Status != CloudAssessmentStatus.Quantified)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped(assessment.ReasonCodes[0]));
+            return ValueTask.CompletedTask;
+        }
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, assessmentProduct);
         var payloads = PresentationLayerProducers.FromCloudAssessmentGroups(
             assessment, Options.WidthPixels, Options.HeightPixels, Options.DrawLabels, Options.LineThickness);
@@ -558,6 +563,10 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
 
 internal sealed class CloudPresentationLayerProcessingStepOptions
 {
+    /// <summary>Explicit profile opt-in; older graphs retain their unavailable-status presentation and identities.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RequireQuantifiedAssessment { get; init; }
+
     [Required, MaxLength(128)] public string MaskOutputVariant { get; init; } = "cloud-mask-layer-v1";
     [Required, MaxLength(128)] public string LabelOutputVariant { get; init; } = "cloud-label-layer-v1";
     [Range(1, 65536)] public int WidthPixels { get; init; }

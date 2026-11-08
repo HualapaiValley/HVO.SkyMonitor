@@ -154,6 +154,18 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
             item.SchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion));
         Assert.IsTrue(layers.All(item => PresentationLayerPayloadJson.Parse(item.Payload).Payload?.SourceIdentitySha256 ==
             assessment.AssessmentIdentitySha256));
+
+        context.BeginNode("qualified-cloud-presentation", ["cloud"]);
+        var qualifiedLayer = new CloudPresentationLayerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("qualified-cloud-presentation", "CloudPresentationLayer", 91),
+            JsonSerializer.Deserialize<CloudPresentationLayerProcessingStepOptions>("""
+                { "WidthPixels": 2, "HeightPixels": 2, "RequireQuantifiedAssessment": true }
+                """)!);
+        await qualifiedLayer.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Skipped, context.ProcessingOutcomes[^1].Status,
+            "The evidence-backed profile must not enable measured cloud controls for an unavailable assessment.");
+        Assert.IsEmpty(context.ProcessingOutcomes[^1].Products);
+        Assert.AreEqual(CloudAssessmentReasonCodes.MissingClearReference, context.ProcessingOutcomes[^1].ReasonCode);
     }
 
     [TestMethod]
