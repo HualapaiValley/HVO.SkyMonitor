@@ -36,6 +36,8 @@ internal static class LinuxCustomScriptSandbox
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (script.ScratchBytes < Environment.SystemPageSize)
+            return new("isolation-unavailable", null, 0, 0);
         if (!HasProtectedCgroupMount(await File.ReadAllTextAsync("/proc/self/mountinfo", cancellationToken).ConfigureAwait(false)))
             return new("isolation-unavailable", null, 0, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(script.TimeoutSeconds));
@@ -145,6 +147,9 @@ internal static class LinuxCustomScriptSandbox
 
     internal static ProcessStartInfo BuildStartInfo(CustomScriptRegistration script)
     {
+        // tmpfs rounds size UP to host pages; zero means unlimited. Never exceed the registered bound.
+        var scratchCapacity = script.ScratchBytes - script.ScratchBytes % Environment.SystemPageSize;
+        ArgumentOutOfRangeException.ThrowIfLessThan(scratchCapacity, Environment.SystemPageSize, nameof(script));
         var info = new ProcessStartInfo(SystemdRun)
         {
             UseShellExecute = false,
@@ -167,7 +172,7 @@ internal static class LinuxCustomScriptSandbox
             "--cpu=" + script.TimeoutSeconds, "--", Bubblewrap,
             "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
             "--ro-bind", "/usr/bin/busybox", "/bin/sh", "--ro-bind", "/usr/bin/busybox", "/bin/sleep",
-            "--proc", "/proc", "--remount-ro", "/proc", "--dev-bind", "/dev/null", "/dev/null", "--size", script.ScratchBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--proc", "/proc", "--remount-ro", "/proc", "--dev-bind", "/dev/null", "/dev/null", "--size", scratchCapacity.ToString(CultureInfo.InvariantCulture),
             "--tmpfs", "/work", "--symlink", "/work", "/tmp", "--chdir", "/work",
             "--clearenv", "--setenv", "PATH", "/bin", "--setenv", "HOME", "/work",
             "--setenv", "TMPDIR", "/work", "--setenv", "LC_ALL", "C",

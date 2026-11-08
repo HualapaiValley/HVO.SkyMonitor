@@ -138,18 +138,45 @@ public sealed class CustomScriptSandboxIntegrationTests
     public async Task ScratchCapacityIsSharedAcrossFilesAndNothingIsPublished()
     {
         var script = CustomScriptTaskAdapterTests.Script("""
-            block=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-            block=$block$block$block$block$block$block$block$block
+            block=x
+            while [ "${#block}" -lt "$1" ]; do block=$block$block; done
             for file in one two three four; do
-                printf '%s%s%s%s%s%s%s%s' "$block" "$block" "$block" "$block" "$block" "$block" "$block" "$block" > "$file" || exit 27
+                printf '%s' "$block" > "$file" || exit 27
             done
             exit 99
             """);
-        script.ScratchBytes = 8192;
+        script.ScratchBytes = Environment.SystemPageSize * 2;
+        script.Arguments = [new(CustomScriptArgumentKind.WholeNumber,
+            Environment.SystemPageSize.ToString(System.Globalization.CultureInfo.InvariantCulture))];
         var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
         Assert.AreEqual(27, result.ExitCode, "The tmpfs aggregate capacity must reject writes across multiple files.");
         var fresh = CustomScriptTaskAdapterTests.Script("[ ! -e one ] && [ ! -e two ]");
         Assert.AreEqual(0, (await LinuxCustomScriptSandbox.ExecuteAsync(fresh, default).ConfigureAwait(false)).ExitCode);
+    }
+
+    [TestMethod]
+    public async Task OddScratchLimitCannotAllocateAnExtraPageAndSubpageLimitCannotLaunch()
+    {
+        var script = CustomScriptTaskAdapterTests.Script("""
+            block=x
+            while [ "${#block}" -lt "$1" ]; do block=$block$block; done
+            printf '%s' "$block" > one || exit 81
+            printf '%s' "$block" > two || exit 82
+            printf '%s' "$block" > three 2>/dev/null && exit 83
+            exit 0
+            """);
+        script.ScratchBytes = Environment.SystemPageSize * 2 + 1;
+        script.Arguments = [new(CustomScriptArgumentKind.WholeNumber,
+            Environment.SystemPageSize.ToString(System.Globalization.CultureInfo.InvariantCulture))];
+        var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        Assert.AreEqual("completed", result.Status);
+        Assert.AreEqual(0, result.ExitCode, "A third page must not fit in a two-page-plus-one-byte budget.");
+
+        script.ScratchBytes = Environment.SystemPageSize - 1;
+        var unavailable = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        Assert.AreEqual("isolation-unavailable", unavailable.Status);
+        Assert.IsNull(unavailable.ExitCode);
+        Assert.AreEqual(0L, unavailable.StdoutBytes + unavailable.StderrBytes);
     }
 
     [TestMethod]
@@ -313,7 +340,7 @@ public sealed class CustomScriptSandboxIntegrationTests
         var content = CustomScriptNativeFixture.WritePayload(bytes, "/work/probe") +
             "chmod +x /work/probe; /work/probe " + mode;
         var script = CustomScriptTaskAdapterTests.Script(content);
-        script.ScratchBytes = 32768;
+        script.ScratchBytes = Math.Max(32768, Environment.SystemPageSize);
         Assert.IsTrue(script.IsValid(), "The native regression must fit the supported script contract.");
         var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
         Assert.AreEqual("completed", result.Status);

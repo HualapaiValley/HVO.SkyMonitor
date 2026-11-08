@@ -1,6 +1,7 @@
 # CameraAgent custom-script adapter (#1137)
 
-This is the adapter preparation slice alongside #1133. The predefined wizard's
+This is the adapter preparation slice integrated with the predefined wizard from
+#1133. The wizard's
 custom-task step, individual running-task stop controls, installer provisioning
 and production adoption are not delivered here. Keep #1137 open until those
 integration and qualification gates are complete. No hardware is required.
@@ -66,7 +67,8 @@ and specific `script.sandbox-*` prerequisite/probe codes), logged once at adapte
 construction without rejected values. The existing generic editor continues to
 list this registered kind as disabled when unavailable, and exposes opaque digest
 targets only when enabled. That limited setup is accepted for this adapter slice;
-#1133 owns the later guided task presentation. No wizard files are changed here.
+The custom step remains incomplete under #1137 after #1133's predefined wizard
+delivery. No wizard files are changed by the script corrections.
 
 ## Execution boundary
 
@@ -115,7 +117,10 @@ stdin. Bubblewrap must consume/install it before exec; the script itself receive
 `/dev/null` as stdin, so `read` cannot consume later script lines.
 The working directory is a private size-limited `/work` tmpfs; `/tmp` points to
 it. The remaining filesystem is read-only. Scratch capacity is shared across
-files and defaults to 1 MiB (4 KiB–8 MiB allowed). Scratch disappears with the
+files and defaults to 1 MiB (4 KiB–8 MiB allowed, and at least one host memory
+page). Capacity rounds down to whole host pages so tmpfs cannot round above the
+registered byte bound; sub-page limits fail closed instead of using an unlimited
+zero-sized tmpfs. Scratch disappears with the
 namespace. There is **no output artifact publication contract in this slice**:
 no script file is imported into products or served as a download, and there is
 no capture/object-store/publication authority. Future publication requires its
@@ -136,7 +141,7 @@ and CPU limit files before releasing the seccomp/exec barrier. A failed scope/bu
 setup cannot fall back to an unbudgeted process. The scope is collected after its
 tree exits; no persistent service configuration is changed. `prlimit` additionally
 sets zero core bytes, 32 MiB address space per process, 64 descriptors, file size
-no larger than scratch capacity, and CPU seconds no larger than wall timeout.
+no larger than the registered scratch bound, and CPU seconds no larger than wall timeout.
 Deployment qualification still owns host capacity and supported service-manager
 topology; this slice does not certify hostile-code multi-tenant hosting.
 
@@ -206,7 +211,8 @@ refresh progress during repeated real script timeouts.
   implemented; real subprocess and SQLite regressions qualify this host.
 - Retry/missed policy and failure isolation: reuse the delivered durable runner;
   no exactly-once promise or automatic script retry.
-- Custom wizard step and run-now/stop/history UI: pending #1133 integration,
+- Custom wizard step and run-now/stop/history UI: pending custom-step integration
+  with the delivered #1133 predefined wizard,
   an authenticated generic script run-now control and a separately qualified
   running-task stop command; no wizard files changed here.
 - Unit/Integration, independent deep review and selected CI: record actual

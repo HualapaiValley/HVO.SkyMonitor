@@ -44,7 +44,7 @@ public sealed class CustomScriptRegistration
         Interpreter == CustomScriptInterpreter.PosixShell && !string.IsNullOrWhiteSpace(Content) &&
         !Content.Contains('\0', StringComparison.Ordinal) && Encoding.UTF8.GetByteCount(Content) <= 65_536 &&
         Arguments is { Count: <= 16 } && Arguments.All(static argument => argument is not null && argument.IsValid()) &&
-        TimeoutSeconds is >= 1 and <= 300 && ScratchBytes is >= 4096 and <= 8_388_608 &&
+        TimeoutSeconds is >= 1 and <= 300 && ScratchBytes is >= 4096 and <= 8_388_608 && ScratchBytes >= Environment.SystemPageSize &&
         OutputBytes is >= 256 and <= 1_048_576;
 
     /// <summary>Opaque identity only. No script text, command, path or argument is stored in TaskTarget.</summary>

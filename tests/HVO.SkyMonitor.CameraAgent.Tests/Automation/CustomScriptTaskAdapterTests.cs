@@ -140,6 +140,21 @@ public sealed class CustomScriptTaskAdapterTests
     }
 
     [TestMethod]
+    public void ScratchBudgetRoundsDownAndSubpageRegistrationsFailClosed()
+    {
+        var script = Script();
+        script.ScratchBytes = Environment.SystemPageSize * 2 + 1;
+        Assert.IsTrue(script.IsValid());
+        var arguments = LinuxCustomScriptSandbox.BuildStartInfo(script).ArgumentList.ToList();
+        Assert.AreEqual((Environment.SystemPageSize * 2).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            arguments[arguments.IndexOf("--size") + 1]);
+
+        script.ScratchBytes = Environment.SystemPageSize - 1;
+        Assert.IsFalse(script.IsValid());
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => LinuxCustomScriptSandbox.BuildStartInfo(script));
+    }
+
+    [TestMethod]
     public void DisabledAdapterCannotValidateAnArbitraryCommandTarget()
     {
         var adapter = new CustomScriptTaskAdapter(Options.Create(new CustomScriptOptions()));
