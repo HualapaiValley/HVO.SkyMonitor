@@ -302,7 +302,8 @@ else
                 </dl>
             </details>
         }
-        @if (_catalog.HorizonCompatibility.GetValueOrDefault(_revisionId) is { } horizonState)
+        @if ((_catalog.HorizonCompatibility.GetValueOrDefault(_revisionId) ??
+            (_historicalRevision is not null ? "Historical horizon compatibility unavailable; preview and revalidate before staging." : null)) is { } horizonState)
         {
             <p role="status" id="selected-horizon-compatibility">@horizonState</p>
         }

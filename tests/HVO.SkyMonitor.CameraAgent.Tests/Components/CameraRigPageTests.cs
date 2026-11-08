@@ -351,6 +351,7 @@ public sealed class CameraRigPageTests
         cut.Find("#rig-revision-select").Change("older-v1");
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Selected</th>", StringComparison.Ordinal));
         StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal);
+        Assert.Contains("compatibility unavailable", cut.Find("#selected-horizon-compatibility").TextContent);
         ClickPreview(cut);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Contract preview passed", StringComparison.Ordinal));
         Assert.AreEqual(2, service.HistoryCalls);

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -90,6 +91,44 @@ public sealed class NamedRigQuickEditServiceTests
         await InitializeAsync(staged).ConfigureAwait(false);
         catalog = (await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
         Assert.Contains("revalidation required", catalog.HorizonCompatibility[catalog.Selection.ActiveRevisionId!]);
+    }
+
+    [TestMethod]
+    public async Task InvalidUnstagedDraftCannotHideCompatibleActiveHorizonOrOtherRevisions()
+    {
+        using var harness = await Harness.CreateAsync().ConfigureAwait(false);
+        var (original, version) = await harness.ActiveAsync().ConfigureAwait(false);
+        var horizon = await harness.Service.PreviewHorizonAsync(original.RevisionId, version, "installation", 90,
+            [new(0, 0), new(90, 0), new(180, 0), new(270, 0)], CancellationToken.None).ConfigureAwait(false);
+        var saved = await harness.Service.SaveHorizonAsync(horizon.Value!, CancellationToken.None).ConfigureAwait(false);
+        var active = saved.Value!;
+        var preview = await harness.Named.PreviewAsync(active.RevisionId, CancellationToken.None).ConfigureAwait(false);
+        await harness.Named.StageAsync(active.RevisionId, version, "horizon", "owner", true,
+            preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+        var schedule = await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var configuration = schedule.PendingRevision!.Profile.ApplyTo(Configuration());
+        var prepared = await harness.Runtime.PrepareStartupAsync(schedule.PendingRevision, configuration, CancellationToken.None).ConfigureAwait(false);
+        await harness.Runtime.CommitPreparedStartupAsync(prepared,
+            token => harness.Named.CommitInitializedAsync(active.RevisionId, configuration, token), CancellationToken.None).ConfigureAwait(false);
+        var before = await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(before.IsSuccess, before.Message);
+        Assert.Contains("compatible with", before.Value!.HorizonCompatibility[active.RevisionId]);
+
+        var optics = await harness.Named.SaveEquipmentAsync(null, "optics", "Invalid perspective draft",
+            JsonSerializer.SerializeToElement(active.Rig.Optics with { FieldOfViewDegrees = 180 }), CancellationToken.None).ConfigureAwait(false);
+        var draft = await harness.Named.ComposeAsync(active.ProfileId, active.CameraRevisionId, optics.RevisionId,
+            active.MountRevisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(draft.Rig.HorizonObstruction);
+        Assert.ThrowsExactly<NotSupportedException>(() => HVO.SkyMonitor.Astronomy.RigProjectionContextFactory.Create(draft.Rig));
+
+        var after = await harness.Service.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(after.IsSuccess, after.Message);
+        Assert.AreEqual(active.RevisionId, after.Value!.Selection.ActiveRevisionId);
+        Assert.IsNull(after.Value.Selection.PendingRevisionId, "The invalid candidate was never staged.");
+        Assert.Contains("revalidation required", after.Value.HorizonCompatibility[draft.RevisionId]);
+        Assert.Contains("compatible with", after.Value.HorizonCompatibility[active.RevisionId]);
+        Assert.Contains("This revision has no obstruction profile", after.Value.HorizonCompatibility[original.RevisionId]);
+        Assert.IsTrue((await harness.Named.PreviewAsync(active.RevisionId, CancellationToken.None).ConfigureAwait(false)).Valid);
     }
 
     [TestMethod]
