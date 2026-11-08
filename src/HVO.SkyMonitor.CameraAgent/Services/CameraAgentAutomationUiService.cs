@@ -8,6 +8,11 @@ using Microsoft.AspNetCore.Components.Authorization;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
+internal sealed record CameraAgentAutomationWindowPreview(
+    DateTimeOffset ReadAtUtc,
+    LocalAutomationSourceWindow? NextWindow,
+    string? UnavailableReasonCode);
+
 /// <summary>The operator surface of the versioned durable local automation contract.</summary>
 internal interface ICameraAgentAutomationUiService
 {
@@ -20,14 +25,85 @@ internal interface ICameraAgentAutomationUiService
     ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RemoveAsync(
         LocalAutomationRemoveRequest request,
         CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(
+        LocalAutomationSaveRequest request,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentAutomationUiService(
     AuthenticationStateProvider authenticationStateProvider,
     IAuthorizationService authorizationService,
     ILocalAutomationStore store,
-    ILogger<CameraAgentAutomationUiService> logger) : ICameraAgentAutomationUiService
+    ILogger<CameraAgentAutomationUiService> logger,
+    ILocalAutomationTaskRegistry registry,
+    LocalAutomationWindowPlanner windowPlanner,
+    TimeProvider clock) : ICameraAgentAutomationUiService
 {
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Preview failures return fixed guidance without disclosing host configuration or paths.")]
+    public async ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(
+        LocalAutomationSaveRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
+                .ConfigureAwait(false) is null)
+        {
+            return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var now = DateTimeOffset.FromUnixTimeMilliseconds(clock.GetUtcNow().ToUnixTimeMilliseconds());
+            var definition = new LocalAutomationDefinition(request.DefinitionId, request.Name, request.Enabled,
+                request.TaskKind, request.TaskTarget, request.TriggerKind, request.TriggerInterval, now, request.SourceWindow);
+            var descriptor = registry.Describe().FirstOrDefault(item => item.TaskKind == request.TaskKind);
+            if (request.TriggerKind != LocalAutomationTriggerKind.SourceWindowClosed ||
+                descriptor is not { Available: true } || request.SourceWindow is null ||
+                !descriptor.SupportedSourceWindows.Contains(request.SourceWindow.Kind))
+            {
+                return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(
+                    OperatorUiResultKind.Invalid, "That source-window task or preset is unavailable on this CameraAgent.");
+            }
+            if ((LocalAutomationDefinitionValidator.Validate(definition) ?? registry.Validate(definition)) is { } invalid)
+            {
+                return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(OperatorUiResultKind.Invalid,
+                    invalid.FieldPath == "definition.sourceWindow.selection"
+                        ? DescribeSourceSelectionMismatch(definition)
+                        : DescribeFailure(new(LocalAutomationCommandStatus.Invalid, invalid.ReasonCode,
+                            invalid.FieldPath, LocalAutomationOperatorState.Empty)));
+            }
+            // A prospective future window, never a write, claim, backfill or coverage assertion.
+            var plan = windowPlanner.Resolve(new(definition, 1,
+                LocalAutomationContract.ComputeRevisionSha256(definition), null, null), now);
+            return OperatorUiResult<CameraAgentAutomationWindowPreview>.Success(
+                new(now, plan.NextOccurrence?.SourceWindow, plan.UnavailableReasonCode));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning("CameraAgent local automation preview failed ({FailureType}).", exception.GetType().Name);
+            return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(
+                OperatorUiResultKind.Unavailable, "The source-window preview is unavailable. Try again.");
+        }
+    }
+
+    private string DescribeSourceSelectionMismatch(LocalAutomationDefinition definition)
+    {
+        var accepted = Enum.GetValues<LocalAutomationSourceSelection>()
+            .Where(selection => registry.Validate(definition with
+            { SourceWindow = definition.SourceWindow! with { Selection = selection } }) is null)
+            .Select(static selection => selection == LocalAutomationSourceSelection.DarkNightActualSources
+                ? "Dark-night actual sources" : "All actual sources").ToArray();
+        return accepted.Length == 0
+            ? "No source selection is currently accepted by this task target. Choose a current producer target."
+            : $"The source selection does not match this task target. Choose {string.Join(" or ", accepted)} for this producer.";
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
     public async ValueTask<OperatorUiResult<LocalAutomationOperatorState>> GetAsync(
@@ -154,6 +230,8 @@ internal sealed class CameraAgentAutomationUiService(
 
     private static string DescribeField(string? fieldPath) => fieldPath switch
     {
+        "definition.sourceWindow" =>
+            "Select a supported source period and a settle allowance between 0 and 86400 seconds.",
         "definition.definitionId" =>
             "The identifier must start with a lower-case letter and use only lower-case letters, digits, "
             + "hyphens, and dots.",
