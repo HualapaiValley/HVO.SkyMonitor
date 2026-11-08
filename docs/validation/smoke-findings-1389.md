@@ -82,5 +82,16 @@ This provides v1 integration evidence, not release or physical qualification.
 
 The PR ledger records the executed red/green evidence, final classifier output,
 Release build, format/whitespace checks, full relevant suites, four CI-control
-guards, independent immutable-range review and required CI result. No full
-qualification workflow is dispatched for this ordinary v1 PR.
+guards and required CI result. No full qualification workflow is dispatched for
+this ordinary v1 PR.
+
+On resumption, Kepler explicitly directed a ready PR after local validation and
+assigned formal Sol and Opus reviews to separate T3 threads after CI turns green.
+The in-thread review runner is excluded from this handoff; no completed review
+or reviewed-head merge status is claimed. This operator-directed ordering
+supersedes the default draft-first, in-thread review sequence for this batch.
+
+Before final validation, the branch incorporated `development/v1`
+`fc8ae601a62fed4a363c300ff7394fa953392a5d` (merged #1708). Conflicts were confined
+to the changelog and test-count inventories/runbook totals: both changelog
+entries and the upstream tests plus all four smoke regressions are preserved.
