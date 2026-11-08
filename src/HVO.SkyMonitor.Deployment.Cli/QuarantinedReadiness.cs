@@ -152,6 +152,16 @@ internal static class QuarantinedReadiness
     {
         processingQuarantine = 0;
         reason = "capture-lanes is unhealthy for a reason other than a processing-lane quarantine.";
+        if (check.TryGetProperty("data", out var pressureData) && pressureData.ValueKind == JsonValueKind.Object &&
+            TryNonNegative(pressureData, "RequiredPressureLaneCount", out var requiredPressure) && requiredPressure > 0)
+        {
+            reason = "capture-lanes reports required-lane backlog pressure (count, bytes, or oldest age); --allow-quarantined-readiness cannot waive it.";
+            if (TryNonNegative(pressureData, "RequiredProcessingQuarantineCount", out var quarantined) && quarantined > 0)
+            {
+                reason += " Pending work can include captures queued behind a quarantined head; review and acknowledge an eligible processing-lane quarantine as the owner, let the backlog drain, then recheck all required-lane pressure.";
+            }
+            return false;
+        }
         if (check.GetProperty("description").GetString() != LaneDescription ||
             !check.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
             data.GetProperty("Availability").GetString() != "Unhealthy" ||

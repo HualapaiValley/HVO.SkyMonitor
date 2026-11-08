@@ -73,7 +73,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (request.Abort && resumed is not null)
         {
             await EnsureBackupUnpublishedAsync(BackupVault.For(request),
-                BackupVaultFiles.NameFor(manifest.InstanceId, resumed.StartedUtc, resumed.OperationId), cancellationToken).ConfigureAwait(false);
+                BackupVaultFiles.NameFor(manifest.InstanceId, resumed.StartedUtc, resumed.OperationId), manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         }
         // A backup that starts the instance it stopped is held to the host's limits as a rollback is (#1357); one that
         // starts nothing is not (PR-1369-R2 F19).
