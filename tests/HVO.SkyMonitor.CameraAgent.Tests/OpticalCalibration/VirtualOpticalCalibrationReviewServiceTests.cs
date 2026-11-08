@@ -267,7 +267,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
             actual.Revisions.Select(revision => revision.RevisionId).ToArray());
     }
 
-    private static CameraModuleConfig Configuration(string moduleType, OpticsProfile? optics = null)
+    internal static CameraModuleConfig Configuration(string moduleType, OpticsProfile? optics = null)
         => new(
             new ObservatoryLocation(Observer.LatitudeDegrees, Observer.LongitudeDegrees, Observer.ElevationMeters, "UTC"),
             new CameraModuleDescriptor(moduleType),
@@ -333,12 +333,17 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
         return new(frame, FullFrame, Hash("readout:full"), detections);
     }
 
-    private sealed class Harness : IDisposable
+    internal sealed class Harness : IDisposable
     {
         private readonly string _root;
         private readonly List<IDisposable> _owned = [];
 
         private Harness(string root) => _root = root;
+
+        public SqliteCaptureScheduleStore Schedule { get; private set; } = default!;
+
+        public SqliteNamedRigProfileStore CreateRestartedNamedStore() => new(Ingress,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root }), TimeProvider.System, Schedule);
 
         public SqliteNamedRigProfileStore Named { get; private set; } = default!;
 
@@ -371,6 +376,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
                 var ingress = new JournalInitializer(root);
                 harness.Ingress = ingress;
                 var schedule = harness.Own(new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System));
+                harness.Schedule = schedule;
                 var active = await schedule.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
                 var telemetry = harness.Own(new CaptureControlTelemetry());
                 var admission = harness.Own(new CaptureAdmissionCoordinator(ingress, options, TimeProvider.System, telemetry));
@@ -409,7 +415,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
         public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config) => throw new NotSupportedException();
     }
 
-    private sealed class JournalInitializer(string root) : IRawCaptureIngress
+    internal sealed class JournalInitializer(string root) : IRawCaptureIngress
     {
         private readonly string _database = Path.Combine(root, "journal", "raw-ingress.db");
 

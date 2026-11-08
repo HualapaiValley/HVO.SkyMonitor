@@ -30,6 +30,12 @@ internal interface ICameraAgentNamedRigUiService
     ValueTask<OperatorUiResult<NamedRigStageReceipt>> CancelAsync(string revisionId, long version, string key,
         CancellationToken token);
 
+    ValueTask<OperatorUiResult<HorizonObstructionPreview>> PreviewHorizonAsync(string activeRevisionId, long version,
+        string installationId, double maximumGap, IReadOnlyList<HorizonObstructionSample> samples, CancellationToken token)
+        => ValueTask.FromResult(OperatorUiResult<HorizonObstructionPreview>.Failure(OperatorUiResultKind.Invalid, "Horizon editing is unavailable."));
+    ValueTask<OperatorUiResult<NamedRigRevision>> SaveHorizonAsync(HorizonObstructionPreview preview, CancellationToken token)
+        => ValueTask.FromResult(OperatorUiResult<NamedRigRevision>.Failure(OperatorUiResultKind.Invalid, "Horizon editing is unavailable."));
+
     /// <summary>
     /// Saves the changed optics/mount equipment, composes a new revision of the active named rig, previews it
     /// against the active schedule and stages it for restart as one orchestrated operator command.

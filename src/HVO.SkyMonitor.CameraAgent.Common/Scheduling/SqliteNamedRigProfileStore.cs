@@ -461,7 +461,8 @@ public sealed class SqliteNamedRigProfileStore(
                 Sensor = target.Rig.Sensor,
                 Readout = target.Rig.Readout,
                 Optics = target.Rig.Optics,
-                Orientation = target.Rig.Orientation
+                Orientation = target.Rig.Orientation,
+                HorizonObstruction = target.Rig.HorizonObstruction
             }
         };
         var validation = LocalCaptureProfileContract.Validate(profile);
@@ -597,6 +598,43 @@ public sealed class SqliteNamedRigProfileStore(
         return revision;
     }
 
+    /// <summary>Appends an installation horizon to a new immutable rig; activation uses the ordinary explicit stage flow.</summary>
+    public async Task<NamedRigRevision> RetainHorizonObstructionAsync(string activeRevisionId, long expectedVersion,
+        HorizonObstructionProfile profile, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var selection = await ReadSelectionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (selection.Version != expectedVersion || selection.ActiveRevisionId != activeRevisionId || selection.PendingRevisionId is not null)
+            throw new CaptureScheduleStoreConflictException("The named rig selection changed after horizon preview.");
+        var active = await ReadRevisionAsync(connection, transaction, activeRevisionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The active named rig revision is missing.");
+        var previous = active.Rig.HorizonObstruction;
+        if (profile.GeometryIdentitySha256 != HorizonObstructionProfile.ComputeGeometryIdentitySha256(active.Rig) ||
+            previous is not null && profile.ProfileId != previous.ProfileId)
+            throw new ArgumentException("Horizon revision or geometry does not match the reviewed rig.", nameof(profile));
+        using var next = connection.CreateCommand();
+        next.Transaction = transaction;
+        next.CommandText = "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM named_rig_revisions WHERE profile_id = $profile;";
+        next.Parameters.AddWithValue("$profile", active.ProfileId);
+        var number = (long)(await next.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 1L);
+        if (profile.Revision != number)
+            throw new CaptureScheduleStoreConflictException("A newer rig revision was saved after horizon preview.");
+        var rig = active.Rig with { HorizonObstruction = profile };
+        var id = Guid.NewGuid().ToString("N");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new InstalledRig(active.Module, rig));
+        await ExecuteAsync(connection, transaction, """
+            INSERT INTO named_rig_revisions VALUES ($id, $profile, $number, $camera, $optics, $mount, $json, $hash, NULL, $now);
+            """, cancellationToken, ("$id", id), ("$profile", active.ProfileId), ("$number", number),
+            ("$camera", active.CameraRevisionId), ("$optics", active.OpticsRevisionId), ("$mount", active.MountRevisionId),
+            ("$json", bytes), ("$hash", Convert.ToHexString(SHA256.HashData(bytes))),
+            ("$now", timeProvider.GetUtcNow().ToUnixTimeMilliseconds())).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return active with { RevisionId = id, RevisionNumber = number, Rig = rig, SourceScheduleRevisionId = null };
+    }
+
     private async Task<NamedRigRevision> ComposeCoreAsync(SqliteConnection connection, SqliteTransaction transaction,
         CaptureScheduleStoreSnapshot schedule, string profileId, string cameraRevisionId, string opticsRevisionId,
         string mountRevisionId, CancellationToken cancellationToken)
@@ -679,7 +717,8 @@ public sealed class SqliteNamedRigProfileStore(
             Sensor = revision.Rig.Sensor,
             Readout = revision.Rig.Readout,
             Optics = revision.Rig.Optics,
-            Orientation = revision.Rig.Orientation
+            Orientation = revision.Rig.Orientation,
+            HorizonObstruction = revision.Rig.HorizonObstruction
         };
         var candidate = current with { Module = revision.Module, Rig = rig };
         var validation = LocalCaptureProfileContract.Validate(candidate);

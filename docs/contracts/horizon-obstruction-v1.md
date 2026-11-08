@@ -1,0 +1,71 @@
+# Rig installation horizon obstruction v1 (#1394)
+
+Contract frozen before consumer implementation, 2026-11-08. Software/virtual
+acceptance only; physical survey accuracy is outside this contract.
+
+AgentCore owns the bounded transport-neutral manual/synthetic angular profile.
+It belongs to an installed rig, never to a lens or a star/orbit catalog. A stable
+installation ID, site-coordinate hash, geometry hash, profile ID and increasing
+revision identify it. Geometry covers sensor, pointing/roll, optical calibration,
+parity and readout ROI/binning. Moving an installation requires a new installation
+ID or explicit revalidation even if its coordinates are unchanged. Coordinates
+are not embedded in the coordinate-free local profile. Site identity hashes
+latitude, longitude and elevation; time-zone/display-name edits are irrelevant.
+
+Azimuth is degrees eastward from true north, normalized to [0,360). Samples are
+strictly ordered, unique azimuths; 360 is represented by 0. Elevation is geometric
+altitude in degrees above the local astronomical horizontal plane, [-90,90].
+At most 720 samples and a maximum interpolation gap in (0,90] degrees are allowed.
+A null sample elevation marks unknown terrain. Interpolation is linear across
+north wrap only when both endpoints are known and the circular gap is within
+the declared bound. An exact known knot is usable even next to a gap. Empty,
+single-knot surroundings, null knots and wider gaps are unknown. At or below
+the interpolated elevation is obstructed. Below geometric zero is independently
+ineligible. Unknown is never evidence of clear sky. V1 has no polygon or imported
+image-mask representation; neither automatic segmentation nor cloud inference
+is supported.
+
+Astronomy owns angular evaluation and compatibility checks, using existing
+projectors and the canonical crop/bin/mirror/quarter-rotation transform. Outside
+projection/sensor support is distinct from unknown terrain. Imaging samples pixel
+centres and returns separately named bit planes for obstruction, unknown and
+outside-domain. Generation is bounded to 16,777,216 output pixels, cancellation
+is checked by row, and there is no persistent or unbounded global mask cache.
+Products bind source, profile content hash, rig geometry, calibration, projection,
+transform and mask checksums. Reusing incompatible geometry fails closed.
+
+Processing owns source-bound mask and predicted-point eligibility products.
+A star, satellite or meteor direction uses the same angular test. Display segments
+also test intervening horizon knots and interval midpoints using a declared
+linear-altitude, shortest-azimuth approximation, so clear endpoints cannot bridge
+an obstruction peak or an unknown gap. This is a display eligibility model,
+not a physical trajectory guarantee; these are
+eligibility facts, never detection or actual visibility assertions. Host consumers
+retain raw pixels and predicted tracks. Hard detection eligibility is the union
+of fixed obstruction, unknown obstruction terrain, sensor/image-circle bounds,
+geometric horizon, defective-pixel/calibration exclusions, saturation and existing
+rectangular exclusions. Star rejection remains separately identified. Dynamic
+cloud evidence belongs to #1004 and is never relabelled fixed obstruction.
+Legacy rectangular exclusions keep their existing half-open coordinate behavior.
+An absent profile preserves the baseline geometric-horizon behavior and supplies
+no obstruction-clear assertion; an explicitly active empty profile is unknown.
+
+CameraAgent owns persistence and UI through existing immutable named rig and
+capture-profile revisions. Preview writes nothing. Saving appends a candidate rig
+revision, and the ordinary compare/preview and explicit restart-only stage flow
+activates it; this work never restarts a host. Prior rig revisions remain readable
+and can be explicitly restaged for rollback. Archived captures use their retained
+configuration, never a current mutable obstruction pointer. Geometry/site changes
+require explicit revalidation (a newly bound revision); incompatible old profiles
+remain present for diagnosis and exclude rather than silently align pixels.
+No new DB schema/layout or recovery backend is needed (#1607/#1615 keep-current
+primitives). Host UI and persistence do not move into shared libraries.
+
+Regression gates cover wrap, gaps, crossing boundaries, all projector families,
+ROI/bin/mirror/rotation, invalid data, empty profiles, content identity, revision
+history/rollback, rectangular masks and full-resolution bounded cost.
+
+Capture satellite products retain every original track and attach authenticated
+sample and segment eligibility. The current capture overlay conservatively
+withholds an entire track if any sample/segment is ineligible. Planning arcs
+split at ineligible samples/segments and show the profile limitation explicitly.

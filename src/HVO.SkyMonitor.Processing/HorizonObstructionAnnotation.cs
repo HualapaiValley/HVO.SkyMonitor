@@ -1,0 +1,34 @@
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
+
+namespace HVO.SkyMonitor.Processing;
+
+/// <summary>Conservative presentation filtering; original scenes and raw evidence remain unchanged.</summary>
+public static class HorizonObstructionAnnotation
+{
+    public static (IReadOnlyList<ProjectedAnnotationObject> Objects, IReadOnlyList<ProjectedAnnotationSegment> Segments) Filter(
+        HorizonObstructionEvaluator evaluator, ProjectedSceneImageTransformV1 transform,
+        IReadOnlyList<ProjectedAnnotationObject> objects, IReadOnlyList<ProjectedAnnotationSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(evaluator);
+        ArgumentNullException.ThrowIfNull(objects);
+        ArgumentNullException.ThrowIfNull(segments);
+        if (objects.Count > ProjectedSceneJson.MaximumObjectCount || segments.Count > ProjectedSceneJson.MaximumSegmentCount)
+            throw new ArgumentOutOfRangeException(nameof(objects));
+        ProjectedSceneImageTransform.Validate(transform, evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
+        if (!evaluator.IsCompatible) return ([], []);
+        var projector = ProjectorFactory.Create(evaluator.Projection);
+        AltAzPoint? Direction(PixelPoint pixel)
+        {
+            if (pixel.X < 0 || pixel.Y < 0 || pixel.X > transform.OutputWidthPixels || pixel.Y > transform.OutputHeightPixels)
+                return null;
+            return projector.Unproject(ProjectedSceneImageTransform.Inverse(transform, pixel));
+        }
+        bool Clear(PixelPoint pixel) => Direction(pixel) is { } direction &&
+            evaluator.Evaluate(direction) == HorizonObstructionEligibility.Clear;
+        return (objects.Where(item => Clear(item.Pixel) &&
+                (item.FootprintParts is null || item.FootprintParts.All(part => part.Points.All(Clear)))).ToArray(),
+            segments.Where(segment => Direction(segment.FromPixel) is { } from && Direction(segment.ToPixel) is { } to &&
+                evaluator.IsSegmentClear(from, to)).ToArray());
+    }
+}

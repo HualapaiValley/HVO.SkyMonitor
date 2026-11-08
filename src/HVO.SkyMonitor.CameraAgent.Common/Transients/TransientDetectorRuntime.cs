@@ -121,7 +121,7 @@ internal sealed class TransientDetectorRuntime(
                     radius)).ToArray();
                 star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
             }
-            var masks = new[]
+            var masks = new List<TransientDetectorMask>
             {
                 TransientDetectorMask.Create(TransientDetectorMaskKind.Sky,
                     new ProcessingAlgorithmIdentity("geometric-sky-mask", "v1"), empty),
@@ -137,6 +137,24 @@ internal sealed class TransientDetectorRuntime(
                     new ProcessingAlgorithmIdentity(options.ExposureIntegratedStarMask
                         ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", "v1"), star)
             };
+            if (configuration.Rig.HorizonObstruction is { } profile)
+            {
+                var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer);
+                if (!evaluator.IsCompatible)
+                    throw new TransientWorkerExecutionException("transient-runtime.obstruction-revalidation-required", retryable: false);
+                var binding = HorizonObstructionProducts.Bind(input.Descriptor.InputIdentitySha256, evaluator,
+                    configuration.Rig.Optics.CalibrationVersion,
+                    ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels));
+                var product = HorizonObstructionProducts.CreateMask(evaluator, binding, cancellationToken);
+                Linear16PixelMask Reduce(Linear16PixelMask plane) => width == plane.Width && height == plane.Height ? plane :
+                    Linear16MaskOperations.ReduceRggb16ToDetector(plane, cancellationToken);
+                masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.FixedHorizonObstruction,
+                    new ProcessingAlgorithmIdentity(HorizonObstructionMask.AlgorithmVersion, product.Binding.ProfileIdentitySha256),
+                    Reduce(product.Planes.Obstructed)));
+                masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.UnknownHorizonObstruction,
+                    new ProcessingAlgorithmIdentity(HorizonObstructionMask.AlgorithmVersion, product.Binding.ProfileIdentitySha256),
+                    Reduce(product.Planes.Unknown)));
+            }
             output.Add(pair.Key, new TransientTemporalSource(
                 ToPosition(pair.Key), input.CaptureSequence!.Value, input,
                 new TransientSensitivityV1(input.Descriptor.Compatibility.SetpointRegime, 1, 1), masks));

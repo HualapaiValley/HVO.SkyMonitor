@@ -138,13 +138,23 @@ public sealed class CameraAgentSkyMapProjection(
         var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
             .BuildAsync(request, cancellationToken).ConfigureAwait(false);
 
+        var horizon = config.Rig.HorizonObstruction is { } profile
+            ? new HorizonObstructionEvaluator(profile, config.Rig, request.Observer) : null;
+        bool Eligible(ProjectedCelestialObject item) => horizon is null ||
+            horizon.Evaluate(item.GeometricHorizontal) == HorizonObstructionEligibility.Clear;
+        var eligibleObjects = scene.Objects.Where(Eligible).ToArray();
+        var projector = ProjectorFactory.Create(projection);
+        bool EligibleSegment(ProjectedConstellationSegment segment) => horizon is null ||
+            projector.Unproject(segment.FromPixel) is { } from && projector.Unproject(segment.ToPixel) is { } to &&
+            horizon.IsSegmentClear(from, to);
+
         var visibleStars = scene.Objects.Count(static item => item.Kind != CelestialObjectKind.SolarSystemBody);
-        var stars = scene.Objects
+        var stars = eligibleObjects
             .Where(static item => item.Kind != CelestialObjectKind.SolarSystemBody)
             .OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .Take(limit);
-        var bodies = scene.Objects.Where(static item => item.Kind == CelestialObjectKind.SolarSystemBody);
+        var bodies = eligibleObjects.Where(static item => item.Kind == CelestialObjectKind.SolarSystemBody);
         var objects = stars
             .Concat(bodies)
             .OrderBy(static item => item.Magnitude)
@@ -161,7 +171,7 @@ public sealed class CameraAgentSkyMapProjection(
                 item.HipparcosId))
             .ToArray();
         var bodyCount = objects.Count(static item => item.Kind != nameof(CelestialObjectKind.Star));
-        var constellations = scene.Segments
+        var constellations = scene.Segments.Where(EligibleSegment)
             .GroupBy(static segment => segment.ConstellationId, StringComparer.Ordinal)
             .Select(static group => new CameraAgentSkyMapConstellation(group.Key, group.Count(), JoinChords(group)))
             .OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)

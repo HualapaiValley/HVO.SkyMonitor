@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Processing;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Astronomy;
@@ -180,7 +181,18 @@ public sealed class CameraAgentSatellitePlanner(
             if (timeProvider.GetUtcNow() >= session.View.ExpiresUtc)
                 throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.Expired, "The original search expired during detail generation. Run a new search.");
             return new(CameraAgentSatellitePlanningOutcome.Ready, Limitations,
-                new(searchIdentity, parentIdentity, session.View.Context, prediction));
+                new(searchIdentity, parentIdentity, session.View.Context, prediction)
+                {
+                    Obstruction = session.View.Context.ObstructionRig is { HorizonObstruction: { } profile } rig
+                        ? prediction.Products.Select(arc =>
+                        {
+                            var evaluator = new HorizonObstructionEvaluator(profile, rig, arc.Pass.Observer);
+                            return HorizonObstructionProducts.Predict(evaluator,
+                                HorizonObstructionProducts.Bind(arc.ProductSha256, evaluator, rig.Optics.CalibrationVersion,
+                                    ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels)),
+                                arc.Samples.Select(static sample => sample.Horizontal).ToArray());
+                        }).ToArray() : null
+                });
         }
         catch (PlanningUnavailable exception) when (exception.Outcome is CameraAgentSatellitePlanningOutcome.ContextChanged or
             CameraAgentSatellitePlanningOutcome.NoSnapshot or CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable or
@@ -264,7 +276,7 @@ public sealed class CameraAgentSatellitePlanner(
                 { Points = Array.AsReadOnly(line.Points.ToArray()) }).ToArray())
             }).ToArray())
         };
-        return new(scene.Observer, geometry, projection);
+        return new(scene.Observer, geometry, projection) { ObstructionRig = after.Rig.HorizonObstruction is null ? null : after.Rig };
     }
 
     private static void ValidateQueryTime(OrbitalTimeData time, OrbitalPredictionModelFacts model, OrbitalUtcInterval interval)

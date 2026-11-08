@@ -190,6 +190,26 @@ internal sealed class AnnotationCaptureProcessingStep(
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
 
+        if (context.Config.Rig.HorizonObstruction is { } horizon)
+        {
+            var site = context.Config.ResolveObservatory(context.ReconstructionDescriptor?.Timing.ExposureStartedUtc);
+            var observer = projectedScene?.Observer ?? generatedScene?.Scene.Request.Observer ??
+                new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
+            var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer);
+            var imageTransform = projectedScene?.ImageTransform ??
+                ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
+            // A separately registered/measured scene needs its own validated obstruction alignment.
+            if (projectedScene is { Kind: ProjectedSceneKind.ImageRegistered } ||
+                imageTransform.SourceWidthPixels != evaluator.Projection.WidthPixels ||
+                imageTransform.SourceHeightPixels != evaluator.Projection.HeightPixels)
+            {
+                objects = [];
+                segments = [];
+            }
+            else (objects, segments) = HorizonObstructionAnnotation.Filter(evaluator, imageTransform, objects, segments);
+            context.RecordCanonicalInput("horizon-obstruction", HorizonObstructionProfile.CurrentSchemaVersion, horizon.ComputeIdentitySha256());
+        }
+
         var previewProduct = context.GetProcessingProduct(preview.ArtifactId);
         MetadataCornerOverlay? metadataOverlay = null;
         if (Options.DrawMetadataCorners)
