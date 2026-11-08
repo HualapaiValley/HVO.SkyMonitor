@@ -306,7 +306,7 @@ public sealed partial class LifecycleContractTests
     public async Task RollbackAsync_QuarantinedReadiness_VerifiesAndRestoresThePreviousImage()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed,
-            CameraAgentReplayProfile.LocalRunner);
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
         using var release = CandidateRelease(fixture, out var candidateImageId);
         fixture.Runner.CandidateRawIngressSchema = "13";
         var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
