@@ -7,6 +7,32 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCameraModuleTests
 {
     [TestMethod]
+    public async Task CaptureAsync_ProcessingLatencyExcludesExposureAndRetainsRenderTime()
+    {
+        var clock = new ExposureTestTimeProvider(FixtureUtc);
+        var catalog = new TimedExposureCatalog(clock);
+        var module = new VirtualSkyCameraModule(clock, catalog, new ProjectedSceneStore());
+        await using var moduleLifetime = module.ConfigureAwait(false);
+        await module.InitializeAsync(CreateConfig(CameraPixelFormat.Mono16, 64, 48), CancellationToken.None)
+            .ConfigureAwait(false);
+        var exposure = TimeSpan.FromSeconds(20);
+        var capture = module.CaptureAsync(new(FixtureUtc, exposure, CaptureMode.Still,
+            new(exposure, 1, null, null)), CancellationToken.None);
+
+        Assert.IsFalse(capture.IsCompleted);
+        clock.Advance(exposure);
+        var result = await capture.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        Assert.IsTrue(catalog.Elapsed > TimeSpan.Zero, "Catalog work must contribute measurable render time.");
+        Assert.AreEqual(catalog.Elapsed, result.ProcessingLatency);
+        Assert.AreEqual(exposure + catalog.Elapsed, clock.GetUtcNow() - FixtureUtc);
+        Assert.AreEqual(exposure, result.AcquisitionTiming!.ExposureEndedUtc -
+            result.AcquisitionTiming.ExposureStartedUtc);
+        Assert.AreEqual(catalog.Elapsed, result.AcquisitionTiming.ReadoutCompletedUtc -
+            result.AcquisitionTiming.ExposureEndedUtc);
+    }
+
+    [TestMethod]
     [DataRow(200_000_000)]
     [DataRow(0)]
     [DataRow(10_000)]
@@ -87,5 +113,24 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsFalse(clock.TimerCreated.Task.IsCompleted);
         Assert.AreEqual(TimeSpan.FromSeconds(20), result.Frame!.Metadata.Exposure);
         Assert.AreEqual(FixtureUtc, result.AcquisitionTiming!.ReadoutCompletedUtc);
+    }
+
+    private sealed class TimedExposureCatalog(ExposureTestTimeProvider clock) : ICelestialCatalog
+    {
+        public TimeSpan Elapsed { get; private set; }
+
+        public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => RecordQuery();
+
+        public ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+            CatalogCandidateQuery query,
+            CancellationToken cancellationToken = default) => ValueTask.FromResult(RecordQuery());
+
+        private IReadOnlyList<CelestialCatalogObject> RecordQuery()
+        {
+            var duration = TimeSpan.FromMilliseconds(125);
+            clock.Advance(duration);
+            Elapsed += duration;
+            return [];
+        }
     }
 }

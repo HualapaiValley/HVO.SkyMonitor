@@ -223,7 +223,6 @@ public sealed class VirtualSkyCameraModule(
         var psfRadiusPixels = focusModel is null
             ? _options.PsfRadiusPixels
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
-        var start = timeProvider.GetTimestamp();
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
         if (preview is null && _curatedAnnotations is { Enabled: true } &&
             (!_stageProjectedScene || stagingStore is null))
@@ -257,6 +256,7 @@ public sealed class VirtualSkyCameraModule(
             }
             cancellationToken.ThrowIfCancellationRequested();
         }
+        var processingStartedTimestamp = timeProvider.GetTimestamp();
         var sensor = config.Rig.Sensor;
         var outputProjection = RigProjectionContextFactory.Create(config.Rig);
         var useNativeReadout = RequiresNativeReadout(config.Rig, _resolvedReadout);
@@ -795,7 +795,7 @@ public sealed class VirtualSkyCameraModule(
         };
         cancellationToken.ThrowIfCancellationRequested();
         var readoutCompletedUtc = preview is null ? timeProvider.GetUtcNow().ToUniversalTime() : exposureEndedUtc;
-        var result = new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
+        var result = new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(processingStartedTimestamp), request.Mode, false)
         {
             AcquisitionTiming = new CaptureAcquisitionTiming(
                 exposureStartedUtc,

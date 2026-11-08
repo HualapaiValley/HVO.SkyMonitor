@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, and cancels interrupted exposures cleanly. #1707
+- VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
 
 - HYG 4.4 and OpenNGC catalog builds reproduce the approved checksums with the pinned SQLite source build as well as Ubuntu's packaged SQLite. #1701
 
