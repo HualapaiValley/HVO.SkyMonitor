@@ -58,8 +58,18 @@ public sealed partial class ObservingDayEvidenceIntegrationTests
         // Use the fixture's ordinary virtual acquisition and SQLite archive, without substituting a UI fixture.
         using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
         var archive = scope.ServiceProvider.GetRequiredService<ICameraAgentArchive>();
-        var day = archive.ObservingDays.SelectVersion(ObservingDayCalendar.LegacyNoonVersion).Resolve(DateTimeOffset.UtcNow);
+        var gallery = scope.ServiceProvider.GetRequiredService<ICameraAgentGallery>();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        CameraAgentGalleryPage captures;
+        do
+        {
+            captures = await gallery.GetPageAsync(new(PageSize: 1), deadline.Token).ConfigureAwait(false);
+            if (captures.Items.Count > 0) break;
+            await Task.Delay(100, deadline.Token).ConfigureAwait(false);
+        } while (true);
+        // Select from exposure evidence, including when fixture startup crosses the observing-day boundary.
+        var day = archive.ObservingDays.SelectVersion(ObservingDayCalendar.LegacyNoonVersion)
+            .Resolve(captures.Items[0].ExposureStartedUtc);
         CameraAgentObservingDayDetail? detail;
         do
         {
@@ -92,8 +102,8 @@ public sealed partial class ObservingDayEvidenceIntegrationTests
         using var capture = await client.GetAsync(new Uri($"/gallery/{captureId:D}", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, capture.StatusCode);
         using var retained = AssemblyHooks.Fixture.CreateCameraAgentScope();
-        var gallery = retained.ServiceProvider.GetRequiredService<ICameraAgentGallery>();
-        var record = await gallery.GetCaptureAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+        var record = await retained.ServiceProvider.GetRequiredService<ICameraAgentGallery>()
+            .GetCaptureAsync(captureId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(record);
         Assert.IsTrue(day.Contains(record.ExposureStartedUtc));
         Assert.IsTrue(record.Artifacts.Any(artifact => preview.Headers.Location.OriginalString.Contains(

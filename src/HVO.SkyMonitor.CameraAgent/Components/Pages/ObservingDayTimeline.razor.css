@@ -19,9 +19,9 @@ header p:not(.eyebrow) { margin: .25rem 0 0; color: var(--hvo-muted); font-size:
 .timeline-marker span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 a:focus-visible { outline: 3px solid #58a6ff; outline-offset: 2px; }
 .timeline-hours { position: relative; grid-column: 2; height: 2.5rem; }
-.timeline-hours span { position: absolute; max-width: 6rem; color: var(--hvo-muted); font: 600 .61rem ui-monospace, monospace; text-align: center; transform: translateX(-50%); }
-.timeline-hours span:first-child { transform: none; }
-.timeline-hours span:last-child { transform: translateX(-100%); }
+.timeline-hours span { position: absolute; width: 3.5rem; color: var(--hvo-muted); font: 600 .61rem ui-monospace, monospace; text-align: center; transform: translateX(-50%); }
+.timeline-hours span:first-child { text-align: left; transform: none; }
+.timeline-hours span:last-child { text-align: right; transform: translateX(-100%); }
 .timeline-key { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin-top: .4rem; color: var(--hvo-muted); font-size: .65rem; }
 .timeline-key span { display: inline-flex; align-items: center; gap: .3rem; }
 .timeline-key i { width: .6rem; height: .6rem; border-radius: 2px; }
