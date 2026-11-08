@@ -469,6 +469,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
             prior.Dispose();
         }
         _isLoading = true;
+        _view = null;
         _errorMessage = null;
         _viewerOpen = false;
         _viewerKind = null;
