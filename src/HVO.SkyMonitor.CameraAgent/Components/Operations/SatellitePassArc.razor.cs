@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
@@ -22,6 +23,9 @@ public sealed partial class SatellitePassArc : ComponentBase
     private IReadOnlyList<Anchor> _anchors = [];
     private OrbitalPassArcV1? _projectedArc;
     private CameraAgentSatellitePlanningContext? _projectedContext;
+    private string? _solarModelVersion;
+
+    [Inject] internal IServiceProvider Services { get; set; } = default!;
 
     [Parameter, EditorRequired] public OrbitalPassArcV1 Arc { get; set; } = default!;
     [Parameter, EditorRequired] public CameraAgentSatellitePlanningContext Context { get; set; } = default!;
@@ -29,7 +33,8 @@ public sealed partial class SatellitePassArc : ComponentBase
     [Parameter] public bool ShowLabels { get; set; } = true;
     [Parameter] public bool ShowRigPreview { get; set; }
 
-    private sealed record Anchor(string Name, OrbitalTrackSample? Sample, PixelPoint? Point, string? LabelX, string? LabelY);
+    private sealed record Anchor(string Name, OrbitalTrackSample? Sample, PixelPoint? Point, string? LabelX, string? LabelY,
+        SolarAltitudeClassification? Solar);
     private readonly record struct PredictionPoint(DateTimeOffset Utc, PixelPoint Point);
 
     protected override void OnParametersSet()
@@ -37,6 +42,8 @@ public sealed partial class SatellitePassArc : ComponentBase
         if (ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context)) return;
         _projectedArc = Arc;
         _projectedContext = Context;
+        var ephemeris = Services.GetService<IPlanetEphemeris>();
+        _solarModelVersion = ephemeris?.ModelVersion;
         (_fullPaths, _fullPoints) = ProjectSegments(FullSky);
         (_rigPaths, _rigPoints) = ProjectSegments(ProjectorFactory.Create(Context.RigProjection));
         var anchors = new List<Anchor>(3);
@@ -66,9 +73,29 @@ public sealed partial class SatellitePassArc : ComponentBase
                     y = Number(labelY);
                 }
             }
-            anchors.Add(new(name, sample, point, x, y));
+            anchors.Add(new(name, sample, point, x, y, SolarAt(ephemeris, sample)));
         }
     }
+
+    private SolarAltitudeClassification? SolarAt(IPlanetEphemeris? ephemeris, OrbitalTrackSample? sample)
+    {
+        if (ephemeris is null || sample is null) return null;
+        try
+        {
+            // Use the original pass observer and exact declared anchor time, independently of orbital illumination.
+            var solar = SolarAltitudeClassifier.Classify(ephemeris, sample.Utc,
+                Arc.Pass.Observer.LatitudeDegrees, Arc.Pass.Observer.LongitudeDegrees, 0, -18);
+            return double.IsFinite(solar.AltitudeDegrees) ? solar : null;
+        }
+        catch (Exception exception) when (exception is KeyNotFoundException or ArgumentException or InvalidOperationException or ArithmeticException)
+        {
+            return null;
+        }
+    }
+
+    private static string SolarContext(Anchor anchor) => anchor.Solar is { } solar
+        ? $"Sun geometric altitude {Number(solar.AltitudeDegrees)}°; sky context {solar.Regime}."
+        : "Sun geometric altitude Unknown; sky context Unknown.";
 
     private (List<string> Paths, List<PredictionPoint> Points) ProjectSegments(IImageProjector projector)
     {
