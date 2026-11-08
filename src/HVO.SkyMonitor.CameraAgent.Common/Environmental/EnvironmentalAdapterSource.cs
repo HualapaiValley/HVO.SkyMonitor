@@ -84,9 +84,12 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
             DeviceOptions.ClearDeltaCelsius,
             DeviceOptions.CloudyDeltaCelsius
         }, SerializerOptions));
-        var source = new EnvironmentalObservationSource(Descriptor.Type, Descriptor.Id + suffix, "adapter-v1",
+        var parametersIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
+        var sourceVersion = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        { Algorithm = "environmental-adapter-v1", sample.Simulated, ParametersSha256 = parametersIdentity });
+        var source = new EnvironmentalObservationSource(Descriptor.Type, Descriptor.Id + suffix, sourceVersion,
             sourceKind ?? (sample.Simulated ? EnvironmentalObservationSourceKind.Simulated : EnvironmentalObservationSourceKind.Measured),
-            new(new("environmental-adapter", "adapter-v1"), parameters, CaptureContractJson.ComputeCanonicalJsonSha256(parameters)));
+            new(new("environmental-adapter", "adapter-v1"), parameters, parametersIdentity));
         var withMetadata = value with
         {
             Metadata = (value.Metadata ?? new()) with { DeviceReceivedAtUtc = sample.ReceivedAtUtc ?? context.ObservedAtUtc }

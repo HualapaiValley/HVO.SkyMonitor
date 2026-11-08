@@ -13,7 +13,9 @@ through the existing durable outbox and never polls these sources.
 `EnvironmentalDeviceOptions`: a non-sensitive `deviceId`, optional `simulation`,
 and the infrared model settings. With `simulation` absent, the adapter uses the
 injected `IEnvironmentalDevice`. Without that transport it reports
-`device-unconfigured`. Physical drivers are intentionally behind that seam:
+`device-unconfigured`. Stable settings and simulated/measured nature select an immutable source-version
+digest; switching to a physical transport can retain the source alias without
+relabeling old readings. Physical drivers are intentionally behind that seam:
 **physical qualification held** for #1089, #1090 and #1091. No hardware issue is
 closed by the software evidence.
 
@@ -88,7 +90,9 @@ The `sky-ambient-linear-v1` model maps sky minus ambient between
 [0,1], and retains both thresholds and version in provenance. Thresholds require
 site qualification. Temperature input facts are durably published before the
 derived cloud fact; retries are idempotent. Sensor and image cloud-cover facts
-keep separate source identities. A drying wet sensor reports
+keep separate source identities. The bridge owns heater control and must assert
+`drying` throughout heater-driven drying/warm-up until a valid dry reading is
+qualified; the adapter never commands a heater or assumes it has finished. A drying wet sensor reports
 `wet-sensor-drying`; it never reports dry.
 
 `SkyQualityMeter` issues Unihedron-compatible `rx` through the transport seam and

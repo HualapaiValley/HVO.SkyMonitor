@@ -159,6 +159,36 @@ public sealed class EnvironmentalHardwareAdapterTests
         }
     }
 
+    [TestMethod]
+    [DataRow("LocalWeatherStation")]
+    [DataRow("InfraredSky")]
+    [DataRow("SkyQualityMeter")]
+    public async Task PhysicalQualificationCanReplaceSimulationWithoutChangingSourceAlias(string type)
+    {
+        var simulated = Source(type);
+        var payload = type == "LocalWeatherStation" ? Station : type == "InfraredSky" ? Infrared : Sqm;
+        var device = new FixedPhysicalDevice(payload);
+        var options = new EnvironmentalDeviceOptions("virtual-device");
+        IEnvironmentalSource measured = type switch
+        {
+            "LocalWeatherStation" => new LocalWeatherStationSource(simulated.Descriptor, options, device),
+            "InfraredSky" => new InfraredSkySource(simulated.Descriptor, options, device),
+            _ => new SkyQualityMeterSource(simulated.Descriptor, options, device)
+        };
+        var before = (await simulated.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!;
+        var after = (await measured.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!;
+        Assert.AreEqual(before.Source.SourceId, after.Source.SourceId);
+        Assert.AreEqual(EnvironmentalObservationSourceKind.Measured, after.Source.Kind);
+        Assert.AreNotEqual(EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(before),
+            EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(after));
+    }
+
+    private sealed class FixedPhysicalDevice(string payload) : IEnvironmentalDevice
+    {
+        public ValueTask<EnvironmentalDeviceSample> ReadAsync(string deviceId, string command, DateTimeOffset receivedAtUtc, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new EnvironmentalDeviceSample(Encoding.UTF8.GetBytes(payload), receivedAtUtc, false, ReceivedAtUtc: receivedAtUtc));
+    }
+
     internal static IEnvironmentalSource Source(string type, SimulatedEnvironmentalDeviceMode mode = SimulatedEnvironmentalDeviceMode.Normal)
         => type switch
         {

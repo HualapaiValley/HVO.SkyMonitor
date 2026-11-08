@@ -53,9 +53,12 @@ public sealed class OnlineWeatherSource : IEnvironmentalSource
                 protocol = "current-weather-v1",
                 attribution = options.Provider == WeatherProvider.Nws ? "NOAA/NWS" : "Hualapai Valley Observatory"
             }));
-            var source = new EnvironmentalObservationSource(options.Provider.ToString(), Descriptor.Id, "adapter-v1",
+            var parametersIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
+            var sourceVersion = CaptureContractJson.ComputeCanonicalJsonSha256(new
+            { Algorithm = "current-weather-v1", ParametersSha256 = parametersIdentity });
+            var source = new EnvironmentalObservationSource(options.Provider.ToString(), Descriptor.Id, sourceVersion,
                 EnvironmentalObservationSourceKind.Imported, new(new("current-weather", "adapter-v1"), parameters,
-                    CaptureContractJson.ComputeCanonicalJsonSha256(parameters)));
+                    parametersIdentity));
             var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new { source, sample.SampledAtUtc, reading });
             var fact = new EnvironmentalObservationFactV1(EnvironmentalObservationSchemaVersions.V3,
                 new Guid(Convert.FromHexString(identity).AsSpan(0, 16)), source, sample.SampledAtUtc, null, null,
