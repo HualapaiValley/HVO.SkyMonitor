@@ -40,6 +40,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, recover an owned pre-restart pause on failure, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
 
+
+- New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
 - CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
