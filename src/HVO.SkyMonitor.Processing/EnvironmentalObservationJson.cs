@@ -82,9 +82,7 @@ public static class EnvironmentalObservationJson
         ArgumentNullException.ThrowIfNull(observation);
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            Schema = observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
-                ? "hvo-environmental-observation-content-v2"
-                : "hvo-environmental-observation-content-v1",
+            Schema = $"hvo-environmental-observation-content-{EnvironmentalObservationSchemaVersions.IdentityVersion(observation.SchemaVersion)}",
             Observation = Normalize(observation)
         });
     }
@@ -92,10 +90,10 @@ public static class EnvironmentalObservationJson
     public static string ComputeSourceIdentitySha256(EnvironmentalObservationV1 observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
-        return observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+        return observation.SchemaVersion != EnvironmentalObservationSchemaVersions.V1
             ? CaptureContractJson.ComputeCanonicalJsonSha256(new
             {
-                Schema = "hvo-environmental-source-identity-v2",
+                Schema = $"hvo-environmental-source-identity-{EnvironmentalObservationSchemaVersions.IdentityVersion(observation.SchemaVersion)}",
                 observation.Target.SiteId,
                 observation.Target.AgentId,
                 observation.Target.RigId,
@@ -119,10 +117,10 @@ public static class EnvironmentalObservationJson
     public static string ComputeSourceContentSha256(EnvironmentalObservationV1 observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
-        return observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+        return observation.SchemaVersion != EnvironmentalObservationSchemaVersions.V1
             ? CaptureContractJson.ComputeCanonicalJsonSha256(new
             {
-                Schema = "hvo-environmental-source-content-v2",
+                Schema = $"hvo-environmental-source-content-{EnvironmentalObservationSchemaVersions.IdentityVersion(observation.SchemaVersion)}",
                 Target = observation.Target,
                 Source = Normalize(observation).Source,
                 observation.Value.Kind
@@ -166,14 +164,21 @@ public static class EnvironmentalObservationJson
         {
             return timeValidation;
         }
+        if ((observation.Value?.Kind is EnvironmentalObservationKind.SkyTemperature or EnvironmentalObservationKind.SeaLevelPressure ||
+            observation.Value?.Metadata is not null) && observation.SchemaVersion != EnvironmentalObservationSchemaVersions.V3)
+            return Failure(EnvironmentalObservationReasonCodes.UnsupportedSchema, "value");
+        if (observation.Value?.Metadata is { } metadata &&
+            (metadata.DeviceReceivedAtUtc is { } received && (received.Offset != TimeSpan.Zero || received == default) ||
+             metadata.SensorTemperatureCelsius is { } temperature && (!double.IsFinite(temperature) || temperature is < -100 or > 100)))
+            return Failure(EnvironmentalObservationReasonCodes.InvalidValue, "value.metadata");
         var valueValidation = ValidateValue(
             observation.Value,
-            observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V2);
+            observation.SchemaVersion != EnvironmentalObservationSchemaVersions.V1);
         if (!valueValidation.IsValid)
         {
             return valueValidation;
         }
-        if (observation.Value.Kind == EnvironmentalObservationKind.CameraSensorTemperature &&
+        if (observation.Value!.Kind == EnvironmentalObservationKind.CameraSensorTemperature &&
             observation.Target.RigId is null)
         {
             return Failure(EnvironmentalObservationReasonCodes.InvalidTarget, "target.rigId");
@@ -323,11 +328,11 @@ public static class EnvironmentalObservationJson
     private static bool ValidUnitAndRange(EnvironmentalObservationValue value, bool supportsCameraSensorTemperature)
         => value.Kind switch
         {
-            EnvironmentalObservationKind.AirTemperature =>
+            EnvironmentalObservationKind.AirTemperature or EnvironmentalObservationKind.SkyTemperature =>
                 value.Unit == EnvironmentalObservationUnit.DegreesCelsius && value.NumericValue >= -273.15,
             EnvironmentalObservationKind.RelativeHumidity =>
                 value.Unit == EnvironmentalObservationUnit.Percent && value.NumericValue is >= 0 and <= 100,
-            EnvironmentalObservationKind.AtmosphericPressure =>
+            EnvironmentalObservationKind.AtmosphericPressure or EnvironmentalObservationKind.SeaLevelPressure =>
                 value.Unit == EnvironmentalObservationUnit.Pascals && value.NumericValue > 0,
             EnvironmentalObservationKind.WindSpeed or EnvironmentalObservationKind.WindGust =>
                 value.Unit == EnvironmentalObservationUnit.MetersPerSecond && value.NumericValue >= 0,

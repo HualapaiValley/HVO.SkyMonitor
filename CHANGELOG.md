@@ -30,6 +30,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Configure a local weather-station adapter with deterministic simulated devices and explicit sensor/freshness failures; physical station qualification remains held. #1089
+- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage and drying-state handling; physical sensor qualification remains held. #1090
+- Configure an SQM adapter with capture association, real integration intervals and sensor-temperature metadata; physical meter qualification remains held. #1091
+- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff and explicit source priority. #1092
+
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
 - Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)

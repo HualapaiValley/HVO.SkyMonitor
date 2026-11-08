@@ -10,7 +10,8 @@ public sealed class EnvironmentalAssociationService(
     ILocalEnvironmentalAssociationStore associations,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
-    EnvironmentalAcquisitionTelemetry? telemetry = null)
+    EnvironmentalAcquisitionTelemetry? telemetry = null,
+    IEnvironmentalAcquisitionStateStore? acquisitionStates = null)
 {
     private const string AlgorithmVersion = "local-environment-association-v1";
     private static readonly string[] SourcePriority = ["Measured", "Imported", "Manual", "Derived", "Simulated"];
@@ -35,7 +36,7 @@ public sealed class EnvironmentalAssociationService(
         }
         var root = options.Value.RawIngressRoot;
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        var policyIdentity = CreatePolicyIdentity(expectedKinds);
+        var policyIdentity = PolicyIdentity(expectedKinds);
         var persisted = (await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false))
             .Where(association => string.Equals(
                 association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal))
@@ -52,6 +53,11 @@ public sealed class EnvironmentalAssociationService(
         {
             var candidates = await observations.ReadLocalCandidatesAsync(
                 root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
+            if (options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count > 0)
+            {
+                var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
+                candidates = SelectWeatherCandidates(candidates, states, exposureFromUtc, exposureThroughUtc);
+            }
             var association = CreateAssociation(
                 captureId,
                 captureSequence,
@@ -105,7 +111,7 @@ public sealed class EnvironmentalAssociationService(
             if (expectedKinds.Except(configuredKinds).Any())
                 throw new EnvironmentalObservationIdentityConflictException(
                     "The requested environmental kinds are not part of the configured association policy.");
-            var configuredPolicyIdentity = CreatePolicyIdentity(configuredKinds);
+            var configuredPolicyIdentity = PolicyIdentity(configuredKinds);
             candidateSets = candidateSets.Where(group =>
                 string.Equals(group[0].PolicyIdentitySha256, configuredPolicyIdentity, StringComparison.Ordinal) &&
                 group.Select(static association => association.Kind).Order().SequenceEqual(configuredKinds)).ToArray();
@@ -123,6 +129,35 @@ public sealed class EnvironmentalAssociationService(
         return persisted.Length == expectedKinds.Length
             ? persisted.OrderBy(static association => association.Kind).ToArray()
             : null;
+    }
+
+    private string PolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> kinds)
+        => options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count == 0 ? CreatePolicyIdentity(kinds)
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            { Schema = "real-weather-selection-v1", Kinds = kinds, options.Value.EnvironmentalAcquisition.WeatherSourcePriority,
+                OnlineKinds = options.Value.EnvironmentalAcquisition.Sources.Where(source => source.Type == "OnlineWeather").Select(source => source.Kind).Distinct().Order().ToArray() });
+
+    private IReadOnlyList<LocalEnvironmentalObservationRecord> SelectWeatherCandidates(
+        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates, IReadOnlyList<EnvironmentalSourceRuntimeState> states,
+        DateTimeOffset from, DateTimeOffset through)
+    {
+        // Hardware/IR/SQM simulation remains available for qualification. The real-weather fallback policy applies only
+        // to kinds configured with an online feed, and never silently falls back to simulated or stale weather.
+        if (!options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type == "OnlineWeather" &&
+            candidates.Any(candidate => candidate.Fact.Value.Kind == source.Kind))) return candidates;
+        foreach (var id in options.Value.EnvironmentalAcquisition.WeatherSourcePriority)
+        {
+            var state = states.SingleOrDefault(state => state.SourceId == id);
+            if (state is { LastCompletedUtc: { } completed } && completed <= through &&
+                state.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut)
+                continue;
+            var eligible = candidates.Where(candidate => candidate.Fact.Source.SourceId == id &&
+                candidate.Fact.Source.Kind is EnvironmentalObservationSourceKind.Measured or EnvironmentalObservationSourceKind.Imported &&
+                candidate.Fact.Value.Quality is EnvironmentalObservationQuality.Good or EnvironmentalObservationQuality.Unknown &&
+                candidate.Fact.ValidFromUtc <= from && candidate.Fact.ValidThroughUtc >= through && candidate.Fact.StaleAfterUtc > through).ToArray();
+            if (eligible.Length > 0) return eligible;
+        }
+        return [];
     }
 
     private static void ValidateRequest(

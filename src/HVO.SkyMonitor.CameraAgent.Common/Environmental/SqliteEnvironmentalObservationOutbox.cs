@@ -2444,6 +2444,34 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             throw new InvalidDataException("Local environmental delivery target is invalid.");
         }
         var observation = record.Fact.Enrich(new EnvironmentalObservationTarget(siteId, agentId, rigId));
+        var unresolvedLineage = false;
+        if (record.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 && record.Fact.Lineage.Count > 0)
+        {
+            var lineage = new List<EnvironmentalObservationReference>(record.Fact.Lineage.Count);
+            foreach (var reference in record.Fact.Lineage)
+            {
+                using var lookup = connection.CreateCommand();
+                lookup.Transaction = transaction;
+                lookup.CommandText = "SELECT record_id FROM environmental_observation_journal WHERE source_identity_sha256 = $source AND observation_id = $observation;";
+                lookup.Parameters.AddWithValue("$source", reference.SourceIdentitySha256);
+                lookup.Parameters.AddWithValue("$observation", reference.ObservationId.ToString("D"));
+                var inputId = await lookup.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (inputId is null)
+                {
+                    unresolvedLineage = true;
+                    break;
+                }
+                var input = await ReadLocalRecordAsync(connection, transaction,
+                    Convert.ToInt64(inputId, System.Globalization.CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
+                lineage.Add(reference with
+                {
+                    SourceIdentitySha256 = EnvironmentalObservationJson.ComputeSourceIdentitySha256(
+                        input.Fact.Enrich(new EnvironmentalObservationTarget(siteId, agentId, rigId)))
+                });
+            }
+            if (!unresolvedLineage) observation = observation with { Lineage = lineage };
+        }
+
         if (!EnvironmentalObservationJson.Validate(observation).IsValid)
         {
             throw new InvalidDataException("Local environmental observation cannot be projected for delivery.");
@@ -2488,6 +2516,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             createProjection.Parameters.AddWithValue("$updated", now);
             await createProjection.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        if (unresolvedLineage)
+            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Waiting, null, null);
 
         var sourceIdentity = EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation);
         var contentIdentity = EnvironmentalObservationJson.ComputeContentSha256(observation);

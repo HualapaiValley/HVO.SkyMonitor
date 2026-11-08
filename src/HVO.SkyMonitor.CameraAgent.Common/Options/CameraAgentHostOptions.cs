@@ -1000,6 +1000,10 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
 
     public IReadOnlyList<EnvironmentalSourceConfiguration> Sources { get; init; } = [];
 
+    /// <summary>Explicit per-kind source ordering for real weather selection. Empty preserves the legacy virtual policy.</summary>
+    public IReadOnlyList<string> WeatherSourcePriority { get; init; } = [];
+
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (!Enabled && Sources.Count > 0)
@@ -1014,6 +1018,10 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
                 "Enabled environmental acquisition requires at least one source.",
                 [nameof(Enabled), nameof(Sources)]);
         }
+        if (WeatherSourcePriority.Count > 128 || WeatherSourcePriority.Distinct(StringComparer.Ordinal).Count() != WeatherSourcePriority.Count ||
+            WeatherSourcePriority.Any(id => !Sources.Any(source => source is not null && source.Id == id)) ||
+            Sources.Any(source => source is not null && source.Type == "OnlineWeather") && WeatherSourcePriority.Count == 0)
+            yield return new ValidationResult("Online weather requires an explicit configured source priority order.", [nameof(WeatherSourcePriority)]);
         if (Sources.Count > 128)
         {
             yield return new ValidationResult("At most 128 environmental sources may be configured.", [nameof(Sources)]);

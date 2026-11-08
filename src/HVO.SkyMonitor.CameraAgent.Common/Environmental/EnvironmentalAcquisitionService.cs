@@ -91,11 +91,11 @@ public sealed partial class EnvironmentalAcquisitionService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var due = CurrentDue(source, now);
+        var due = await ResolveDueAsync(source, CurrentDue(source, now), cancellationToken).ConfigureAwait(false);
         if (due <= now)
         {
             await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
-            due = NextDue(source, timeProvider.GetUtcNow());
+            due = await ResolveDueAsync(source, NextDue(source, timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
         }
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
@@ -115,7 +115,7 @@ public sealed partial class EnvironmentalAcquisitionService(
                     await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
                 }
                 await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
-                due = NextDue(source, timeProvider.GetUtcNow());
+                due = await ResolveDueAsync(source, NextDue(source, timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -205,6 +205,15 @@ public sealed partial class EnvironmentalAcquisitionService(
                 "unexpected",
                 exception);
         }
+    }
+
+    private async ValueTask<DateTimeOffset> ResolveDueAsync(EnvironmentalSourceDescriptor source, DateTimeOffset due,
+        CancellationToken cancellationToken)
+    {
+        if (source.Type != "OnlineWeather") return due;
+        var states = await stateStore.ReadSourceStatesAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+        var persisted = states.SingleOrDefault(state => state.SourceId == source.Id)?.NextPollUtc;
+        return persisted is { } minimum && minimum > due ? minimum : due;
     }
 
     private static DateTimeOffset CurrentDue(EnvironmentalSourceDescriptor source, DateTimeOffset now)

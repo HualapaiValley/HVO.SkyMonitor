@@ -27,6 +27,33 @@ public sealed class DeviceEnvironmentalObservationApiTests
     public void Cleanup() => _client?.Dispose();
 
     [TestMethod]
+    [DataRow(EnvironmentalObservationKind.SkyTemperature)]
+    [DataRow(EnvironmentalObservationKind.SeaLevelPressure)]
+    public async Task VersionThreeAdapterKindsAreAcceptedAlongsideLegacyFacts(EnvironmentalObservationKind kind)
+    {
+        var device = await SeedDeviceAsync().ConfigureAwait(false);
+        var legacy = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid());
+        var observation = legacy with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            ObservationId = Guid.NewGuid(),
+            Value = new(kind, kind == EnvironmentalObservationKind.SkyTemperature
+                ? EnvironmentalObservationUnit.DegreesCelsius : EnvironmentalObservationUnit.Pascals,
+                kind == EnvironmentalObservationKind.SkyTemperature ? -30 : 101325, null,
+                EnvironmentalObservationQuality.Good, Metadata: new(Epoch, 15))
+        };
+        using var accepted = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var duplicate = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var old = await PostAsync(device.DeviceId, device.DeviceKey, legacy).ConfigureAwait(false);
+        using var invalidLegacy = await PostAsync(device.DeviceId, device.DeviceKey,
+            observation with { SchemaVersion = EnvironmentalObservationSchemaVersions.V1, ObservationId = Guid.NewGuid() }).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.OK);
+        old.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        invalidLegacy.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [TestMethod]
     public async Task AcceptedThenDuplicateReturnsOriginalReceiptAndOneDurableObservation()
     {
         var device = await SeedDeviceAsync().ConfigureAwait(false);

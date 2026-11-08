@@ -118,7 +118,8 @@ internal sealed class CameraAgentEnvironmentalUiService(
                     source.Kind,
                     source.Required,
                     source.Triggers.Contains(EnvironmentalAcquisitionTrigger.OnDemand),
-                    state?.LastStaleAfterUtc is { } staleAfter ? staleAfter > now ? "Fresh" : "Stale" : "Never observed",
+                    state?.LastDisposition is EnvironmentalAcquisitionDisposition.Failed or EnvironmentalAcquisitionDisposition.Missing or EnvironmentalAcquisitionDisposition.TimedOut
+                        ? "Unavailable" : state?.LastStaleAfterUtc is { } staleAfter ? staleAfter > now ? "Fresh" : "Stale" : "Never observed",
                     state?.LastDisposition,
                     state?.LastReason,
                     state?.LastObservedUtc,
