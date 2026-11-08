@@ -63,6 +63,9 @@ hyg44_build_database() {
     sqlite3 "$database" <<SQL
 .bail on
 PRAGMA page_size = 4096;
+-- The approved bytes were built with secure deletion enabled. Upstream SQLite
+-- defaults it off; Ubuntu enables it at compile time. Pin it before any writes.
+PRAGMA secure_delete = ON;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = OFF;
 PRAGMA user_version = 3;
