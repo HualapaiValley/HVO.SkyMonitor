@@ -78,7 +78,7 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
     private static async Task PrewarmRuntimeAsync(Workload workload)
     {
         var sceneStore = new ProjectedSceneStore();
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), sceneStore);
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), sceneStore);
         await module.InitializeAsync(CreateConfig(workload), CancellationToken.None).ConfigureAwait(false);
         var capture = await CaptureAsync(
             module,
@@ -121,7 +121,7 @@ public sealed class VirtualSkyNoCloudBaselinePerformanceTests
     private static async Task<NoCloudMeasurement> MeasureAsync(Workload workload)
     {
         var sceneStore = new ProjectedSceneStore();
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), sceneStore);
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), sceneStore);
         await module.InitializeAsync(CreateConfig(workload), CancellationToken.None).ConfigureAwait(false);
         var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 0, null, null);
         for (var index = 0; index < WarmupCount; index++)

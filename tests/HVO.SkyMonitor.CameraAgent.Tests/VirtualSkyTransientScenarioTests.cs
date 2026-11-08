@@ -444,7 +444,7 @@ public sealed class VirtualSkyTransientScenarioTests
     public TestContext TestContext { get; set; } = null!;
 
     private static VirtualSkyCameraModule Module()
-        => new(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        => new(new ExposureTestTimeProvider(FixtureUtc, true), new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
 
     private static async Task<CameraFrame> CaptureAtAsync(
         VirtualSkyCameraModule module,

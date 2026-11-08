@@ -136,7 +136,7 @@ public sealed class VirtualLongExposureCapacityTests
     private static async Task<(object Row, bool Refused, double? MotionPixels)> RunProbeAsync(CatalogSnapshotResult snapshot, Probe probe,
         List<string> failures)
     {
-        var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         var stage = "initialize"; var clock = Stopwatch.StartNew();
         CaptureResult? captured = null; Exception? refused = null;

@@ -91,7 +91,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
             async Task<(OpticalCalibrationFrame Frame, VirtualAstrometryPixels Pixels, StellarMeasurementSummary Summary, DateTimeOffset SceneUtc)> CaptureAsync(string readout, double hours)
             {
                 var rig = WithReadout(truthRig, readout);
-                var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+                var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
                 await using var lifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(template.Config with { Rig = rig }, CancellationToken.None).ConfigureAwait(false);
                 var captured = await module.CaptureAsync(VirtualAstrometryQualificationTests.Request(origin.AddHours(hours)), CancellationToken.None).ConfigureAwait(false);
@@ -167,7 +167,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
                 var version = $"{OpticalCalibrationOptions.FitterVersion}:{result.IdentitySha256}";
                 var calibratedOptics = RigProjectionContextFactory.CreateCalibratedOptics(nominalRig, calibrated, version);
                 var calibratedRig = nominalRig with { Optics = calibratedOptics };
-                var activation = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+                var activation = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
                 await using (activation.ConfigureAwait(false))
                     await activation.InitializeAsync(template.Config with { Rig = calibratedRig }, CancellationToken.None).ConfigureAwait(false);
                 foreach (var (readout, frame, pixels, sceneUtc) in withheld)
