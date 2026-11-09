@@ -417,7 +417,8 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         string endpointName,
         string method,
         object? requestBody = null,
-        RouteValueDictionary? routeValues = null)
+        RouteValueDictionary? routeValues = null,
+        CancellationToken cancellationToken = default)
     {
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
             .OfType<RouteEndpoint>()
@@ -428,7 +429,8 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var context = new DefaultHttpContext
         {
             RequestServices = app.Services,
-            User = CreateUser()
+            User = CreateUser(),
+            RequestAborted = cancellationToken
         };
         context.Request.Method = method;
         context.Request.Headers["Idempotency-Key"] = "test-key";

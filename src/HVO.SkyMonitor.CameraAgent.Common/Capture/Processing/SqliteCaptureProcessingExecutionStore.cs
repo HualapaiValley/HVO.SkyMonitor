@@ -1034,7 +1034,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 frozenNodeCount = ReadRunManifestNodeCount(frozenPlanJson);
             }
-            var committedOutputCounts = ReadCommittedOutputCounts(frozenPlanJson);
+            // Optional export bookkeeping must not make the ordinary journal unreadable.
+            // Manifest reads still validate it and fail closed with the corrupt-evidence reason.
+            var committedOutputCounts = manifestOnly ? ReadCommittedOutputCounts(frozenPlanJson) : [];
             var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)
                 .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
             foreach (var row in rows)

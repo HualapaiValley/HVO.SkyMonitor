@@ -50,6 +50,10 @@ than claiming that it was deleted. If the existing frozen-plan byte limit leaves
 no room to record a count, processing continues and export applies the same
 fail-closed completeness rule. New completions record conditional and zero-output
 counts without consulting mutable current-capture state.
+Optional count metadata is validated only for manifest downloads. If that member is
+corrupt, the ordinary execution API, run journal, replay detail and central evidence
+export remain readable; the run page disables the download with the corrupt-evidence
+reason. Removing the corrupt member restores the legacy completeness rules above.
 
 The database read holds one SQLite WAL snapshot. It allows at most 64 nodes and
 4096 rows in each attempts/inputs/output-input-pins/outputs/source-reference collection,
