@@ -147,7 +147,7 @@ if not any(int(line.get("hits")) < 0 for line in wrapped.findall(".//line")):
     for line in wrapped.findall(".//line"):
         line.set("hits", "-2")
     wrapped.write(merged_overflow)
-check("canonical gate treats actual wrapped merged hits as covered", merged_overflow, 0,
+check("canonical gate treats signed wrapped merged hits as covered", merged_overflow, 0,
       "line 100.00", "Coverage gate passed.", profile=False)
 check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
 baseline_file.write_text(json.dumps(baseline))
