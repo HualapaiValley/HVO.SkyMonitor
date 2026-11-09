@@ -298,9 +298,17 @@ public sealed class OperationsPageTests
         var service = Configure(context);
         service.OperationsHandler = async token =>
         {
-            using var registration = token.Register(() => cancellationObserved.TrySetResult());
             readStarted.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // Observe the canceled read: its cleanup can dispose a registration before its callback runs.
+                cancellationObserved.TrySetResult();
+                throw;
+            }
             return OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations());
         };
 
@@ -322,9 +330,16 @@ public sealed class OperationsPageTests
         var service = Configure(context);
         service.CaptureHandler = async (_, _, _, token) =>
         {
-            using var registration = token.Register(() => cancellationObserved.TrySetResult());
             commandStarted.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                cancellationObserved.TrySetResult();
+                throw;
+            }
             return OperatorUiResult<OperatorCommandReceipt>.Success(new(
                 "Pause capture", "Applied", "Paused", 8, OperatorUiTestData.Now));
         };

@@ -60,6 +60,22 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         Guid.Parse("20900000-0000-0000-0000-000000000001"),
         Guid.Parse("20900000-0000-0000-0000-000000000002"));
     private static readonly string[] HistoryPositions = ["first", "middle", "late"];
+    // Preserve the ordered issue #209 v1 workload when the production enum gains new kinds.
+    private static readonly IReadOnlyList<EnvironmentalObservationKind> WorkloadKinds = Array.AsReadOnly<EnvironmentalObservationKind>(
+    [
+        EnvironmentalObservationKind.AirTemperature,
+        EnvironmentalObservationKind.RelativeHumidity,
+        EnvironmentalObservationKind.AtmosphericPressure,
+        EnvironmentalObservationKind.WindSpeed,
+        EnvironmentalObservationKind.WindDirection,
+        EnvironmentalObservationKind.WindGust,
+        EnvironmentalObservationKind.PrecipitationRate,
+        EnvironmentalObservationKind.RainState,
+        EnvironmentalObservationKind.SkyBrightness,
+        EnvironmentalObservationKind.SkyQuality,
+        EnvironmentalObservationKind.CloudCover,
+        EnvironmentalObservationKind.CameraSensorTemperature
+    ]);
     private static readonly JsonSerializerOptions EvidenceJsonOptions = CreateEvidenceJsonOptions();
 
     public TestContext TestContext { get; set; } = null!;
@@ -168,7 +184,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                     PeriodSeconds = 30,
                     ValidForSeconds = 120,
                     StaleAfterSeconds = 45,
-                    ObservationKinds = Enum.GetNames<EnvironmentalObservationKind>()
+                    ObservationKinds = WorkloadKinds.Select(static kind => kind.ToString()).ToArray()
                 },
                 A1 = a1,
                 A2 = a2,
@@ -1344,12 +1360,12 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         return Convert.ToString(await command.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture)!;
     }
 
-    private static IEnvironmentalSource[] CreateVirtualSources(
+    internal static IEnvironmentalSource[] CreateVirtualSources(
         string prefix,
         IReadOnlyList<EnvironmentalAcquisitionTrigger> triggers,
         int delayMilliseconds = 0)
     {
-        var kinds = Enum.GetValues<EnvironmentalObservationKind>();
+        var kinds = WorkloadKinds;
         Assert.HasCount(KindCount, kinds);
         return kinds.Select((kind, index) =>
         {
@@ -1436,7 +1452,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         return acquired.Fact;
     }
 
-    private static (double? Numeric, bool? Boolean) Baseline(EnvironmentalObservationKind kind)
+    internal static (double? Numeric, bool? Boolean) Baseline(EnvironmentalObservationKind kind)
         => kind switch
         {
             EnvironmentalObservationKind.AirTemperature => (12.5, null),
@@ -1467,14 +1483,8 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
             520,
             "America/Phoenix");
 
-    private static TrackingCoordinatorFixture CreateTrackingCoordinator(
-        string prefix,
-        EnvironmentalAcquisitionTelemetry telemetry)
-    {
-        var tracker = new ConcurrencyTracker();
-        var publisher = new RecordingPublisher();
-        var services = new ServiceCollection().AddSingleton(tracker).BuildServiceProvider();
-        var configurations = Enum.GetValues<EnvironmentalObservationKind>().Select(kind =>
+    internal static EnvironmentalSourceConfiguration[] CreateTrackingSourceConfigurations(string prefix)
+        => WorkloadKinds.Select(kind =>
         {
             var triggers = new List<EnvironmentalAcquisitionTrigger>
             {
@@ -1509,6 +1519,15 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                     DelayMilliseconds: 2))
             };
         }).ToArray();
+
+    private static TrackingCoordinatorFixture CreateTrackingCoordinator(
+        string prefix,
+        EnvironmentalAcquisitionTelemetry telemetry)
+    {
+        var tracker = new ConcurrencyTracker();
+        var publisher = new RecordingPublisher();
+        var services = new ServiceCollection().AddSingleton(tracker).BuildServiceProvider();
+        var configurations = CreateTrackingSourceConfigurations(prefix);
         var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = Path.GetTempPath(),
