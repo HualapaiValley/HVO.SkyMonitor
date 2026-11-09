@@ -45,9 +45,9 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             // No transient stage or running live execution survives this restart. Replay must use committed evidence.
             using var reopened = Provider(root);
             await InitializeAsync(reopened, file).ConfigureAwait(false);
-            var before = File.ReadAllBytes(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"));
+            var before = await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false);
             await AssertSceneReplayAsync(reopened, receipt, root).ConfigureAwait(false);
-            CollectionAssert.AreEqual(before, File.ReadAllBytes(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")));
+            CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false));
             Assert.AreEqual(original, receipt.Manifest.CaptureGraphRevisionId);
             AssertRawRetained(receipt);
         }
@@ -275,7 +275,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
     {
         var outputs = ProcessingGraphOperationsTests.ReadProjectedSceneOutputs(root, receipt.Manifest.Descriptor.Capture.CaptureId);
         Assert.HasCount(1, outputs);
-        var payloadBefore = File.ReadAllBytes(Path.Combine(root, outputs[0].PayloadRelativePath));
+        var payloadBefore = await File.ReadAllBytesAsync(Path.Combine(root, outputs[0].PayloadRelativePath)).ConfigureAwait(false);
         var registry = await Operations(provider).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
         var replay = await Operations(provider).SubmitReplayAsync(new(receipt.Manifest.Descriptor.Capture.CaptureId,
             registry.ActiveRevisionId, receipt.Manifest.Descriptor.Artifact.ArtifactId, Reason: "recover Storage skip"),
@@ -283,7 +283,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         var result = await ProcessingGraphOperationsTests.RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);
         Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, result.Execution.Status, result.Execution.FailureReason);
         Assert.HasCount(1, ProcessingGraphOperationsTests.ReadProjectedSceneOutputs(root, receipt.Manifest.Descriptor.Capture.CaptureId));
-        CollectionAssert.AreEqual(payloadBefore, File.ReadAllBytes(Path.Combine(root, outputs[0].PayloadRelativePath)));
+        CollectionAssert.AreEqual(payloadBefore, await File.ReadAllBytesAsync(Path.Combine(root, outputs[0].PayloadRelativePath)).ConfigureAwait(false));
         AssertNoStoragePublication(root);
     }
 
