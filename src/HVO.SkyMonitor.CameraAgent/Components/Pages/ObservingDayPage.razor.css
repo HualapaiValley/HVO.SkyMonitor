@@ -65,7 +65,7 @@ button.product-slot__media:hover .product-slot__open, button.product-slot__media
 .product-hours { padding-top: .55rem; border-top: 1px solid var(--hvo-border-muted); }
 .product-hours__label { color: var(--hvo-muted); font-size: .66rem; }
 .product-hours ol { display: flex; flex-wrap: wrap; gap: .3rem; margin: .35rem 0 0; padding: 0; list-style: none; }
-.product-hours a, .product-hours li > span { display: inline-block; min-width: 3rem; padding: .3rem .35rem; border-radius: .3rem; font-size: .68rem; font-variant-numeric: tabular-nums; text-align: center; }
+.product-hours a, .product-hours li > span { display: inline-flex; min-width: 3rem; min-height: 44px; align-items: center; justify-content: center; padding: .3rem .35rem; border-radius: .3rem; font-size: .68rem; font-variant-numeric: tabular-nums; text-align: center; }
 .product-hours a { color: #58a6ff; background: rgba(88, 166, 255, .12); text-decoration: none; }
 .product-hours li > span { color: var(--hvo-muted); border: 1px dashed var(--hvo-border-muted); text-decoration: line-through; }
 .daily-products__note { margin: 0; padding: .65rem .75rem; border: 1px solid var(--hvo-border-muted); border-radius: .5rem; color: var(--hvo-muted); font-size: .7rem; }
@@ -92,4 +92,4 @@ button.product-slot__media:hover .product-slot__open, button.product-slot__media
 @media (max-width: 430px) { .day-facts dl { grid-template-columns: 1fr; } .day-facts dl > div:nth-child(even) { padding-left: 0; border-left: 0; } }
 
 .day-title__step:focus-visible, .day-actions a:focus-visible, .day-hero__image > a:focus-visible, .day-events a:focus-visible, .day-automations a:focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 2px; }
-.daily-products header a, .day-automations header a, .product-hours a { display: inline-flex; min-height: 44px; align-items: center; }
+.daily-products header a, .day-automations header a { display: inline-flex; min-height: 44px; align-items: center; }

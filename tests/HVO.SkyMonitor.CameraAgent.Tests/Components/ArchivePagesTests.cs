@@ -296,6 +296,7 @@ public sealed class ArchivePagesTests
         var windowEnd = day.StartUtc.AddHours(17);
         var candidate = new CameraAgentTransientOperatorCandidate(
             Guid.NewGuid(), Guid.NewGuid(), "Extracted", "None", "CausalRetained", day.StartUtc.AddHours(9), day.StartUtc.AddHours(9), "Retained", "Pending", "Pending", "Pending");
+        var olderCandidate = candidate with { CandidateId = Guid.NewGuid(), CreatedUtc = candidate.CreatedUtc.AddMinutes(-1) };
         var dayService = new TestObservingDayUiService
         {
             Handler = (date, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
@@ -303,7 +304,7 @@ public sealed class ArchivePagesTests
                 exposures,
                 TimeSpan.FromSeconds(60),
                 new CameraAgentObservingDayScheduleView([(windowStart, windowEnd)], windowEnd - windowStart, TimeSpan.FromMinutes(3), false),
-                [candidate],
+                [candidate, olderCandidate],
                 false,
                 [],
                 representative,
@@ -331,8 +332,12 @@ public sealed class ArchivePagesTests
             Assert.HasCount(1, cut.FindAll(".timeline-bar--schedule"));
             // Three captures five minutes apart with one-minute bins do not merge.
             Assert.HasCount(3, cut.FindAll(".timeline-bar--captures"));
-            Assert.HasCount(1, cut.FindAll(".timeline-marker"));
-            Assert.AreEqual("Candidate recorded 21:00", cut.Find(".timeline-marker").GetAttribute("title"));
+            Assert.HasCount(2, cut.FindAll(".timeline-marker"));
+            Assert.AreEqual("Candidate recorded 21:00", cut.FindAll(".timeline-marker")[0].GetAttribute("title"));
+            Assert.AreEqual("#day-candidates", cut.Find(".night-timeline__note a").GetAttribute("href"));
+            var listLinks = cut.FindAll("#day-candidates .candidate-list a");
+            CollectionAssert.AreEqual(new[] { candidate, olderCandidate }.Select(item => $"/transients/{item.CandidateId:D}").ToArray(),
+                listLinks.Select(link => link.GetAttribute("href")).ToArray());
             Assert.HasCount(7, cut.FindAll(".timeline-hours span"));
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "21 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "22 Jul", StringComparison.Ordinal);

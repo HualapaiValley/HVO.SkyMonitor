@@ -40,6 +40,8 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private string? _nightlyMessage;
     private bool _nightlyLoading;
     private readonly HashSet<Guid> _failedPreviews = [];
+    // Retain failures by capture identity across day navigation; another day's image never substitutes for it.
+    private readonly HashSet<Guid> _failedRepresentativePreviews = [];
     // The tile whose viewer is open: a nightly product kind, or the time-lapse sample when no kind is set.
     private NightlyProductKind? _viewerKind;
     private bool _viewerOpen;

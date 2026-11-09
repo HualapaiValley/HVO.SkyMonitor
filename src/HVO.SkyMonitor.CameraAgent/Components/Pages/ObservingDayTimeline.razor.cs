@@ -21,6 +21,7 @@ public sealed partial class ObservingDayTimeline : ComponentBase
 
     private string TimeZoneId => Day.TimeZoneFallback ? TimeZoneInfo.Utc.Id : Day.TimeZoneId;
     private string CandidatesUrl => ArchiveCalendarPage.CandidatesUrl(Day);
+    private static string CoverageBinLabel => FormattableString.Invariant($"{CameraAgentObservingDayUiService.CoverageBin.TotalMinutes:0.######}-minute");
 
     private string RangeLabel => $"{LocalBoundary(Day.StartUtc)} – {LocalBoundary(Day.EndUtc)} ({TimeZoneId})";
 
@@ -44,7 +45,7 @@ public sealed partial class ObservingDayTimeline : ComponentBase
 
     private string MarkerStyle(DateTimeOffset utc) => FormattableString.Invariant($"left: {Percent(utc):0.######}%");
 
-    /// <summary>Union one-minute bins only for exposures inside the half-open period; clip the final bin to its end.</summary>
+    /// <summary>Union coverage bins only for exposures inside the half-open period; clip the final bin to its end.</summary>
     internal static IReadOnlyList<CaptureSegment> CaptureSegments(ObservingDay day, IReadOnlyList<DateTimeOffset> exposures)
     {
         var segments = new List<CaptureSegment>();

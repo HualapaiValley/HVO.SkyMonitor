@@ -25,7 +25,7 @@
             }
         </div>
         <span class="timeline-track-label">Captures</span>
-        <div class="timeline-track" aria-label="Retained capture exposure starts in one-minute bins; blank intervals have no retained exposure start">
+        <div class="timeline-track" aria-label="Retained capture exposure starts in @CoverageBinLabel bins; blank intervals have no retained exposure start">
             @foreach (var segment in CaptureSegments(Day, ExposureInstantsUtc))
             {
                 <span class="timeline-bar timeline-bar--captures" style="@BarStyle(segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
@@ -57,11 +57,15 @@
             }
         </div>
     </div>
-    <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Active schedule definition</span><span><i class="timeline-key__captures"></i>Exposure starts (1-minute bins)</span><span><i class="timeline-key__event"></i>Candidate record time</span><span class="timeline-key__unavailable">Cloud/usable intervals: unavailable</span></div>
-    <p class="night-timeline__note">Blank capture intervals are gaps in retained exposure starts, not evidence of cloud or unusable sky. One-minute bins are a coverage estimate, not exposure duration. Candidate observations and confirmed-event times are unavailable in this summary.</p>
+    <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Active schedule definition</span><span><i class="timeline-key__captures"></i>Exposure starts (@CoverageBinLabel bins)</span><span><i class="timeline-key__event"></i>Candidate record time</span><span class="timeline-key__unavailable">Cloud/usable intervals: unavailable</span></div>
+    <p class="night-timeline__note">Blank capture intervals are gaps in retained exposure starts, not evidence of cloud or unusable sky. The @CoverageBinLabel bins are a coverage estimate, not exposure duration. Candidate observations and confirmed-event times are unavailable in this summary.</p>
+    @if (Candidates.Any(candidate => Day.Contains(candidate.CreatedUtc)))
+    {
+        <p class="night-timeline__note">Close markers may overlap visually. <a href="#day-candidates">Use the full-size candidate list controls</a> to select any record.</p>
+    }
     @if (CandidatesTruncated)
     {
-        <p class="night-timeline__note" role="note">Partial candidate timeline: only the first @Candidates.Count retained records are shown. <a href="@CandidatesUrl">View all candidate records in this range</a>.</p>
+        <p class="night-timeline__note" role="note">Partial candidate timeline: @(Candidates.Count == 1 ? "the most recent record is shown" : $"the {Candidates.Count} most recent records are shown"); earlier records are not plotted. <a href="@CandidatesUrl">View all candidate records in this range</a>.</p>
     }
     @if (ActiveRevisionCaveat)
     {

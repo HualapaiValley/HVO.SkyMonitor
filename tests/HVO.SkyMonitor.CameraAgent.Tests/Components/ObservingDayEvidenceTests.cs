@@ -88,16 +88,37 @@ public sealed class ObservingDayEvidenceTests
     }
 
     [TestMethod]
-    public void TruncatedCandidateEvidenceHasAnExplicitRangeLink()
+    [DataRow(1)]
+    [DataRow(3)]
+    public void TruncatedCandidateEvidenceNamesTheMostRecentRecordsAndLinksTheRange(int count)
     {
         using var context = new BunitContext();
+        var history = Enumerable.Range(0, 5).Select(index => Candidate(Day.StartUtc.AddHours(index))).ToArray();
+        var newest = history.Reverse().Take(count).ToArray();
         var cut = context.Render<ObservingDayTimeline>(parameters => parameters
-            .Add(component => component.Day, Day).Add(component => component.Candidates, [Candidate(Day.StartUtc)])
+            .Add(component => component.Day, Day).Add(component => component.Candidates, newest)
             .Add(component => component.CandidatesTruncated, true).Add(component => component.ActiveRevisionCaveat, true));
 
-        StringAssert.Contains(cut.Markup, "Partial candidate timeline: only the first 1 retained records", StringComparison.Ordinal);
-        Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(Day), cut.Find(".night-timeline__note a").GetAttribute("href"));
+        var note = cut.Find("[role=note]");
+        StringAssert.Contains(note.TextContent, count == 1 ? "the most recent record is shown" : "the 3 most recent records are shown", StringComparison.Ordinal);
+        StringAssert.Contains(note.TextContent, "earlier records are not plotted", StringComparison.Ordinal);
+        Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(Day), note.QuerySelector("a")!.GetAttribute("href"));
+        CollectionAssert.AreEqual(newest.Select(candidate => $"/transients/{candidate.CandidateId:D}").ToArray(),
+            cut.FindAll(".timeline-marker").Select(marker => marker.GetAttribute("href")).ToArray());
+        Assert.IsFalse(cut.Markup.Contains(history[0].CandidateId.ToString("D"), StringComparison.Ordinal));
         StringAssert.Contains(cut.Markup, "not a historical admission record", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CaptureResolutionLabelsFollowTheCoverageBin()
+    {
+        using var context = new BunitContext();
+        var cut = context.Render<ObservingDayTimeline>(parameters => parameters.Add(component => component.Day, Day));
+        var label = FormattableString.Invariant($"{CameraAgentObservingDayUiService.CoverageBin.TotalMinutes:0.######}-minute bins");
+
+        StringAssert.Contains(cut.FindAll(".timeline-track")[1].GetAttribute("aria-label")!, label, StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".timeline-key").TextContent, label, StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".night-timeline__note").TextContent, label, StringComparison.Ordinal);
     }
 
     [TestMethod]

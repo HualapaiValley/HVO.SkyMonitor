@@ -1,6 +1,6 @@
 # Observing Day acceptance reconciliation (#1016)
 
-Status: **partial implementation evidence; visual acceptance remains open**.
+Status: **partial implementation evidence; full issue implementation and visual acceptance remain open**.
 Target profile: `development-v1`. Tier B UI work; the operator additionally
 requires the complete local Unit/Integration, warning-clean Debug/Release and
 format gate. Starting target: `7d5ec63b09a67ab4b675ba6a29641013df1247d8`.
@@ -37,7 +37,11 @@ are 369.20px wide and appear in one column before events and automations.
 - Clear/usable and cloudier intervals now retain unavailable rows in the
   timeline. Absence of retained captures is explicitly distinct from cloudy
   or unusable sky. Candidate truncation has a visible range link.
-- Candidate marker links have 44 by 44 CSS-pixel controls and focus outlines.
+- Candidate marker links hit-test their visible circles and retain focus outlines.
+  A nearby link leads to equivalent 44px candidate-list controls for every record,
+  including coincident or visually overlapping markers. Transparent enlarged
+  targets no longer intercept clicks on a neighbouring circle. Partial history
+  names the most recent records shown and states that earlier records are absent.
   The period's ticks use actual elapsed time, including 23/25-hour DST periods,
   with offsets when the period crosses a clock change.
 - A failed representative preview retains its exact capture link and a visible
@@ -45,10 +49,12 @@ are 369.20px wide and appear in one column before events and automations.
   selection caption overlays the hero, and product cards stack at 650px.
 
 The timeline has its own Razor/code-behind/scoped CSS. No product selection,
-generation, state, or historical attribution was changed. PR #1728 owns the
-time-lapse slot and PR #1732 owns the daily summary. Their existing product
-markup and helpers are retained. The shared page wrapper, stylesheet, changelog
-and count inventories will need normal integration when those PRs land.
+generation, state, or historical attribution was changed. The #1709/PR #1728
+time-lapse slot is now inherited through the target merge at `2a7a7233`;
+its state logic and product markup are preserved. PR #1732 owns the daily
+summary. Full three-slot fidelity, retained metadata and real-state navigation
+remain to be established; inheriting the time-lapse work does not prove them.
+The correction aligns available/unavailable hourly slot geometry only.
 
 ## Criterion audit
 
@@ -60,14 +66,21 @@ All issue acceptance checkboxes remain unchecked pending reviewed evidence.
 | Archive navigation, heading, previous/next, selected range and calendar | Existing `ArchivePagesTests` cover exact return/range links, invalid dates and calendar versions; new HTTP Integration cases cover empty and invalid days. Sunrise ownership is retained, with explicit legacy noon mode. | Review desktop/mobile navigation on the pinned real snapshot. |
 | Representative hero and factual health panel | Exact-day archive policy retained; new Unit preview-failure case and real VirtualSky HTTP Integration verify the representative's capture and image destination. Unknown cloud remains unassessed. | Review real hero/facts ratio, selection, quality/integration/count facts and partial states. |
 | Proportional timeline, gaps, evidence times and unavailable lanes | New timeline Unit cases cover half-open boundaries, precise sparse widths, gaps, absent lanes, truncation, exact links, DST and UTC fallback. | Candidate summary is creation-time filtered and lacks observation times. It explicitly says record time, not observation time; reconcile with #991 evidence before claiming this criterion. Review real timeline geometry and historical schedule caveats. |
-| Three daily product slots with durable state and artifact navigation | Delivered still-product behavior and existing product/viewer tests retained; no generator changes. | Integrate #1709/PR #1728 and #1713/PR #1732, then review actual retained IDs, source lineage/span/creation and available/unavailable states. Current delivered product UI can show more than three tiles. |
+| Three daily product slots with durable state and artifact navigation | Delivered still-product behavior and inherited #1709 time-lapse state retained; no generator changes. | #1713/PR #1732 remains separately owned. Establish consistent slots, retained source-count/creation facts, actual IDs/lineage/span, available/unavailable states and exact-day navigation. Current delivered product UI can show more than three tiles. |
 | Event preview and scheduled automations | Delivered local-candidate links and actual bounded automation-run history retained. No confirmed meteor, quality, confidence, duration, media or authoritative-review facts are invented. | Existing candidate summary is not the complete evidence-backed event preview. Reconcile independent media/classification/review availability under #991, and pin real definition/run evidence. |
-| Empty/loading/error/retry, focus, phone stacking and 44px controls | Existing page tests retained; new empty-lane and preview-failure tests, explicit focus styles and phone stacking. | Browser-measure every active control, mobile order and loading/retry behavior; closely spaced timeline markers can overlap hit regions and retain the full-size candidate-list alternative. |
+| Empty/loading/error/retry, focus, phone stacking and 44px controls | Existing page tests retained; new empty-lane/preview-failure cases, explicit focus styles and phone stacking. Glyph-sized marker targets have equivalent 44px candidate-list links. Browser regressions hit-test and click two newest-first records at 10/15/20/30/43px separation at desktop/phone sizes. | Full-page control/mobile measurements and Day retry-to-success/exact-preview recovery remain open. Coincident glyphs use the equivalent full-size list. |
 | Real before/reference/after at 1440x900 and 390x844 | No production evidence asserted. VirtualSky tests are automated software evidence only. | Approved real-state source, immutable snapshot, screenshots and owner review are absent. No fixture substitution is acceptable. |
 | State matrix, side-by-side and pixel/overlay comparisons, interactions | Numerical timeline regression assertions retained. | Real visual comparison and interaction recording remain open; rough/source-level fidelity is not acceptance. |
 | Reviewed evidence and ownership boundaries | #988 remains delivered; #993 generation and #991 events retain their ownership. | #1016 remains open; this PR references it without a closure directive. |
 
 ## Required real-state evidence packet
+
+The full issue also still needs observation-evidence day association,
+independent quality/event/media/review facts, consistent product slots and
+retained source-count/created-time facts, exact-day navigation/return, actual
+automation definition names with historical/missing-definition fallback, and
+Day retry/recovery evidence. These are implementation/evidence gaps, not Low
+findings or gaps explained away by the absence of production screenshots.
 
 Before any owner acceptance, retain a manifest with the observing date, calendar
 version and resolved UTC boundaries, site/timezone and fallback state,

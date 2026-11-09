@@ -298,7 +298,7 @@
             </section>
 
             <div class="day-columns">
-                <section class="day-events" aria-label="Detected candidates">
+                <section id="day-candidates" class="day-events" aria-label="Detected candidates">
                     <header><div><h2>Local candidates</h2><p>Detection records, not confirmed meteors or reviewed events.</p></div><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
                     @if (view.Candidates.Count == 0)
                     {
