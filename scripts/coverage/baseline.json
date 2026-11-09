@@ -35,6 +35,10 @@
     "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs": { "line": 0.55, "branch": 0.35 },
     "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs": { "line": 0.75, "branch": 0.48 },
-    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs": { "line": 0.50, "branch": 0.35 }
+    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs": {
+      "line": 0.50,
+      "branch": 0.35,
+      "developmentV1LocalOnlyReason": "The short v1 workflow does not provision HVO_PRODUCTION_CATALOG_BUNDLE; catalog-gated Unit tests supply this floor's coverage. Run the canonical local/full-qualification gate with the production catalog. See docs/validation/catalog-f7-1188.md and docs/validation/issue-1644-candidate.md."
+    }
   }
 }

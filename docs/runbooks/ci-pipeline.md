@@ -9,6 +9,74 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 Per-file Coverage
+
+**Development v1 / Build and Unit** enforces the canonical risk-file line and
+branch floors from `scripts/coverage/baseline.json`, using the same pinned
+ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
+canonical gate. No threshold is copied into the workflow. Preflight also runs
+`scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
+a file floor, widen tolerance, or add an arbitrary v1 local-only path.
+
+The existing complete Docker-disabled Unit selection collects coverage once.
+`scripts/coverage:development-v1 --settings OUTPUT` copies
+`tests/coverage.runsettings` and changes only its assembly Include filter, deriving
+the assemblies from existing canonical floor paths. Canonical test-assembly,
+TestSupport, migration, build-output and attribute exclusions remain intact.
+This avoids instrumenting host assemblies whose coverage is not measured by this
+profile. The generated settings are retained with the raw reports. The merge
+requires one GUID-directory report per Unit-bearing project's category inventory;
+it excludes TRX attachment copies and never searches outside the fresh run root.
+An enforced file missing from those reports, or present without executable line
+data, **fails**. Failure output names the path, observed line/branch percentages,
+floors, and the remedy: restore collection or add tests, then rerun the gate.
+
+The following limits are explicit; none changes the canonical local/full gate:
+
+- Full-suite aggregate floors and additional/higher component file floors remain
+  local/full-qualification checks. V1 runs no Integration suite and claims no
+  aggregate qualification from its partial assembly coverage.
+- ReleaseTool `Program.cs` remains local/full-qualification-only because v1 does
+  not provision `HVO_PRODUCTION_CATALOG_BUNDLE` for its catalog-gated Unit tests.
+  Its `developmentV1LocalOnlyReason` lives beside its unchanged 50% line/35%
+  branch floors in the canonical baseline. Every v1 evaluation prints `SKIP`, the
+  path, floors and prerequisite. The default canonical gate still enforces it.
+  See the reproduced catalog-absent limitation in
+  [catalog-f7-1188](../validation/catalog-f7-1188.md) and
+  [issue-1644-candidate](../validation/issue-1644-candidate.md).
+- Baseline entries whose source files were retired follow the existing canonical
+  source-absence rule. V1 prints each path and reason instead of silently omitting
+  it. At introduction these are `ArtifactUploadManifest.cs`,
+  `DistributionCatalogAcquirer.cs` and `DistributionVerifier.cs`.
+- Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
+  is recorded in that PR's discussion, not a repository exception registry.
+  `InstallerControlWorker`, `InstallerControlJournal` and
+  `CameraAgentSystemUiService` have no canonical per-file floor; this gate adds
+  none and creates no general 85% new-file rule or permanent waiver.
+
+Reproduce the short profile with a private, short, owner-only `TMPDIR` (installer
+Unix socket fixtures need the short path), and a fresh results directory:
+
+```bash
+./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
+dotnet tool restore
+./scripts/test:coverage-development-v1
+./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
+```
+
+`scripts/test:coverage-development-v1` runs behavioral tests against the actual
+evaluator, including line/branch violations, missing/empty data, and the
+catalog-dependent path under both profiles. The workflow contract's mutation
+controls protect collection, enforcement, evidence, and existing PR/merge-group
+triggers. Coverage shares the existing 1080-second workload deadline and appears
+as a fourth timed stage in the `hvo-development-v1-ci-v5` evidence manifest;
+failed runs retain generated settings, raw/merged XML, report paths and timings.
+The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
+`merge_group/checks_requested`; drafts retain Preflight only. Required check names
+and ruleset 26838822 need no change. No new check, permission, catalog provision,
+Integration selection, workflow dispatch or repository setting is introduced.
+
 ## Development v1 Preflight Budget
 
 **Development v1 / Preflight** has a four-minute (240-second) job timeout,

@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
+  --configuration Release --output "$scratch/gate" -warnaserror > "$scratch/build.log" 2>&1 || {
+  cat "$scratch/build.log" >&2
+  exit 1
+}
+python3 - "$repo_root" "$scratch" <<'PY'
+import copy
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+root, scratch = map(pathlib.Path, sys.argv[1:])
+canonical = json.loads((root / "scripts/coverage/baseline.json").read_text())
+path = "HVO.SkyMonitor.Astronomy/CameraGeometry.cs"
+release = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+retired = "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"
+baseline = copy.deepcopy(canonical)
+baseline["files"] = {key: canonical["files"][key] for key in (path, release, retired)}
+baseline_file = scratch / "repo/scripts/coverage/baseline.json"
+baseline_file.parent.mkdir(parents=True)
+baseline_file.write_text(json.dumps(baseline))
+for source in (scratch / "repo/src" / path, scratch / "repo" / release):
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.touch()
+
+
+def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=False):
+    document = ET.Element("coverage")
+    classes = ET.SubElement(ET.SubElement(ET.SubElement(document, "packages"), "package", name="fixture"), "classes")
+    lines = ET.SubElement(ET.SubElement(classes, "class", name="Fixture", filename=filename), "lines")
+    if not empty:
+        for number in range(1, 101):
+            line = ET.SubElement(lines, "line", number=str(number), hits=str(hits))
+            if number == 1:
+                line.set("condition-coverage", f"{covered * 50}% ({covered}/2)")
+    if release_data:
+        lines = ET.SubElement(ET.SubElement(classes, "class", name="Release", filename=release), "lines")
+        ET.SubElement(lines, "line", number="1", hits="0", **{"condition-coverage": "0% (0/2)"})
+    output = scratch / f"{name}.xml"
+    ET.ElementTree(document).write(output)
+    return output
+
+
+cases = 0
+
+
+def check(name, report_file, expected, *needles, profile=True):
+    global cases
+    command = ["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll")]
+    if profile:
+        command += ["--development-v1"]
+    result = subprocess.run([*command, str(baseline_file), str(report_file)], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or any(needle not in output for needle in needles):
+        raise SystemExit(f"FAIL {name}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {name}")
+
+
+good = report("good")
+check("measured floors pass; absent catalog and retired source are explicit", good, 0,
+      "Coverage gate passed.", f"SKIP {release}", "HVO_PRODUCTION_CATALOG_BUNDLE", f"SKIP {retired}", "source file is absent")
+check("real line-count violation fails", report("line-failure", hits=0), 1,
+      path, "line 0.00", "min 95.00", "add tests")
+check("real branch-count violation fails", report("branch-failure", covered=1), 1,
+      path, "branch 50.00", "min 90.00")
+check("missing enforced file fails", report("missing", filename="Other.cs"), 1,
+      path, "measured coverage MISSING", "floors line 95.00")
+check("empty file data does not become 100%", report("empty", empty=True), 1,
+      path, "no executable line data")
+check("catalog-dependent failure is explicitly local-only in v1", report("catalog-absent", release_data=True), 0,
+      f"SKIP {release}", "Coverage gate passed.")
+check("default canonical gate still enforces the catalog-dependent floor", report("full-catalog-absent", release_data=True), 1,
+      release, "min 50.00", profile=False)
+check("default canonical gate still rejects missing paths", report("full-missing", filename="Other.cs"), 1,
+      path, "missing from the supplied reports", profile=False)
+
+# A runtime-only floor bump must affect the same evaluator; no threshold is
+# copied into the development profile or its wrapper.
+baseline["files"][path]["line"] = 1.0
+baseline_file.write_text(json.dumps(baseline))
+one_uncovered = ET.parse(good)
+one_uncovered.find(".//line").set("hits", "0")
+one_uncovered.write(scratch / "bumped.xml")
+check("changed shared definition changes v1 enforcement", scratch / "bumped.xml", 1,
+      "line 99.00", "min 100.00")
+
+# Preserve every canonical collector setting except the assembly Include. The
+# six measured assemblies come from the original policy, not a new floor list.
+settings_file = scratch / "v1.runsettings"
+subprocess.run([str(root / "scripts/coverage:development-v1"), "--settings", str(settings_file)], check=True)
+original = ET.parse(root / "tests/coverage.runsettings")
+generated = ET.parse(settings_file)
+include = generated.find(".//Configuration/Include")
+expected = {"AgentCore", "Astronomy", "Catalog.Sqlite", "Imaging", "Processing", "Storage.FileSystem"}
+assert set(include.text.split(",")) == {f"[HVO.SkyMonitor.{name}]*" for name in expected}
+include.text = original.find(".//Configuration/Include").text
+assert ET.tostring(generated.getroot()) == ET.tostring(original.getroot())
+cases += 1
+print("PASS scoped settings retain all canonical exclusions")
+
+results = scratch / "results"
+results.mkdir()
+result = subprocess.run([str(root / "scripts/coverage:development-v1"), str(results), str(scratch / "coverage")],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "Missing or extra Unit coverage data" in result.stderr
+cases += 1
+print("PASS missing Unit reports fail before merging")
+
+# Exercise the actual policy, including the rule against turning arbitrary
+# low-coverage files into new local-only exceptions. This fixture is not a Git
+# worktree and never mutates the caller's baselines.
+policy_scripts = scratch / "policy-repo/scripts"
+(policy_scripts / "coverage").mkdir(parents=True)
+for script in ("coverage:policy", "coverage:component"):
+    shutil.copy2(root / "scripts" / script, policy_scripts / script)
+for source in (root / "scripts/coverage").glob("baseline*.json"):
+    shutil.copy2(source, policy_scripts / "coverage" / source.name)
+command = [str(policy_scripts / "coverage:policy"), "push", ""]
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr
+unauthorized = copy.deepcopy(canonical)
+unauthorized["files"][path]["developmentV1LocalOnlyReason"] = "Unapproved exception"
+(policy_scripts / "coverage/baseline.json").write_text(json.dumps(unauthorized))
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 1 and "malformed" in result.stderr
+cases += 1
+print("PASS actual policy rejects an arbitrary new v1 exclusion")
+
+print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
+PY

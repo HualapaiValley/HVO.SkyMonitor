@@ -58,6 +58,14 @@ classifier evidence. Risk-tier local validation and independent review still
 apply. This target-specific rule governs generic protected-CI references in this
 skill; it does not waive an explicitly required integration/qualification result.
 
+V1's Build and Unit check enforces the measurable canonical per-file floors
+using the same baseline and evaluator as the local coverage gate; Preflight
+rejects baseline weakening. Follow the [coverage scope and reproduction](../../../docs/runbooks/ci-pipeline.md#development-v1-per-file-coverage).
+Missing enforced-file data is a failure. Catalog-dependent ReleaseTool coverage,
+full-suite aggregate and additional/higher component floors remain local/full
+qualification. Preserve documented per-PR coverage exceptions, including #1739;
+do not turn them into permanent waivers or invent a new-file percentage gate.
+
 ```text
 coding implementation -> original-issue evidence at candidate SHA
   -> required tier-specific local CLEAN reviews -> coding thread STOP/handoff

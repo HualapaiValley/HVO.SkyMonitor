@@ -352,18 +352,48 @@ def violations(short, full, queue=None, extra=None):
     require('--filter "TestCategory=Unit"' in build, "positive Unit filter")
     require("--no-build" in build, "reuse this job's Release build")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
-    require(build.count("((remaining > 0)) || exit 124") == 3, "cumulative deadline guards")
-    require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 3,
+    unit = step(build, "Run Docker-disabled Unit selection")
+    coverage = step(build, "Enforce canonical per-file coverage floors")
+    policy = step(preflight, "Check coverage policy")
+    require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
+            'EVENT_NAME: ${{ github.event_name }}' in policy and
+            'BASE_REF: ${{ github.base_ref }}' in policy and '        if:' not in policy and
+            'continue-on-error:' not in policy, "coverage policy runs on every v1 event")
+    for command in (
+        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
+        '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \\',
+        '              --collect:"XPlat Code Coverage" \\',
+    ):
+        require(unit.splitlines().count(command) == 1, f"Unit coverage wiring: {command}")
+    for command in (
+        '              dotnet tool restore',
+        '              ./scripts/test:coverage-development-v1',
+        '              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+    ):
+        require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
+    require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
+            "coverage failures propagate and retain stage identity")
+    for name, body in (("Unit", unit), ("coverage", coverage)):
+        require("        if:" not in body and "continue-on-error:" not in body,
+                f"{name} cannot skip or tolerate errors")
+    require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
+            build.find("- name: Enforce canonical per-file coverage floors") <
+            build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
+    require('COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}' in build and
+            'stage_json coverage "$COVERAGE_OUTCOME"' in build and
+            'stages:[$restore,$build,$unit,$coverage]' in build, "coverage outcome and timing retained")
+    require(build.count("((remaining > 0)) || exit 124") == 4, "cumulative deadline guards")
+    require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 4,
             "bounded commands")
     require(re.search(r"started_at_epoch \+ 1080\)\)", build) is not None and
             re.search(r"^    timeout-minutes: 22$", build, re.M) is not None, "bounded workload and job")
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount" in build, "summary matches enforced budgets")
     require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
-    require("hvo-development-v1-ci-v4" in build, "versioned short-profile evidence")
+    require("hvo-development-v1-ci-v5" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
                   "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
-                  '--collect:', "TestCategory=Integration", "gh workflow run ci.yml"):
+                  "TestCategory=Integration", "gh workflow run ci.yml"):
         require(heavy not in short, f"qualification work in short run: {heavy}")
     for command in ("ci:shellcheck", "test:ci-shellcheck"):
         require(f"          ./scripts/{command}\n" in quality, f"full Quality retains {command}")
@@ -415,6 +445,15 @@ mutations = (
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
     ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
+    ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
+    ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
+    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
+    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
+    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage step conditional", short.replace('- name: Enforce canonical per-file coverage floors', '- name: Enforce canonical per-file coverage floors\n        if: false'), full),
+    ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
+    ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
+    ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
     ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
     ("warnings tolerated", short.replace("-warnaserror", ""), full),

@@ -2,6 +2,12 @@ using System.Globalization;
 using System.Text.Json;
 using System.Xml.Linq;
 
+var developmentV1 = args.Length > 0 && args[0] == "--development-v1";
+if (developmentV1)
+{
+    args = args[1..];
+}
+
 if (args.Length < 2)
 {
     throw new ArgumentException("A baseline file and at least one Cobertura report are required.");
@@ -17,8 +23,39 @@ var thresholds = baselineDocument.RootElement.GetProperty("files").EnumerateObje
     static property => property.Name,
     static property => new Threshold(
         property.Value.GetProperty("line").GetDouble(),
-        property.Value.GetProperty("branch").GetDouble()),
+        property.Value.GetProperty("branch").GetDouble(),
+        property.Value.TryGetProperty("developmentV1LocalOnlyReason", out var reason) ? reason.GetString() : null),
     StringComparer.Ordinal);
+
+if (developmentV1)
+{
+    foreach (var (path, threshold) in thresholds.ToArray())
+    {
+        var reason = threshold.DevelopmentV1LocalOnlyReason;
+        if (reason is not null && string.IsNullOrWhiteSpace(reason))
+        {
+            throw new InvalidDataException($"Empty developmentV1LocalOnlyReason for '{path}'.");
+        }
+
+        if (!SourcePathExists(repositoryRoot, path))
+        {
+            reason = "source file is absent from this checkout (the canonical gate's retired-path rule)";
+        }
+
+        if (reason is not null)
+        {
+            Console.WriteLine(FormattableString.Invariant(
+                $"SKIP {path}: canonical floors line {threshold.Line:P2}, branch {threshold.Branch:P2}; {reason}"));
+            thresholds.Remove(path);
+        }
+    }
+
+    if (thresholds.Count == 0)
+    {
+        throw new InvalidDataException("Development v1 has no measurable per-file coverage floors.");
+    }
+}
+
 var files = new Dictionary<string, Coverage>(StringComparer.Ordinal);
 
 foreach (var report in args.Skip(1))
@@ -92,7 +129,9 @@ foreach (var requiredPath in thresholds.Keys.Order(StringComparer.Ordinal))
 {
     if (!files.ContainsKey(requiredPath) && SourcePathExists(repositoryRoot, requiredPath))
     {
-        failures.Add($"required coverage path '{requiredPath}' is missing from the supplied reports");
+        var minimum = thresholds[requiredPath];
+        failures.Add(FormattableString.Invariant(
+            $"{requiredPath}: measured coverage MISSING; floors line {minimum.Line:P2}, branch {minimum.Branch:P2}; required coverage path is missing from the supplied reports"));
     }
 }
 
@@ -112,6 +151,13 @@ foreach (var (sourcePath, coverage) in files)
         continue;
     }
 
+    if (developmentV1 && coverage.Lines.Count == 0)
+    {
+        failures.Add(FormattableString.Invariant(
+            $"{sourcePath}: measured coverage MISSING (no executable line data); floors line {minimum.Line:P2}, branch {minimum.Branch:P2}"));
+        continue;
+    }
+
     var lineRate = Rate(coverage.HitLines.Count, coverage.Lines.Count, 1);
     var fileBranches = coverage.Branches.Values.Sum(static branch => branch.Total);
     var fileCoveredBranches = coverage.Branches.Values.Sum(static branch => branch.Covered);
@@ -121,7 +167,7 @@ foreach (var (sourcePath, coverage) in files)
     if (lineRate < minimum.Line || branchRate < minimum.Branch)
     {
         failures.Add(FormattableString.Invariant(
-            $"{sourcePath}: line {lineRate:P2} (min {minimum.Line:P0}), branch {branchRate:P2} (min {minimum.Branch:P0})"));
+            $"{sourcePath}: line {lineRate:P2} (min {minimum.Line:P2}), branch {branchRate:P2} (min {minimum.Branch:P2})"));
     }
 }
 
@@ -131,10 +177,15 @@ var minimumLine = baselineLine - tolerance;
 var minimumBranch = baselineBranch - tolerance;
 Console.WriteLine(FormattableString.Invariant(
     $"Aggregate coverage: line {aggregateLineRate:P4} ({coveredLines}/{totalLines}), branch {aggregateBranchRate:P4} ({coveredBranches}/{totalBranches})"));
-if (aggregateLineRate < minimumLine || aggregateBranchRate < minimumBranch)
+if (!developmentV1 && (aggregateLineRate < minimumLine || aggregateBranchRate < minimumBranch))
 {
     failures.Add(FormattableString.Invariant(
         $"aggregate: line {aggregateLineRate:P4} (min {minimumLine:P4}), branch {aggregateBranchRate:P4} (min {minimumBranch:P4})"));
+}
+
+if (developmentV1)
+{
+    Console.WriteLine($"Development v1 enforces {thresholds.Count} canonical per-file floors. Aggregate and component coverage remain local/full-qualification gates; the Unit-only aggregate above is informational.");
 }
 
 if (failures.Count > 0)
@@ -145,6 +196,7 @@ if (failures.Count > 0)
         Console.Error.WriteLine($"- {failure}");
     }
 
+    Console.Error.WriteLine("Restore missing coverage collection or add tests for the uncovered paths, then rerun the same gate. Keep the checked-in floors unchanged; documented local-only paths require their catalog/Integration prerequisites.");
     return 1;
 }
 
@@ -204,4 +256,4 @@ sealed class Coverage
 
 readonly record struct BranchKey(string ClassName, int Line, string Condition);
 readonly record struct BranchCoverage(int Covered, int Total);
-readonly record struct Threshold(double Line, double Branch);
+readonly record struct Threshold(double Line, double Branch, string? DevelopmentV1LocalOnlyReason);

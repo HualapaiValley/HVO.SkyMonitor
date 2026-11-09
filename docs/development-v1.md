@@ -41,8 +41,8 @@ Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixe
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
-- **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, and the complete Docker-disabled Unit selection.
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
+- **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, the complete Docker-disabled Unit selection, and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
@@ -118,8 +118,9 @@ a failure does not retract an already successful queue check.
 
 The target controlling path is under ten minutes, with a 1080-second cumulative
 workload budget and a 22-minute hard job timeout. Each self-hosted run retains
-restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the
-`hvo-development-v1-ci-v4` manifest. Failed runs retain their evidence too.
+restore/build/Unit/coverage timing, largest-process RSS, Unit TRX and raw/merged
+coverage evidence in the `hvo-development-v1-ci-v5` manifest. Failed runs retain
+their evidence too.
 
 ### Short checks and full qualification
 

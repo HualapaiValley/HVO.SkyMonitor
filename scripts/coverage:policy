@@ -28,6 +28,8 @@ if (( component_count == 0 )); then
   exit 1
 fi
 
+# The only v1 local-only file is the documented catalog-dependent ReleaseTool
+# path. Adding another exclusion requires changing this executable policy.
 for baseline in "${baselines[@]}"; do
   jq --exit-status '
     (.aggregate.line | type == "number" and . > 0 and . <= 1) and
@@ -36,7 +38,11 @@ for baseline in "${baselines[@]}"; do
     (.files | type == "object") and
     all(.files[];
       (.line | type == "number" and . >= 0 and . <= 1) and
-      (.branch | type == "number" and . >= 0 and . <= 1))
+      (.branch | type == "number" and . >= 0 and . <= 1)) and
+    all(.files | to_entries[];
+      (.value | has("developmentV1LocalOnlyReason") | not) or
+      (.key == "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs" and
+       (.value.developmentV1LocalOnlyReason | type == "string" and test("\\S"))))
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline is malformed: %s\n' "$baseline" >&2
     exit 1

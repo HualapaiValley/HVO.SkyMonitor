@@ -68,6 +68,12 @@ jobs:
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
 
+      - name: Check coverage policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"
+
       # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens, and scripts/docs:terminal-screenshots, which
       # replaces docs/images/terminal with them (#1317).
       - name: Test the terminal screenshot converter and script
@@ -164,6 +170,7 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
           HVO_TERMINAL_RENDERS_DIR: ${{ runner.temp }}/development-v1/terminal-renders
         run: |
+          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/unit.time" \
@@ -172,8 +179,25 @@ jobs:
               --no-build \
               --configuration Release \
               --filter "TestCategory=Unit" \
+              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
+              --collect:"XPlat Code Coverage" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
               --logger trx
+
+      - name: Enforce canonical per-file coverage floors
+        id: coverage
+        run: |
+          remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining > 0)) || exit 124
+          # The timed child expands the exported evidence directory.
+          # shellcheck disable=SC2016
+          /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/coverage.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining}s" \
+            bash -euo pipefail -c '
+              dotnet tool restore
+              ./scripts/test:coverage-development-v1
+              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
+            '
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
       - name: Draw terminal screenshots
@@ -188,6 +212,7 @@ jobs:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           UNIT_OUTCOME: ${{ steps.unit.outcome }}
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
         run: |
           read_metric() {
             local file="$1" label="$2"
@@ -206,7 +231,7 @@ jobs:
           completed_at="$(date +%s)"
           trx_count="$(find "$DEV_V1_EVIDENCE_ROOT/unit" -name '*.trx' -type f | wc -l)"
           jq -n \
-            --arg schema hvo-development-v1-ci-v4 \
+            --arg schema hvo-development-v1-ci-v5 \
             --arg headSha "$GITHUB_SHA" \
             --arg event "$GITHUB_EVENT_NAME" \
             --arg sdkVersion "$(dotnet --version 2>/dev/null || true)" \
@@ -215,7 +240,8 @@ jobs:
             --argjson restore "$(stage_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
+            --argjson coverage "$(stage_json coverage "$COVERAGE_OUTCOME")" \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 
