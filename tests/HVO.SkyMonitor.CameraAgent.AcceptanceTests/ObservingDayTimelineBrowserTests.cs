@@ -59,8 +59,12 @@ public sealed class ObservingDayTimelineBrowserTests
                 var box = await marker.BoundingBoxAsync().ConfigureAwait(false);
                 Assert.IsNotNull(box);
                 var point = new { x = box.X + box.Width / 2, y = box.Y + box.Height / 2 };
-                var hit = await page.EvaluateAsync<string>(
-                    "p => document.elementFromPoint(p.x, p.y)?.closest('a')?.getAttribute('href')", point).ConfigureAwait(false);
+                var hit = await marker.EvaluateAsync<string>("""
+                    a => {
+                        const box = a.getBoundingClientRect();
+                        return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('a')?.getAttribute('href');
+                    }
+                    """).ConfigureAwait(false);
                 Assert.AreEqual(href, hit, $"Visible centre at {width}px, {separation}px separation.");
                 await page.Mouse.ClickAsync(point.x, point.y).ConfigureAwait(false);
                 Assert.AreEqual(href, await page.Locator("body").GetAttributeAsync("data-clicked").ConfigureAwait(false));
@@ -79,7 +83,7 @@ public sealed class ObservingDayTimelineBrowserTests
         var pageCss = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "ObservingDayPage.razor.css")).ConfigureAwait(false);
         await page.AddStyleTagAsync(new() { Content = pageCss.Replace("::deep", string.Empty, StringComparison.Ordinal) }).ConfigureAwait(false);
         await page.EvaluateAsync("""
-            () => document.body.insertAdjacentHTML('beforeend', '<div class="product-hours"><ol><li><a href="/archive/products">01:00</a></li><li><span>02:00</span></li></ol></div>')
+            () => document.body.insertAdjacentHTML('beforeend', '<div class="day-page"><div class="product-hours"><ol><li><a href="/archive/products">01:00</a></li><li><span>02:00</span></li></ol></div></div>')
             """).ConfigureAwait(false);
         var hourSlots = await page.Locator(".product-hours li > *").EvaluateAllAsync<bool>("""
             slots => slots.every(slot => slot.getBoundingClientRect().height >= 44 &&
