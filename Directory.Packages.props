@@ -68,7 +68,7 @@
     <!-- Keep managed SkiaSharp and every native asset on the same release; native ABI ranges are enforced on the first
          native call. macOS/Win32 remain transitive SkiaSharp dependencies; the Linux RID keeps them out of outputs. -->
     <PackageVersion Include="SkiaSharp" Version="4.154.0" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.154.0" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.155.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.154.0" />
     <PackageVersion Include="StackExchange.Redis" Version="3.4.31" />
