@@ -1,4 +1,6 @@
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -106,9 +108,67 @@ internal static class UnitCoverageInputs
         using var provider = MetadataReaderProvider.FromPortablePdbStream(stream);
         var reader = provider.GetMetadataReader();
         var sources = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+        using var assemblyStream = File.OpenRead(Path.ChangeExtension(pdb, ".dll"));
+        using var assembly = new PEReader(assemblyStream);
+        var metadata = assembly.GetMetadataReader();
+        bool Excluded(CustomAttributeHandleCollection attributes)
+        {
+            foreach (var attribute in attributes)
+            {
+                var constructor = metadata.GetCustomAttribute(attribute).Constructor;
+                var type = constructor.Kind == HandleKind.MemberReference
+                    ? metadata.GetMemberReference((MemberReferenceHandle)constructor).Parent
+                    : metadata.GetMethodDefinition((MethodDefinitionHandle)constructor).GetDeclaringType();
+                var name = type.Kind == HandleKind.TypeReference
+                    ? metadata.GetTypeReference((TypeReferenceHandle)type).Name
+                    : metadata.GetTypeDefinition((TypeDefinitionHandle)type).Name;
+                if (metadata.GetString(name) == "ExcludeFromCodeCoverageAttribute")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        bool ExcludedMethod(MethodDefinitionHandle handle)
+        {
+            var method = metadata.GetMethodDefinition(handle);
+            if (Excluded(method.GetCustomAttributes()))
+            {
+                return true;
+            }
+
+            var type = method.GetDeclaringType();
+            while (!type.IsNil)
+            {
+                var definition = metadata.GetTypeDefinition(type);
+                if (Excluded(definition.GetCustomAttributes()))
+                {
+                    return true;
+                }
+
+                type = definition.GetDeclaringType();
+            }
+
+            return false;
+        }
+
+        if (Excluded(metadata.GetAssemblyDefinition().GetCustomAttributes()))
+        {
+            return sources;
+        }
+
         foreach (var handle in reader.MethodDebugInformation)
         {
             var method = reader.GetMethodDebugInformation(handle);
+            var definition = MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle));
+            var kickoff = method.GetStateMachineKickoffMethod();
+            if (ExcludedMethod(definition) || (!kickoff.IsNil && ExcludedMethod(kickoff)))
+            {
+                continue;
+            }
+
             foreach (var point in method.GetSequencePoints())
             {
                 if (point.IsHidden)

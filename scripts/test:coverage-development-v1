@@ -197,7 +197,8 @@ source_dir = inventory_repo / "src" / assembly_name
 source_dir.mkdir(parents=True)
 for filename, type_name in (("CameraGeometry.cs", "InventoryA"), ("InventorySentinel.cs", "InventoryB")):
     (source_dir / filename).write_text(f"namespace CoverageFixture; public static class {type_name} {{ public static int Value() => 1; }}\n")
-(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n}\n")
+(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static int Excluded() => 1;\n}\n")
+(source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
 fixture_project = inventory_repo / "Inventory.csproj"
 fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <TargetFramework>net10.0</TargetFramework><AssemblyName>{assembly_name}</AssemblyName>
