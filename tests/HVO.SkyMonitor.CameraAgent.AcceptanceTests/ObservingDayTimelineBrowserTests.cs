@@ -129,8 +129,10 @@ public sealed class ObservingDayTimelineBrowserTests
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         // Replace only the day read model. App/base, routing, authentication, layouts, CSS and Blazor are real.
+        // The fixture owns/removes its unique /tmp/iv-* root: Unix socket paths must be short and symlink-free.
         await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
-            services.Replace(ServiceDescriptor.Singleton<ICameraAgentObservingDayUiService>(new CandidateDayService()))).ConfigureAwait(false);
+            services.Replace(ServiceDescriptor.Singleton<ICameraAgentObservingDayUiService>(new CandidateDayService())),
+            scratchRoot: "/tmp").ConfigureAwait(false);
         var measurements = new List<object>();
         foreach (var javaScriptEnabled in new[] { true, false })
         {
