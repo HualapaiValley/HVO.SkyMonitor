@@ -99,13 +99,23 @@ files, SysV IPC, io_uring, keys, tracing and executable mmap/mprotect are denied
 There is no dynamic loader or LD_PRELOAD injection path. Ordinary named files,
 including O_TMPFILE, remain confined to the size-limited `/work` mount; proc and
 the rest of the root are read-only. The policy version is part of each target
-identity; this correction is `hvo-custom-script-linux-v2`, so v1 registrations
-are deliberately not reinterpreted.
+identity; this correction is `hvo-custom-script-linux-v3`, so earlier registrations
+are deliberately not reinterpreted. The x64 and arm64 policies both permit the
+verified shell operations for background jobs and `wait`, glob expansion,
+readability tests and `touch`, while retaining the native-code restrictions.
 
 A dedicated launching thread stays alive until the child exits. This matters
 because Bubblewrap's parent-death signal is tied to the **forking thread**, and
 an idle .NET thread-pool thread may retire while the host still runs. The scope
 also has `RuntimeMaxSec = TimeoutSeconds + 10`, independently bounding an orphan.
+
+Before execing `prlimit` and Bubblewrap, a fixed trusted static BusyBox shell
+closes every inherited descriptor above 2 through `/proc/self/fd`. It runs in
+place and before the descriptor ceiling is lowered, so high-numbered host file,
+directory and lock descriptors cannot survive. It fails closed if the descriptor
+table cannot be enumerated or closed. This cleanup code never incorporates
+registered text; launcher/script arguments remain separate literal argv entries.
+Only the redirected standard streams cross that boundary.
 
 The launch environment is cleared; only the non-secret `XDG_RUNTIME_DIR` user-bus
 locator is supplied to the scope launcher. Bubblewrap clears that locator too.
@@ -115,6 +125,11 @@ arguments. It is never interpolated into a host shell or logged. After verifying
 the cgroup, the host sends only a finite binary seccomp policy to Bubblewrap's
 stdin. Bubblewrap must consume/install it before exec; the script itself receives
 `/dev/null` as stdin, so `read` cannot consume later script lines.
+The transient scope has a random content-free unit name and the fixed description
+`HVO bounded custom script`; systemd's default description derived from the command
+line is never used. Scope metadata and its lifecycle journal messages therefore
+contain no registered content or arguments. Qualification inspects the actual
+scope and only that unit's journal, without publishing raw script output.
 The working directory is a private size-limited `/work` tmpfs; `/tmp` points to
 it. The remaining filesystem is read-only. Scratch capacity is shared across
 files and defaults to 1 MiB (4 KiB–8 MiB allowed, and at least one host memory
@@ -171,6 +186,12 @@ counts and injected-clock completion time. The runner retains execution authorit
 through a five-second cancellation-independent journal write before propagating
 cancellation. A delayed restart preserves that result. Abrupt host death still
 uses the existing restart reconciliation when no orderly result is available.
+If an already claimed script is cancelled before launch, the runner durably
+records `script.cancelled-before-start`, no exit code, zero stream counts and the
+actual cancellation-completion instant with the same bounded completion token.
+A restart does not replace that instant with its own reconciliation time.
+The same bounded cancellation-independent write preserves an already completed
+script result if cancellation arrives between execution and journal settlement.
 
 There is no automatic retry of arbitrary side effects or replay of missed work.
 Missed periods are recorded under the existing bounded missed-occurrence policy;
@@ -200,6 +221,11 @@ non-executable mappings and preload rejection through the actual script boundary
 The fixture source is retained; no host escape, unbounded resource load or hardware
 is required. Tests also qualify delayed cancellation recovery and continued built-in
 refresh progress during repeated real script timeouts.
+Descriptor regressions deliberately inherit non-CLOEXEC host file/directory fds
+above the script's descriptor ceiling and verify refusal without touching host
+state outside their synthetic fixture. Cleanup/start assertions observe only
+descendants of the current testhost and their exact script cgroups, so unrelated
+sleep processes and other owners' script scopes cannot affect the assertions.
 
 ## Acceptance and qualification
 

@@ -135,6 +135,9 @@ public sealed class CustomScriptTaskAdapterTests
         Assert.Contains("--disable-userns", info.ArgumentList);
         Assert.Contains("--assert-userns-disabled", info.ArgumentList);
         Assert.Contains("--seccomp", info.ArgumentList);
+        Assert.Contains("--description=" + LinuxCustomScriptSandbox.ScopeDescription, info.ArgumentList);
+        var unit = info.ArgumentList.Single(static value => value.StartsWith("--unit=", StringComparison.Ordinal));
+        Assert.IsTrue(Guid.TryParseExact(unit[25..], "N", out _), "Scope metadata uses a random identity, never content or arguments.");
         Assert.DoesNotContain("/lib64/ld-linux-x86-64.so.2", info.ArgumentList);
         Assert.IsTrue(info.RedirectStandardInput && info.RedirectStandardOutput && info.RedirectStandardError);
     }

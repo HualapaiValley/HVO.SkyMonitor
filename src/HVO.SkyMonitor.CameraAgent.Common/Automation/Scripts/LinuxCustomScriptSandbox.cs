@@ -17,6 +17,18 @@ internal static class LinuxCustomScriptSandbox
     private const string Bubblewrap = "/usr/bin/bwrap";
     private const string SystemdRun = "/usr/bin/systemd-run";
     private const string Prlimit = "/usr/bin/prlimit";
+    internal const string ScopeDescription = "HVO bounded custom script";
+    // This trusted, single-threaded shell execs in place before prlimit lowers RLIMIT_NOFILE.
+    // Enumerate the entire inherited table (including high-numbered fds), never only 3..63.
+    // Kernel fd names are decimal; reject anything else before the numeric-only eval.
+    private const string CloseInheritedDescriptors = """
+        for descriptor in /proc/self/fd/*; do
+            descriptor=${descriptor##*/}
+            case "$descriptor" in 0|1|2) continue;; ''|*[!0-9]*) exit 125;; esac
+            eval "exec $descriptor>&-" || exit 125
+        done
+        exec "$@"
+        """;
 
     internal static bool Probe() => ProbeUnavailableReason() is null;
 
@@ -165,9 +177,11 @@ internal static class LinuxCustomScriptSandbox
         info.Environment["XDG_RUNTIME_DIR"] = "/run/user/" + (RealUserId() ?? "unavailable");
         Add("--user", "--scope", "--quiet", "--collect", "--no-ask-password",
             "--unit=hvo-custom-script-" + Guid.NewGuid().ToString("N"),
+            "--description=" + ScopeDescription,
             "--property=MemoryMax=67108864", "--property=MemorySwapMax=0",
             "--property=TasksMax=16", "--property=CPUQuota=50%", "--property=KillSignal=SIGKILL",
-            "--property=RuntimeMaxSec=" + (script.TimeoutSeconds + 10).ToString(CultureInfo.InvariantCulture), "--", Prlimit,
+            "--property=RuntimeMaxSec=" + (script.TimeoutSeconds + 10).ToString(CultureInfo.InvariantCulture), "--",
+            "/usr/bin/busybox", "sh", "-c", CloseInheritedDescriptors, "hvo-script-launcher", Prlimit,
             "--core=0", "--as=33554432", "--nofile=64", "--fsize=" + script.ScratchBytes,
             "--cpu=" + script.TimeoutSeconds, "--", Bubblewrap,
             "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled", "--die-with-parent", "--new-session", "--cap-drop", "ALL",

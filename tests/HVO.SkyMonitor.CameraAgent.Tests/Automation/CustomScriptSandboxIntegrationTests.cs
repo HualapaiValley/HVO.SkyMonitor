@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class CustomScriptSandboxIntegrationTests
+public sealed partial class CustomScriptSandboxIntegrationTests
 {
     [TestInitialize]
     public void RequireSandbox()
@@ -90,12 +90,14 @@ public sealed class CustomScriptSandboxIntegrationTests
     {
         var script = CustomScriptTaskAdapterTests.Script("sleep 200 & wait");
         script.TimeoutSeconds = 1;
-        var before = SleepProcesses();
+        var scope = new OwnedSandboxScope();
         var watch = Stopwatch.StartNew();
-        var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+        var execution = LinuxCustomScriptSandbox.ExecuteAsync(script, default).AsTask();
+        await scope.WaitForSleepAsync(execution).ConfigureAwait(false);
+        var result = await execution.ConfigureAwait(false);
         Assert.AreEqual("timeout", result.Status);
         Assert.IsLessThan(TimeSpan.FromSeconds(10), watch.Elapsed);
-        Assert.IsEmpty(SleepProcesses().Except(before).ToArray(), "No script sleep child may survive sandbox drain.");
+        scope.AssertDrained();
     }
 
     [TestMethod]
@@ -103,12 +105,16 @@ public sealed class CustomScriptSandboxIntegrationTests
     {
         var script = CustomScriptTaskAdapterTests.Script("sleep 200 & wait");
         var adapter = CustomScriptTaskAdapterTests.Adapter(script);
-        var before = SleepProcesses();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), cancellation.Token).ConfigureAwait(false))
-            .ConfigureAwait(false);
-        Assert.IsEmpty(SleepProcesses().Except(before).ToArray());
+        var scope = new OwnedSandboxScope();
+        using var cancellation = new CancellationTokenSource();
+        var execution = adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), cancellation.Token).AsTask();
+        try { await scope.WaitForSleepAsync(execution).ConfigureAwait(false); }
+        finally
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await execution.ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        scope.AssertDrained();
         using var alreadyCancelled = new CancellationTokenSource();
         await alreadyCancelled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
@@ -405,13 +411,10 @@ public sealed class CustomScriptSandboxIntegrationTests
                     script.Target, LocalAutomationTriggerKind.Periodic, 60, 0, "save", "site-owner", null), default).ConfigureAwait(false);
                 Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
                 await store.RunNowAsync(new("script-task", 1, "run", "site-owner", "cancel test"), default).ConfigureAwait(false);
-                var before = SleepProcesses();
+                var scope = new OwnedSandboxScope();
                 using var cancel = new CancellationTokenSource();
                 await runner.SweepAsync(cancel.Token).ConfigureAwait(false);
-                var deadline = Stopwatch.StartNew();
-                while (!HasSleepingSandboxProcess() && deadline.Elapsed < TimeSpan.FromSeconds(5))
-                    await Task.Delay(10).ConfigureAwait(false);
-                Assert.IsTrue(HasSleepingSandboxProcess(), "Wait until the script printed its prefix and started sleep.");
+                await scope.WaitForSleepAsync(worker.WhenIdleAsync()).ConfigureAwait(false);
                 clock.Advance(TimeSpan.FromSeconds(7));
                 await cancel.CancelAsync().ConfigureAwait(false);
                 await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
@@ -421,7 +424,7 @@ public sealed class CustomScriptSandboxIntegrationTests
                 StringAssert.Contains(terminal.Detail, "script.cancelled; exit=", StringComparison.Ordinal);
                 StringAssert.Contains(terminal.Detail, "stdoutBytes=3; stderrBytes=0", StringComparison.Ordinal);
                 Assert.IsFalse(terminal.Detail.Contains("exit=;", StringComparison.Ordinal));
-                Assert.IsEmpty(SleepProcesses().Except(before).ToArray());
+                scope.AssertDrained();
             }
             clock.Advance(TimeSpan.FromDays(1));
             using var reopened = NewStore();
@@ -481,23 +484,4 @@ public sealed class CustomScriptSandboxIntegrationTests
         }
     }
 
-    private static bool HasSleepingSandboxProcess()
-    {
-        foreach (var directory in Directory.EnumerateDirectories("/proc"))
-        {
-            if (!int.TryParse(Path.GetFileName(directory), out _)) continue;
-            try
-            {
-                if (File.ReadAllText(Path.Combine(directory, "cgroup")).Contains("/hvo-custom-script-", StringComparison.Ordinal) &&
-                    File.ReadAllText(Path.Combine(directory, "wchan")).Contains("nanosleep", StringComparison.Ordinal)) return true;
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
-        }
-        return false;
-    }
-
-    private static int[] SleepProcesses() => Process.GetProcessesByName("sleep").Concat(Process.GetProcessesByName("busybox")).Select(process =>
-    {
-        using (process) return process.Id;
-    }).ToArray();
 }

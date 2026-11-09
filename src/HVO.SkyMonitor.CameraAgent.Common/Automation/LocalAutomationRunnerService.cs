@@ -329,12 +329,22 @@ public sealed partial class LocalAutomationRunnerService(
         catch (LocalAutomationDrainedCancellationException drained) when (cancellationToken.IsCancellationRequested)
         {
             // Execution authority remains held during this bounded, cancellation-independent write.
-            await CompleteDrainedCancellationAsync(journalRunKey, drained).ConfigureAwait(false);
+            await CompleteDrainedScriptAsync(journalRunKey, drained.Execution, drained.CompletedAtUtc).ConfigureAwait(false);
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The claimed run stays claimed and restart recovery settles it as interrupted.
+            if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+            {
+                // A script cancellation after launch carries drained evidence above. An ordinary
+                // cancellation here happened before launch (including registry/startup checks).
+                // Settle the already claimed occurrence now, rather than stamping a later restart.
+                var notStarted = new LocalAutomationDrainedCancellationException(
+                    new(LocalAutomationRunOutcome.Interrupted,
+                        "script.cancelled-before-start; exit=; stdoutBytes=0; stderrBytes=0"),
+                    timeProvider.GetUtcNow(), cancellationToken);
+                await CompleteDrainedScriptAsync(journalRunKey, notStarted.Execution, notStarted.CompletedAtUtc).ConfigureAwait(false);
+            }
             throw;
         }
         catch (Exception exception)
@@ -348,8 +358,16 @@ public sealed partial class LocalAutomationRunnerService(
         }
         var elapsed = Stopwatch.GetElapsedTime(started);
         activity?.SetTag("outcome", execution.Outcome.ToString());
-        await store.CompleteRunAsync(journalRunKey, execution.Outcome, execution.Detail, cancellationToken)
-            .ConfigureAwait(false);
+        if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+        {
+            // A cancellation arriving after a drained normal result must not discard that result.
+            await CompleteDrainedScriptAsync(journalRunKey, execution, timeProvider.GetUtcNow()).ConfigureAwait(false);
+        }
+        else
+        {
+            await store.CompleteRunAsync(journalRunKey, execution.Outcome, execution.Detail, cancellationToken)
+                .ConfigureAwait(false);
+        }
         telemetry?.RecordRun(occurrence.Definition.TriggerKind, execution.Outcome, elapsed);
         RunSettled(
             logger,
@@ -358,11 +376,11 @@ public sealed partial class LocalAutomationRunnerService(
             execution.Outcome.ToString());
     }
 
-    private async Task CompleteDrainedCancellationAsync(string journalRunKey, LocalAutomationDrainedCancellationException drained)
+    private async Task CompleteDrainedScriptAsync(string journalRunKey, LocalAutomationExecution execution, DateTimeOffset completedAtUtc)
     {
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await store.CompleteDrainedRunAsync(journalRunKey, drained.Execution.Outcome, drained.Execution.Detail,
-            drained.CompletedAtUtc, completion.Token).ConfigureAwait(false);
+        await store.CompleteDrainedRunAsync(journalRunKey, execution.Outcome, execution.Detail,
+            completedAtUtc, completion.Token).ConfigureAwait(false);
     }
 
     /// <summary>

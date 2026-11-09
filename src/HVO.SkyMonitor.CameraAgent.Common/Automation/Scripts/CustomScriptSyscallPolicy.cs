@@ -10,9 +10,12 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 /// </summary>
 internal static class CustomScriptSyscallPolicy
 {
-    internal static byte[] Create()
+    internal static byte[] Create() => Create(RuntimeInformation.ProcessArchitecture);
+
+    internal static byte[] Create(Architecture architecture)
     {
-        var arm = RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
+        if (architecture is not (Architecture.X64 or Architecture.Arm64)) throw new PlatformNotSupportedException();
+        var arm = architecture == Architecture.Arm64;
         var instructions = new List<(ushort Code, byte True, byte False, uint Value)>();
         Load(4); // seccomp_data.arch; reject compatibility ABIs and x32 syscall numbers.
         Jump(arm ? 0xc00000b7U : 0xc000003eU, 1, 0);
@@ -45,7 +48,11 @@ internal static class CustomScriptSyscallPolicy
                 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 95, 96, 97, 98, 99, 100, 102, 104,
                 107, 108, 110, 111, 112, 131, 137, 138, 158, 186, 201, 202, 204, 218, 219, 228, 230, 231,
                 234, 257, 258, 262, 263, 264, 267, 269, 270, 271, 273, 280, 281, 292, 293, 302, 318, 332, 334, 439];
-        foreach (var number in allowed)
+        // Verified against a trace of the shipped static BusyBox: ash wait uses rt_sigsuspend,
+        // glob uses getdents64, test -r uses getgroups, and touch uses utimensat. Use the same
+        // semantic operations on both ABIs (Linux unistd_64.h and asm-generic/unistd.h).
+        uint[] shellFeatures = arm ? [133, 61, 158, 88] : [130, 217, 115, 280];
+        foreach (var number in allowed.Concat(shellFeatures).Distinct())
         {
             Jump(number, 0, 1);
             Return(0x7fff0000);
