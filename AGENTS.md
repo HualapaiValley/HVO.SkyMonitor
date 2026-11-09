@@ -4,6 +4,42 @@ This is the canonical repository-wide instruction source for every coding-agent
 harness. Agent-specific instruction files must load or point to this file and
 must not redefine its policy inconsistently.
 
+## Coding Threads and Kepler
+
+Coding threads own implementation, original-requirement evidence, local tests,
+independent local review, and corrections. They stop at the candidate/evidence/
+review handoff to Kepler, and push only when instructed. They **never create a
+PR, including a draft, mark a PR ready, publish `hvo/reviewed-head`, or enqueue**.
+This boundary is unconditional; being the issue owner or having write access
+does not authorize those actions. Kepler alone creates PRs, controls draft/
+readiness and formal review, publishes the reviewed-head gate, and enqueues.
+Kepler also operates any authorized direct/auto-merge fallback and PR ledger.
+Older owner/finalization instructions in other guides do not transfer these
+actions to a coding thread.
+
+## Review Tiers and Findings
+
+| Tier | Scope | Required independent reviews on the same candidate SHA |
+| --- | --- | --- |
+| LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix, with no HIGH concern | One Sol **CLEAN** |
+| HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component work; when unsure, HIGH | Sol **and** Opus **CLEAN**, both on that candidate |
+
+HIGH concerns take precedence over LOW categories. These requirements apply at
+each required local/formal review stage; local review does not waive formal
+review. The existing A/B/C/M validation ladder and review-depth profiles still
+select checks and depth, but cannot replace the named reviewers or their count.
+Humans, bots, other models, a focused interaction review, an availability
+waiver, elapsed time, and a correction cap cannot substitute for required Sol/
+Opus CLEAN reports on the candidate. Missing required review means BLOCKED.
+
+Only **High and Medium review findings block**; classify a Critical finding as
+High. Lows become linked follow-up issues through Kepler and do not force
+another correction round. Incompleteness or missing required evidence always
+blocks, is at least Medium, and is **never Low** or deferrable. Required tests
+and CI checks remain gates independently of finding severity. CLEAN requires
+complete scope and no unresolved High/Medium findings; any remaining Lows must
+have follow-up tracking.
+
 ## Toolchain and Validation
 
 - Select the protected CI profile by the PR's **target branch** before applying
@@ -137,9 +173,11 @@ must not redefine its policy inconsistently.
 
 ### Developer Ownership
 
-- The assigned person or agent owns one issue end to end: implementation,
-  validation, independent review, corrections, green CI, authorized merge, and
-  cleanup. No coordinator or enrollment is required for ordinary assigned work.
+- The assigned coding owner owns implementation, validation, independent local
+  review, corrections, and the resumable candidate handoff. Kepler owns the PR
+  lifecycle and returns findings to that owner when implementation is needed.
+  No coordinator enrollment is required for ordinary coding work; it does not
+  change the unconditional Kepler boundary.
 - Before editing, inspect the issue assignees, `workflow:in-progress` label,
   claim comments, and linked open PRs. An existing claim means do not take it,
   including while its owner waits for review or CI.
@@ -211,77 +249,110 @@ must not redefine its policy inconsistently.
   removal of scheduling-only holds in the issue and roadmap before claiming.
   Distinguish start, integration, and release gates; preparation can precede
   qualification, but supported adoption cannot.
-- Every PR uses a draft-first convergence cycle. Protected CI must not run until
-  review has converged and the target branch has been finally synchronized and
-  integration-reviewed when synchronization changes the target base. A freshly
-  fetched target SHA already covered by the converged review needs a recorded
-  unchanged-base proof, not a redundant base-sync review. Use a
-   PR-owner-requested independent human or agent reviewer, or an
-  equivalent execution route that can bind the requested immutable range and
-  record its actual provider, model, and reasoning effort, for convergence
-  evidence. Provider-side PR bots may supplement this with a current-head audit
-  but do not replace exact-range evidence. Select the review agent from the
-  issue tier, review mode, finding severity, and cross-boundary risk using the
-  PR lifecycle skill; never leave model or effort selection implicit. Initial
-  review covers the full PR diff; correction
-  rereviews cover only the delta from the previous reviewed head and its concrete
-  interactions, and verify every prior finding individually. A finding neither
-  verified fixed nor explicitly deferred to a linked issue remains unresolved.
-  For agent review, use the lifecycle skill's timed primary/fallback acquisition
-  and exact-head unavailability procedure. Human review uses an agreed window;
-  elapsed time is not approval. Record actual reviewers rather than assuming a
-  particular provider pair.
-  Allow at most three correction rereviews per PR before moving remaining
-  non-blocking findings to one linked follow-up issue. Security, data-loss,
-  acceptance, failing-CI, and material-correctness defects always block.
-- Tier A/B PRs receive one initial exact-range review plus only finding-driven
-  correction rereviews. Use `standard` by default and promote Tier B to `deep`
-  for concurrency, durability, security, CI-control, or cross-boundary risk.
-  Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human,
-  one-shot agent, or guarded resumed-session route; fleet scripts apply only to
-  the enrolled resumed-session route they support.
-- Finalize through GitHub auto-merge while the repository allows it. Once review
-  has converged, mark the PR ready. Once the required checks pass on the
-  reviewed head, publish the `hvo/reviewed-head` commit status on exactly that
-  head. `development/v1`'s branch protection requires that status, so it is the
-  merge gate there; `main` doesn't require it, and promotion PRs stay
-  owner-approved. Then
-  merge, or enable auto-merge (merge commit) pinned to that head. Branch
-  protection also enforces green required checks, an up-to-date head and
-  resolved conversations. The PR lifecycle skill gives the steps and commands.
-  - When the target branch advances, the operator's merge-train automation
-    merges it into one queued PR at a time.
-  - It pushes that merge only when two conditions hold. First, the only
-    conflicts are in the test-count inventories, the CI runbook totals and
-    CHANGELOG lines. Second, the non-count diff is byte-identical to the
-    reviewed range. That merge is the recorded unchanged-base proof, so it
-    needs no base-sync review.
-  - In every other case, including a failed required check, the automation
-    disables auto-merge, returns the PR to draft and hands it back to the
-    owner. The owner synchronizes, obtains the base-sync review, and enables
-    auto-merge again on the new reviewed head.
-  - Auto-merge does not switch itself off on a push with write access. Turn it
-    off (`gh pr merge <n> --disable-auto`) before pushing to a finalized PR. The
-    automation also withdraws it from any head it wasn't enabled for.
-- When auto-merge is unavailable or the operator reserves the merge, use the
-  finalization lock. Only one PR may hold the repository-wide finalization
-  lock. Acquire it before final target synchronization and hold it through any
-  required base-sync review, protected CI, and merge. If the target branch
-  advances, return the PR to draft, release the lock, synchronize and review
-  again, then run CI on the new reviewed head.
-- Opening a PR assigns its implementing agent ownership of the complete lifecycle:
-  request review, actively monitor review and checks, disposition findings, drive
-  corrections and bounded rereviews, mark the converged head ready, monitor final
-  protected CI, merge when green, synchronize `main`, and remove merged branches.
-  Continue without a routine operator prompt unless the operator explicitly
-  pauses, limits, or reserves the merge decision, or a real blocker requires a
-  decision.
+- Reaching a PR, including a draft, means the declared issue scope is completed,
+  tested locally, and independently vetted locally at the required complexity.
+  Apply the Issue Completeness contract below before PR creation; draft-first
+  convergence is the subsequent Kepler/PR lifecycle, not permission to offload
+  unfinished implementation or acceptance discovery onto formal review or CI.
+- Kepler creates a draft PR only after completeness evidence and the required
+  tier-specific local CLEAN reviews pass. Protected CI must not advance until
+  formal review converges on the current PR head and real merge/product
+  conflicts are resolved, tested, and independently reviewed. Target-tip
+  movement alone requires no synchronization, re-testing, or new review.
+- Initial review covers the full merge-base-to-candidate diff and original
+  requirements. Correction review covers the prior-reviewed-head delta and
+  concrete interactions, verifying every prior finding individually. Every
+  required Sol/Opus report must identify the same candidate SHA and include a
+  completeness verdict. Provider-side bots and human reviews are supplemental.
+  The legacy three-correction budget triggers escalation to Kepler, not an
+  approval, waiver, or deferral of High/Medium findings or incompleteness.
+- A/B/C/M validation tiers and standard/deep profiles retain their validation
+  and depth roles. Use deep for HIGH concerns and material blocking findings;
+  these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
+- For the operated `development/v1` merge queue, Kepler revalidates the
+  **CURRENT PR HEAD SHA**, complete requirement evidence, required local/formal
+  CLEAN reviews, passing required CI, and resolved conversations. Kepler alone
+  publishes `hvo/reviewed-head` on that exact head and then enqueues with
+  GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
+  `gh pr merge --merge` warns and does **not** enqueue. Coding threads stop at
+  handoff; they do not perform any of these PR/status/queue operations.
+- Direct merge and auto-merge are separate fallback routes, used only by Kepler
+  when the queue is unavailable or an operator explicitly selects the fallback.
+  They retain the same completeness, exact-candidate reviews, checks, and
+  conversation requirements. They are not substitutes for queue admission.
+  Kepler controls fallback finalization locks and disables auto-merge/returns
+  the PR to draft before authorizing a correction push to a finalized PR.
+- Queue eligibility belongs to the **CURRENT PR HEAD SHA**, not the target tip
+  or temporary group commit. Tip-behind or age alone does not invalidate head
+  reviews, require automatic base-only synchronization or latest-development/v1
+  re-testing, or block submission/resubmission. Roy deferred stricter latest-base
+  pre-submit policy: monitor queue and CI first; adopt stricter policy only if
+  evidence shows a need and Roy authorizes it. Queue CI validates integration
+  separately; this documentation changes no executable gate.
+- Actual CONFLICTING merges and real product conflicts still need resolution.
+  Kepler keeps/returns the PR to draft and returns the work to its coding owner.
+  Preserve existing conflict resolutions and reviewed history. Any changed
+  candidate, including an integration merge, needs applicable local evidence
+  and the required tier's reviewers CLEAN on that SHA before Kepler advances it.
+  An unchanged-diff/base proof can inform review but cannot copy old reviews or
+  a reviewed-head status to a new candidate. Target-tip movement with an
+  unchanged PR head does not trigger this loop.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
 - After merge, report completion and release the claim. Taking another issue
   requires explicit assignment or opt-in queue authorization, not a routine
   prompt between steps of the already assigned issue.
+
+### Issue Completeness
+
+- Before claiming done, the owner reads the original GitHub issue body,
+  **all discussion and acceptance criteria**, linked governing requirements,
+  and approved scope clarifications. Roy's latest instructions win conflicts;
+  record the source and resulting scope explicitly. A PR description, code diff,
+  generated test list, or previous review summary cannot replace those sources.
+- Before requesting independent local review, map every in-scope requirement to
+  implemented behavior and local behavioral evidence at the immutable candidate
+  SHA. Include normal, negative, failure, cancellation, recovery, durable-state,
+  and interaction cases as relevant; give N/A reasons for inapplicable cases.
+  Tests and acceptance criteria derived only from the implemented behavior do
+  not prove the original issue is solved.
+  For docs-only or mechanical work, evidence checks the required policy or
+  invariant directly, without inventing runtime results.
+- Missing behavior or required evidence returns the owner to **IMPLEMENTATION**.
+  Do not claim completion, silently downgrade it to Low, or defer it through a
+  review-round cap. Keep the assigned HIGH/LOW risk tier and existing validation
+  and review-depth rules; every tier must satisfy issue completeness.
+- A partial slice must name its delivered scope, exclusions, remaining parent
+  requirements, and tracking. The parent issue stays **OPEN** while any of its
+  scope remains incomplete; do not use an automatic closing reference for it.
+- The independent reviewer reads the original sources as well as the code,
+  checks the owner's requirement/evidence mapping independently, and records
+  an explicit completeness verdict, supporting evidence, and every uncovered
+  requirement. Independently check normal, negative, failure, cancellation,
+  recovery, durable-state, and interaction evidence, with N/A reasons where
+  inapplicable. A focused interaction review alone cannot establish full issue
+  resolution. Use the compact owner and reviewer evidence templates in
+  `.agents/skills/pr-lifecycle/SKILL.md`.
+- Blocking incompleteness means **CHANGES REQUESTED**, owner implementation,
+  and no PR creation or CI/queue advancement. Keep an existing PR draft or
+  have Kepler return it to draft. Green CI, coverage, and a code-only CLEAN
+  verdict cannot substitute for issue-resolution evidence.
+- Classify findings as an existing bug, test gap, fix-introduced regression, or
+  mechanical-only change, citing expected versus observed behavior. Missing
+  hardware or state means evidence is unavailable: report the limitation and
+  exact remaining validation to Kepler/Roy, never assert a pass. Required
+  acceptance remains blocked until evidenced or explicitly re-scoped by Roy.
+- The rejection loop is **reject -> IMPLEMENTATION -> local tests/evidence ->
+  independent local review -> Kepler PR lifecycle**. Prove resolution before
+  the local review; obtain the required tier-specific CLEAN reports before
+  handoff. Only Kepler may create a PR/draft. Unavailability waives no required
+  local or formal review.
+- These are agent/Kepler process requirements. GitHub may disallow a PR author
+  from submitting native `request_changes` on their own PR, just as it forbids
+  self-approval. Record the honest process verdict and enforce the state/handoff;
+  never fabricate a native review or claim branch protection enforces
+  completeness. PR/readiness/reviewed-head/queue writes belong only to Kepler.
 
 ### Progress Reporting
 
