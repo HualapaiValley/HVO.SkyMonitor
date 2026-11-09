@@ -350,7 +350,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
         Assert.AreEqual(0, fixture.RestartCalls);
     }
 
-    private sealed class Fixture(bool neverReturns) : IAsyncDisposable
+    internal sealed class Fixture(bool neverReturns) : IAsyncDisposable
     {
         internal DirectoryInfo Root { get; } = Directory.CreateTempSubdirectory("hvo-1711-wire-");
         internal CameraAgentControlStore Controls { get; private set; } = null!;
@@ -363,7 +363,8 @@ public sealed class InstallerLifecycleControlIntegrationTests
         internal int OutboxPending;
         internal Func<Task>? AfterRestartAccepted;
         internal Action? AfterPause;
-        internal Func<Task>? AfterPauseAsync, BeforePause;
+        internal Func<Task>? AfterPauseAsync, BeforePause, BeforeResume;
+        internal Func<CameraAgentControlReceipt?, Task>? BeforeExchange;
         internal TimeProvider RestartClock { get; set; } = new FastRestartClock();
         internal MutableTimeProvider WindowClock { get; } = new(DateTimeOffset.UtcNow);
         internal DateTimeOffset? WindowOpening;
@@ -482,6 +483,10 @@ public sealed class InstallerLifecycleControlIntegrationTests
                 context.Request.Method = request.Method.Method;
                 foreach (var header in request.Headers) context.Request.Headers[header.Key] = header.Value.ToArray();
                 var content = request.Content is null ? [] : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                if (request.RequestUri!.AbsolutePath.EndsWith("/control/exchange", StringComparison.Ordinal) && owner.BeforeExchange is { } beforeExchange)
+                    await beforeExchange(JsonSerializer.Deserialize<CameraAgentControlExchange>(content, Json)!.Receipt).ConfigureAwait(false);
+                if (request.RequestUri!.AbsolutePath.EndsWith("/resume", StringComparison.Ordinal) && owner.BeforeResume is { } beforeResume)
+                    await beforeResume().ConfigureAwait(false);
                 context.Request.Body = new MemoryStream(content);
                 context.Request.ContentLength = content.Length;
                 context.Request.ContentType = "application/json";

@@ -40,7 +40,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, recover an owned pre-restart pause on failure, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
+- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
 
 - Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
 

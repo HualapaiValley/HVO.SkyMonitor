@@ -9,16 +9,6 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
 {
     internal async Task RunAsync(bool once, CancellationToken cancellationToken)
     {
-        // Never replay a restart after a worker interruption. Recover the prior known pause when no restart was issued.
-        foreach (var interrupted in journal.Receipts.Where(item => !item.IsTerminal).ToArray())
-        {
-            try
-            {
-                using var recoveryLock = await acquireDeployment(cancellationToken).ConfigureAwait(false);
-                await new InstallerControlVerifier(client, journal.SaveAsync, clock, budgets).SettleInterruptedAsync(interrupted).ConfigureAwait(false);
-            }
-            catch (InstallerException) { report("stage=lifecycle-worker recovery=installer-busy"); }
-        }
         do
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -36,7 +26,24 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
 
     internal async Task PollAsync(CancellationToken cancellationToken)
     {
-        foreach (var receipt in journal.Unpublished.ToArray())
+        // Startup and later polls use the same recovery path. A busy lock leaves owned work pending for the next poll.
+        foreach (var interrupted in journal.Receipts.Where(item => !item.IsTerminal).ToArray())
+        {
+            IDisposable recoveryLock;
+            try { recoveryLock = await acquireDeployment(cancellationToken).ConfigureAwait(false); }
+            catch (InstallerException)
+            {
+                report("stage=lifecycle-worker recovery=installer-busy");
+                continue;
+            }
+            using (recoveryLock)
+            {
+                var terminal = await new InstallerControlVerifier(client, journal.SaveAsync, clock, budgets)
+                    .SettleInterruptedAsync(interrupted).ConfigureAwait(false);
+                await PublishAsync(terminal, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        foreach (var receipt in journal.Unpublished.Where(item => item.IsTerminal).ToArray())
             await PublishAsync(receipt, cancellationToken).ConfigureAwait(false);
         // A refused historical receipt cannot prevent the independent worker's next heartbeat.
         var snapshot = await client.ExchangeAsync(null, cancellationToken).ConfigureAwait(false);
@@ -48,6 +55,7 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
             await PublishAsync(retained, cancellationToken).ConfigureAwait(false);
             return;
         }
+        if (retained is { IsTerminal: false }) return; // Recovery still owns this operation, including while its lock is busy.
         if (!journal.CanRetainNew && retained is null)
         {
             report("stage=lifecycle-worker journal=full action=archive-refused-evidence");

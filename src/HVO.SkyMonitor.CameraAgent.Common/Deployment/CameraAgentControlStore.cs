@@ -105,20 +105,23 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     }
 
     /// <summary>Fences new admission during installer-owned drain/restart, including across host startup.</summary>
-    public async Task<bool> MayResumeAsync(string actor, CancellationToken cancellationToken)
+    public async Task<bool> MayResumeAsync(string actor, CancellationToken cancellationToken) =>
+        (await ReadResumeAuthorityAsync(actor, cancellationToken).ConfigureAwait(false)).Allowed;
+
+    internal async Task<(bool Allowed, CameraAgentControlRequest? PauseOwner)> ReadResumeAuthorityAsync(string actor, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var state = await LoadAsync(cancellationToken).ConfigureAwait(false);
             var active = state.Receipts.FirstOrDefault(item => !item.IsTerminal);
-            if (StopPending) return false;
-            return active is null || active.Phase == CameraAgentControlPhase.Queued ||
-                active.ResumeRequested && active.VerifiedProcessId == ProcessId &&
+            if (StopPending) return (false, null);
+            if (active is null || active.Phase == CameraAgentControlPhase.Queued) return (true, null);
+            var allowed = active.ResumeRequested && active.VerifiedProcessId == ProcessId &&
                 actor == $"installer-lifecycle:{active.Request.OperationId:D}" &&
                 (active.Phase == CameraAgentControlPhase.Verifying && state.CancelledOperationId != active.Request.OperationId ||
-                 !active.RestartRequested && active.Phase == CameraAgentControlPhase.Draining ||
-                 active.RestartRefused && active.Phase == CameraAgentControlPhase.Restarting);
+                 (active.Phase is CameraAgentControlPhase.Draining or CameraAgentControlPhase.Restarting) && !active.RestartMayHaveOccurred);
+            return (allowed, allowed ? active.Request : null);
         }
         finally { _gate.Release(); }
     }
@@ -136,6 +139,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             if (exchange.Receipt is not { } next) return false;
             var prior = state.Receipts.FirstOrDefault(item => item.Request.OperationId == next.Request.OperationId);
             if (prior is not null) next = next with { Cancellation = prior.Cancellation ?? next.Cancellation };
+            if (prior is not null && AcknowledgesUnclaimedCancellation(prior, next)) return false;
             if (prior is null || !IsValidSuccessor(prior, next)) throw new InvalidOperationException("The lifecycle receipt is invalid.");
             return !Same(prior, next);
         }
@@ -158,9 +162,10 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             {
                 var prior = state.Receipts.FirstOrDefault(item => item.Request.OperationId == receipt.Request.OperationId);
                 if (prior is not null) receipt = receipt with { Cancellation = prior.Cancellation ?? receipt.Cancellation };
-                if (prior is null || !IsValidSuccessor(prior, receipt))
+                var acknowledgedClaimRace = prior is not null && AcknowledgesUnclaimedCancellation(prior, receipt);
+                if (prior is null || !acknowledgedClaimRace && !IsValidSuccessor(prior, receipt))
                     throw new InvalidOperationException("The installer receipt does not match the retained lifecycle request.");
-                if (!Same(prior, receipt))
+                if (!acknowledgedClaimRace && !Same(prior, receipt))
                 {
                     state = state with
                     {
@@ -193,7 +198,7 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
             var allowed = Available && _worker == command.WorkerId && state.CancelledOperationId != command.OperationId &&
                 command.ExpectedCaptureVersion == captureVersion && state.Receipts.Any(item =>
                     item.Request.OperationId == command.OperationId && item.Phase == CameraAgentControlPhase.Restarting &&
-                    item.PausedVersion == captureVersion);
+                    item.PausedVersion == captureVersion && item.RestartRequested && !item.RestartNotIssued && !item.RestartRefused && !item.ResumeRequested);
             if (allowed && arm)
             {
                 if (!AdmissionHeld) Volatile.Write(ref _admissionReleased, new(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -207,10 +212,22 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private static bool Same(CameraAgentControlReceipt left, CameraAgentControlReceipt right) =>
         JsonSerializer.Serialize(left, Json) == JsonSerializer.Serialize(right, Json);
 
+    // A lost claim has no effects to publish. Acknowledge only this exact, audited local cancellation and preserve its canonical receipt.
+    private static bool AcknowledgesUnclaimedCancellation(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
+        next.IsValid() && next.Request == prior.Request && prior.Phase == CameraAgentControlPhase.Cancelled &&
+        prior.Cancellation is not null && prior.Events[^1].Code == "lifecycle.unclaimed-cancelled" &&
+        next.Phase == CameraAgentControlPhase.Cancelled && next.Events[^1].Code == "lifecycle.claim-refused" &&
+        next.Events[0] == prior.Events[0] && (next.Events.Count == 2 ||
+            next.Events.Count == 3 && next.Events[1].Phase == CameraAgentControlPhase.Draining && next.Events[1].Code == "lifecycle.draining") &&
+        !next.ResumeAfterVerification && !next.ResumeRequested && !next.ResumeConfirmed &&
+        !next.RestartRequested && !next.RestartRefused && !next.RestartNotIssued &&
+        next.PausedVersion is null && next.DrainedCaptureSequence is null && next.VerifiedProcessId is null;
+
     private static bool IsValidSuccessor(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
         next.IsValid() && next.Request == prior.Request &&
         (!prior.ResumeRequested || next.ResumeRequested) &&
         (!prior.RestartRequested || next.RestartRequested) && (!prior.ResumeConfirmed || next.ResumeConfirmed) &&
+        (!prior.RestartRefused || next.RestartRefused) && (!prior.RestartNotIssued || next.RestartNotIssued) &&
         (prior.OriginalProcessId is null || next.OriginalProcessId == prior.OriginalProcessId) &&
         (prior.PausedVersion is null || next.PausedVersion == prior.PausedVersion) &&
         (prior.VerificationDeadlineUtc is null || next.VerificationDeadlineUtc == prior.VerificationDeadlineUtc) && next.Events is { Count: > 0 and <= 10 } &&

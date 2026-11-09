@@ -148,6 +148,7 @@ public sealed class CameraAgentControlStoreTests
         var restarting = queued with
         {
             Phase = CameraAgentControlPhase.Restarting,
+            RestartRequested = true,
             PausedVersion = 9,
             Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
                 new(CameraAgentControlPhase.Restarting, _clock.GetUtcNow(), "restart.requesting")]
@@ -159,6 +160,69 @@ public sealed class CameraAgentControlStoreTests
         Assert.IsFalse(await controls.MayRestartAsync(command with { WorkerId = Guid.NewGuid() }, 9, CancellationToken.None).ConfigureAwait(false));
         await controls.CancelAsync(queued.Request.OperationId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(await controls.MayRestartAsync(command, 9, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("resume")]
+    [DataRow("restart")]
+    [DataRow("pause")]
+    [DataRow("request")]
+    [DataRow("events")]
+    public async Task ClaimRefusalAcknowledgementCannotHideEffectsOrChangeTheCanonicalCancellation(string mutation)
+    {
+        using var controls = Create();
+        await RegisterAsync(controls).ConfigureAwait(false);
+        var queued = await controls.SubmitAsync(Request() with { Kind = CameraAgentControlKind.Restart }, CancellationToken.None).ConfigureAwait(false);
+        await controls.CancelAsync(queued.Request.OperationId, CancellationToken.None, "owner", "Cancel before claim").ConfigureAwait(false);
+        var next = queued with
+        {
+            Phase = CameraAgentControlPhase.Cancelled,
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Cancelled, _clock.GetUtcNow(), "lifecycle.claim-refused")]
+        };
+        next = mutation switch
+        {
+            "resume" => next with { ResumeRequested = true },
+            "restart" => next with { RestartRequested = true },
+            "pause" => next with { PausedVersion = 2 },
+            "events" => next with
+            {
+                Events = [queued.Events[0], new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
+                new(CameraAgentControlPhase.Restarting, _clock.GetUtcNow(), "restart.requesting"), next.Events[^1]]
+            },
+            _ => next with { Request = next.Request with { Reason = "Different request" } }
+        };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ValidateReceiptAsync(new(Worker, next), CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ExchangeAsync(new(Worker, next), CancellationToken.None)).ConfigureAwait(false);
+        var canonical = (await controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual("lifecycle.unclaimed-cancelled", canonical.Events[^1].Code);
+        Assert.AreEqual("owner", canonical.Cancellation!.Actor);
+    }
+
+    [TestMethod]
+    [DataRow("not-issued")]
+    [DataRow("refused")]
+    [DataRow("resume")]
+    public async Task ARecoveryBoundaryCannotArmAnotherStop(string boundary)
+    {
+        using var controls = Create();
+        await RegisterAsync(controls).ConfigureAwait(false);
+        var queued = await controls.SubmitAsync(Request() with { Kind = CameraAgentControlKind.Restart }, CancellationToken.None).ConfigureAwait(false);
+        var restarting = queued with
+        {
+            Phase = CameraAgentControlPhase.Restarting,
+            PausedVersion = 9,
+            RestartRequested = true,
+            RestartNotIssued = boundary == "not-issued",
+            RestartRefused = boundary == "refused",
+            ResumeRequested = boundary == "resume",
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
+                new(CameraAgentControlPhase.Restarting, _clock.GetUtcNow(), "restart.requesting")]
+        };
+        await controls.ExchangeAsync(new(Worker, restarting), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(await controls.ArmRestartAsync(new(Worker, queued.Request.OperationId, 9), 9, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsFalse(controls.StopPending);
+        if (restarting.RestartNotIssued)
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controls.ExchangeAsync(new(Worker, restarting with { RestartNotIssued = false }), CancellationToken.None)).ConfigureAwait(false);
     }
 
     [TestMethod]

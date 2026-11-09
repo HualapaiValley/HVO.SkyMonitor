@@ -216,6 +216,69 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RestartingPublicationFailurePersistsNonIssuanceBeforeOwnedRestore(bool timeout)
+    {
+        using var fixture = new Fixture();
+        fixture.Client.FailRestartingPublication = timeout;
+        fixture.Client.BeforeResume = receipt =>
+        {
+            var durable = JsonSerializer.Deserialize(File.ReadAllText(fixture.JournalPath), DeploymentJsonContext.Default.InstallerControlJournalState)!.Receipts.Single();
+            Assert.IsTrue(durable.RestartRequested);
+            Assert.IsTrue(durable.RestartNotIssued);
+            Assert.IsFalse(durable.RestartMayHaveOccurred);
+            Assert.IsTrue(durable.ResumeRequested);
+            Assert.AreEqual(receipt.PausedVersion, durable.PausedVersion);
+        };
+        var receipt = await fixture.RunAsync();
+        Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
+        Assert.IsTrue(receipt.RestartNotIssued);
+        Assert.IsTrue(receipt.ResumeConfirmed);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(RestoreEffects, fixture.Client.Effects);
+        await fixture.ReloadAndAssertAsync(receipt);
+    }
+
+    [TestMethod]
+    [DataRow("draining", true)]
+    [DataRow("not-issued", true)]
+    [DataRow("refused", true)]
+    [DataRow("ambiguous", false)]
+    public async Task InterruptedSettlementRestoresOnlyDurablyProvenPreStopWork(string boundary, bool shouldRestore)
+    {
+        using var fixture = new Fixture();
+        var initial = await fixture.Client.ExchangeAsync(null, CancellationToken.None);
+        fixture.Client.CaptureState = "Paused";
+        fixture.Client.Version = 8;
+        fixture.Client.Effects.Add("drain");
+        var queued = Queued();
+        var receipt = queued with
+        {
+            Phase = boundary == "draining" ? CameraAgentControlPhase.Draining : CameraAgentControlPhase.Restarting,
+            OriginalProcessId = initial.ProcessId,
+            ResumeAfterVerification = true,
+            PausedVersion = 8,
+            DrainedCaptureSequence = 42,
+            RestartRequested = boundary != "draining",
+            RestartNotIssued = boundary == "not-issued",
+            RestartRefused = boundary == "refused",
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, DateTimeOffset.UtcNow, "lifecycle.draining")]
+        };
+        if (receipt.Phase == CameraAgentControlPhase.Restarting)
+            receipt = receipt with { Events = [.. receipt.Events, new(CameraAgentControlPhase.Restarting, DateTimeOffset.UtcNow, "restart.requesting")] };
+        var journal = new InstallerControlJournal(fixture.JournalPath);
+        await journal.SaveAsync(receipt);
+        var terminal = await new InstallerControlVerifier(fixture.Client, journal.SaveAsync, TimeProvider.System, Budgets).SettleInterruptedAsync(receipt);
+        Assert.AreEqual(CameraAgentControlPhase.Failed, terminal.Phase);
+        Assert.AreEqual(shouldRestore, terminal.ResumeConfirmed);
+        Assert.AreEqual(shouldRestore ? "Running" : "Paused", fixture.Client.CaptureState);
+        Assert.AreEqual(shouldRestore ? 1 : 0, fixture.Client.Effects.Count(effect => effect == "resume"));
+        Assert.DoesNotContain("restart", fixture.Client.Effects);
+        await fixture.ReloadAndAssertAsync(terminal);
+    }
+
+    [TestMethod]
     public async Task JournalPublicationFailure_BlocksTheEffectItWouldAuthorize()
     {
         var client = new FakeClient();
@@ -298,6 +361,9 @@ public sealed class InstallerControlVerifierTests
         internal long Version = 7;
         internal bool Supervised = true, WindowSafe = true, NeverReturns, KeepProcessIdentity, LostAcknowledgement, HungDrain, CancelRequested, TerminalDelivered;
         internal string? Failure;
+        internal bool? FailRestartingPublication;
+        private bool _publicationFailed;
+        internal Action<CameraAgentControlReceipt>? BeforeResume;
         internal Action? AfterDrain;
         internal Action<CameraAgentControlPhase>? BeforeEffect;
         private readonly Guid _original = Guid.NewGuid();
@@ -307,6 +373,12 @@ public sealed class InstallerControlVerifierTests
         public Task<CameraAgentControlSnapshot> ExchangeAsync(CameraAgentControlReceipt? receipt, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (receipt?.Phase == CameraAgentControlPhase.Restarting && FailRestartingPublication is { } timeout && !_publicationFailed)
+            {
+                _publicationFailed = true;
+                if (timeout) throw new TimeoutException("Injected restart publication timeout.");
+                throw new HttpRequestException("Injected restart publication failure.");
+            }
             if (receipt?.Phase == CameraAgentControlPhase.Queued && Failure == "initial-claim-refused" ||
                 receipt?.Phase == CameraAgentControlPhase.Draining && Failure == "claim-refused")
                 throw new InstallerControlRefusalException(409);
@@ -351,7 +423,8 @@ public sealed class InstallerControlVerifierTests
 
         public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
         {
-            BeforeEffect?.Invoke(receipt.RestartRefused ? CameraAgentControlPhase.Restarting : receipt.RestartRequested ? CameraAgentControlPhase.Verifying : CameraAgentControlPhase.Draining);
+            BeforeEffect?.Invoke(receipt.Phase);
+            BeforeResume?.Invoke(receipt);
             Effects.Add("resume");
             CaptureState = "Running";
             return Task.CompletedTask;

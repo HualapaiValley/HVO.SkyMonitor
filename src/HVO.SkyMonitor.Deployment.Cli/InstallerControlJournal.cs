@@ -64,7 +64,10 @@ internal sealed class InstallerControlJournal(string path)
     });
 
     internal Task AcknowledgeAsync(Guid operationId) => WriteAsync(_state with
-    { Unpublished = _state.Unpublished.Where(id => id != operationId).ToArray() });
+    {
+        Unpublished = _state.Unpublished.Where(id => id != operationId).ToArray(),
+        Refused = Refused.Where(item => item.OperationId != operationId).ToArray()
+    });
 
     internal async Task RecoverInterruptedAsync(DateTimeOffset utc)
     {

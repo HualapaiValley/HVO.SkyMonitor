@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -406,6 +407,8 @@ internal sealed class CameraAgentSystemUiService(
             return OperatorUiResult<bool>.Success(true);
         }
         catch (ArgumentException) { return OperatorUiResult<bool>.Failure(OperatorUiResultKind.Invalid, "A cancellation reason of 1 to 512 printable characters is required."); }
+        catch (SqliteException)
+        { return Unavailable<bool>("Lifecycle cancellation was recorded, but automation history could not be updated. Refresh to reconcile history."); }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException)
         { return Unavailable<bool>("Lifecycle cancellation could not be recorded. Refresh before retrying."); }
     }
@@ -422,7 +425,7 @@ internal sealed class CameraAgentSystemUiService(
         CameraAgentControlPhase.Succeeded when receipt.Request.Kind == CameraAgentControlKind.Drain => "Drained; capture remains paused until explicitly resumed.",
         CameraAgentControlPhase.Succeeded => receipt.ResumeAfterVerification ? "Restart verified; prior running state restored." : "Restart verified; prior paused state preserved.",
         CameraAgentControlPhase.Skipped => "Restart skipped: capture window or supervisor requirements were not met.",
-        _ when receipt.ResumeConfirmed && (!receipt.RestartRequested || receipt.RestartRefused) => "Restart was not issued; prior running state restored. " + receipt.Events[^1].Code,
+        _ when receipt.ResumeConfirmed && !receipt.RestartMayHaveOccurred => "Restart was not issued; prior running state restored. " + receipt.Events[^1].Code,
         _ when receipt.ResumeRequested => "Resume was not confirmed; capture was paused before this failure receipt was published. " + receipt.Events[^1].Code,
         _ => "Lifecycle did not complete. No automatic resume was issued; check capture state and the installer receipt. " + receipt.Events[^1].Code
     };

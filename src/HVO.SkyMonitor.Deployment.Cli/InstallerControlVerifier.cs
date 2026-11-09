@@ -21,7 +21,7 @@ internal sealed record InstallerControlBudgets(TimeSpan Drain, TimeSpan Verify, 
 
 /// <summary>
 /// Runs in Deployment.Cli, outside CameraAgent's lifetime. Every effect has a prior durable journal boundary.
-/// A missing acknowledgement never authorizes a second restart. Failure/cancellation never implicitly resumes capture.
+/// A missing acknowledgement never authorizes a second restart. Pre-stop recovery resumes only the latest owned pause.
 /// </summary>
 internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     Func<CameraAgentControlReceipt, Task> persist, TimeProvider timeProvider, InstallerControlBudgets? budgets = null)
@@ -36,6 +36,9 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         ArgumentNullException.ThrowIfNull(receipt);
         if (!receipt.IsValid() || receipt.Phase != CameraAgentControlPhase.Queued)
             throw new ArgumentException("Only a queued immutable lifecycle request may execute.", nameof(receipt));
+        var restartCallIssued = false;
+        Task<CameraAgentControlReceipt> FinishExecutionAsync(CameraAgentControlReceipt current, CameraAgentControlPhase phase, string code) =>
+            FinishAsync(current, phase, code, restartDefinitelyNotIssued: !restartCallIssued);
         var stage = "claim";
         try
         {
@@ -44,10 +47,10 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             ThrowIfCancelled(initial);
             if (initial.ProcessId == Guid.Empty || !initial.Initialized || initial.CaptureVersion != receipt.Request.ExpectedCaptureVersion ||
                 initial.CaptureState is not ("Running" or "Paused"))
-                return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "lifecycle.capture-conflict").ConfigureAwait(false);
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "lifecycle.capture-conflict").ConfigureAwait(false);
             if (receipt.Request.Kind == CameraAgentControlKind.Restart &&
                 (!initial.Supervised || !initial.RestartWindowSafe))
-                return await FinishAsync(receipt, CameraAgentControlPhase.Skipped,
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Skipped,
                     initial.Supervised ? "restart.capture-window" : "restart.unsupervised").ConfigureAwait(false);
 
             receipt = receipt with { OriginalProcessId = initial.ProcessId, ResumeAfterVerification = initial.CaptureState == "Running" };
@@ -60,13 +63,13 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             if (!Drained(drained)) throw new InstallerException("The lifecycle boundary is not drained.");
             receipt = receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence };
             if (receipt.Request.Kind == CameraAgentControlKind.Drain)
-                return await FinishAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
 
             var beforeRestart = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
             ThrowIfCancelled(beforeRestart);
             if (!beforeRestart.RestartWindowSafe || beforeRestart.CaptureState != "Paused" ||
                 beforeRestart.CaptureVersion != drained.CaptureVersion || beforeRestart.ProcessId != initial.ProcessId)
-                return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.boundary-changed").ConfigureAwait(false);
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.boundary-changed").ConfigureAwait(false);
             var verificationStarted = timeProvider.GetTimestamp();
             var verificationDeadline = timeProvider.GetUtcNow() + _budgets.Verify;
             receipt = receipt with { VerificationDeadlineUtc = verificationDeadline };
@@ -75,16 +78,22 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             cancellationToken.ThrowIfCancellationRequested();
             receipt = receipt with { RestartRequested = true };
             receipt = await AdvanceAsync(receipt, CameraAgentControlPhase.Restarting, "restart.requesting").ConfigureAwait(false);
+            stage = "restart-publication";
             await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
             stage = "restart";
             try
             {
-                await BoundedAsync(async token => { await client.RestartAsync(receipt, token).ConfigureAwait(false); return true; },
+                await BoundedAsync(async token =>
+                {
+                    restartCallIssued = true;
+                    await client.RestartAsync(receipt, token).ConfigureAwait(false);
+                    return true;
+                },
                     _budgets.Read, CancellationToken.None).ConfigureAwait(false);
             }
             catch (InstallerControlRefusalException)
             {
-                return await FinishAsync(receipt with { RestartRefused = true }, CameraAgentControlPhase.Failed,
+                return await FinishExecutionAsync(receipt with { RestartRefused = true }, CameraAgentControlPhase.Failed,
                     "restart.refused").ConfigureAwait(false);
             }
             catch (HttpRequestException)
@@ -109,11 +118,11 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                     if (returned.ProcessId != initial.ProcessId && returned.Initialized)
                     {
                         if (returned.ProcessId == Guid.Empty || returned.CaptureState != "Paused" || returned.CaptureVersion != drained.CaptureVersion)
-                            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.pause-not-preserved").ConfigureAwait(false);
+                            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.pause-not-preserved").ConfigureAwait(false);
                         var verified = await BoundedAsync(client.ConfirmDrainedAsync,
                             Min(_budgets.Read, _budgets.Verify - timeProvider.GetElapsedTime(verificationStarted)), cancellationToken).ConfigureAwait(false);
                         if (verified.CaptureVersion != drained.CaptureVersion || verified.CaptureSequence < drained.CaptureSequence)
-                            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.continuity-failed").ConfigureAwait(false);
+                            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.continuity-failed").ConfigureAwait(false);
                         if (!Drained(verified)) throw new HttpRequestException("CameraAgent queue observations are not ready for restart verification.");
                         receipt = receipt with { VerifiedProcessId = returned.ProcessId };
                         await persist(receipt).ConfigureAwait(false);
@@ -129,7 +138,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                             receipt = receipt with { ResumeConfirmed = true };
                             await persist(receipt).ConfigureAwait(false);
                         }
-                        return await FinishAsync(receipt, CameraAgentControlPhase.Succeeded,
+                        return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded,
                             receipt.ResumeAfterVerification ? "restart.verified-resumed" : "restart.verified-paused").ConfigureAwait(false);
                     }
                 }
@@ -139,25 +148,25 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                 if (remaining > TimeSpan.Zero)
                     await Task.Delay(Min(_budgets.Poll, remaining), timeProvider, cancellationToken).ConfigureAwait(false);
             }
-            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, "restart.verification-timeout").ConfigureAwait(false);
+            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.verification-timeout").ConfigureAwait(false);
         }
         catch (InstallerControlRefusalException) when (stage == "claim")
         {
             // Local cancellation won the serialized unclaimed-to-Draining race; no pause was authorized.
-            return await FinishAsync(receipt with { ResumeAfterVerification = false }, CameraAgentControlPhase.Cancelled,
+            return await FinishExecutionAsync(receipt with { ResumeAfterVerification = false }, CameraAgentControlPhase.Cancelled,
                 "lifecycle.claim-refused").ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            return await FinishAsync(receipt, CameraAgentControlPhase.Cancelled, "lifecycle.cancelled-check-capture").ConfigureAwait(false);
+            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Cancelled, "lifecycle.cancelled-check-capture").ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, receipt.ResumeRequested ? "restart.resume-unconfirmed" : stage == "drain" ? "drain.timeout" : "lifecycle.timeout").ConfigureAwait(false);
+            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, receipt.ResumeRequested ? "restart.resume-unconfirmed" : stage == "drain" ? "drain.timeout" : "lifecycle.timeout").ConfigureAwait(false);
         }
         catch (Exception)
         {
-            return await FinishAsync(receipt, CameraAgentControlPhase.Failed, stage switch
+            return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, stage switch
             {
                 "drain" => "drain.failed-check-capture",
                 "verify" => receipt.ResumeRequested ? "restart.resume-unconfirmed" : "restart.verification-failed",
@@ -194,11 +203,18 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The journal stays authoritative when CameraAgent is offline; publication is retried by the installer worker.")]
-    private async Task<CameraAgentControlReceipt> FinishAsync(CameraAgentControlReceipt receipt, CameraAgentControlPhase phase, string code)
+    private async Task<CameraAgentControlReceipt> FinishAsync(CameraAgentControlReceipt receipt, CameraAgentControlPhase phase, string code,
+        bool restartDefinitelyNotIssued = false)
     {
+        // Only the live execution knows the call was never entered. After a crash, an unmarked durable intent stays ambiguous.
+        if (restartDefinitelyNotIssued && receipt.RestartRequested && !receipt.RestartRefused && !receipt.RestartNotIssued)
+        {
+            receipt = receipt with { RestartNotIssued = true };
+            await persist(receipt).ConfigureAwait(false);
+        }
         if (phase != CameraAgentControlPhase.Succeeded && receipt.Request.Kind == CameraAgentControlKind.Restart &&
-            (receipt.Phase == CameraAgentControlPhase.Draining && !receipt.RestartRequested ||
-             receipt.Phase == CameraAgentControlPhase.Restarting && receipt.RestartRefused) && receipt.ResumeAfterVerification)
+            (receipt.Phase is CameraAgentControlPhase.Draining or CameraAgentControlPhase.Restarting) &&
+            !receipt.RestartMayHaveOccurred && receipt.ResumeAfterVerification)
             receipt = await RestoreBeforeRestartAsync(receipt).ConfigureAwait(false);
         receipt = receipt with { Cancellation = receipt.Cancellation ?? _cancellation };
         if (receipt.ResumeRequested && !receipt.ResumeConfirmed && phase != CameraAgentControlPhase.Succeeded)
@@ -218,7 +234,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             if (!current.Initialized || current.ProcessId != receipt.OriginalProcessId ||
                 current.CaptureState != "Paused" || current.OwnedPauseVersion != current.CaptureVersion)
                 return receipt;
-            // The original process and exact pause version prove no restart or later operator mutation intervened.
+            // The original process and latest owned pause prove the boundary; resume rechecks accepted command order atomically.
             receipt = receipt with { PausedVersion = current.CaptureVersion, VerifiedProcessId = current.ProcessId, ResumeRequested = true };
             await persist(receipt).ConfigureAwait(false);
             await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);

@@ -32,8 +32,11 @@ public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request
     IReadOnlyList<CameraAgentControlEvent> Events, Guid? OriginalProcessId = null, Guid? VerifiedProcessId = null,
     long? PausedVersion = null, long? DrainedCaptureSequence = null, bool ResumeAfterVerification = false, DateTimeOffset? VerificationDeadlineUtc = null,
     bool ResumeRequested = false, bool ResumeConfirmed = false, bool RestartRequested = false, bool RestartRefused = false,
-    CameraAgentControlCancellation? Cancellation = null)
+    CameraAgentControlCancellation? Cancellation = null, bool RestartNotIssued = false)
 {
+    [JsonIgnore]
+    public bool RestartMayHaveOccurred => RestartRequested && !RestartRefused && !RestartNotIssued;
+
     public bool IsTerminal => Phase is CameraAgentControlPhase.Succeeded or CameraAgentControlPhase.Failed or
         CameraAgentControlPhase.Cancelled or CameraAgentControlPhase.Skipped;
 
@@ -43,6 +46,9 @@ public sealed record CameraAgentControlReceipt(CameraAgentControlRequest Request
             Events[0].Phase != CameraAgentControlPhase.Queued || Events[^1].Phase != Phase ||
             Events.Any(item => item is null || !Enum.IsDefined(item.Phase) || item.Utc == default || item.Utc.Offset != TimeSpan.Zero ||
                 item.Code is not { Length: > 0 and <= 96 } || !item.Code.All(character => char.IsAsciiLetterLower(character) || character is '.' or '-')))
+            return false;
+        if (RestartNotIssued && (Request.Kind != CameraAgentControlKind.Restart || !RestartRequested || RestartRefused ||
+            Phase is CameraAgentControlPhase.Queued or CameraAgentControlPhase.Verifying or CameraAgentControlPhase.Succeeded))
             return false;
         if (Cancellation is { } cancellation && (string.IsNullOrWhiteSpace(cancellation.Actor) || cancellation.Actor.Length > 256 ||
             cancellation.Actor != cancellation.Actor.Trim() || cancellation.Actor.Any(char.IsControl) || cancellation.Utc == default ||

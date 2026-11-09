@@ -336,7 +336,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         return await _store.ReadRecentCommandsAsync(limit, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Reads one completed, changed pause receipt, so lifecycle recovery never resumes another actor's pause.</summary>
+    /// <summary>Reads a completed, changed pause only while it remains the latest accepted capture command.</summary>
     public Task<long?> ReadCompletedPauseVersionAsync(string idempotencyKey, long expectedVersion, string actor,
         CancellationToken cancellationToken) => _store.ReadCompletedPauseVersionAsync(idempotencyKey, expectedVersion, actor, cancellationToken);
 
@@ -397,9 +397,15 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             {
                 throw new CaptureAdmissionUnavailableException("Capture admission requires verified restart recovery.");
             }
-            if (target == CaptureControlTarget.Running && _lifecycleControls is not null &&
-                !await _lifecycleControls.MayResumeAsync(actor, cancellationToken).ConfigureAwait(false))
-                throw new CaptureControlConflictException("An installer lifecycle operation is pending; wait for its terminal receipt before resuming.");
+            (string IdempotencyKey, long ExpectedVersion)? requiredPause = null;
+            if (target == CaptureControlTarget.Running && _lifecycleControls is not null)
+            {
+                var authority = await _lifecycleControls.ReadResumeAuthorityAsync(actor, cancellationToken).ConfigureAwait(false);
+                if (!authority.Allowed)
+                    throw new CaptureControlConflictException("An installer lifecycle operation is pending; wait for its terminal receipt before resuming.");
+                if (authority.PauseOwner is { } owner)
+                    requiredPause = ($"lifecycle:{owner.OperationId:D}:pause", owner.ExpectedCaptureVersion);
+            }
             var prior = Snapshot;
             if (target == CaptureControlTarget.Paused)
             {
@@ -416,7 +422,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                     expectedVersion,
                     actor,
                     reason,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, requiredPause).ConfigureAwait(false);
             }
             catch
             {
@@ -759,7 +765,8 @@ internal sealed class SqliteCaptureControlStore(
         long? expectedVersion,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        (string IdempotencyKey, long ExpectedVersion)? requiredPause = null)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
@@ -778,6 +785,12 @@ internal sealed class SqliteCaptureControlStore(
         {
             throw new CaptureControlConflictException("Capture control version does not match the expected version.");
         }
+
+        // Accepted no-op commands also supersede intent. Check command order under the same write transaction as resume.
+        if (requiredPause is { } owned && (target != CaptureControlTarget.Running || current.State != CaptureAdmissionState.Paused ||
+            await ReadOwnedPauseVersionAsync(connection, transaction, owned.IdempotencyKey, owned.ExpectedVersion, actor, cancellationToken)
+                .ConfigureAwait(false) != current.Version))
+            throw new CaptureControlConflictException("A later accepted capture command superseded the installer's pause.");
 
         var now = UtcNow();
         var sameTarget = target == CaptureControlTarget.Running
@@ -851,11 +864,19 @@ internal sealed class SqliteCaptureControlStore(
         CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadOwnedPauseVersionAsync(connection, null, idempotencyKey, expectedVersion, actor, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<long?> ReadOwnedPauseVersionAsync(SqliteConnection connection, SqliteTransaction? transaction,
+        string idempotencyKey, long expectedVersion, string actor, CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT result_version FROM capture_control_commands
             WHERE idempotency_key = $key AND actor = $actor AND expected_version = $expected
-              AND target_state = 'paused' AND result_state = 'paused' AND status = 'completed' AND changed = 1;
+              AND target_state = 'paused' AND result_state = 'paused' AND status = 'completed' AND changed = 1
+              AND rowid = (SELECT MAX(rowid) FROM capture_control_commands);
             """;
         command.Parameters.AddWithValue("$key", idempotencyKey);
         command.Parameters.AddWithValue("$actor", actor);

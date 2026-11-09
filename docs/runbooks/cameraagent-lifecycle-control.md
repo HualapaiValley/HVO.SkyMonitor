@@ -74,7 +74,8 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    different CameraAgent process identity, initialized capture control, the same
    durable pause version, a nondecreasing durable capture sequence, and the
    drained queue boundary. Only then may it restore the prior running state,
-   fenced by the exact pause version. An originally paused agent stays paused.
+   fenced by the exact pause version and latest accepted capture-command identity.
+   An originally paused agent stays paused.
    Capture admission stays fenced from Draining until terminal receipt publication,
    including while a verified resume awaits acknowledgement. If that acknowledgement
    is lost, terminal failure publication first restores the pause; replaying the
@@ -87,12 +88,21 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
 For scheduled restart failures or cancellation **before a stop was issued**, the
 installer restores the prior running state before publishing the terminal receipt,
 when the same process and its exact completed pause command still own the boundary.
-It uses the stored command identity, actor, expected version and result version;
-a later owner pause cannot be undone. A definite refusal of the restart mechanism
+It uses the stored command identity, actor, expected version and result version,
+and requires that pause to remain the latest accepted command. A later accepted
+owner pause, including a successful no-op with the same capture version, withdraws
+recovery authority. The conditional resume checks this ordering in the same SQLite
+write transaction as the state change, so a pause accepted after the installer's
+snapshot is preserved too. Ordinary pause/resume versions and no-op semantics are
+unchanged. A definite refusal of the restart mechanism
 also permits this recovery; an ambiguous restart acknowledgement does not. An
 originally paused host stays paused. If the recovery resume is unconfirmed,
 publication restores paused admission and records `restart.resume-unconfirmed`.
-Standalone Drain always leaves capture paused. No recovery deletes accepted work.
+A failed Restarting publication before the stop call records a separate durable
+`restartNotIssued` proof before attempting restore. Durable restart intent alone
+is not that proof: after a crash, an unmarked intent remains ambiguous and never
+authorizes another stop or an automatic pre-stop restore. Standalone Drain always
+leaves capture paused. No recovery deletes accepted work.
 
 ## Receipts and failure recovery
 
@@ -114,7 +124,10 @@ waiting for a worker; a concurrent late installer claim is refused before any pa
 An unclaimed request does not fence ordinary resume. Claimed requests require
 installer settlement. Cancellation cannot undo an already accepted delayed stop.
 Closing the confirmation dialog sends no request. Storage faults return Unavailable
-without faulting the Blazor circuit.
+without faulting the Blazor circuit. If local cancellation succeeds but the separate
+SQLite automation-history write is busy or fails, the UI reports Unavailable while
+retaining the cancellation. History is reconciled from the terminal receipt after
+the database becomes available; cancellation does not need to be repeated.
 
 If CameraAgent never returns, the installer writes **Failed** with
 `restart.verification-timeout` locally even though it cannot deliver that receipt
@@ -124,7 +137,10 @@ the supervisor/process, then read capture state before explicitly resuming.
 When CameraAgent returns, the worker republishes retained terminal evidence.
 
 An installer-worker interruption is recovered as terminal failure
-(`lifecycle.installer-interrupted`); an ambiguous restart is not replayed.
+(`lifecycle.installer-interrupted`); an ambiguous restart is not replayed. Startup
+and later polls use the same owned-pause settlement. A busy deployment lock leaves
+a journal-owned interrupted operation pending and retries on a later poll; it is
+not classified as an orphan or terminalized without attempting safe restore.
 Interrupted installer deployment work must be recovered before starting another
 runtime lifecycle. Failures and cancellation preserve accepted capture/artifact
 records, pause intent and the journal. Corrupt, unsupported or linked state is
@@ -159,7 +175,12 @@ process fenced even after settlement.
 A definite 4xx publication refusal is durably recorded in the installer journal's
 `refused` entries with operation ID, status and UTC time. It emits
 `publication=quarantined` and continues heartbeating and processing other requests.
-The refused receipt is not endlessly replayed or silently discarded. At the
+The refused receipt is not endlessly replayed or silently discarded. The expected
+unclaimed cancellation/claim race is acknowledged without quarantine only when
+CameraAgent proves the same request already has an audited terminal local
+cancellation and the worker's receipt has no effect metadata. The canonical
+cancellation/audit remains unchanged, and the journal entry becomes acknowledged
+and eligible for ordinary retention. At the
 100-receipt bound, retained refused/unpublished evidence prevents new work until
 operator reconciliation. Preserve the journal and compare the refused receipt with
 the matching CameraAgent request/backup; repair the consistent installation state
