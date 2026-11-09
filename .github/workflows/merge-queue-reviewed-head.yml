@@ -1,0 +1,44 @@
+name: Merge queue reviewed head
+
+# Produces the required hvo/reviewed-head context on merge queue commits.
+#
+# On a pull request, hvo/reviewed-head is the commit status the reviewing
+# operator publishes on the exact reviewed head, and branch rules require it
+# before the PR can be queued. The queue's temporary merge_group commit never
+# carries that status, so this job re-checks it on the queued PR head and
+# reports the same context there (scripts/ci:queue-reviewed-head).
+#
+# This workflow must only ever trigger on merge_group. A job with this name that
+# ran, or was skipped, on pull_request would satisfy the required context on
+# the PR without a review; scripts/test:development-v1-ci rejects that.
+
+on:
+  merge_group:
+    types: [checks_requested]
+    branches: [development/v1]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  reviewed-head:
+    name: hvo/reviewed-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout merge group commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require the reviewed-head status on the queued pull request head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          ALLOWED_SETTERS: RoySalisbury
+        run: ./scripts/ci:queue-reviewed-head

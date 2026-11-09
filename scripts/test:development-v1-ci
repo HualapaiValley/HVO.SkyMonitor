@@ -17,6 +17,7 @@ root = pathlib.Path(sys.argv[1])
 short = (root / ".github/workflows/development-v1.yml").read_text()
 full = (root / ".github/workflows/ci.yml").read_text()
 promotion = (root / ".github/workflows/promote-main.yml").read_text()
+queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_text()
 
 
 def job(workflow, name):
@@ -54,7 +55,13 @@ def step(section, name):
     return match.group(1) if match else ""
 
 
-def violations(short, full):
+merge_group_trigger = (
+    "  merge_group:\n    types: [checks_requested]\n    branches: [development/v1]\n"
+)
+
+
+def violations(short, full, queue=None):
+    queue = queue_gate if queue is None else queue
     errors = []
     preflight = job(short, "preflight")
     build = job(short, "build-unit")
@@ -69,10 +76,25 @@ def violations(short, full):
     require("name: Development v1 / Build and Unit" in build, "required Build and Unit name")
     require("needs: preflight" in build, "preflight dependency")
     require(
-        "if: github.event_name == 'push' || github.event.pull_request.draft == false" in build,
+        "if: github.event_name == 'push' || github.event_name == 'merge_group' || "
+        "github.event.pull_request.draft == false" in build,
         "draft exclusion",
     )
-    require(short.count("branches: [development/v1]") == 2, "v1 PR and push triggers")
+    require(short.count("branches: [development/v1]") == 3, "v1 PR, push and merge queue triggers")
+    require(merge_group_trigger in short, "both required checks report on merge queue commits")
+    # The queue commit never carries the operator's hvo/reviewed-head status, so a
+    # merge_group-only job reports that context after re-checking the queued PR head.
+    # It must never run (or be skipped) on pull_request, where a job with that name
+    # would satisfy the required context without a review.
+    queue_on = queue.split("\non:\n", 1)[1].split("\npermissions:", 1)[0] if "\non:\n" in queue else ""
+    require(queue_on.strip() == merge_group_trigger.strip(), "queue reviewed-head runs only on merge_group")
+    require("pull_request" not in queue_on and "push" not in queue_on and "workflow_" not in queue_on,
+            "queue reviewed-head has no PR, push or dispatch trigger")
+    require(queue.count("    name: hvo/reviewed-head\n") == 1, "queue reviewed-head reports the required context")
+    require("        run: ./scripts/ci:queue-reviewed-head\n" in queue, "queue reviewed-head re-checks the PR head")
+    require("        if:" not in queue and "    if:" not in queue and "continue-on-error:" not in queue,
+            "queue reviewed-head is unconditional and fails closed")
+    require("hvo/reviewed-head" not in short, "the v1 checks never report hvo/reviewed-head")
     require("cancel-in-progress: true" in short, "stale-run cancellation")
     require("continue-on-error:" not in short, "required checks must fail closed")
     for command in (
@@ -195,6 +217,20 @@ mutations = (
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
     ("warnings tolerated", short.replace("-warnaserror", ""), full),
     ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
+    ("merge queue trigger removed", short.replace(merge_group_trigger, ""), full),
+    ("Build and Unit skipped in the queue", short.replace(" || github.event_name == 'merge_group'", ""), full),
+    ("queue gate on pull_request", short, full, queue_gate.replace(
+        "on:\n  merge_group:", "on:\n  pull_request:\n    branches: [development/v1]\n  merge_group:")),
+    ("queue gate on push", short, full, queue_gate.replace(
+        "on:\n  merge_group:", "on:\n  push:\n  merge_group:")),
+    ("queue gate renamed", short, full, queue_gate.replace("name: hvo/reviewed-head", "name: reviewed head")),
+    ("queue gate check removed", short, full, queue_gate.replace("./scripts/ci:queue-reviewed-head", "true")),
+    ("queue gate skippable", short, full, queue_gate.replace(
+        "    runs-on: ubuntu-24.04", "    if: github.event_name == 'merge_group'\n    runs-on: ubuntu-24.04")),
+    ("queue gate masked", short, full, queue_gate.replace(
+        "    timeout-minutes: 3", "    timeout-minutes: 3\n    continue-on-error: true")),
+    ("v1 checks report reviewed-head", short.replace(
+        "name: Development v1 / Preflight", "name: hvo/reviewed-head"), full),
     ("deadline removed", short.replace("((remaining > 0)) || exit 124", ":"), full),
     ("errors tolerated", short + "\n    continue-on-error: true\n", full),
     ("heavy lint returned", short + "\n          ./scripts/ci:shellcheck\n", full),
@@ -242,8 +278,8 @@ mutations = (
     ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
     ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
-for name, candidate, qualification in mutations:
-    if not violations(candidate, qualification):
+for name, candidate, qualification, *queue in mutations:
+    if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
@@ -312,3 +348,4 @@ PY
 # Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
 "$repo_root/scripts/test:ci-base-images"
 "$repo_root/scripts/test:cameraagent-arm64-preflight"
+"$repo_root/scripts/test:ci-queue-reviewed-head"

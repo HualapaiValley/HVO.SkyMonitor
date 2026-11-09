@@ -46,6 +46,8 @@ The branch currently requires:
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
+Both checks also run on `merge_group`, so the merge queue tests each queued pull request on a temporary commit built on the latest `development/v1`. The queue commit never carries the operator's `hvo/reviewed-head` status, so `merge-queue-reviewed-head.yml` reports that context there, and only there: `scripts/ci:queue-reviewed-head` re-checks that the queued commit's second parent is the pull request's current head and that the newest `hvo/reviewed-head` status on that head is `success` from an allowed account. On the pull request itself, `hvo/reviewed-head` remains the operator's commit status.
+
 The target controlling path is under ten minutes, with a 1080-second cumulative
 workload budget and a 22-minute hard job timeout. Each self-hosted run retains
 restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the

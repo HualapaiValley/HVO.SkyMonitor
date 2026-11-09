@@ -6,6 +6,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [development/v1]
+  # The merge queue tests each queued PR on a temporary merge_group commit built
+  # on the latest base; both required checks must report there too.
+  merge_group:
+    types: [checks_requested]
+    branches: [development/v1]
 
 permissions:
   contents: read
@@ -102,7 +107,7 @@ jobs:
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 22
     steps:

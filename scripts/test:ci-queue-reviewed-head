@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Offline controls for scripts/ci:queue-reviewed-head with a substitute gh."""
+import json
+import os
+import pathlib
+import subprocess
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+GATE = ROOT / "scripts/ci:queue-reviewed-head"
+BASE = "b" * 40
+GROUP = "c" * 40
+HEAD = "a" * 40
+REF = f"refs/heads/gh-readonly-queue/development/v1/pr-42-{BASE}"
+
+GH = r"""#!/usr/bin/env python3
+import json, os, sys
+state = json.load(open(os.environ["FAKE_GH_STATE"]))
+args = sys.argv[1:]
+path = next(a for a in args[1:] if not a.startswith("-"))
+jq = args[args.index("--jq") + 1] if "--jq" in args else None
+if path.endswith("/commits/" + state["group"]):
+    if state.get("fail") == "commit":
+        sys.exit(1)
+    print(" ".join(state["parents"]))
+elif path.endswith("/pulls/42"):
+    if state.get("fail") == "pull":
+        sys.exit(1)
+    print(" ".join([state["pr_state"], state["pr_base"], state["pr_head"]]))
+elif "/statuses" in path:
+    if state.get("fail") == "statuses":
+        sys.exit(1)
+    for s in state["statuses"]:
+        if s["context"] == "hvo/reviewed-head":
+            print("\t".join([str(s["id"]), s["state"], s["login"]]))
+else:
+    sys.exit(2)
+"""
+
+
+def status(id_, state="success", login="RoySalisbury", context="hvo/reviewed-head"):
+    return {"id": id_, "state": state, "login": login, "context": context}
+
+
+class QueueReviewedHead(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.temp.name)
+        gh = self.dir / "gh"
+        gh.write_text(GH)
+        gh.chmod(0o700)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_gate(self, ref=REF, group=GROUP, **overrides):
+        state = {
+            "group": group, "parents": [BASE, HEAD], "pr_state": "open",
+            "pr_base": "development/v1", "pr_head": HEAD,
+            "statuses": [status(10)],
+        }
+        state.update(overrides)
+        state_file = self.dir / "state.json"
+        state_file.write_text(json.dumps(state))
+        env = dict(
+            os.environ, PATH=f"{self.dir}:{os.environ['PATH']}", FAKE_GH_STATE=str(state_file),
+            REPOSITORY="example/repo", HEAD_REF=ref, GROUP_SHA=group,
+            BASE_REF="refs/heads/development/v1", ALLOWED_SETTERS="RoySalisbury",
+        )
+        return subprocess.run([str(GATE)], env=env, capture_output=True, text=True)
+
+    def assertPass(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def assertFail(self, result, text):
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(text, result.stderr)
+
+    def test_reviewed_head_passes(self):
+        self.assertPass(self.run_gate())
+
+    def test_newest_status_wins(self):
+        self.assertFail(self.run_gate(statuses=[status(10), status(11, "failure")]), "is failure")
+        self.assertPass(self.run_gate(statuses=[status(11), status(10, "failure")]))
+        self.assertFail(self.run_gate(statuses=[status(10), status(12, "pending")]), "is pending")
+
+    def test_missing_status_fails(self):
+        self.assertFail(self.run_gate(statuses=[]), "has no hvo/reviewed-head")
+        self.assertFail(self.run_gate(statuses=[status(10, context="other")]), "has no hvo/reviewed-head")
+
+    def test_unallowed_setter_fails(self):
+        self.assertFail(self.run_gate(statuses=[status(10, login="someone")]), "not allowed")
+        self.assertFail(self.run_gate(statuses=[status(10, login="RoySalisbury2")]), "not allowed")
+
+    def test_head_must_be_queued_parent(self):
+        self.assertFail(self.run_gate(pr_head="d" * 40), "is not the queued head")
+        self.assertFail(self.run_gate(parents=[BASE]), "has 1 parents")
+        self.assertFail(self.run_gate(parents=[BASE, HEAD, "e" * 40]), "has 3 parents")
+
+    def test_pull_request_must_be_open_on_base(self):
+        self.assertFail(self.run_gate(pr_state="closed"), "is closed")
+        self.assertFail(self.run_gate(pr_base="main"), "targets main")
+
+    def test_malformed_inputs_fail(self):
+        self.assertFail(self.run_gate(ref="refs/heads/feature"), "unexpected merge group ref")
+        self.assertFail(self.run_gate(ref="refs/heads/gh-readonly-queue/main/pr-42-" + BASE),
+                        "unexpected merge group ref")
+        self.assertFail(self.run_gate(ref="refs/heads/gh-readonly-queue/development/v1/pr-x-" + BASE),
+                        "cannot read the pull request number")
+        self.assertFail(self.run_gate(group="short"), "not a full commit SHA")
+
+    def test_api_errors_fail_closed(self):
+        for stage, text in (("commit", "cannot read merge group commit"),
+                            ("pull", "cannot read pull request"),
+                            ("statuses", "cannot read commit statuses")):
+            with self.subTest(stage=stage):
+                self.assertFail(self.run_gate(fail=stage), text)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)
