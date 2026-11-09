@@ -1,8 +1,166 @@
 # Virtual horizon-obstruction acceptance (#1394)
 
+Tested merged candidate: `10a79302a1deed7bb95d582d49048fd5e7f166dc`.
+Target: `250f7727139e1c43d0b93e553e3ddedd3a9bac4f` (`development/v1`, #1743).
+Updated 2026-11-09T08:16:27+00:00.
+
+**Current local outcome: PASSED; PUSH BLOCKED by target advancement.** The final
+fetch observed `581eccc6a2da76441c7038d02d24e7f8f4f49331` (#1744, merged at
+2026-11-09T08:13:11Z), rather than the operator's requested `250f7727`. No merge
+of that unapproved target and no push occurred. The tested source and all evidence
+remain retained. The inherited environmental per-file coverage blocker is
+resolved by upstream #1743. The PR stays draft. Kepler owns the formal
+HIGH-tier Sol/Opus reviews, ready transition and protected CI. This worker does
+not post GitHub comments, edit PR metadata, set statuses/labels or merge.
+The later commit changes this report only; product and test source remain exactly
+the frozen tested merge. Full access and xhigh are active; the harness exposes no
+FAST/service-tier control, so none is attested.
+
+## Current owner evidence table — coverage-base resynchronization
+
+Evidence root: `TestResults/issue-1394/resync1743/` (ignored, retained locally).
+Every fresh test project executes serially, with separate category/project TRX,
+coverage and private physical `/tmp` backing directories. Unit uses the invalid
+Docker endpoint. No assembly/output directory is instrumented concurrently.
+
+| Gate | Result | Provenance |
+| --- | --- | --- |
+| SDK/tool/solution restore | SDK 10.0.402; passed | Fresh |
+| Debug and Release solution builds, `-warnaserror` | Both passed; zero warnings/errors | Fresh |
+| Solution format verify, package audit | Passed | Fresh |
+| Shell syntax, classification, coordination, review-tool guards | All four passed | Fresh |
+| Operations docs audit; `git diff --check` | Passed | Fresh |
+| Unit: `Processing.Tests` | 1,275 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Unit: `Astronomy.Tests` | 803 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Unit: `CameraAgent.Tests` | 7,794 passed; 1 skipped; 0 failures | Fresh complete selection |
+| Unit: `LogicHost.Tests` | 1,002 passed; 1 skipped; 0 failures | Fresh complete selection |
+| Integration: `Astronomy.Tests` | 2 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Integration: `CameraAgent.Tests` | 395 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Integration: `CameraAgent.IntegrationTests` | 43 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Integration: `CameraAgent.LogicHost.IntegrationTests` | 24 passed; 0 skipped; 0 failures | Fresh complete selection |
+| Manual: `Processing.Tests` | 1 passed; 0 skipped; 0 failures | Fresh horizon component measurement |
+| Fresh Unit total | 10,874 passed; 2 conditional skips; 0 failures (10,876 selected) | Four complete affected/acceptance-owner projects |
+| Fresh Integration total | 464 passed; 0 skips/failures | Four complete relevant projects; combined host included |
+| Canonical per-file coverage | Passed, including `EnvironmentalObservationJson.cs` | Exactly 23 slots: eight fresh complete reports and 15 retained complete reports |
+| Carried findings and acceptance regressions | All 21 checklist groups passed | Individual cases in `regression-checklist-results.json` |
+| Shipped configurations and virtual fixtures | Passed within CameraAgent Unit and Integration selections | W6 graph/identity checks; shipped VirtualSky cloud execution; actual combined-host virtual publication |
+| Final exact-target guard before push | Blocked: expected `250f7727`, observed `581eccc6` | Fresh fetch; #1744 is outside this tested merge |
+
+HVO.SkyMonitor.Processing/EnvironmentalObservationJson.cs: line 99.60 % (246/247), branch 92.00 % (253/275)
+
+Aggregate coverage: line 89.7597 % (199341/222083), branch 75.9100 % (97435/128356)
+
+The fresh synthetic measurement retains exact mask-union checksums for all three
+trials at each size. Median reference/after latency is 41.040/86.385 ms at
+1936x1216 and 439.790/952.017 ms at 4096x4096. After allocations are 883,952 and
+6,292,592 bytes respectively; peak process RSS is 104,185,856 and 128,237,568
+bytes. Three exclusion planes retain the original byte bounds.
+`performance-trials.json` retains CPU time, allocation, latency and checksums for
+every trial. These component results do not claim production cadence.
+
+`shipped-virtual-smoke.json` verifies 93 passing Unit cases across W6 profiles,
+shipped node-option binding, cloud-profile acceptance and virtual-cloud scenarios;
+the nine additional actual shipped-cloud graph cases also pass. These 102 Unit
+cases are subsets of the fresh totals, not additional tests. Physical W6 profiles
+receive graph/identity smoke; actual frame execution uses VirtualSky/synthetic
+fixtures, with no physical adapter initialized.
+
+`canonical-coverage-slots.json` binds every input to its raw source report,
+SHA-256 and tested source SHA. All 23 literal copies are byte-identical to their
+original reports. Eight complete fresh category/project reports replace their
+old slots; 15 unchanged complete reports retain evidence from
+`a1e4a39dfba24817fe716e3e4e8fa46c3afdd878`. No focused or supplemental report is
+added to inflate the rollup. `summary.json` records only the fresh selections;
+`case-outcomes.json` and the regression checklist retain the exact outcomes.
+
+The two fresh conditional skips are `InitializeOnMacOsRejectsBeforeRuntimeAccess`
+and `AmbiguousDelete_IsNotAReachableStateForThisProvider`. All horizon and shipped
+virtual smoke regressions passed. In particular the combined-host
+`ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame` passed;
+its 20-second budget and coherent-publication predicate were unchanged.
+
+The complete earlier source gate remains retained under `base1727/`: 15,334 Unit
+passes plus three skips, and 1,090 Integration passes. The new upstream test-only
+change adds 40 Processing Unit cases. Combining replacement and retained complete
+project evidence accounts for the declared inventory of Unit=15,377,
+Integration=1,090, Manual=297; this is **not** a claim of a fresh complete-solution
+run at the current head. Fresh totals are the table above.
+
+Both correction and full-PR selectors (`b2efa4a3..10a79302` and
+`250f7727..10a79302`) returned `mode=full complete=false`, with shared,
+cameraagent, logichost, combined and delivery selected, and deployment,
+secret-scan-contract and release-scripts excluded. The protected profile remains
+`development-v1`. The operator explicitly narrowed this resync to affected
+projects and all acceptance/regression evidence; unrelated long suites and full
+qualification were not repeated.
+
+## Current merge and unchanged-diff proof
+
+Fresh fetch verified target `250f7727139e1c43d0b93e553e3ddedd3a9bac4f`.
+Normal merge `10a79302` has parents prepared `b2efa4a3` and that target. A separate
+fresh merge tree of published head `e35fcf78` plus target `250f7727`, resolving only
+the four bookkeeping records, equals the reused prepared merge tree except for
+the historical validation report. Proof is retained in `inputs/merge-equivalence.json`.
+No rebase or force push is used.
+
+The latest merge conflicts were confined to the CI runbook and Processing
+inventory. The common Processing count was 1,192; the PR contributes 43 and #1743
+contributes 40, giving Unit=1,275 and Manual=19. Solution totals were recomputed
+from all project inventories: Unit=15,377, Integration=1,090, Manual=297.
+The earlier prepared #1727 merge retained both CHANGELOG entries and independently
+added CameraAgent inventory deltas; those resolutions remain unchanged.
+
+No product-source conflict or product-source change occurred. The complete `src`
+tree is identical to tested `a1e4a39d` (tree
+`11a2bccee67f855b80f4f60ac0df754c2a34d939`). Excluding CHANGELOG, the runbook, the
+two conflicted inventories and this report, the PR-owned binary diff is
+byte-identical to the previously reviewed range: SHA-256
+`c7b9eb04f68e42d27b2e0f53f285da00c68d06125595f4790ff7cd6cecfb4232`.
+The only new validation-relevant upstream changes are EnvironmentalObservation
+contract tests and their inventory. No new defect or scope was invented.
+
+## Current scope, remaining qualification and cleanup
+
+Acceptance criteria 1–7 retain virtual/software support, with fresh behavioral
+and numerical checks in the table above. All earlier findings remain individually
+covered by the consolidated checklist and existing dispositions below. No known
+material defect is deferred. Physical survey accuracy, physical camera/ARM
+behavior and production cadence are outside this evidence. The supported central
+horizon path still fails closed as `MaskEvidenceUnavailable` / `NeedsReview`;
+this does not claim positive central horizon-mask evaluation.
+
+Not rerun at this head: the remaining unchanged 4,501 Unit selections (4,500
+passes and one skip retained), 626 Integration selections (all passed previously),
+unrelated Manual/Soak/Hardware campaigns, end-to-end W1/W2/W6 performance
+qualification, protected CI and independent formal reviews. The fresh horizon
+measurement is one component test, not end-to-end cadence qualification.
+Upstream #1744's merge-queue/CI-control changes are not merged or validated here.
+The next action is an operator-directed sync to the newly observed target, with
+classifier-selected validation of that delta before pushing. Remote PR head
+remains `e35fcf78958474ac7c31538827b4a9f5c1d49e81`, draft, with no auto-merge.
+
+The host sample showed 12 effective cores with no cgroup CPU quota, approximately
+45 GiB available RAM, 685 GiB free disk and no competing test/build group.
+Per-suite snapshots are retained in `inputs/host-before-*.json`; no contention or
+overlapping instrumentation was observed. Test start/end times are in
+`test-events.jsonl`; build/guard commands and times are in `build-events.jsonl`.
+
+Disposable temporary backing, obsolete PR-specific aliases/probes and generated
+project bin/obj trees were cleaned after all jobs finished. `cleanup.json` lists
+101 removed paths and any already-absent paths. The worktree,
+raw TRX, coverage, manifests, logs, prior failed attempts and numerical evidence
+remain retained for Kepler and review. No shared services, branches or unrelated
+worktrees were deleted.
+
+## Historical source lineage and earlier evidence
+
+The following records retain earlier source lineage and gate outcomes. Their
+then-current BLOCKED state and workflow instructions are superseded by the
+current owner table and operator constraints above.
+
 Production source candidate: `a1e4a39dfba24817fe716e3e4e8fa46c3afdd878`.
 
-**Current outcome: BLOCKED.** The prepared merge is local and unpublished. No
+**Historical #1727 outcome: BLOCKED (resolved above by upstream #1743).** The prepared merge is local and unpublished. No
 ready transition or protected CI run was started for this candidate.
 This candidate has complete behavioral evidence, but the mandatory canonical coverage gate is blocked.
 Initial target/merge base: `7d5ec63b09a67ab4b675ba6a29641013df1247d8` (`development/v1`).
@@ -69,7 +227,7 @@ The change adds 111 Unit cases, 5 Integration cases and 1 Manual measurement cas
 All are virtual/software evidence; physical survey accuracy and camera/ARM cadence
 qualification are outside this acceptance.
 
-## Local candidate gates
+## Historical complete local candidate gates (#1727)
 
 SDK 10.0.402, Ubuntu 24.04.5 x86_64, Intel Core i9-14900K, 12 exposed CPUs,
 15,406 MiB host RAM. Native Release test hosts; Integration uses isolated
@@ -189,7 +347,7 @@ this worker; no review label, reviewed-head status, auto-merge or merge is set.
 The operator's reservation is used without mutating lock labels. Worktree and
 TRX/coverage evidence remain retained until merge.
 
-### Canonical coverage blocker
+### Historical canonical coverage blocker (resolved by #1743)
 
 The complete Unit and Integration selections above passed, but
 `scripts/coverage:enforce --merged` exited 1. Its sole failure is
