@@ -271,6 +271,17 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
                 throw new InvalidDataException($"Invalid line data for '{sourcePath}:{number}'.");
             }
 
+            var conditions = line.Element("conditions")?.Elements("condition").ToArray() ?? [];
+            foreach (var condition in conditions)
+            {
+                _ = RequiredAttribute(condition, "number");
+                var percentage = ParsePercentage(RequiredAttribute(condition, "coverage"));
+                if (!double.IsFinite(percentage) || percentage < 0 || percentage > 100)
+                {
+                    throw new InvalidDataException($"Invalid condition coverage for '{sourcePath}:{number}'.");
+                }
+            }
+
             if (!thresholds.TryGetValue(sourcePath, out var minimum))
             {
                 continue;
@@ -279,7 +290,6 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
             var marker = line.Attribute("branch")?.Value;
             var hasMarker = bool.TryParse(marker, out var hasBranches);
             var conditionCoverage = line.Attribute("condition-coverage")?.Value;
-            var conditions = line.Element("conditions")?.Elements("condition").ToArray() ?? [];
             if ((!hasMarker && conditionCoverage is null) ||
                 ((hasBranches || conditions.Length > 0) && conditionCoverage is null) ||
                 (conditionCoverage is not null &&
