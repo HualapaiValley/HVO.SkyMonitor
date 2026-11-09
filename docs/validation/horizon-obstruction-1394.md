@@ -1,16 +1,23 @@
 # Virtual horizon-obstruction acceptance (#1394)
 
-Production source candidate: `54f86e00be3af875f3455174ce2a86aedf13115f`.
-This fresh complete local gate validates the operator-requested base synchronization after formal review convergence.
+Production source candidate: `a1e4a39dfba24817fe716e3e4e8fa46c3afdd878`.
+
+**Current outcome: BLOCKED.** The prepared merge is local and unpublished. No
+ready transition or protected CI run was started for this candidate.
+This candidate has complete behavioral evidence, but the mandatory canonical coverage gate is blocked.
 Initial target/merge base: `7d5ec63b09a67ab4b675ba6a29641013df1247d8` (`development/v1`).
-Current merged target: `ad78013bc3b4e5b36e24b7e8a5cbc2019d58f0f1` (#1737), incorporated by normal merge
-`54f86e00be3af875f3455174ce2a86aedf13115f` under explicit operator authorization.
+Current merged target: `6220c722ec069dbd13296575c544083d0b6df098` (#1727), incorporated by normal merge
+`a1e4a39dfba24817fe716e3e4e8fa46c3afdd878` under the operator-assigned finalization slot.
+The prior normal merge `54f86e00be3af875f3455174ce2a86aedf13115f` incorporated
+`ad78013bc3b4e5b36e24b7e8a5cbc2019d58f0f1` (#1737).
 The prior normal merge `bc42850307a5c324949aae587c15fd4ffed82bab` incorporated
 `4708bbc3099019f1b8c2ec2531ff21a9d69dd404` (#1722).
 The earlier normal merge `69f1b9998cd816f23db3a409ebd4619d558348dc` incorporated
 `35da16df25546bd6adbadf5a6613e50fc04cd052` (#1736).
-Tier C; protected profile `development-v1`. The PR remains draft. Protected CI,
-reviewed-head status and merge remain unauthorized.
+Tier C; protected profile `development-v1`. The local gate ran while draft.
+The operator authorizes marking ready after the green push to start protected CI,
+then Kepler obtains formal base-sync reviews. Reviewed-head status, labels,
+auto-merge and merge remain reserved for Kepler.
 
 ## Shared behavior and ownership
 
@@ -70,8 +77,8 @@ Testcontainers and SQLite/filesystem fixtures. No production host was restarted
 or deployed. No networking or secret configuration was changed, and no branches
 were deleted.
 
-Base-sync selector: `scripts/ci:classify pull_request 18323af8 54f86e00` and full
-PR selector `scripts/ci:classify pull_request ad78013b 54f86e00` both returned
+Base-sync selector: `scripts/ci:classify pull_request e35fcf78 a1e4a39d` and full
+PR selector `scripts/ci:classify pull_request 6220c722 a1e4a39d` both returned
 `mode=full complete=false shared=true cameraagent=true logichost=true combined=true
 delivery=true deployment=false secret_scan_contract=false release_scripts=false`.
 The full local matrix is required by Tier C and the operator. The target profile
@@ -82,9 +89,9 @@ remains `development-v1`; no full protected qualification was dispatched.
 - Whole-solution `dotnet format --no-restore --verify-no-changes`: passed.
 - Package audit, Bash syntax, CI classification, coordination and PR-review guards: passed.
 - Operations documentation audit: passed.
-- Full Docker-disabled Unit selection with coverage: 15,244 passed, 3 conditional skips, 0 failures (15,247 selected), all on the production source above.
-- Full Integration selection with coverage: 1,029 passed, 0 skips/failures.
-- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Enforced aggregate line 89.7141%, branch 75.8657%; all enforced per-file floors passed.
+- Complete Docker-disabled Unit final unique outcomes with coverage: 15,334 passed, 3 conditional skips, 0 failures (15,337 selected), all on the production source above.
+- Full Integration selection with coverage: 1,090 passed, 0 skips/failures.
+- Canonical coverage: exactly 23 prescribed category/project reports, copied byte-identically with manifest checksums and merged once. Aggregate line 89.7651%, branch 75.9061%; the per-file gate FAILED for EnvironmentalObservationJson.cs: 243/275 covered branches (88.36%) against 90%. Line 245/247 (99.19%) passes its 95% floor.
 - Manual full-resolution measurement: 1 passed (retained unchanged-path evidence).
 
 Unit ran with `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock` and the approved local
@@ -97,7 +104,7 @@ canceled after source changes and is not credited.
 Commands are the complete Tier C block in AGENTS.md; tests use
 `--no-build --configuration Release` with separate `--filter "TestCategory=Unit"`
 and `--filter "TestCategory=Integration"` selections, `tests/coverage.runsettings`, and XPlat Code Coverage.
-Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/base1737/`
+Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/base1727/`
 (ignored). `summary.json` records all current project/category results. The exact
 23-slot canonical coverage manifest records original report paths and byte-identical
 literal copies (avoiding wildcard interpretation of bracketed filenames);
@@ -106,6 +113,108 @@ measurement evidence remains under `TestResults/issue-1394/final/performance/`.
 The measured mask-generation and fixture paths did not change, so that measurement
 was retained. Earlier complete and refreshed evidence remains in its original
 result roots and is superseded for the changed source by this fresh complete run.
+
+## Reserved-slot synchronization after #1727
+
+Both formal base-sync reviews are CLEAN at `e35fcf78958474ac7c31538827b4a9f5c1d49e81`:
+[Opus 5820837988](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734#pullrequestreview-5820837988)
+and [Sol 5821181077](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734#pullrequestreview-5821181077).
+Their complete reports and the consolidated carried-finding checklist were read.
+Those reports verify all earlier findings corrected and identify no new blocking
+or non-blocking review finding. Optional observations and historical draft/ready
+wording remain informational; no correction or scope change was introduced here.
+
+The operator assigned this PR the finalization slot after #1727 and required a
+fresh exact-target check. Fetch confirmed `6220c722ec069dbd13296575c544083d0b6df098`.
+The normal merge has parents `e35fcf78` and `6220c722`; it neither rebases nor
+rewrites reviewed history. Conflicts were limited to the four expected records:
+
+- CHANGELOG retains both the horizon and environmental-adapter entries.
+- CameraAgent Unit: 7,650 merge base + 59 PR + 86 upstream = 7,795.
+  Integration: 335 + five PR + 55 upstream = 395.
+- Processing Unit: 1,188 + 43 PR + four upstream = 1,235. Manual remains 19,
+  preserving the one PR measurement case over the base's 18.
+- The runbook totals sum every merged inventory: Unit=15,337,
+  Integration=1,090, Manual=297. Upstream adds 90 Unit and 61 Integration
+  relative to the previous reviewed head; PR-owned additions remain 111 Unit,
+  five Integration and one Manual case relative to the current target.
+
+No product-source file conflicted. Excluding exactly those four records, the
+reviewed PR-owned diff (`ad78013b..e35fcf78`) and merged PR-owned diff
+(`6220c722..a1e4a39d`) are byte-identical: SHA-256
+`2fb4ed8ab11d1998262ca2104a1d92d4a6acb4e0dc315f224ad43977f8e5c57c`.
+The only later commit updates this validation report. The fresh full suites cover
+both prior horizon behavior and the upstream environmental evidence/adapters.
+All hardware adapters are virtualized by their fixtures; no physical hardware or
+production endpoint is used.
+
+Per-project TRX, temp stores and coverage outputs are isolated beneath
+`TestResults/issue-1394/base1727/`. The credited isolation manifest records one
+complete passing result per selected project/category. Corrected test processes
+use a private physical `/tmp` bind-mounted from their project backing directory,
+so even hardcoded temporary paths remain under that root and Unix socket paths
+stay short. UID/GID 1000, native system-root ownership and mode 0700 temp roots
+are preserved; host mounts, configuration and other jobs are unchanged.
+Conventional build outputs belong only to this worktree. Unit project jobs are
+bounded to two based on host
+capacity; all Integration projects execute serially, including the complete
+combined-host selection. Unit instrumentation completes before Integration starts,
+and no assembly/output directory is instrumented concurrently. No unchanged
+performance benchmark is rerun.
+
+The first Unit attempt used symbolic-link TMPDIR aliases created by this worker.
+Storage, installer, backup and causal-evaluation guards correctly rejected those
+linked ancestors. All 21 projects completed; five complete selections failed:
+CameraAgent.Tests (154 cases), CameraAgent.IntegrationTests Unit (six), installer
+(1,223), LogicHost.Tests (16), and Processing.Tests (39). These 1,438 failed case
+outcomes and their coverage receive no pass credit and remain retained separately.
+After a lightweight private-mount probe verified normal ownership, physical paths
+and backing-file identity, only those five complete project selections were rerun.
+The 16 passing projects were retained without duplication. The final Unit totals
+above are unique outcomes from those complete selections, not added retry counts.
+No product source, assertion, timeout or guard was changed. Integration runs once
+per project with the corrected physical layout, serially. The original gate logs,
+failed TRX and per-case errors are retained beside the corrected evidence.
+
+The initial host check found 12 effective cores, approximately 44.9 GiB available
+RAM, 688 GiB free disk, load1 0.05, and no other visible worktree .NET jobs.
+The runtime is full-access/xhigh; service-tier selection is not exposed by the
+harness, so no priority/FAST setting is attested.
+
+Per the operator's explicit sequence, the PR is draft for this local gate, then
+pushed normally and marked ready only after every required local gate is green.
+The coverage blocker below currently prevents both actions. Kepler
+launches formal base-sync reviews after CI is green. No reviewer is launched by
+this worker; no review label, reviewed-head status, auto-merge or merge is set.
+The operator's reservation is used without mutating lock labels. Worktree and
+TRX/coverage evidence remain retained until merge.
+
+### Canonical coverage blocker
+
+The complete Unit and Integration selections above passed, but
+`scripts/coverage:enforce --merged` exited 1. Its sole failure is
+`HVO.SkyMonitor.Processing/EnvironmentalObservationJson.cs`: 243/275 covered
+branches (88.36%), below the configured 90% floor. Line coverage is 245/247
+(99.19%), above its 95% floor. Aggregate line/branch results are not a substitute
+for that per-file gate.
+
+The prescribed 23 input slots were checked against the runbook and workflow.
+Every retained canonical copy is byte-identical to its raw report and manifest
+SHA-256. Supplemental reports were not added to inflate coverage. The failing
+file's Git blob is `ee30342461726499aed6ed56b5d13619a576b796`, identical on
+target `6220c722` and the prepared merge. The new upstream metadata validation
+around line 171 has 15/22 branch outcomes covered. No target-only baseline run
+or product defect is claimed; this is the observed merged candidate's coverage
+failure.
+
+The operator requires an unchanged PR-owned diff apart from the four conflict
+records. Adding environmental coverage tests, changing source or lowering the
+floor would exceed that scope. The local gate is therefore not green. The
+prepared merge and report are retained locally; no push, ready transition,
+protected workflow dispatch, review, reviewed-head status, label, auto-merge or
+merge is performed. Resolution needs an upstream coverage correction or an
+explicit scope decision from Kepler. All raw TRX, canonical coverage, failed
+setup attempts and corrected project results remain under `base1727/`.
 
 ## Base synchronization after formal review convergence
 
