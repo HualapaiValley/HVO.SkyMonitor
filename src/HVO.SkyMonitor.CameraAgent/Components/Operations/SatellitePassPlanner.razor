@@ -5,7 +5,7 @@
         <div><h2 id="satellite-planner-heading">Satellite pass planner</h2><p>Geometric planning from local orbital data for the selected site and rig. Nothing is captured or scheduled.</p></div>
         <span class="state-chip pending">Planning only</span>
     </header>
-    <p class="satellite-note">Satellite sunlight, shadow, brightness, optical eligibility, clouds and physical orbit uncertainty are unknown here. Selected pass details show geometric solar context separately. A predicted path does not establish detection or optical visibility. Baseline geometric horizon; no custom obstruction profile.</p>
+    <p class="satellite-note">Satellite sunlight, shadow, brightness, optical eligibility, clouds and physical orbit uncertainty are unknown here. Selected pass details show geometric solar context separately. A predicted path does not establish detection or optical visibility. Baseline geometric horizon for pass times. Selected arcs apply the site horizon when present; terrain remains unknown without a compatible profile.</p>
     @if (ContextLoading)
     {
         <p role="status">Waiting for the selected site, rig and UTC instant.</p>
@@ -107,10 +107,14 @@
             </dl></details>
             @if (_arc is { } detail)
             {
+                @if (detail.Obstruction is not null)
+                {
+                    <p>Site horizon applied: obstructed, unknown and incompatible samples are omitted from the path. Retained orbital samples remain available; this does not establish physical visibility.</p>
+                }
                 <p>Arc computation: @detail.Prediction.Status / @detail.Prediction.Reason. Gaps stay disconnected; unavailable anchors stay unresolved.</p>
                 @foreach (var arc in detail.Prediction.Products.Take(1))
                 {
-                    <SatellitePassArc Arc="arc" Context="detail.Context" ShowPath="_showPath" ShowLabels="_showLabels" ShowRigPreview="_showRigPreview" />
+                    <SatellitePassArc Arc="arc" Context="detail.Context" Obstruction="detail.Obstruction?.FirstOrDefault()" ShowPath="_showPath" ShowLabels="_showLabels" ShowRigPreview="_showRigPreview" />
                 }
                 @if (detail.Prediction.Products.Count == 0) { <p>No angular arc is available for this selected pass.</p> }
             }

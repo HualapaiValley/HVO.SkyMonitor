@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -15,6 +16,161 @@ public sealed class EnvironmentalObservationContractTests
     private static readonly DateTimeOffset Epoch = DateTimeOffset.Parse(
         "2026-01-15T06:00:00Z",
         CultureInfo.InvariantCulture);
+
+    [TestMethod]
+    [DataRow(null, null, null)]
+    [DataRow("null", null, null)]
+    [DataRow("{}", null, null)]
+    [DataRow("""{"deviceReceivedAtUtc":null,"sensorTemperatureCelsius":null}""", null, null)]
+    [DataRow("""{"deviceReceivedAtUtc":"2026-01-15T06:00:00Z"}""", "2026-01-15T06:00:00Z", null)]
+    [DataRow("""{"sensorTemperatureCelsius":-100}""", null, -100d)]
+    [DataRow("""{"sensorTemperatureCelsius":100}""", null, 100d)]
+    [DataRow("""{"deviceReceivedAtUtc":"2026-01-15T06:00:00Z","sensorTemperatureCelsius":0}""", "2026-01-15T06:00:00Z", 0d)]
+    public void VersionThreeMetadataRoundTripsOptionalFieldsAndInclusiveTemperatureBounds(
+        string? metadataJson, string? receivedAt, double? temperature)
+    {
+        var source = CreateObservation() with { SchemaVersion = EnvironmentalObservationSchemaVersions.V3 };
+        var json = JsonNode.Parse(EnvironmentalObservationJson.Serialize(source))!;
+        if (metadataJson is not null)
+        {
+            json["value"]!["metadata"] = JsonNode.Parse(metadataJson);
+        }
+
+        var parsed = EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(json.ToJsonString()));
+
+        Assert.AreEqual(EnvironmentalObservationValidationResult.Success, parsed.Validation);
+        Assert.IsNotNull(parsed.Observation);
+        var expected = metadataJson is null or "null"
+            ? null
+            : new EnvironmentalObservationSampleMetadata(
+                receivedAt is null ? null : DateTimeOffset.Parse(receivedAt, CultureInfo.InvariantCulture), temperature);
+        Assert.AreEqual(expected, parsed.Observation.Value.Metadata);
+        var expectedObservation = source with { Value = source.Value with { Metadata = expected } };
+        CollectionAssert.AreEqual(
+            EnvironmentalObservationJson.Serialize(expectedObservation),
+            EnvironmentalObservationJson.Serialize(parsed.Observation));
+    }
+
+    [TestMethod]
+    [DataRow("0001-01-01T00:00:00Z", null)]
+    [DataRow("2026-01-15T07:00:00+01:00", null)]
+    [DataRow("2026-01-15T05:00:00-01:00", null)]
+    [DataRow(null, double.NaN)]
+    [DataRow(null, double.PositiveInfinity)]
+    [DataRow(null, double.NegativeInfinity)]
+    [DataRow(null, -100.001d)]
+    [DataRow(null, 100.001d)]
+    public void VersionThreeMetadataRejectsInvalidReceiptTimesAndSensorTemperatures(
+        string? receivedAt, double? temperature)
+    {
+        var source = CreateObservation();
+        var observation = source with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            Value = source.Value with
+            {
+                Metadata = new(
+                    receivedAt is null ? null : DateTimeOffset.Parse(receivedAt, CultureInfo.InvariantCulture), temperature)
+            }
+        };
+
+        Assert.AreEqual(
+            EnvironmentalObservationValidationResult.Failure(EnvironmentalObservationReasonCodes.InvalidValue, "value.metadata"),
+            EnvironmentalObservationJson.Validate(observation));
+    }
+
+    [TestMethod]
+    [DataRow(EnvironmentalObservationSchemaVersions.V1)]
+    [DataRow(EnvironmentalObservationSchemaVersions.V2)]
+    public void LegacySchemasRejectMetadataEvenForLegacyKinds(string schema)
+    {
+        var source = CreateObservation();
+        var observation = source with
+        {
+            SchemaVersion = schema,
+            Value = source.Value with { Metadata = new() }
+        };
+        var expected = EnvironmentalObservationValidationResult.Failure(
+            EnvironmentalObservationReasonCodes.UnsupportedSchema, "value");
+
+        Assert.AreEqual(expected, EnvironmentalObservationJson.Validate(observation));
+        var parsed = EnvironmentalObservationJson.Parse(EnvironmentalObservationJson.Serialize(observation));
+        Assert.AreEqual(expected, parsed.Validation);
+        Assert.IsNull(parsed.Observation);
+    }
+
+    [TestMethod]
+    [DataRow("[]")]
+    [DataRow("42")]
+    [DataRow("""{"deviceReceivedAtUtc":"not-a-timestamp"}""")]
+    [DataRow("""{"deviceReceivedAtUtc":42}""")]
+    [DataRow("""{"sensorTemperatureCelsius":true}""")]
+    [DataRow("""{"sensorTemperatureCelsius":{}}""")]
+    [DataRow("""{"unknown":true}""")]
+    [DataRow("""{"sensorTemperatureCelsius":1,"sensorTemperatureCelsius":2}""")]
+    [DataRow("""{"deviceReceivedAtUtc":null,"deviceReceivedAtUtc":null}""")]
+    public void ParseRejectsMalformedOrAmbiguousMetadata(string metadataJson)
+    {
+        var source = CreateObservation() with { SchemaVersion = EnvironmentalObservationSchemaVersions.V3 };
+        var json = Encoding.UTF8.GetString(EnvironmentalObservationJson.Serialize(source));
+        // Insert raw JSON so duplicate member names reach the strict parser intact.
+        json = json.Replace("\"value\":{", "\"value\":{\"metadata\":" + metadataJson + ",", StringComparison.Ordinal);
+
+        var parsed = EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(json));
+
+        Assert.AreEqual(
+            EnvironmentalObservationValidationResult.Failure(EnvironmentalObservationReasonCodes.InvalidJson, "$"),
+            parsed.Validation);
+        Assert.IsNull(parsed.Observation);
+    }
+
+    [TestMethod]
+    [DataRow("""{"deviceReceivedAtUtc":"0001-01-01T00:00:00Z"}""")]
+    [DataRow("""{"deviceReceivedAtUtc":"2026-01-15T07:00:00+01:00"}""")]
+    [DataRow("""{"deviceReceivedAtUtc":"2026-01-15T05:00:00-01:00"}""")]
+    [DataRow("""{"sensorTemperatureCelsius":-100.001}""")]
+    [DataRow("""{"sensorTemperatureCelsius":100.001}""")]
+    public void ParseRejectsSemanticallyInvalidMetadataWithoutReturningObservation(string metadataJson)
+    {
+        var source = CreateObservation() with { SchemaVersion = EnvironmentalObservationSchemaVersions.V3 };
+        var json = JsonNode.Parse(EnvironmentalObservationJson.Serialize(source))!;
+        json["value"]!["metadata"] = JsonNode.Parse(metadataJson);
+
+        var parsed = EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(json.ToJsonString()));
+
+        Assert.AreEqual(
+            EnvironmentalObservationValidationResult.Failure(EnvironmentalObservationReasonCodes.InvalidValue, "value.metadata"),
+            parsed.Validation);
+        Assert.IsNull(parsed.Observation);
+    }
+
+    [TestMethod]
+    [DataRow("target", false, EnvironmentalObservationReasonCodes.InvalidTarget, "target")]
+    [DataRow("source", false, EnvironmentalObservationReasonCodes.InvalidSource, "source")]
+    [DataRow("value", false, EnvironmentalObservationReasonCodes.InvalidValue, "value")]
+    [DataRow("lineage", false, EnvironmentalObservationReasonCodes.InvalidProvenance, "lineage")]
+    [DataRow("target", true, EnvironmentalObservationReasonCodes.InvalidJson, "$")]
+    [DataRow("source", true, EnvironmentalObservationReasonCodes.InvalidJson, "$")]
+    [DataRow("value", true, EnvironmentalObservationReasonCodes.InvalidJson, "$")]
+    [DataRow("lineage", true, EnvironmentalObservationReasonCodes.InvalidJson, "$")]
+    public void ParseDistinguishesNullFromMissingRequiredFields(
+        string field, bool omit, string reasonCode, string fieldPath)
+    {
+        var json = JsonNode.Parse(EnvironmentalObservationJson.Serialize(CreateObservation()))!.AsObject();
+        if (omit)
+        {
+            Assert.IsTrue(json.Remove(field));
+        }
+        else
+        {
+            json[field] = null;
+        }
+
+        var parsed = EnvironmentalObservationJson.Parse(Encoding.UTF8.GetBytes(json.ToJsonString()));
+
+        Assert.AreEqual(EnvironmentalObservationValidationResult.Failure(reasonCode, fieldPath), parsed.Validation);
+        Assert.IsNull(parsed.Observation);
+    }
 
     [TestMethod]
     [DataRow(EnvironmentalObservationKind.SkyTemperature, EnvironmentalObservationUnit.DegreesCelsius, -30d)]

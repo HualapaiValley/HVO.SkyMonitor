@@ -6,6 +6,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [development/v1]
+  # The merge queue tests each queued PR on a temporary merge_group commit built
+  # on the latest base; both required checks must report there too.
+  merge_group:
+    types: [checks_requested]
+    branches: [development/v1]
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
   preflight:
     name: Development v1 / Preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: ${{ github.event_name == 'merge_group' && 6 || 4 }}
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,7 +53,8 @@ jobs:
             '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+          shopt -s nullglob
+          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml .github/workflows/*.yaml
 
       # Offline and cheap enough to run on every draft/push (#1345).
       - name: Check Dockerfile base images
@@ -102,7 +108,7 @@ jobs:
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 22
     steps:

@@ -476,8 +476,9 @@ internal static class BuiltInProcessingProductContracts
             .Where(static value => value.Kind == ProcessingAuxiliaryInputKind.Artifact)
             .Select(value => request.Inputs.SingleOrDefault(source => source.ArtifactId == value.ArtifactId));
         var curatedScene = CuratedDeepSkyAnnotation.FindScene(primary, curatedSources);
+        var curatedHorizon = CuratedDeepSkyAnnotation.ResolveHorizon(request, curatedScene);
         if (curatedScene is not null)
-            algorithms.InsertRange(algorithms.Count - 1, CuratedDeepSkyAnnotation.Algorithms(curatedScene));
+            algorithms.InsertRange(algorithms.Count - 1, CuratedDeepSkyAnnotation.Algorithms(curatedScene, curatedHorizon));
         algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);
         if (!packed)

@@ -55,7 +55,9 @@ public enum TransientDetectorMaskKind
     Obstruction,
     BadPixel,
     Saturation,
-    Star
+    Star,
+    FixedHorizonObstruction,
+    UnknownHorizonObstruction
 }
 
 public enum TransientTemporalSourceDisposition
@@ -286,7 +288,7 @@ public static class TransientTemporalBackgroundJson
                 source.NormalizationNumerator == 0 != (source.NormalizationDenominator == 0) ||
                 descriptor.Status == TransientTemporalBackgroundStatus.Produced &&
                     (source.NormalizationNumerator == 0 || source.NormalizationDenominator == 0) ||
-                source.MaskIdentitySha256s is null || source.MaskIdentitySha256s.Count is < 1 or > 7 ||
+                source.MaskIdentitySha256s is null || source.MaskIdentitySha256s.Count is < 1 or > 9 ||
                 source.MaskIdentitySha256s.Any(static value => !CanonicalSha256(value)))
             {
                 throw new ArgumentException("Temporal background source lineage is invalid.", nameof(descriptor));
@@ -632,6 +634,8 @@ public static class TransientTemporalBackgroundFactory
         {
             return (TransientTemporalBackgroundReasonCodes.IncompatibleResponse, "sensitivity.responseIdentity");
         }
+        if (source.Masks.Count != target.Masks.Count)
+            return (TransientTemporalBackgroundReasonCodes.IncompatibleMask, "masks");
         var targetMasks = target.Masks.ToDictionary(static mask => mask.Kind);
         foreach (var mask in source.Masks)
         {
@@ -678,7 +682,7 @@ public static class TransientTemporalBackgroundFactory
             failure = TransientTemporalBackgroundReasonCodes.InvalidRequest;
             return false;
         }
-        if (source.Masks.Count != RequiredPersistentMaskKinds.Length || source.Input.SaturationMask is null ||
+        if (source.Masks.Count != RequiredPersistentMaskKinds.Length && source.Masks.Count != RequiredPersistentMaskKinds.Length + 2 || source.Input.SaturationMask is null ||
             source.Input.SaturationMask.Width != descriptor.Layout.Width ||
             source.Input.SaturationMask.Height != descriptor.Layout.Height)
         {
@@ -736,7 +740,9 @@ public static class TransientTemporalBackgroundFactory
                 return false;
             }
         }
-        if (!RequiredPersistentMaskKinds.All(maskKinds.Contains))
+        if (!RequiredPersistentMaskKinds.All(maskKinds.Contains) ||
+            maskKinds.Contains(TransientDetectorMaskKind.FixedHorizonObstruction) !=
+                maskKinds.Contains(TransientDetectorMaskKind.UnknownHorizonObstruction))
         {
             failure = TransientTemporalBackgroundReasonCodes.IncompatibleMask;
             return false;
