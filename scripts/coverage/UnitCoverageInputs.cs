@@ -131,10 +131,23 @@ internal static class UnitCoverageInputs
             return false;
         }
 
+        var excludedAccessors = new HashSet<MethodDefinitionHandle>();
+        foreach (var handle in metadata.PropertyDefinitions)
+        {
+            var property = metadata.GetPropertyDefinition(handle);
+            if (Excluded(property.GetCustomAttributes()))
+            {
+                var accessors = property.GetAccessors();
+                excludedAccessors.Add(accessors.Getter);
+                excludedAccessors.Add(accessors.Setter);
+                excludedAccessors.UnionWith(accessors.Others);
+            }
+        }
+
         bool ExcludedMethod(MethodDefinitionHandle handle)
         {
             var method = metadata.GetMethodDefinition(handle);
-            if (Excluded(method.GetCustomAttributes()))
+            if (excludedAccessors.Contains(handle) || Excluded(method.GetCustomAttributes()))
             {
                 return true;
             }
