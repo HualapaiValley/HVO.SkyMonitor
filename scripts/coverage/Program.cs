@@ -282,7 +282,8 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
                 }
             }
 
-            if (!thresholds.TryGetValue(sourcePath, out var minimum))
+            var hasFloor = thresholds.TryGetValue(sourcePath, out var minimum);
+            if (!hasFloor && !allowEmpty)
             {
                 continue;
             }
@@ -290,7 +291,8 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
             var marker = line.Attribute("branch")?.Value;
             var hasMarker = bool.TryParse(marker, out var hasBranches);
             var conditionCoverage = line.Attribute("condition-coverage")?.Value;
-            if ((!hasMarker && conditionCoverage is null) ||
+            if ((marker is not null && !hasMarker) ||
+                (!hasMarker && conditionCoverage is null) ||
                 ((hasBranches || conditions.Length > 0) && conditionCoverage is null) ||
                 (conditionCoverage is not null &&
                  (!TryParseConditionCoverage(conditionCoverage, out var covered, out var total) ||
@@ -298,8 +300,11 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
                   ((hasBranches || conditions.Length > 0) && total == 0) ||
                   (hasMarker && !hasBranches && total > 0))))
             {
-                throw new InvalidDataException(FormattableString.Invariant(
-                    $"{sourcePath}:{number}: measured branch data MISSING or invalid; branch floor {minimum.Branch:P2}. A branch-marked line needs condition-coverage counts; branchless lines must explicitly declare branch=false."));
+                var floorDescription = hasFloor
+                    ? FormattableString.Invariant($"branch floor {minimum.Branch:P2}")
+                    : "input branch counts required";
+                throw new InvalidDataException(
+                    $"{sourcePath}:{number}: measured branch data MISSING or invalid; {floorDescription}. A branch-marked line needs condition-coverage counts; branchless lines must explicitly declare branch=false.");
             }
         }
     }
