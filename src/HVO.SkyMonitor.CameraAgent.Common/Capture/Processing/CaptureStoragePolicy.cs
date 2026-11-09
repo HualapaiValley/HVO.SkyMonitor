@@ -8,7 +8,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 /// <summary>Graph revisions cannot override the profile that also owns retention and outbox draining.</summary>
 public static class CaptureStoragePolicy
 {
-    public const string RejectionMessage = "Enabled Storage settings must match the active capture profile. Change Storage through the local capture-profile configuration owner, then reconcile this graph with that policy.";
+    public const string RejectionMessage = "Enabled Storage settings must match the active capture profile. Pause acquisition and finish in-flight processing before changing the local capture profile, then reconcile, validate and activate the graph before resuming. Raw captures are retained while incompatible standard processing is skipped.";
+
+    public const string LiveMismatchLaneReason = "storage-policy-mismatch";
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {

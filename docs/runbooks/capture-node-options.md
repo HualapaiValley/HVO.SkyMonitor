@@ -27,14 +27,36 @@ and upload draining follow that profile. A graph draft cannot independently
 override its Storage directory, retention, latest-frame/upload flags or artifact
 policies. Preview and save reject an enabled Storage node that differs from its
 corresponding enabled profile node; validation, activation and rollback recheck
-retained revisions. Newly selected live work also fails closed for an incompatible
-old revision. Disabled Storage nodes do not publish and can retain their options.
+retained revisions. These four HTTP commands return 409 ProblemDetails with the
+profile-policy guidance when they reject a mismatch. Disabled Storage nodes do
+not publish and can retain their options.
 
-Change Storage through the local capture-profile configuration owner first, then
-reconcile the graph's fields with that policy. Other graph settings can still be
-edited and activated while preserving Storage. This panel does not update the
-profile or teach retention/upload workers to read graph revisions. Explicit
-archived replay keeps its existing retained-revision path.
+Raw acquisition and startup recovery retain the original immutable graph binding
+even if that graph's Storage no longer matches the active profile. Before any
+standard processing node runs, CameraAgent checks the current profile. A mismatch
+abandons standard processing with lane reason `storage-policy-mismatch` and
+execution reason `processing.storage-policy-mismatch`. Raw bytes and sidecars
+remain retained under the existing raw retention/upload rules; this condition does
+not turn raw ingress unhealthy or stop recovery at the first incompatible capture.
+Later compatible work can continue. No Storage publication runs for skipped work.
+
+For a planned Storage change:
+
+1. Pause acquisition and let in-flight standard processing finish before changing
+   the profile. Already running processing is not transactionally migrated.
+2. Change Storage through the local capture-profile configuration owner. Reconcile
+   a graph draft with that policy, then save, validate and activate it. If retained
+   artifact-policy collections differ, start from the current configured-basic
+   revision; this scalar panel does not edit those collections.
+3. Resume acquisition after the matching graph is active. Pending work bound to
+   an incompatible old graph is skipped; activation resumes compatible/new work
+   and does not silently replay or rewrite old captures. Only matching-policy
+   graphs can be selected by an explicit activation or rollback command.
+
+Other graph settings can still be edited and activated while preserving Storage.
+This panel does not update the profile or teach retention/upload workers to read
+graph revisions. Explicit archived replay keeps its existing retained-revision
+path and does not gain a current-profile Storage check in this delivery.
 
 Defaults match the existing runtime option classes. Unchanged saves preserve
 absent defaults, source member casing, unknown fields and nested scientific

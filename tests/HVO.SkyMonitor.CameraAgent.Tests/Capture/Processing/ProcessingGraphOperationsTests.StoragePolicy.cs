@@ -82,7 +82,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await store.ValidateRevisionAsync(legacyId, "legacy-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
                 var oldActive = await store.ActivateRevisionAsync(legacyId, initial.StateVersion, "legacy-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
                 var oldRollback = await store.RollbackRevisionAsync(sourceId, oldActive.StateVersion, "legacy-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
-                await AssertStorageSelectionRejectedAsync(operations, profile, legacyId, oldRollback.StateVersion, "before").ConfigureAwait(false);
+                await AssertStorageCommandsRejectedAndRawBindingPreservedAsync(operations, profile, legacyId, oldRollback.StateVersion, "before").ConfigureAwait(false);
                 AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), profile, root);
             }
             using (var restarted = CreateRemainingOptionsProvider(root))
@@ -92,7 +92,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var initial = await operations.EnsureConfiguredBasicAsync(profile, CancellationToken.None).ConfigureAwait(false);
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                     await operations.ValidateRevisionAsync(legacyId, "restart-validate-rejected", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-                await AssertStorageSelectionRejectedAsync(operations, profile, legacyId, initial.StateVersion, "restart").ConfigureAwait(false);
+                await AssertStorageCommandsRejectedAndRawBindingPreservedAsync(operations, profile, legacyId, initial.StateVersion, "restart").ConfigureAwait(false);
                 Assert.AreEqual(sourceId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
                 var unchangedStorage = profile.Pipeline with
                 {
@@ -158,15 +158,17 @@ public sealed partial class ProcessingGraphOperationsTests
         provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(profile);
     }
 
-    private static async Task AssertStorageSelectionRejectedAsync(ProcessingGraphOperationsCoordinator operations,
+    private static async Task AssertStorageCommandsRejectedAndRawBindingPreservedAsync(ProcessingGraphOperationsCoordinator operations,
         CameraModuleConfig profile, string revisionId, long stateVersion, string key)
     {
         await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
             await operations.ActivateRevisionAsync(revisionId, stateVersion, key + "-activate", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
             await operations.RollbackRevisionAsync(revisionId, stateVersion, key + "-rollback", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        var binding = await operations.SelectLiveRevisionAsync(profile, false, CancellationToken.None, revisionId).ConfigureAwait(false);
+        Assert.AreEqual(revisionId, binding.State.RevisionId, "Raw binding preserves the immutable graph even when standard processing must skip it.");
         await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
-            await operations.SelectLiveRevisionAsync(profile, false, CancellationToken.None, revisionId).ConfigureAwait(false)).ConfigureAwait(false);
+            await operations.EnsureLiveStoragePolicyAsync(profile with { Pipeline = binding.Pipeline }, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]

@@ -158,9 +158,15 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
-        var profile = await ReadCurrentProfileAsync(configuration, cancellationToken).ConfigureAwait(false);
-        CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, profile?.Pipeline);
+        // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
+        // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
+    }
+
+    internal async ValueTask EnsureLiveStoragePolicyAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false) ?? configuration;
+        CaptureStoragePolicy.EnsureMatchesProfile(configuration.Pipeline, profile.Pipeline);
     }
 
     private async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(

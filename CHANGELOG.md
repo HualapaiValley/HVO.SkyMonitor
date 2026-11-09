@@ -79,6 +79,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Keep CameraAgent raw capture and startup recovery running when an active graph's Storage differs from the capture profile; skip incompatible standard processing with a specific reason and return policy guidance with HTTP 409 for graph commands. #1386
+
 - The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
 
 - CameraAgent images declare approved-catalog contract `hvo-approved-catalogs-v2` and catalog manifest version 3. An upgraded instance keeps a verified manifest 2 HYG catalog, and can install and select the verified HYG 4.4 + OpenNGC manifest 3 catalog. Curated deep-sky expected positions stay off until `curatedAnnotations` is enabled. Checksums and manifests stay required. #1388

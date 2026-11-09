@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -118,7 +119,8 @@ internal sealed class FrameProcessingWorker
         ICaptureProcessingFaultInjector? faultInjector = null,
         int? durableAttempt = null,
         Func<CaptureLaneHandlerResult>? cancellationDisposition = null,
-        bool frozenPlanSuperseded = false)
+        bool frozenPlanSuperseded = false,
+        Func<CancellationToken, ValueTask>? ensureLiveStoragePolicy = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -158,6 +160,21 @@ internal sealed class FrameProcessingWorker
             if (persistence is not null)
             {
                 await persistence.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            if (ensureLiveStoragePolicy is not null)
+            {
+                try
+                {
+                    await ensureLiveStoragePolicy(cancellationToken).ConfigureAwait(false);
+                }
+                catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+                {
+                    // Keep raw ingress/recovery moving without publishing under stale Storage policy. As with
+                    // superseded plans, damaged evidence must still fail instead of being abandoned as intact.
+                    await EnsureEvidenceIntactAsync(context, persistence, item.Execution, cancellationToken).ConfigureAwait(false);
+                    logger.CaptureLaneTerminal("standard", "abandoned", CaptureStoragePolicy.LiveMismatchLaneReason);
+                    return Finish(CaptureLaneHandlerResult.Abandon(CaptureStoragePolicy.LiveMismatchLaneReason));
+                }
             }
             if (frozenPlanSuperseded)
             {
