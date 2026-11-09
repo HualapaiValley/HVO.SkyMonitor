@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -34,16 +35,15 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     private static readonly NightlyProductKind[] ProductKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
 
-    internal sealed record CaptureSegment(DateTimeOffset StartUtc, DateTimeOffset EndUtc, int Count);
-
-    internal sealed record HourTick(double Percent, string Label);
-
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentObservingDayView? _view;
     private CameraAgentNightlyDayView? _nightly;
     private string? _nightlyMessage;
     private bool _nightlyLoading;
     private readonly HashSet<Guid> _failedPreviews = [];
+    // Retain failures by capture identity across day navigation; another day's image never substitutes for it.
+    private readonly HashSet<Guid> _failedRepresentativePreviews = [];
+    private ElementReference _candidateList;
     // The tile whose viewer is open: a nightly product kind, or the time-lapse sample when no kind is set.
     private NightlyProductKind? _viewerKind;
     private bool _viewerOpen;
@@ -61,9 +61,9 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     private DateOnly Date { get; set; }
 
-    private static string CoverageBinMinutes => CameraAgentObservingDayUiService.CoverageBin.TotalMinutes.ToString("0", CultureInfo.InvariantCulture);
-
     private string PageTitleText => _invalidDate ? "Observing day" : $"Observing day {DateText}";
+
+    private async Task FocusCandidatesAsync() => await _candidateList.FocusAsync().ConfigureAwait(false);
 
     private string DayTitle => Date.ToString("d MMMM yyyy", CultureInfo.InvariantCulture);
 
@@ -391,65 +391,6 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         { TotalHours: < 1 } => FormattableString.Invariant($"{(int)value.TotalMinutes}m {value.Seconds:00}s"),
         _ => FormattableString.Invariant($"{(int)value.TotalHours}h {value.Minutes:00}m")
     };
-
-    private string TimelineRange(CameraAgentObservingDayView view)
-        => $"{LocalTime(view.Day.Day.StartUtc)} {view.Day.Day.Date:dd MMM} – {LocalTime(view.Day.Day.EndUtc)} {view.Day.Day.Date.AddDays(1):dd MMM} ({TimeZoneId})";
-
-    private static double NightHours(CameraAgentObservingDayView view) => (view.Day.Day.EndUtc - view.Day.Day.StartUtc).TotalHours;
-
-    private static double Percent(CameraAgentObservingDayView view, DateTimeOffset utc)
-    {
-        var total = (view.Day.Day.EndUtc - view.Day.Day.StartUtc).TotalSeconds;
-        var offset = (utc - view.Day.Day.StartUtc).TotalSeconds;
-        return Math.Clamp(100 * offset / total, 0, 100);
-    }
-
-    private static string BarStyle(CameraAgentObservingDayView view, DateTimeOffset startUtc, DateTimeOffset endUtc)
-    {
-        var left = Percent(view, startUtc);
-        var width = Math.Max(0.15, Percent(view, endUtc) - left);
-        return FormattableString.Invariant($"left: {left:0.###}%; width: {width:0.###}%");
-    }
-
-    private static string MarkerStyle(CameraAgentObservingDayView view, DateTimeOffset utc)
-        => FormattableString.Invariant($"left: {Percent(view, utc):0.###}%");
-
-    /// <summary>Exposures collapsed into runs where consecutive exposures are within one coverage bin.</summary>
-    internal static IReadOnlyList<CaptureSegment> CaptureSegments(CameraAgentObservingDayView view)
-    {
-        var segments = new List<CaptureSegment>();
-        CaptureSegment? current = null;
-        foreach (var exposure in view.ExposureInstantsUtc.Order())
-        {
-            var start = exposure;
-            var end = start + CameraAgentObservingDayUiService.CoverageBin;
-            if (current is not null && start <= current.EndUtc)
-            {
-                current = current with { EndUtc = end > current.EndUtc ? end : current.EndUtc, Count = current.Count + 1 };
-                segments[^1] = current;
-            }
-            else
-            {
-                current = new CaptureSegment(start, end, 1);
-                segments.Add(current);
-            }
-        }
-        return segments;
-    }
-
-    private List<HourTick> HourTicks(CameraAgentObservingDayView view)
-    {
-        var ticks = new List<HourTick>();
-        var start = view.Day.Day.StartUtc;
-        var end = view.Day.Day.EndUtc;
-        // Six evenly spaced ticks fit a phone and follow real elapsed time across DST days.
-        for (var index = 0; index <= 6; index++)
-        {
-            var utc = start + TimeSpan.FromTicks((end - start).Ticks * index / 6);
-            ticks.Add(new HourTick(Percent(view, utc), LocalTime(utc)));
-        }
-        return ticks;
-    }
 
     protected override Task OnParametersSetAsync()
     {

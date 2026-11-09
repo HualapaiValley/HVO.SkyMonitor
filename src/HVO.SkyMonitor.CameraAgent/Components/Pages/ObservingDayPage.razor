@@ -61,7 +61,14 @@
                     @if (view.RepresentativeCaptureId is { } representative)
                     {
                         <a href="/gallery/@representative.ToString("D")" aria-label="Open the representative capture">
-                            <img src="@ArchiveCalendarPage.ThumbnailUrl(representative)" alt="Representative capture of @DayTitle" />
+                            @if (_failedRepresentativePreviews.Contains(representative))
+                            {
+                                <span class="day-hero__empty" role="status"><strong>Representative preview unavailable</strong><span>Open this capture to inspect its retained evidence. No other image has been substituted.</span></span>
+                            }
+                            else
+                            {
+                                <RetainedPreviewImage Source="@ArchiveCalendarPage.ThumbnailUrl(representative)" Alt="@($"Representative capture of {DayTitle}")" OnFailure="() => _failedRepresentativePreviews.Add(representative)" />
+                            }
                         </a>
                         <p class="day-hero__caption"><span>Representative capture</span><strong>@RepresentativeCaption(view)</strong></p>
                     }
@@ -90,47 +97,10 @@
                 </aside>
             </section>
 
-            <section class="night-timeline" aria-label="Night timeline">
-                <header><div><p class="eyebrow">@(view.Day.Day.SunrisePeriod is null ? "Legacy noon to noon" : "Sunrise to following sunrise")</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
-                <div class="timeline-tracks" style="--night-hours: @NightHours(view).ToString(System.Globalization.CultureInfo.InvariantCulture)">
-                    <span class="timeline-track-label">Schedule</span>
-                    <div class="timeline-track" aria-label="Scheduled windows from the active schedule definition">
-                        @if (view.Schedule is { OpenWindows.Count: > 0 } schedule)
-                        {
-                            @foreach (var window in schedule.OpenWindows)
-                            {
-                                <span class="timeline-bar timeline-bar--schedule" style="@BarStyle(view, window.StartUtc, window.EndUtc)" title="Scheduled @LocalTime(window.StartUtc)–@LocalTime(window.EndUtc)"></span>
-                            }
-                        }
-                        else
-                        {
-                            <span class="timeline-track__empty">@(view.Schedule is null ? "Schedule unavailable" : "No schedule window")</span>
-                        }
-                    </div>
-                    <span class="timeline-track-label">Captures</span>
-                    <div class="timeline-track" aria-label="Retained capture exposure starts in @CoverageBinMinutes-minute bins">
-                        @foreach (var segment in CaptureSegments(view))
-                        {
-                            <span class="timeline-bar timeline-bar--captures" style="@BarStyle(view, segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
-                        }
-                    </div>
-                    <span class="timeline-track-label">Candidates</span>
-                    <div class="timeline-track timeline-track--markers" aria-label="Local candidate record times, not verified observation times">
-                        @foreach (var candidate in view.Candidates)
-                        {
-                            <a class="timeline-marker" style="@MarkerStyle(view, candidate.CreatedUtc)" href="/transients/@candidate.CandidateId.ToString("D")" title="Candidate recorded @LocalTime(candidate.CreatedUtc)"><span>Candidate recorded @LocalTime(candidate.CreatedUtc)</span></a>
-                        }
-                    </div>
-                    <div class="timeline-hours" aria-hidden="true">
-                        @foreach (var tick in HourTicks(view))
-                        {
-                            <span style="left: @tick.Percent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%">@tick.Label</span>
-                        }
-                    </div>
-                </div>
-                <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Active schedule definition</span><span><i class="timeline-key__captures"></i>Exposure starts (@CoverageBinMinutes-minute bins)</span><span><i class="timeline-key__event"></i>Candidate record time</span><span class="timeline-key__unavailable">Cloud/usable intervals: unavailable</span></div>
-                @if (view.Schedule?.ActiveRevisionCaveat == true) { <p class="night-timeline__note">The active schedule was created after this day. Its windows are not a historical admission record.</p> }
-            </section>
+            <ObservingDayTimeline Day="@view.Day.Day" ExposureInstantsUtc="@view.ExposureInstantsUtc"
+                                  ScheduleWindows="@view.Schedule?.OpenWindows" Candidates="@view.Candidates"
+                                  CandidatesTruncated="@view.CandidatesTruncated" ActiveRevisionCaveat="@(view.Schedule?.ActiveRevisionCaveat == true)"
+                                  OnCandidatesRequested="FocusCandidatesAsync" />
 
             <section class="daily-products" aria-label="Generated products" aria-busy="@(_nightlyLoading ? "true" : "false")">
                 <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="@ProductsPage.RetainedPath">Browse retained outputs</a></header>
@@ -329,7 +299,7 @@
             </section>
 
             <div class="day-columns">
-                <section class="day-events" aria-label="Detected candidates">
+                <section id="day-candidates" class="day-events" aria-label="Detected candidates" tabindex="-1" @ref="_candidateList">
                     <header><div><h2>Local candidates</h2><p>Detection records, not confirmed meteors or reviewed events.</p></div><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
                     @if (view.Candidates.Count == 0)
                     {

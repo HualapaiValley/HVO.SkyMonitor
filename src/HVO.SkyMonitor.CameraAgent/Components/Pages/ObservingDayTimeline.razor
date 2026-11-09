@@ -1,0 +1,74 @@
+@using System.Globalization
+
+<section class="night-timeline" aria-label="Night timeline">
+    <header>
+        <div>
+            <p class="eyebrow">@(Day.SunrisePeriod is null ? "Legacy noon to noon" : "Sunrise to following sunrise")</p>
+            <h2>Night timeline</h2>
+            <p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p>
+        </div>
+        <span class="night-timeline__range">@RangeLabel</span>
+    </header>
+    <div class="timeline-tracks">
+        <span class="timeline-track-label">Schedule</span>
+        <div class="timeline-track" aria-label="Scheduled windows from the active schedule definition">
+            @if (ScheduleWindows is { Count: > 0 })
+            {
+                @foreach (var window in ScheduleWindows.Where(window => window.StartUtc < Day.EndUtc && window.EndUtc > Day.StartUtc))
+                {
+                    <span class="timeline-bar timeline-bar--schedule" style="@BarStyle(window.StartUtc, window.EndUtc)" title="Scheduled @LocalTime(window.StartUtc)–@LocalTime(window.EndUtc)"></span>
+                }
+            }
+            else
+            {
+                <span class="timeline-track__empty">@(ScheduleWindows is null ? "Schedule unavailable" : "No schedule window")</span>
+            }
+        </div>
+        <span class="timeline-track-label">Captures</span>
+        <div class="timeline-track" aria-label="Retained capture exposure starts in @CoverageBinLabel bins; blank intervals have no retained exposure start">
+            @foreach (var segment in CaptureSegments(Day, ExposureInstantsUtc))
+            {
+                <span class="timeline-bar timeline-bar--captures" style="@BarStyle(segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
+            }
+            @if (!ExposureInstantsUtc.Any(Day.Contains))
+            {
+                <span class="timeline-track__empty">No retained exposures</span>
+            }
+        </div>
+        <span class="timeline-track-label">Clear/usable</span>
+        <div class="timeline-track timeline-track--unavailable" aria-label="Clear or usable intervals unavailable"><span class="timeline-track__empty">Unavailable</span></div>
+        <span class="timeline-track-label">Cloudier</span>
+        <div class="timeline-track timeline-track--unavailable" aria-label="Cloudier intervals unavailable"><span class="timeline-track__empty">Unavailable</span></div>
+        <span class="timeline-track-label">Candidates</span>
+        <div class="timeline-track timeline-track--markers" aria-label="Local candidate record times, not verified observation times">
+            @foreach (var candidate in Candidates.Where(candidate => Day.Contains(candidate.CreatedUtc)))
+            {
+                <a class="timeline-marker" style="@MarkerStyle(candidate.CreatedUtc)" href="/transients/@candidate.CandidateId.ToString("D")" title="Candidate recorded @LocalTime(candidate.CreatedUtc)"><span>Candidate recorded @LocalTime(candidate.CreatedUtc)</span></a>
+            }
+            @if (!Candidates.Any(candidate => Day.Contains(candidate.CreatedUtc)))
+            {
+                <span class="timeline-track__empty">No candidate records</span>
+            }
+        </div>
+        <div class="timeline-hours" aria-hidden="true">
+            @foreach (var tick in HourTicks())
+            {
+                <span style="left: @tick.Percent.ToString("0.##", CultureInfo.InvariantCulture)%">@tick.Label</span>
+            }
+        </div>
+    </div>
+    <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Active schedule definition</span><span><i class="timeline-key__captures"></i>Exposure starts (@CoverageBinLabel bins)</span><span><i class="timeline-key__event"></i>Candidate record time</span><span class="timeline-key__unavailable">Cloud/usable intervals: unavailable</span></div>
+    <p class="night-timeline__note">Blank capture intervals are gaps in retained exposure starts, not evidence of cloud or unusable sky. The @CoverageBinLabel bins are a coverage estimate, not exposure duration. Candidate observations and confirmed-event times are unavailable in this summary.</p>
+    @if (Candidates.Any(candidate => Day.Contains(candidate.CreatedUtc)))
+    {
+        <p class="night-timeline__note">Close markers may overlap visually. <a href="@CandidateListUrl" @onclick="OnCandidatesRequested" @onclick:preventDefault="OnCandidatesRequested.HasDelegate">Use the full-size candidate list controls</a> to select any record.</p>
+    }
+    @if (CandidatesTruncated)
+    {
+        <p class="night-timeline__note" role="note">Partial candidate timeline: @(Candidates.Count == 1 ? "the most recent record is shown" : $"the {Candidates.Count} most recent records are shown"); earlier records are not plotted. <a href="@CandidatesUrl">View all candidate records in this range</a>.</p>
+    }
+    @if (ActiveRevisionCaveat)
+    {
+        <p class="night-timeline__note">The active schedule was created after this day. Its windows are not a historical admission record.</p>
+    }
+</section>
