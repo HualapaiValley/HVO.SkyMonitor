@@ -50,6 +50,13 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
 
     private string PageTitleText => Detail is { } detail ? $"{Title(detail)} {detail.Summary.ObservingDate:yyyy-MM-dd}" : "Nightly product";
 
+    internal static string SummaryProductLabel(string kind) => kind switch
+    {
+        NightlyProductContract.StarTrailTarget => "Star trail",
+        NightlyProductContract.KeogramTarget => "Keogram",
+        _ => "Still product"
+    };
+
     private string DayUrl => Detail is { } detail
         ? ArchiveCalendarPage.DayUrl(detail.Summary.ObservingDate) + "?calendar=" + Uri.EscapeDataString(SunriseReportingPeriod.CurrentVersion)
         : "/archive/calendar?calendar=" + Uri.EscapeDataString(SunriseReportingPeriod.CurrentVersion);

@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Tests/NightlyProducts/NightlyProductTestSupport.cs" Link="Infrastructure/NightlyProductTestSupport.cs" />
   </ItemGroup>
 
   <ItemGroup>

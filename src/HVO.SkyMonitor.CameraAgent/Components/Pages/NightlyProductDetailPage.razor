@@ -135,7 +135,7 @@
                     <ul>
                         @foreach (var linked in summary.Products)
                         {
-                            <li><a href="@NightlyProductLinks.Detail(linked.ProductId)">@linked.Kind</a></li>
+                            <li><a href="@NightlyProductLinks.Detail(linked.ProductId)">@SummaryProductLabel(linked.Kind)</a></li>
                         }
                     </ul>
                 }

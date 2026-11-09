@@ -1436,17 +1436,22 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 1).ConfigureAwait(false);
 
-        // Calendar: the current night carries the seeded captures and links into the filtered archive.
+        // Calendar opens the selected observing day; that day's capture action preserves the exact archive bounds.
         await page.GotoAsync("/archive/calendar").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Observing calendar", Level = 1 })).ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".night").First).ConfigureAwait(false);
-        var populated = page.Locator(".night:not(.night--empty)").First;
+        await VisibleAsync(page.Locator(".calendar-day").First).ConfigureAwait(false);
+        var populated = page.Locator(".calendar-day:not(.calendar-day--empty)").First;
         await VisibleAsync(populated).ConfigureAwait(false);
-        var capturesLink = populated.GetByRole(AriaRole.Link, new() { Name = "Open captures" });
-        var dayUrl = await capturesLink.GetAttributeAsync("href").ConfigureAwait(false);
+        var dayLink = populated.Locator(".calendar-day__link");
+        var dayUrl = await dayLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(dayUrl);
-        StringAssert.StartsWith(dayUrl, "/gallery?from=", StringComparison.Ordinal);
+        StringAssert.StartsWith(dayUrl, "/archive/day/", StringComparison.Ordinal);
         await AssertPageStructureAsync(page, "/archive/calendar").ConfigureAwait(false);
+        await dayLink.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/day/", StringComparison.Ordinal)).ConfigureAwait(false);
+        var capturesLink = page.Locator(".day-actions a[href^='/gallery?from=']");
+        await VisibleAsync(capturesLink).ConfigureAwait(false);
+        StringAssert.StartsWith((await capturesLink.GetAttributeAsync("href").ConfigureAwait(false))!, "/gallery?from=", StringComparison.Ordinal);
         await capturesLink.ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/gallery" && new Uri(url).Query.Contains("from=", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);

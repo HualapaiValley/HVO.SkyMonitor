@@ -263,7 +263,9 @@ internal static class CameraAgentStatePreflight
         if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
         {
             builder.AppendLine(CultureInfo.InvariantCulture,
-                $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+                report.Compatible
+                    ? $"Candidate state-boundary revision: {minimum}."
+                    : $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
         }
         foreach (var finding in report.Findings)
         {

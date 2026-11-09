@@ -59,7 +59,7 @@ else if (_page is { } page)
         @* An empty older page says nothing about newer pages, so it never claims that no product matches. *@
         @if (_query?.Before is not null)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No older still products" Message="@(IsFiltered ? "No earlier sunrise-to-sunrise period has a recorded star-trail or keogram evaluation matching these filters." : "No earlier sunrise-to-sunrise period has a recorded star-trail or keogram evaluation.")">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No older still products" Message="@(IsFiltered ? "No earlier sunrise-to-sunrise period has a recorded star trail, keogram or daily summary evaluation matching these filters." : "No earlier sunrise-to-sunrise period has a recorded star trail, keogram or daily summary evaluation.")">
                 <a class="btn btn-outline-light btn-sm" href="@NewestUrl">Newest products</a>
             </PageStateNotice>
         }
@@ -72,7 +72,7 @@ else if (_page is { } page)
         }
         else
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No still products yet" Message="No sunrise-to-sunrise period has a recorded star-trail or keogram evaluation. Published daily videos are listed separately below when they match.">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No still products yet" Message="No sunrise-to-sunrise period has a recorded star trail, keogram or daily summary evaluation. Published daily videos are listed separately below when they match.">
                 <a class="btn btn-outline-light btn-sm" href="/operations/automations">Manage automations</a>
             </PageStateNotice>
         }

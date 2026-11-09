@@ -139,7 +139,7 @@ public sealed class ObservingDayTimeLapseStateTests
                 var summary = cut.Find("[data-product-kind='daily summary']");
                 Assert.AreEqual("partial", summary.GetAttribute("data-nightly-state"));
                 Assert.AreEqual(NightlyProductLinks.Preview(id), summary.QuerySelector("img")!.GetAttribute("src"));
-                StringAssert.Contains(summary.TextContent, "1 admitted previews", StringComparison.Ordinal);
+                StringAssert.Contains(summary.TextContent, "1 admitted preview;", StringComparison.Ordinal);
                 Assert.DoesNotContain("Sample", summary.TextContent, StringComparison.Ordinal);
             }
             if (hasSample)

@@ -225,7 +225,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
     private string ProductFacts(ProductCard card) => card.Product is { } product
         ? $"Frames {LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)} from " +
-          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} {(card.Kind == NightlyProductKind.DailySummary ? "admitted previews" : "segment products")}; {product.Width:N0} × {product.Height:N0}.")
+          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} {(card.Kind == NightlyProductKind.DailySummary ? "admitted preview" : "segment product")}{(card.Daily.Status.AdmittedCount == 1 ? "" : "s")}; {product.Width:N0} × {product.Height:N0}.")
         : card.Daily is { Status: var status } && card.Badge.State == ArchiveCalendarPage.NightlyBadgeState.NotProduced
             ? $"The period was evaluated: {Outcome(status)}."
             : card.Badge.Description + ".";

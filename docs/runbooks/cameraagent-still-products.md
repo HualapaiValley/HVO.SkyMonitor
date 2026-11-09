@@ -260,6 +260,9 @@ With the same enabled and pinned `NightlyProducts` settings, select the register
 `AllActualSources`. Hourly or dark-night-only definitions are rejected. Allow
 settlement after other still-product automations if their links should appear.
 No physical camera is required; VirtualSky previews use the ordinary path.
+A later evaluation of the same retained occurrence includes newly published
+still-product links as a new immutable summary; it never rewrites the earlier
+snapshot. There is no automatic link refresh after the scheduled evaluation.
 
 The host-neutral Processing producer emits `hvo-daily-summary-v1`: canonical JSON
 in `recipe.descriptor.options.parameters` of the checksummed provenance document,
@@ -273,13 +276,21 @@ count is null and presented as unavailable, never as zero.
 
 Coverage counts five-minute bins containing an admitted exposure start, including
 a possible shorter final bin. This measures sampling, not continuous exposure,
-expected cadence or quality. Missing bins or excluded sources make the produced
+expected cadence or quality. The denominator is the whole sunrise-to-sunrise
+period, so a night-only capture schedule normally produces Partial sampling
+even when every planned night exposure succeeded. Missing bins or excluded sources make the produced
 summary Partial in all archive views. Empty admission records Not produced with
 no substitute image. Every bin populated is Produced, without a claim of
 continuous capture. The representative exposure duration is labeled separately.
 
 Only the representative payload is restored; metadata is bounded at 4,096
-candidates and 1,024 linked products. Capture and linked-product identities form
+candidates and 1,024 linked products. More than 4,096 preview candidates rejects
+the whole window; it does not downsample or silently truncate. For a 24-hour
+period this bound corresponds to an average interval of about 21.1 seconds;
+the 25-second sample cadence has limited headroom, especially if each capture
+publishes multiple matching previews. Re-evaluating unchanged over-bound input
+remains Rejected. Higher-cadence support needs a separately bounded metadata
+strategy, not an arbitrary increase to the guard. Capture and linked-product identities form
 the ordered immediate lineage. Facts, sources and occurrence bind the output
 identity. Unchanged retries verify the immutable publication; changed captures,
 exclusions or linked products publish a new identity while preserving prior

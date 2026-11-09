@@ -280,9 +280,11 @@ public sealed class NightlyProductDetailPageTests
         var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
         var window = occurrence.SourceWindow!;
         var source = NightlyProductFixture.Frame(41, window.StartUtc.AddHours(12)).Candidate;
+        var linkedId = Guid.NewGuid();
         var facts = DailySummaryProducer.Summarize(window.ReportingPeriod.ReportDate, window.ReportingPeriod.IdentitySha256,
             window.StartUtc, window.EndUtc, 1,
-            [new(source.ArtifactId, source.CaptureId, source.OutputIdentitySha256, source.ExposureStartedUtc)], [], new Dictionary<string, int>());
+            [new(source.ArtifactId, source.CaptureId, source.OutputIdentitySha256, source.ExposureStartedUtc)],
+            [new(linkedId, NightlyProductContract.StarTrailTarget, source.OutputIdentitySha256, source.ExposureStartedUtc)], new Dictionary<string, int>());
         var presentation = Presentation(occurrence, NightlyProductKind.DailySummary) with { DailySummary = facts };
         nightly.PresentationHandler = _ => OperatorUiResult<NightlyProductPresentation>.Success(presentation);
         var cut = context.Render<NightlyProductDetailPage>(parameters => parameters.Add(page => page.ProductId, presentation.Detail.Summary.ProductId));
@@ -291,6 +293,7 @@ public sealed class NightlyProductDetailPageTests
         StringAssert.Contains(text, "Partial: sampled coverage has gaps", StringComparison.Ordinal);
         StringAssert.Contains(text, "Unavailable; no event count was supplied", StringComparison.Ordinal);
         StringAssert.Contains(text, source.ArtifactId.ToString(), StringComparison.Ordinal);
+        Assert.AreEqual("Star trail", cut.Find($"[data-nightly-section='daily-summary'] a[href='{NightlyProductLinks.Detail(linkedId)}']").TextContent);
         Assert.IsEmpty(cut.FindAll("[data-nightly-section='axis']"));
         StringAssert.Contains(cut.Markup, "Representative exposure", StringComparison.Ordinal);
     }
