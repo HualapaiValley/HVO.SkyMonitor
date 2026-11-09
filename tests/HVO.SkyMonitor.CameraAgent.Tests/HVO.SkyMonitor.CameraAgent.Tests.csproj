@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The SDK Roslyn references below have Linux ReadyToRun PE headers. Keep this test assembly AnyCPU rather
+         than inferring a compiler platform from the native-asset RID, which causes CS8012 with those references. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <DefineConstants>$(DefineConstants);CAMERAAGENT_FLEET_PERFORMANCE_TESTS</DefineConstants>
     <!-- hvo-sky ui runs here as hvo-sky ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
     <HvoTerminalProgram>true</HvoTerminalProgram>
@@ -39,11 +42,14 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
     <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\FleetStatusPerformanceTests.cs" Link="Fleet\FleetStatusPerformanceTests.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerControlVerifier.cs" Link="Deployment/InstallerControlVerifier.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerControlHttpClient.cs" Link="Deployment/InstallerControlHttpClient.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycleClient.cs" Link="Deployment/CameraAgentLifecycleClient.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/QuarantinedReadiness.cs" Link="Deployment/QuarantinedReadiness.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerException.cs" Link="Deployment/InstallerException.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/Redaction.cs" Link="Deployment/Redaction.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/RawIngressV13Schema.cs" Link="Deployment/RawIngressV13Schema.cs" />
+    <ProjectReference Include="../../src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" Aliases="InstallerRuntime" />
     <ProjectReference Include="../../src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts.csproj" />
   </ItemGroup>
 

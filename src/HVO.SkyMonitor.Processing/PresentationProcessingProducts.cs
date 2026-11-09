@@ -35,7 +35,8 @@ public static class PresentationProcessingProducts
         PresentationLayerPayloadV1 payload,
         string outputVariant,
         IReadOnlyList<ProcessingArtifact> canonicalSources,
-        string producerVersion)
+        string producerVersion,
+        string? eligibilityIdentitySha256 = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
         PresentationLayerPayloadJson.Validate(payload);
@@ -43,12 +44,21 @@ public static class PresentationProcessingProducts
         ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
         if (!canonicalSources.Any(source => string.Equals(ArtifactIdentity(source), payload.SourceIdentitySha256, StringComparison.Ordinal)))
             throw new ArgumentException("A canonical source must provide the layer source identity.", nameof(canonicalSources));
-        var identity = Identity(LayerRecipeName, producerVersion, new
+        if (eligibilityIdentitySha256 is not null && (eligibilityIdentitySha256.Length != 64 || !eligibilityIdentitySha256.All(Uri.IsHexDigit)))
+            throw new ArgumentException("Eligibility must have a SHA-256 identity.", nameof(eligibilityIdentitySha256));
+        var parameters = eligibilityIdentitySha256 is null ? JsonSerializer.SerializeToElement(new
         {
             payload.SchemaVersion,
             payload.SourceIdentitySha256,
             payload.ContentIdentitySha256
+        }) : JsonSerializer.SerializeToElement(new
+        {
+            payload.SchemaVersion,
+            payload.SourceIdentitySha256,
+            payload.ContentIdentitySha256,
+            eligibilityIdentitySha256
         });
+        var identity = Identity(LayerRecipeName, producerVersion, parameters);
         return ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, outputVariant,
             PresentationLayerPayloadJson.MediaType, null, PresentationLayerPayloadJson.Serialize(payload), identity,
             [new("presentation-layer-producer", producerVersion)], canonicalSources, TimeSpan.Zero,

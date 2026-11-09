@@ -315,7 +315,7 @@ jobs:
           overwrite: true
 
   install-test:
-    name: Release / Install and Upgrade (${{ matrix.platform }})
+    name: Release / Install and Upgrade
     needs: [gate, draft]
     # Tag pushes alone; the arm64 runner never runs a pull request's code.
     if: github.event_name == 'push' && github.ref_type == 'tag'

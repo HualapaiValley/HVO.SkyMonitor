@@ -206,6 +206,21 @@
         "required": true
       },
       {
+        "type": "CloudAssessment",
+        "id": "CloudAssessment",
+        "order": 60,
+        "options": {
+          "clearReferenceManifestPath": "references/cloud/clear-reference.manifest.json"
+        },
+        "dependsOn": [
+          "$raw"
+        ],
+        "required": false,
+        "publication": {
+          "persistence": "durable-local"
+        }
+      },
+      {
         "type": "ScenePresentationLayer",
         "id": "ScenePresentation",
         "order": 70,
@@ -227,6 +242,23 @@
           "ProjectedScene"
         ],
         "required": true,
+        "publication": {
+          "persistence": "durable-local"
+        }
+      },
+      {
+        "type": "CloudPresentationLayer",
+        "id": "CloudPresentation",
+        "order": 71,
+        "options": {
+          "widthPixels": 1936,
+          "heightPixels": 1216,
+          "requireQuantifiedAssessment": true
+        },
+        "dependsOn": [
+          "CloudAssessment"
+        ],
+        "required": false,
         "publication": {
           "persistence": "durable-local"
         }
@@ -257,7 +289,8 @@
         "dependsOn": [
           "CombinedPreview",
           "ScenePresentation",
-          "EnvironmentPresentation"
+          "EnvironmentPresentation",
+          "CloudPresentation"
         ],
         "required": true,
         "publication": {
@@ -275,6 +308,7 @@
           "CombinedPreview",
           "ScenePresentation",
           "EnvironmentPresentation",
+          "CloudPresentation",
           "OverlayManifest"
         ],
         "required": true,

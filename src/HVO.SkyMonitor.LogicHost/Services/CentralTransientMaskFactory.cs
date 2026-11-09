@@ -88,7 +88,9 @@ internal sealed class CentralTransientMaskFactory(
         {
             return null;
         }
-        if (rig is null)
+        // Central mask evidence currently cannot authenticate/reconstruct the edge horizon planes.
+        // Refuse the whole mask set so validation records MaskEvidenceUnavailable / NeedsReview.
+        if (rig is null || rig.HorizonObstruction is not null)
         {
             return null;
         }

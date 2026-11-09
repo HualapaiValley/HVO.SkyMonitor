@@ -28,6 +28,25 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
     private const int CurrentSchemaVersion = 3;
+    // V3 maps local lineage into central identities. Retain legacy v1/v2 projection semantics;
+    // for v3, retrying or expired input leases must not release a derivative before its inputs are acknowledged.
+    private const string AcknowledgedLineageSql = """
+        AND NOT EXISTS (
+            SELECT 1 FROM environmental_observation_local_lineage AS dependency
+            JOIN environmental_observation_journal AS derivative
+                ON derivative.record_id = dependency.local_record_id
+                AND derivative.schema_version = 'environmental-observation-v3'
+            LEFT JOIN environmental_observation_central_projection AS owner_projection
+                ON owner_projection.local_record_id = candidate.local_record_id
+                AND owner_projection.outbox_record_id = candidate.record_id
+            LEFT JOIN environmental_observation_central_projection AS input_projection
+                ON input_projection.local_record_id = dependency.referenced_record_id
+                AND input_projection.target_site_id = owner_projection.target_site_id
+                AND input_projection.target_agent_id = owner_projection.target_agent_id
+                AND input_projection.target_rig_id IS owner_projection.target_rig_id
+            WHERE dependency.local_record_id = candidate.local_record_id
+                AND (input_projection.status IS NULL OR input_projection.status != 'acknowledged'))
+        """;
     private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private const int MaximumAuditRecords = 10_000;
@@ -351,6 +370,50 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return new LocalEnvironmentalObservationPage(records, next);
     }
 
+    public async ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalLatestPrimaryAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        IReadOnlyList<string> configuredSourceIds,
+        IReadOnlyList<string> unavailableSourceIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configuredSourceIds);
+        ArgumentNullException.ThrowIfNull(unavailableSourceIds);
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        var started = _timeProvider.GetTimestamp();
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            WITH candidates AS (
+                SELECT record_id, observed_at_unix_ms,
+                    json_extract(CAST(payload AS TEXT), '$.source.sourceId') AS source_id,
+                    CASE WHEN json_type(CAST(payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId') = 'text'
+                        THEN json_extract(CAST(payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId')
+                        ELSE json_extract(CAST(payload AS TEXT), '$.source.sourceId') END AS owner_id,
+                    json_extract(CAST(payload AS TEXT), '$.source.provenance.parameters.readingRole') AS reading_role
+                FROM environmental_observation_journal WHERE observation_kind = $kind)
+            SELECT record_id FROM candidates
+            WHERE COALESCE(reading_role, '') != 'lineage-input'
+                AND (owner_id IS source_id OR owner_id IN (SELECT value FROM json_each($configured)))
+                AND owner_id NOT IN (SELECT value FROM json_each($unavailable))
+            ORDER BY observed_at_unix_ms DESC, record_id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$kind", kind.ToString());
+        command.Parameters.AddWithValue("$configured", JsonSerializer.Serialize(configuredSourceIds));
+        command.Parameters.AddWithValue("$unavailable", JsonSerializer.Serialize(unavailableSourceIds));
+        var id = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        var record = id is null ? null : await ReadLocalRecordAsync(connection, transaction,
+            Convert.ToInt64(id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        acquisitionTelemetry?.RecordHistoryQuery(kind, _timeProvider.GetElapsedTime(started));
+        return record;
+    }
+
     public async ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalDetailAsync(
         string root,
         long recordId,
@@ -441,6 +504,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         var projected = 0;
+        var attempted = new HashSet<long>();
         for (var index = 0; index < maximumResults; index++)
         {
             using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
@@ -452,9 +516,11 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 candidate.CommandText = """
                     SELECT local_record_id FROM environmental_observation_central_projection
                     WHERE status = 'waiting'
+                        AND local_record_id NOT IN (SELECT value FROM json_each($attempted))
                     ORDER BY updated_unix_ms, local_record_id
                     LIMIT 1;
                     """;
+                candidate.Parameters.AddWithValue("$attempted", JsonSerializer.Serialize(attempted));
                 var value = await candidate.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
                 localRecordId = value is null
                     ? null
@@ -465,6 +531,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 break;
             }
+            attempted.Add(localRecordId.Value);
             var record = await ReadLocalRecordAsync(
                 connection, transaction, localRecordId.Value, cancellationToken).ConfigureAwait(false);
             var result = await EnsureProjectionAsync(connection, transaction, record, cancellationToken)
@@ -472,6 +539,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             if (result.Disposition != EnvironmentalObservationProjectionDisposition.Staged)
             {
+                if (result.Disposition == EnvironmentalObservationProjectionDisposition.Waiting && result.WaitingForLineage)
+                    continue;
                 break;
             }
             projected++;
@@ -747,23 +816,29 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     consecutive_failures, next_poll_unix_ms)
                 VALUES($source, $kind, $required, $outcome, $reason, $observation, $observed, $staleAfter,
                     $started, $completed,
-                    CASE WHEN $outcome IN ('Produced','Duplicate','Coalesced') THEN 0 ELSE 1 END, NULL)
+                    CASE WHEN $outcome IN ('Produced','Duplicate') OR $preserve = 1 THEN 0 ELSE 1 END, NULL)
                 ON CONFLICT(source_id) DO UPDATE SET
                     observation_kind = excluded.observation_kind,
                     required = excluded.required,
-                    last_outcome = excluded.last_outcome,
-                    last_reason = excluded.last_reason,
+                    last_outcome = CASE WHEN $preserve = 1
+                        THEN environmental_source_runtime.last_outcome ELSE excluded.last_outcome END,
+                    last_reason = CASE WHEN $preserve = 1
+                        THEN environmental_source_runtime.last_reason ELSE excluded.last_reason END,
                     last_observation_id = COALESCE(excluded.last_observation_id, environmental_source_runtime.last_observation_id),
                     last_observed_unix_ms = COALESCE(excluded.last_observed_unix_ms, environmental_source_runtime.last_observed_unix_ms),
                     last_stale_after_unix_ms = COALESCE(excluded.last_stale_after_unix_ms, environmental_source_runtime.last_stale_after_unix_ms),
-                    last_started_unix_ms = excluded.last_started_unix_ms,
-                    last_completed_unix_ms = excluded.last_completed_unix_ms,
+                    last_started_unix_ms = CASE WHEN $preserve = 1
+                        THEN environmental_source_runtime.last_started_unix_ms ELSE excluded.last_started_unix_ms END,
+                    last_completed_unix_ms = CASE WHEN $preserve = 1
+                        THEN environmental_source_runtime.last_completed_unix_ms ELSE excluded.last_completed_unix_ms END,
                     consecutive_failures = CASE
                         WHEN excluded.last_outcome IN ('Produced','Duplicate') THEN 0
-                        WHEN excluded.last_outcome = 'Coalesced' THEN environmental_source_runtime.consecutive_failures
+                        WHEN $preserve = 1 THEN environmental_source_runtime.consecutive_failures
                         ELSE environmental_source_runtime.consecutive_failures + 1 END;
                 """;
             AddAttemptParameters(runtime, source, receipt, captureSequence, captureId);
+            runtime.Parameters.AddWithValue("$preserve", receipt.Disposition == EnvironmentalAcquisitionDisposition.Coalesced ||
+                receipt.Disposition == EnvironmentalAcquisitionDisposition.TimedOut && receipt.Reason == "before-capture-source-busy" ? 1 : 0);
             await runtime.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1263,27 +1338,30 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             using (var candidate = connection.CreateCommand())
             {
                 candidate.Transaction = transaction;
-                candidate.CommandText = """
+                candidate.CommandText = $"""
                     SELECT record_id FROM (
                         SELECT * FROM (
-                            SELECT record_id, next_attempt_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'pending'
-                            ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.next_attempt_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'pending'
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.next_attempt_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1)
                         UNION ALL
                         SELECT * FROM (
-                            SELECT record_id, next_attempt_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'retry' AND next_attempt_unix_ms <= $now
-                            ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.next_attempt_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'retry' AND candidate.next_attempt_unix_ms <= $now
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.next_attempt_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1)
                         UNION ALL
                         SELECT * FROM (
-                            SELECT record_id, lease_expires_unix_ms, created_unix_ms
-                            FROM environmental_observation_outbox
-                            WHERE status = 'leased' AND lease_expires_unix_ms <= $now
-                            ORDER BY lease_expires_unix_ms, created_unix_ms, record_id
+                            SELECT candidate.record_id, candidate.lease_expires_unix_ms, candidate.created_unix_ms
+                            FROM environmental_observation_outbox AS candidate
+                            WHERE candidate.status = 'leased' AND candidate.lease_expires_unix_ms <= $now
+                                {AcknowledgedLineageSql}
+                            ORDER BY candidate.lease_expires_unix_ms, candidate.created_unix_ms, candidate.record_id
                             LIMIT 1))
                     ORDER BY next_attempt_unix_ms, created_unix_ms, record_id
                     LIMIT 1;
@@ -1294,6 +1372,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             }
             if (recordId is null)
             {
+                // An older active lease may have prevented failure propagation. Reconcile once it expires,
+                // without scanning the lineage graph on successful ordinary claims.
+                await SettleUndeliverableLineageAsync(connection, transaction, now.ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return null;
             }
@@ -1337,6 +1418,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 quarantine.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
                 quarantine.Parameters.AddWithValue("$id", recordId.Value);
                 await quarantine.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await SettleUndeliverableLineageAsync(connection, transaction, now.ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
         }
@@ -1657,6 +1739,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             payloadBytes = reader.GetInt32(1);
         }
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        await SettleUndeliverableLineageAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
         using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;
@@ -1706,6 +1789,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await audit.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await PruneOperationReceiptsAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
+        await SettleUndeliverableLineageAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return OutboxOperationDisposition.Applied;
     }
@@ -1782,6 +1866,13 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
                 }
             }, cancellationToken).ConfigureAwait(false);
+            // Repair previously stranded derivatives on restart, without putting a whole-outbox scan on each claim.
+            using (var transaction = connection.BeginTransaction(deferred: false))
+            {
+                await SettleUndeliverableLineageAsync(connection, transaction,
+                    _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
             lock (_initializedLock)
             {
                 _initializedRoots.Add(root);
@@ -1825,6 +1916,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             status = reader.GetString(0);
             payloadBytes = reader.GetInt32(1);
         }
+        await SettleUndeliverableLineageAsync(connection, transaction,
+            _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = replay
@@ -1883,6 +1976,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             retention.Parameters.AddWithValue("$maximum", MaximumAuditRecords);
             await retention.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        await SettleUndeliverableLineageAsync(connection, transaction,
+            _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1897,7 +1992,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         projection.Transaction = transaction;
         projection.CommandText = """
             UPDATE environmental_observation_central_projection
-            SET status = 'waiting', outbox_record_id = NULL, updated_unix_ms = $updated
+            SET status = CASE WHEN EXISTS (
+                    SELECT 1 FROM environmental_observation_journal AS journal
+                    WHERE journal.record_id = environmental_observation_central_projection.local_record_id
+                        AND journal.schema_version = 'environmental-observation-v3') THEN 'staged' ELSE 'waiting' END,
+                outbox_record_id = CASE WHEN EXISTS (
+                    SELECT 1 FROM environmental_observation_journal AS journal
+                    WHERE journal.record_id = environmental_observation_central_projection.local_record_id
+                        AND journal.schema_version = 'environmental-observation-v3') THEN outbox_record_id ELSE NULL END,
+                updated_unix_ms = $updated
             WHERE outbox_record_id = $outbox AND status = 'staged';
             """;
         projection.Parameters.AddWithValue("$updated", updatedUnixMs);
@@ -2039,6 +2142,57 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 AND lease_expires_unix_ms > $now;
             """, null, reason, cancellationToken);
 
+    private static async ValueTask SettleUndeliverableLineageAsync(
+        SqliteConnection connection, SqliteTransaction transaction, long now, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // Keep the immutable projection link when v3 work is discarded. A staged link whose outbox row
+        // is gone is abandonment evidence, never an acknowledgement. UNION also bounds cyclic/corrupt lineage.
+        command.CommandText = """
+            WITH RECURSIVE blocked(record_id, local_record_id, site_id, agent_id, rig_id) AS (
+                SELECT candidate.record_id, candidate.local_record_id,
+                    owner.target_site_id, owner.target_agent_id, owner.target_rig_id
+                FROM environmental_observation_outbox AS candidate
+                JOIN environmental_observation_journal AS derivative ON derivative.record_id = candidate.local_record_id
+                    AND derivative.schema_version = 'environmental-observation-v3'
+                JOIN environmental_observation_central_projection AS owner
+                    ON owner.local_record_id = candidate.local_record_id AND owner.outbox_record_id = candidate.record_id
+                JOIN environmental_observation_local_lineage AS dependency ON dependency.local_record_id = candidate.local_record_id
+                JOIN environmental_observation_journal AS input_fact ON input_fact.record_id = dependency.referenced_record_id
+                LEFT JOIN environmental_observation_central_projection AS input
+                    ON input.local_record_id = dependency.referenced_record_id
+                    AND input.target_site_id = owner.target_site_id AND input.target_agent_id = owner.target_agent_id
+                    AND input.target_rig_id IS owner.target_rig_id
+                LEFT JOIN environmental_observation_outbox AS input_delivery ON input_delivery.record_id = input.outbox_record_id
+                WHERE (candidate.status IN ('pending','retry') OR candidate.status = 'leased' AND candidate.lease_expires_unix_ms <= $now)
+                    AND (input.status = 'staged' AND (input_delivery.status IN ('quarantined','terminal') OR input_delivery.record_id IS NULL)
+                        OR input_fact.central_target_site_id IS NOT NULL AND (
+                            input_fact.central_target_site_id != owner.target_site_id
+                            OR input_fact.central_target_agent_id != owner.target_agent_id
+                            OR input_fact.central_target_rig_id IS NOT owner.target_rig_id))
+                UNION
+                SELECT candidate.record_id, candidate.local_record_id,
+                    owner.target_site_id, owner.target_agent_id, owner.target_rig_id
+                FROM blocked
+                JOIN environmental_observation_local_lineage AS dependency ON dependency.referenced_record_id = blocked.local_record_id
+                JOIN environmental_observation_outbox AS candidate ON candidate.local_record_id = dependency.local_record_id
+                JOIN environmental_observation_journal AS derivative ON derivative.record_id = candidate.local_record_id
+                    AND derivative.schema_version = 'environmental-observation-v3'
+                JOIN environmental_observation_central_projection AS owner
+                    ON owner.local_record_id = candidate.local_record_id AND owner.outbox_record_id = candidate.record_id
+                    AND owner.target_site_id = blocked.site_id AND owner.target_agent_id = blocked.agent_id
+                    AND owner.target_rig_id IS blocked.rig_id
+                WHERE candidate.status IN ('pending','retry') OR candidate.status = 'leased' AND candidate.lease_expires_unix_ms <= $now)
+            UPDATE environmental_observation_outbox
+            SET status = 'terminal', last_reason = 'lineage-input-undeliverable', updated_unix_ms = $now,
+                lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL
+            WHERE record_id IN (SELECT record_id FROM blocked);
+            """;
+        command.Parameters.AddWithValue("$now", now);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask SettleAsync(
         string root,
         EnvironmentalObservationOutboxLease lease,
@@ -2059,7 +2213,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         command.Parameters.AddWithValue("$id", lease.Record.RecordId);
         command.Parameters.AddWithValue("$owner", lease.Owner);
         command.Parameters.AddWithValue("$token", lease.Token);
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        command.Parameters.AddWithValue("$now", now);
         if (retryAtUtc is { } next)
         {
             command.Parameters.AddWithValue("$next", next.ToUnixTimeMilliseconds());
@@ -2081,6 +2236,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             metadata.Parameters.AddWithValue("$bytes", lease.Record.PayloadBytes);
             await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        if (retryAtUtc is null)
+            await SettleUndeliverableLineageAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -2282,7 +2439,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     AND NOT EXISTS(
                         SELECT 1 FROM environmental_observation_central_projection AS projection
                         WHERE projection.local_record_id = journal.record_id
-                            AND projection.status IN ('waiting','staged'))
+                            AND (projection.status = 'waiting' OR projection.status = 'staged' AND EXISTS (
+                                SELECT 1 FROM environmental_observation_outbox AS delivery
+                                WHERE delivery.record_id = projection.outbox_record_id)))
                     AND NOT EXISTS(
                         SELECT 1 FROM environmental_observation_outbox AS delivery
                         WHERE delivery.local_record_id = journal.record_id)
@@ -2304,7 +2463,11 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             using (var projection = connection.CreateCommand())
             {
                 projection.Transaction = transaction;
-                projection.CommandText = "DELETE FROM environmental_observation_central_projection WHERE local_record_id = $id AND status = 'acknowledged';";
+                projection.CommandText = """
+                    DELETE FROM environmental_observation_central_projection
+                    WHERE local_record_id = $id AND (status = 'acknowledged' OR status = 'staged' AND NOT EXISTS (
+                        SELECT 1 FROM environmental_observation_outbox AS delivery WHERE delivery.record_id = outbox_record_id));
+                    """;
                 projection.Parameters.AddWithValue("$id", candidate.RecordId);
                 await projection.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -2444,6 +2607,34 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             throw new InvalidDataException("Local environmental delivery target is invalid.");
         }
         var observation = record.Fact.Enrich(new EnvironmentalObservationTarget(siteId, agentId, rigId));
+        var unresolvedLineage = false;
+        if (record.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 && record.Fact.Lineage.Count > 0)
+        {
+            var lineage = new List<EnvironmentalObservationReference>(record.Fact.Lineage.Count);
+            foreach (var reference in record.Fact.Lineage)
+            {
+                using var lookup = connection.CreateCommand();
+                lookup.Transaction = transaction;
+                lookup.CommandText = "SELECT record_id FROM environmental_observation_journal WHERE source_identity_sha256 = $source AND observation_id = $observation;";
+                lookup.Parameters.AddWithValue("$source", reference.SourceIdentitySha256);
+                lookup.Parameters.AddWithValue("$observation", reference.ObservationId.ToString("D"));
+                var inputId = await lookup.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (inputId is null)
+                {
+                    unresolvedLineage = true;
+                    break;
+                }
+                var input = await ReadLocalRecordAsync(connection, transaction,
+                    Convert.ToInt64(inputId, System.Globalization.CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
+                lineage.Add(reference with
+                {
+                    SourceIdentitySha256 = EnvironmentalObservationJson.ComputeSourceIdentitySha256(
+                        input.Fact.Enrich(new EnvironmentalObservationTarget(siteId, agentId, rigId)))
+                });
+            }
+            if (!unresolvedLineage) observation = observation with { Lineage = lineage };
+        }
+
         if (!EnvironmentalObservationJson.Validate(observation).IsValid)
         {
             throw new InvalidDataException("Local environmental observation cannot be projected for delivery.");
@@ -2453,13 +2644,20 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using (var readProjection = connection.CreateCommand())
         {
             readProjection.Transaction = transaction;
-            readProjection.CommandText = "SELECT status FROM environmental_observation_central_projection WHERE local_record_id = $local;";
+            readProjection.CommandText = """
+                SELECT CASE WHEN status = 'staged' AND NOT EXISTS (
+                    SELECT 1 FROM environmental_observation_outbox AS delivery WHERE delivery.record_id = projection.outbox_record_id)
+                    THEN 'abandoned' ELSE status END
+                FROM environmental_observation_central_projection AS projection WHERE local_record_id = $local;
+                """;
             readProjection.Parameters.AddWithValue("$local", record.RecordId);
             var value = await readProjection.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             status = value is null
                 ? null
                 : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
         }
+        if (status == "abandoned")
+            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Abandoned, null, null);
         if (status == "acknowledged")
         {
             return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Acknowledged, observation, null);
@@ -2487,6 +2685,21 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             createProjection.Parameters.AddWithValue("$rig", (object?)rigId ?? DBNull.Value);
             createProjection.Parameters.AddWithValue("$updated", now);
             await createProjection.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (unresolvedLineage)
+        {
+            using var rotate = connection.CreateCommand();
+            rotate.Transaction = transaction;
+            rotate.CommandText = """
+                UPDATE environmental_observation_central_projection
+                SET updated_unix_ms = MAX(updated_unix_ms + 1, $now)
+                WHERE local_record_id = $local AND status = 'waiting';
+                """;
+            rotate.Parameters.AddWithValue("$now", now);
+            rotate.Parameters.AddWithValue("$local", record.RecordId);
+            await rotate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Waiting, null, null, WaitingForLineage: true);
         }
 
         var sourceIdentity = EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation);
@@ -2531,6 +2744,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             }
             await MarkProjectionStagedAsync(
                 connection, transaction, record.RecordId, outboxId, now, cancellationToken).ConfigureAwait(false);
+            if (record.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 && record.Fact.Lineage.Count > 0)
+                await SettleUndeliverableLineageAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
             return new ProjectionResult(
                 EnvironmentalObservationProjectionDisposition.Staged,
                 observation,
@@ -2592,6 +2807,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
         await MarkProjectionStagedAsync(
             connection, transaction, record.RecordId, newOutboxId, now, cancellationToken).ConfigureAwait(false);
+        if (record.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 && record.Fact.Lineage.Count > 0)
+            await SettleUndeliverableLineageAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
         return new ProjectionResult(
             EnvironmentalObservationProjectionDisposition.Staged,
             observation,
@@ -3080,7 +3297,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private sealed record ProjectionResult(
         EnvironmentalObservationProjectionDisposition Disposition,
         EnvironmentalObservationV1? Observation,
-        EnvironmentalObservationEnqueueDisposition? EnqueueDisposition);
+        EnvironmentalObservationEnqueueDisposition? EnqueueDisposition,
+        bool WaitingForLineage = false);
 
     private sealed record EnvironmentalSchemaInspection(int SchemaVersion, long SchemaObjectCount);
 

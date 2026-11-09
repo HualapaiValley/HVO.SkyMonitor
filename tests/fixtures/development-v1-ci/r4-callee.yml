@@ -1,0 +1,13 @@
+name: R4 callee
+on:
+  workflow_call:
+    inputs:
+      x:
+        type: string
+        required: false
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'

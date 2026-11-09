@@ -138,6 +138,13 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
 | `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across releases (`release.json` and `SHA256SUMS`), catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
 
+CameraAgent lifecycle control (#1711) shares only fixed transport DTOs from
+`HVO.SkyMonitor.Deployment.Contracts` with CameraAgent.Common. Installer execution,
+privileges and authoritative verification receipts remain in Deployment.Cli; no
+CameraAgent host or Common reference to the installer executable is permitted.
+See [lifecycle control](runbooks/cameraagent-lifecycle-control.md).
+
+
 CameraAgent and LogicHost must never reference each other. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
 approved host-neutral project.

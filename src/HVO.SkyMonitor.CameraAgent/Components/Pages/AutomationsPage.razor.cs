@@ -84,6 +84,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private ReservedAutomationTask? _defaultsTask;
     private LocalAutomationTriggerKind _triggerKindInput = LocalAutomationTriggerKind.Periodic;
     private LocalAutomationSourceWindowPolicy? _sourceWindowInput;
+    private LocalAutomationSourceWindowKind _windowKindInput = LocalAutomationSourceWindowKind.SunriseDay;
+    private LocalAutomationSourceSelection _selectionInput;
+    private string _settleInput = "900";
+    private bool _windowStep;
+    private CameraAgentAutomationWindowPreview? _windowPreview;
     private bool _enabledInput = true;
     private long _editingVersion;
     private bool _editTargetRemoved;
@@ -167,7 +172,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private IReadOnlyList<LocalAutomationTaskDescriptor> EditorTasks => _automation?.Registry
         .Where(static descriptor => descriptor.CompatibleTriggers.Any(static trigger =>
-            trigger is LocalAutomationTriggerKind.Periodic or LocalAutomationTriggerKind.CaptureRelative)).ToArray() ?? [];
+            trigger is LocalAutomationTriggerKind.Periodic or LocalAutomationTriggerKind.CaptureRelative or
+                LocalAutomationTriggerKind.SourceWindowClosed)).ToArray() ?? [];
+
+    private bool WindowTask => _triggerKindInput == LocalAutomationTriggerKind.SourceWindowClosed;
+
+    private IReadOnlyList<LocalAutomationSourceWindowKind> SourceWindows
+        => Descriptor(_taskKindInput)?.SupportedSourceWindows ?? [];
 
     private string RegistryUnavailableReason => _automation?.Registry
         .Select(static descriptor => descriptor.UnavailableReason)
@@ -362,12 +373,14 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             : descriptor.CompatibleTriggers[0];
         _targetInput = descriptor.Targets.Count == 0 ? string.Empty : descriptor.Targets[0];
         ApplyTaskDefaults();
+        ApplyWindowDefaults();
     }
 
     private void FormChanged()
     {
         _formDirty = true;
         _commandMessage = null;
+        _windowPreview = null;
     }
 
     private void TaskChanged()
@@ -385,6 +398,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _triggerKindInput = triggers[0];
         }
         ApplyTaskDefaults();
+        ApplyWindowDefaults();
     }
 
     /// <summary>
@@ -432,6 +446,29 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             (LocalAutomationTriggerKind.Periodic, DefaultCaptureInterval) => DefaultPeriodicInterval,
             _ => _intervalInput
         };
+        ApplyWindowDefaults();
+    }
+
+    private void ApplyWindowDefaults()
+    {
+        if (WindowTask)
+        {
+            _intervalInput = "1";
+            if (!SourceWindows.Contains(_windowKindInput) && SourceWindows.Count > 0)
+            {
+                _windowKindInput = SourceWindows[0];
+            }
+        }
+        else
+        {
+            _sourceWindowInput = null;
+            _windowStep = false;
+            if (_intervalInput == "1")
+            {
+                _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.Periodic
+                    ? DefaultPeriodicInterval : DefaultCaptureInterval;
+            }
+        }
     }
 
     private void ResetForm()
@@ -443,6 +480,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _nameInput = string.Empty;
         _intervalInput = DefaultPeriodicInterval;
         _sourceWindowInput = null;
+        _windowKindInput = LocalAutomationSourceWindowKind.SunriseDay;
+        _selectionInput = LocalAutomationSourceSelection.AllActualSources;
+        _settleInput = "900";
+        _windowStep = false;
+        _windowPreview = null;
         _reasonInput = string.Empty;
         _enabledInput = true;
         SeedForm();
@@ -462,7 +504,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private void BeginEdit(LocalAutomationDefinitionState definition)
     {
-        if (_busy || definition.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+        if (_busy)
         {
             return;
         }
@@ -476,6 +518,19 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _targetInput = definition.Definition.TaskTarget;
         _triggerKindInput = definition.Definition.TriggerKind;
         _sourceWindowInput = definition.Definition.SourceWindow;
+        _windowStep = false;
+        _windowPreview = null;
+        if (_sourceWindowInput is { } policy)
+        {
+            _windowKindInput = policy.Kind;
+            _selectionInput = policy.Selection;
+            _settleInput = ((decimal)policy.ProcessingSettleAllowance.Ticks / TimeSpan.TicksPerSecond).ToString("0.#######", Invariant);
+            if (WindowTask && !SourceWindows.Contains(_windowKindInput) && SourceWindows.Count > 0)
+            {
+                ApplyWindowDefaults();
+                SetCommandMessage($"The recorded source period is no longer supported. {SourceWindowLabel(_windowKindInput)} is selected; review it before recording a new revision.", error: false);
+            }
+        }
         _intervalInput = definition.Definition.TriggerInterval.ToString(Invariant);
         _enabledInput = definition.Definition.Enabled;
         _reasonInput = string.Empty;
@@ -484,8 +539,12 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         OpenDialog(DialogMode.Editor, "automation-name");
     }
 
-    private void BeginSave()
+    private async Task BeginSaveAsync()
     {
+        if (_busy)
+        {
+            return;
+        }
         _commandMessage = null;
         if (_editTargetRemoved)
         {
@@ -496,10 +555,62 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             return;
         }
+        if (WindowTask)
+        {
+            if (!_windowStep)
+            {
+                _windowStep = true;
+                _focusTargetId = "automation-source-window";
+                return;
+            }
+            if (!SourceWindows.Contains(_windowKindInput) || !Enum.IsDefined(_selectionInput) ||
+                !decimal.TryParse(_settleInput, NumberStyles.AllowDecimalPoint, Invariant, out var seconds) ||
+                seconds < 0 || seconds > 86400 || decimal.Round(seconds, 7) != seconds)
+            {
+                SetCommandMessage("Choose a supported source period and a settle allowance between 0 and 86400 seconds (up to seven decimal places).", error: true);
+                return;
+            }
+            _sourceWindowInput = new(LocalAutomationSourceWindowPolicy.CurrentVersion, _windowKindInput,
+                _selectionInput, TimeSpan.FromTicks((long)(seconds * TimeSpan.TicksPerSecond)));
+            _busy = true;
+            try
+            {
+                var result = await AutomationService.PreviewWindowAsync(new(_idInput.Trim(), _nameInput.Trim(),
+                    _enabledInput, _taskKindInput, _targetInput.Trim(), _triggerKindInput, 1, _editingVersion,
+                    string.Empty, string.Empty, null, _sourceWindowInput), _lifetime.Token);
+                if (result.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    return;
+                }
+                if (!result.IsSuccess || result.Value is not { } preview)
+                {
+                    SetCommandMessage(result.Message ?? "The source-window preview is unavailable.", error: true);
+                    return;
+                }
+                _windowPreview = preview;
+            }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            finally
+            {
+                _busy = false;
+            }
+        }
         _pendingKind = PendingCommandKind.Save;
         _pendingDefinition = null;
         _dialog = DialogMode.Confirm;
         _focusTargetId = CancelId;
+    }
+
+    private void BackToTask()
+    {
+        _windowStep = false;
+        _windowPreview = null;
+        _commandMessage = null;
+        _focusTargetId = "automation-task";
     }
 
     private string RemovedEditMessage => string.Create(
@@ -725,6 +836,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return (id, name, _enabledInput, _taskKindInput, target, _triggerKindInput, interval, _editingVersion,
                 string.Join('|', "save", id, name, _enabledInput, _taskKindInput, target, _triggerKindInput,
                     interval.ToString(Invariant),
+                    WindowTask ? System.Text.Json.JsonSerializer.Serialize(_sourceWindowInput) : string.Empty,
                     _editingVersion.ToString(Invariant),
                     TrimmedReason() ?? string.Empty));
         }
@@ -779,8 +891,26 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             SetCommandMessage("Select a registered task target.", error: true);
             return false;
         }
+        var descriptor = Descriptor(_taskKindInput);
+        if (descriptor is not { Available: true } || !Targets().Contains(_targetInput!.Trim(), StringComparer.Ordinal) ||
+            !CompatibleTriggers().Contains(_triggerKindInput))
+        {
+            SetCommandMessage(descriptor?.UnavailableReason ?? "Select an available registered task, target and trigger.", error: true);
+            return false;
+        }
         return TryParseInterval(out _);
     }
+
+    private static string SourceWindowLabel(LocalAutomationSourceWindowKind kind)
+        => kind == LocalAutomationSourceWindowKind.SunriseDay ? "Sunrise to next sunrise" : "Completed site-local hour";
+
+    private static string SelectionLabel(LocalAutomationSourceSelection selection)
+        => selection == LocalAutomationSourceSelection.DarkNightActualSources ? "Dark-night actual sources" : "All actual sources";
+
+    private static string WindowTime(DateTimeOffset utc, LocalAutomationSourceWindow window)
+        => string.Concat(TimeZoneInfo.ConvertTime(utc,
+                TimeZoneInfo.FindSystemTimeZoneById(window.ReportingPeriod.Site.TimeZoneId)).ToString("yyyy-MM-dd HH:mm:ss.fffffff zzz", Invariant),
+            " / UTC ", utc.ToString("yyyy-MM-dd HH:mm:ss.fffffff", Invariant));
 
     /// <summary>The reason exactly as the store will hash it, so the retained key stays payload-accurate.</summary>
     private string? TrimmedReason()
@@ -901,6 +1031,48 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private LocalAutomationTaskDescriptor? Descriptor(LocalAutomationTaskKind kind)
         => _automation?.Registry.FirstOrDefault(descriptor => descriptor.TaskKind == kind);
 
+    private string? DefinitionUnavailableReason(LocalAutomationDefinition definition)
+    {
+        var descriptor = Descriptor(definition.TaskKind);
+        if (descriptor is not { Available: true })
+        {
+            return descriptor?.UnavailableReason ?? "This task is not registered on this CameraAgent.";
+        }
+        if (!descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal))
+        {
+            return "The recorded target is no longer registered. Edit this automation to choose a current target.";
+        }
+        if (!descriptor.CompatibleTriggers.Contains(definition.TriggerKind))
+        {
+            return "The recorded trigger is not supported by this task. Edit this automation to choose a supported trigger.";
+        }
+        if (definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed &&
+            (definition.SourceWindow is not { } policy || !policy.IsValid() || !descriptor.SupportedSourceWindows.Contains(policy.Kind)))
+        {
+            return "The recorded source period is not supported by this task. Edit this automation to choose a supported period.";
+        }
+        return null;
+    }
+
+    private bool IsDefinitionRunnable(LocalAutomationDefinitionState item)
+        => item.Definition.Enabled && DefinitionUnavailableReason(item.Definition) is null;
+
+    private IReadOnlyList<LocalAutomationCalendarEntry> RunnableCalendar
+    {
+        get
+        {
+            if (_automation is not { } state) return [];
+            // The store calendar is already capped and may be filled by retired targets. Definitions retain
+            // every next occurrence, so filter that complete projection before applying the display limit.
+            return state.Definitions.Where(item => IsDefinitionRunnable(item) && item.NextRunUtc is not null)
+                .OrderBy(static item => item.NextRunUtc)
+                .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)
+                .Select(static item => new LocalAutomationCalendarEntry(item.Definition.DefinitionId,
+                    item.Definition.Name, item.Definition.TaskKind, item.Definition.TaskTarget, item.NextRunUtc!.Value)
+                { Occurrence = item.NextOccurrence }).ToArray();
+        }
+    }
+
     private IReadOnlyList<string> Targets() => Descriptor(_taskKindInput)?.Targets ?? [];
 
     private IReadOnlyList<LocalAutomationTriggerKind> CompatibleTriggers()
@@ -941,6 +1113,10 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             return "Disabled";
         }
+        if (DefinitionUnavailableReason(definition.Definition) is not null)
+        {
+            return "Unavailable";
+        }
         if (definition.NextRunUtc is { } due)
         {
             return DayClock(due);
@@ -965,15 +1141,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                candidate.Definition.DefinitionId, definitionId, StringComparison.Ordinal))?.Definition.Name
            ?? definitionId;
 
-    private int EnabledCount => _automation?.Definitions.Count(static item => item.Definition.Enabled) ?? 0;
+    private int EnabledCount => _automation?.Definitions.Count(IsDefinitionRunnable) ?? 0;
 
     private int RunningCount => _automation?.RunningRunCount ??
         _automation?.Runs.Count(static run => run.Outcome == LocalAutomationRunOutcome.Running) ?? 0;
 
-    private LocalAutomationCalendarEntry? NextEntry => _automation?.Calendar.MinBy(static entry => entry.DueUtc);
+    private LocalAutomationCalendarEntry? NextEntry => RunnableCalendar.MinBy(static entry => entry.DueUtc);
 
     private LocalAutomationDefinitionState? NextCaptureRelative => _automation?.Definitions
-        .Where(static item => item.Definition.Enabled && item.NextRunCaptureSequence is not null)
+        .Where(item => IsDefinitionRunnable(item) && item.NextRunCaptureSequence is not null)
         .MinBy(static item => item.NextRunCaptureSequence);
 
     /// <summary>Finished runs in the 24 hours before the read, and how many of them succeeded.</summary>
@@ -1079,7 +1255,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return markers;
         }
         var lastCard = Enumerable.Repeat(double.NegativeInfinity, MarkerRows).ToArray();
-        foreach (var entry in _automation.Calendar.Where(item => item.DueUtc >= start && item.DueUtc < end).OrderBy(static item => item.DueUtc))
+        foreach (var entry in RunnableCalendar.Where(item => item.DueUtc >= start && item.DueUtc < end).OrderBy(static item => item.DueUtc))
         {
             var exact = Percent(entry.DueUtc, start, end);
             var card = Math.Clamp(exact, MarkerMinimumPercent, MarkerMaximumPercent);
