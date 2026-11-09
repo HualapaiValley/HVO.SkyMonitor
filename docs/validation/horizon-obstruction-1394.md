@@ -1,10 +1,12 @@
 # Virtual horizon-obstruction acceptance (#1394)
 
-Production source candidate: `bc42850307a5c324949aae587c15fd4ffed82bab`.
-This fresh complete local gate includes the invalid-draft catalog correction and the operator-authorized target merge.
+Production source candidate: `54f86e00be3af875f3455174ce2a86aedf13115f`.
+This fresh complete local gate validates the operator-requested base synchronization after formal review convergence.
 Initial target/merge base: `7d5ec63b09a67ab4b675ba6a29641013df1247d8` (`development/v1`).
-Current merged target: `4708bbc3099019f1b8c2ec2531ff21a9d69dd404` (#1722), incorporated by normal merge
-`bc42850307a5c324949aae587c15fd4ffed82bab` under explicit operator authorization.
+Current merged target: `ad78013bc3b4e5b36e24b7e8a5cbc2019d58f0f1` (#1737), incorporated by normal merge
+`54f86e00be3af875f3455174ce2a86aedf13115f` under explicit operator authorization.
+The prior normal merge `bc42850307a5c324949aae587c15fd4ffed82bab` incorporated
+`4708bbc3099019f1b8c2ec2531ff21a9d69dd404` (#1722).
 The earlier normal merge `69f1b9998cd816f23db3a409ebd4619d558348dc` incorporated
 `35da16df25546bd6adbadf5a6613e50fc04cd052` (#1736).
 Tier C; protected profile `development-v1`. The PR remains draft. Protected CI,
@@ -68,25 +70,21 @@ Testcontainers and SQLite/filesystem fixtures. No production host was restarted
 or deployed. No networking or secret configuration was changed, and no branches
 were deleted.
 
-Full PR selector: `scripts/ci:classify pull_request 4708bbc3 bc428503` returned
+Base-sync selector: `scripts/ci:classify pull_request 18323af8 54f86e00` and full
+PR selector `scripts/ci:classify pull_request ad78013b 54f86e00` both returned
 `mode=full complete=false shared=true cameraagent=true logichost=true combined=true
 delivery=true deployment=false secret_scan_contract=false release_scripts=false`.
-Correction selector `scripts/ci:classify pull_request b0b51fb2 bc428503` returned
-`mode=full complete=true shared=true cameraagent=true logichost=true combined=true
-delivery=true deployment=true deployment_shards=true deployment_installer=true`,
-with deployment_catalog/secret-scan/release flags false. Full qualification remains
-unauthorized for the v1 target.
-The full local matrix is required by Tier C and the operator; these selectors do
-not authorize the full protected workflow for the v1 target.
+The full local matrix is required by Tier C and the operator. The target profile
+remains `development-v1`; no full protected qualification was dispatched.
 
 - Tool restore and solution restore: passed.
 - Debug and Release solution builds with `-warnaserror`: passed, zero warnings/errors.
 - Whole-solution `dotnet format --no-restore --verify-no-changes`: passed.
 - Package audit, Bash syntax, CI classification, coordination and PR-review guards: passed.
 - Operations documentation audit: passed.
-- Full Docker-disabled Unit selection with coverage: 15,179 passed, 3 conditional skips, 0 failures (15,182 selected), all on the production source above.
-- Full Integration selection with coverage: 1,017 passed, 0 skips/failures.
-- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Enforced aggregate line 89.7064%, branch 75.8465%; all enforced per-file floors passed.
+- Full Docker-disabled Unit selection with coverage: 15,244 passed, 3 conditional skips, 0 failures (15,247 selected), all on the production source above.
+- Full Integration selection with coverage: 1,029 passed, 0 skips/failures.
+- Canonical coverage: exactly 23 category/project reports, copied byte-for-byte to literal paths and merged once; all floors passed. Enforced aggregate line 89.7141%, branch 75.8657%; all enforced per-file floors passed.
 - Manual full-resolution measurement: 1 passed (retained unchanged-path evidence).
 
 Unit ran with `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock` and the approved local
@@ -99,7 +97,7 @@ canceled after source changes and is not credited.
 Commands are the complete Tier C block in AGENTS.md; tests use
 `--no-build --configuration Release` with separate `--filter "TestCategory=Unit"`
 and `--filter "TestCategory=Integration"` selections, `tests/coverage.runsettings`, and XPlat Code Coverage.
-Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/m3-synced/`
+Fresh complete TRX/Cobertura evidence is under `TestResults/issue-1394/base1737/`
 (ignored). `summary.json` records all current project/category results. The exact
 23-slot canonical coverage manifest records original report paths and byte-identical
 literal copies (avoiding wildcard interpretation of bracketed filenames);
@@ -108,6 +106,64 @@ measurement evidence remains under `TestResults/issue-1394/final/performance/`.
 The measured mask-generation and fixture paths did not change, so that measurement
 was retained. Earlier complete and refreshed evidence remains in its original
 result roots and is superseded for the changed source by this fresh complete run.
+
+## Base synchronization after formal review convergence
+
+Both full formal reviews returned CLEAN on `18323af8a5275267b0a265a500671ebda81da918`:
+[Opus 5820085473](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734#pullrequestreview-5820085473)
+and [Sol 5820206577](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734#pullrequestreview-5820206577).
+They independently support acceptance criteria 1–7 within the virtual/software scope.
+The [consolidated finding checklist](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734#issuecomment-6729256235)
+records all carried fixes and optional observations from both reports in one place.
+No new defect was identified and no optional nit was promoted into correction scope.
+The operator subsequently requested this normal merge of target `ad78013b` (#1737).
+Kepler owns the formal base-sync reviews and merge; no new reviewer was dispatched
+by this worker and no review label or reviewed-head status was set.
+
+Conflicts were limited to four records:
+
+- CHANGELOG: keep both the #1394 horizon entry and #1714 Products Library entry.
+- CameraAgent inventory: Unit 7,605 + 59 PR cases + 45 upstream cases = 7,709;
+  Integration 331 + five PR cases + four upstream cases = 340.
+- Processing inventory: Unit 1,168 + 43 PR cases + 20 upstream cases = 1,231;
+  the retained Manual horizon measurement keeps Manual=19.
+- CI runbook: recompute solution totals from every project inventory:
+  Unit=15,247, Integration=1,029, Manual=297. The upstream CameraAgent Integration
+  assembly adds eight more Integration cases, so the solution delta is 12.
+
+No source files conflicted. Excluding exactly those four records, the PR diff from
+`ad78013b` to the merged candidate is byte-identical to the reviewed PR diff from
+`4708bbc3` to `18323af8`: SHA-256
+`dc9964c41106680709dc9f720ad48ac376abe3aec31dad81044b9873caf70c6b`.
+Both sides' product behavior is retained without a scope change. The fresh gates
+above run on the merged source. Integration projects execute serially (`-m:1`) to
+bound host load, with the original coherent-publication predicate and 20-second
+budget unchanged. Unit instrumentation completed before Integration began, and all
+new TRX/coverage outputs use the isolated `base1737/` root named above. Temporary
+fixture storage remains under per-test generated roots; logs/helpers use the unique
+`/tmp/hvo-1394-base1737-*` prefix. A host snapshot during validation showed load
+5.75/7.07/8.04, 5,365 MiB available memory and 667 GiB free disk. One other test
+job used a separate review worktree/output tree. No overlapping instrumentation
+of the same assembly/output directory or duplicate suite was launched here.
+The requested single capacity observation at 2026-11-08 16:31:17 PST measured
+12 effective logical cores (affinity/cpuset 0–11, no cgroup CPU quota), load1/cores
+0.128, CPU busy 7.25%, iowait 1.17%, available RAM 9,820 MiB and no swap-in/out.
+Host IO PSI avg10 some/full was 1.68%/1.67%; CPU/memory PSI was zero. The exposed
+workspace device measured 17.95% utilization and 0.24 ms await. One active local
+suite group and one idle .NET worker group were visible; the earlier #1739 review
+testhost was absent. Docker reported four containers including Ryuk, with the
+busiest at 60.23% CPU/1.644 GiB; daemon placement was not established, so those
+values are not added to this host's totals. This was observation, not a concurrency
+cap or a benchmark. The 2.01-second interval plus 2.06-second metadata read is
+retained in the isolated `capacity-sample.json` and `capacity-metadata.json`
+helper records under the `/tmp/hvo-1394-base1737-*` prefix.
+Earlier intermittent readiness failures remain an explicitly unresolved cause,
+not a claimed product-source fix.
+
+The PR was ready when this work began and was returned to draft before the new
+push, keeping protected Build and Unit held for Kepler's base-sync reviews. The
+only commit after the tested merge updates this validation report. Unchanged
+full-resolution measurements below remain applicable and were not rerun.
 
 ## Independent-review corrections
 
@@ -187,13 +243,13 @@ four-source-centre union are explicit in the shared contract. Existing rectangul
 exclusions are unchanged. The standalone full-resolution generator measured below
 is unchanged; no redundant component performance run is credited.
 
-Fresh raw TRX and coverage reside under `TestResults/issue-1394/m3-synced/`.
+The prior correction raw TRX and coverage remain under
+`TestResults/issue-1394/m3-synced/`; the current base-sync results are recorded above.
 Exactly 23 canonical reports are copied byte-identically to literal paths before
-merging. The source above is the test/build candidate; later report-only commits
-are identified in the PR ledger. The operator-authorized normal target merge is
-recorded above. Protected CI, reviewed-head status and merge remain held; the PR
-stays draft. Earlier unsuccessful inner-loop builds and fixture runs receive no
-final validation credit.
+merging for each credited rollup. The source above is the current test/build
+candidate; later report-only commits are identified in the PR ledger. Protected
+CI, reviewed-head status and merge remain held; the PR stays draft. Earlier
+unsuccessful inner-loop builds and fixture runs receive no final validation credit.
 
 ## Sol correction at b0b51fb2 and target merge
 
