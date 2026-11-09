@@ -1,6 +1,6 @@
 ---
 name: pr-lifecycle
-description: Manage a pull request from draft creation through review, correction, final synchronization, protected CI, merge, and cleanup. Use whenever an agent opens, reviews, updates, finalizes, or merges a PR; do not use for local-only work that will not touch a PR.
+description: Establish issue completeness and independent local review before a PR, then manage draft convergence, correction, synchronization, protected CI, merge, and cleanup. Use for pre-PR readiness or whenever an agent opens, reviews, updates, finalizes, or merges a PR; exclude unrelated local-only work.
 ---
 
 # Pull Request Lifecycle
@@ -10,7 +10,8 @@ operating procedure lives in `docs/planning/agent-execution.md`; this file keeps
 the non-negotiable PR contracts, selection matrix, and guards needed before a
 harness follows that procedure. `AGENTS.md` remains the repository-wide entry
 point. User instructions take precedence; identify any conflict before changing
-PR state.
+PR state. The Issue Completeness contract here and in `AGENTS.md` governs
+pre-PR readiness even where an older walkthrough starts with draft creation.
 
 ## Ownership and State
 
@@ -31,9 +32,11 @@ skill; it does not waive an explicitly required integration/qualification result
 
 ```text
 local implementation
-  -> local candidate evidence
+  -> original-issue resolution mapped to local evidence at candidate SHA
+  -> tier-appropriate independent local review PASS
+  -> Kepler PR lifecycle (when authorized)
   -> draft PR
-  -> review convergence or documented unavailability waiver
+  -> formal review convergence or permitted unavailability waiver
   -> final target-branch synchronization and review if the target advanced
   -> ready for review
   -> target-branch protected CI
@@ -48,7 +51,8 @@ reviewed head without explicit operator approval.
 ## Local Work and Draft PR
 
 1. Inspect the worktree, branch, target branch, issue, dependencies, and related
-   PRs. Start from the current target branch.
+   PRs. Start from the current target branch. Read the original issue including
+   its discussion and acceptance criteria, not just the planned implementation.
 2. Use the risk-tiered validation ladder: focused inner-loop tests, then one
    tier-appropriate candidate gate before the first push. Record the commands
    and the commit or worktree fingerprint they validate.
@@ -63,24 +67,139 @@ reviewed head without explicit operator approval.
    that was never chosen. The gate includes the CI-control guards, which are
    Docker-free and are listed in `AGENTS.md`; run them again on the base-synced
    head before requesting the base-sync review.
-3. Commit only intended files, push the issue branch, and open a draft PR.
-4. Keep the PR draft while acquiring review, correcting findings, and
+3. Commit only intended files and bind the completeness evidence below to that
+   candidate SHA. Resolve every in-scope requirement before requesting the
+   tier-appropriate independent local review. No PR, including a draft, may
+   open until both the evidence and that local review pass.
+4. Hand the vetted candidate and reports to Kepler when Kepler owns PR/status/
+   queue writes. Otherwise, when authorized, push and open the draft. Reaching
+   this step means the declared scope is completed, tested, and independently
+   vetted locally by complexity. Formal review and CI must not carry the
+   implementation-completeness work that belongs before this step.
+5. Keep the PR draft while acquiring formal review, correcting findings, and
    synchronizing the target branch. Draft pushes must not run protected CI.
-5. Include scope, exclusions, compatibility, tests, output and performance
+6. Include scope, exclusions, compatibility, tests, output and performance
    evidence, observability review, and residual risks in the PR.
+
+## Issue Completeness and Independent Local Review
+
+The owner must read the original GitHub issue body, all discussion, acceptance
+criteria, linked governing specifications, and approved scope decisions before
+claiming done. Record source links and the read/snapshot time so the reviewer
+can independently inspect the same requirements. Roy's latest instructions win
+conflicts; cite the clarification rather than silently narrowing scope.
+
+Before independent local review, prove each in-scope requirement through
+implemented behavior and local evidence at the candidate SHA. Deriving tests
+or acceptance criteria only from what the implementation happens to do is
+insufficient. Evaluate normal, negative, failure, recovery, and interaction cases
+as relevant, with reasons for cases that do not apply. For docs-only work,
+inspect the required policy decisions and cross-document consistency; for
+mechanical work, verify the claimed invariant. Neither needs invented runtime
+tests. Preserve assigned HIGH/LOW risk tiers and existing tier-specific local
+gates and review depth; completeness is required at either risk level.
+
+Any missing in-scope behavior or required evidence returns the owner to
+**IMPLEMENTATION** before review or PR creation. A partial slice may proceed
+only when its scope is explicitly authorized and independently complete. Name
+the remaining parent requirements and their tracking; keep the parent issue
+**OPEN**, and omit closing keywords for it until its entire scope is satisfied.
+An owner cannot silently turn an incomplete issue into a completed slice.
+
+The independent local reviewer must read the original sources and inspect the
+implementation and evidence, checking the mapping for omissions independently.
+Return a separate completeness verdict, supporting evidence, and uncovered
+requirements alongside code findings. A code-only CLEAN result, green CI, or a
+coverage percentage is insufficient. A focused interaction review can preserve
+previously established full completeness evidence through a delta; alone it
+cannot establish full issue resolution.
+
+Blocking incompleteness returns **CHANGES REQUESTED** and the owner resumes
+implementation. Do not create a PR or advance CI/queue state. Keep an existing
+PR draft, or have its authorized owner return it to draft and withdraw queue
+advancement. The required loop is:
+
+```text
+reject -> IMPLEMENTATION -> local tests/evidence at new candidate SHA
+       -> independent local review -> Kepler PR lifecycle
+```
+
+Missing requirements or evidence are acceptance blockers regardless of a Low
+finding label and cannot be deferred through the correction cap. Classify each
+finding using the distinctions below; a classification never excuses unmet
+acceptance:
+
+| Class | Required distinction and evidence |
+| --- | --- |
+| Existing bug | Original required behavior versus observed behavior; whether it predates the fix and whether it is in scope. |
+| Test gap | Behavior may work, but a required case lacks evidence; do not equate a missing test with a proven runtime bug or a pass. |
+| Fix-introduced regression | Before/after behavior showing the change broke a requirement or interaction. |
+| Mechanical-only | The preserved invariant and direct checks establishing no behavior change; the label alone is insufficient. |
+
+When hardware or state is unavailable, record what could and could not be
+validated, the missing prerequisite, and the exact remaining check for
+Kepler/Roy. Do not assert a pass. Required acceptance stays blocked until the
+evidence exists or Roy explicitly changes scope. Preserve accepted coverage
+exceptions; completeness does not reopen them or invent new coverage gates.
+
+### Owner Evidence Template
+
+Record original issue/discussion/specification links and source snapshot/read
+time, approved scope and exclusions, branch, target base SHA, candidate SHA,
+assigned HIGH/LOW risk and validation tier, classifier output, and gate results.
+Use one row per in-scope requirement; distinguish expected and observed outcomes:
+
+| Requirement ID and original source | Required outcome/cases | Implemented behavior/location | Local command or check, expected -> observed, evidence at candidate SHA | Status / gap |
+| --- | --- | --- | --- | --- |
+| R1 — issue AC/discussion link | Normal; negative; failure; recovery; interactions (or reason N/A) | Path/symbol or policy location | Command/check; result; artifact/log; SHA | PROVED / MISSING / BLOCKED |
+
+Owner verdict: `RESOLVED | IMPLEMENTATION REQUIRED | BLOCKED` for the declared
+scope. List remaining parent requirements and tracking, limitations, and the
+next action. Only `RESOLVED` with no acceptance gaps is ready for independent
+local review; only its tier-appropriate PASS is ready for Kepler PR handling.
+
+### Reviewer Evidence Template
+
+Record request ID, independent reviewer identity, actual provider/model/effort,
+exact base..candidate range, original sources personally read, and evidence
+inspected or reproduced. Evaluate each requirement independently:
+
+| Requirement/source | Expected versus observed behavior and evidence at candidate SHA | Verdict | Uncovered requirement/evidence, finding class, required action |
+| --- | --- | --- | --- |
+| R1 — original AC/discussion link | Check/result and implementation location | COMPLETE / INCOMPLETE / BLOCKED | None, or concrete gap and owner action |
+
+Report `Completeness: COMPLETE | INCOMPLETE | BLOCKED`, `Review: PASS | CHANGES
+REQUESTED | BLOCKED`, uncovered requirements (`none` only if verified), prior
+finding dispositions where applicable, limitations, and the exact next action.
+Any blocking incompleteness requires `CHANGES REQUESTED` and implementation;
+missing environmental evidence must not be reported as COMPLETE or PASS.
+
+These verdicts are agent/Kepler policy. GitHub may reject native
+`request_changes` submitted by the PR author; record the actual limitation and
+the process verdict without fabricating a native review or approval. Existing
+branch protection and review statuses do not natively prove issue completeness.
+Respect the operator's reservation of PR/status/queue writes.
 
 ## Review Request Contract
 
 Every review request must state the following information, adapted to the
 reviewer's route. Human and independent one-shot agent reviews are first-class
 convergence evidence, not exceptions requiring fleet enrollment:
+For pre-PR local review, PR fields are `N/A` and requests, acknowledgements,
+and reports live in the local evidence pack. References below to posting on a
+PR apply only after an authorized PR exists.
 
 ```text
 Review mode: initial | correction | base-sync
-Issue and PR:
+Review stage: pre-PR local | formal PR
+Issue and PR: (PR N/A before creation)
 Review request ID and reviewer identity:
 Dispatch command ID and target participant ID: (enrolled resumed-session route only)
 Acceptance criteria:
+Original issue body, discussion, governing sources and read/snapshot time:
+Approved scope, exclusions, and remaining parent requirements:
+Candidate completeness mapping and prior local independent review report:
+  (report N/A for the first local review)
 Target base SHA: (the tip of the base branch read from the repository by
   branch name; retained for staleness checks, not the initial range's left
   endpoint, which is the computed merge base)
@@ -110,7 +229,8 @@ Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
 Evidence pack:
 Expected output: (reviewer identity, request link/ID, exact reviewed range,
-  verdict, findings, and individual carried-finding dispositions)
+  completeness verdict with evidence and uncovered requirements, review verdict,
+  findings, and individual carried-finding dispositions)
 Start acknowledgement: use the agreed human window or 15 minutes for agents; identify
   the reviewer identity, execution route, exact range, and actual agent
   provider/model/effort or human model/effort N/A.
@@ -119,8 +239,9 @@ Start acknowledgement: use the agreed human window or 15 minutes for agents; ide
 ### Human and Independent One-Shot Routes
 
 The owner may record an equivalent request and the independent reviewer's report
-directly on the PR without fleet scripts, enrollment, participant leases, or a
-coordinator. Use a durable request ID/link and reviewer identity rather than
+in the local evidence pack before PR creation, then on the PR when authorized,
+without fleet scripts, enrollment, participant leases, or a coordinator.
+Use a durable request ID/link and reviewer identity rather than
 inventing a fleet command or participant ID. An attributed report relayed by the
 owner must retain the reviewer's actual result and evidence, not the owner's
 self-review. Bind all endpoints to immutable Git SHAs and verify them against
@@ -253,7 +374,10 @@ effort settings in the table apply only to agents:
 | `standard` | Ordinary Tier A/B implementation, full initial review, bounded test/configuration work, or a localized correction | Balanced general coding model | `medium` for implementation; `high` for review |
 | `deep` | Tier C/M, security/auth/secrets, data-loss, concurrency, migrations, architecture or cross-host boundaries, CI semantics, material-correctness findings, conflict resolution, or ambiguous failure analysis | Strongest available coding/reasoning model | `high`; increase to `xhigh` or the supported equivalent only when complexity warrants it |
 
-Review work is adversarial and must not use low effort. A narrow correction may
+Review work is adversarial and must not use low effort unless Roy explicitly
+prescribes a docs-only local review at LOW effort. That exception does not
+reduce HIGH risk review or permit executable-gate work under a docs-only scope.
+A narrow correction may
 step down only when both the changed surface and every carried finding are
 non-critical. A security, data-loss, acceptance, failing-CI, or
 material-correctness finding keeps the review at `deep` until verified resolved.
@@ -299,9 +423,12 @@ the launcher does not advertise.
 
 Review modes have fixed ranges:
 
-- **Initial:** review the complete merge-base-to-head PR diff.
+- **Initial:** review the complete merge-base-to-head candidate/PR diff and
+  independently assess issue completeness against the original sources.
 - **Correction:** review only the previous-reviewed-head-to-current-head delta
-  and the effects that delta has on surrounding code. Verify every prior
+  and the effects that delta has on surrounding code. Retain the initial full
+  completeness mapping and assess any affected requirements; a focused delta
+  review alone is not proof of full issue resolution. Verify every prior
   finding individually as `verified corrected`, `verified deferred` with a
   linked issue and rationale, or `unresolved`. A prior finding that is neither
   fixed nor explicitly deferred must be reported as unresolved. Do not reopen
@@ -369,6 +496,9 @@ below apply to agent routes only; human review has no timed waiver.
    names, request links and times, deadlines, exact SHA/range, and residual
    risk. The waiver completes acquisition for that exact head and mode; it is
    not a passed review and does not waive local evidence or protected CI.
+   It cannot replace the required pre-PR independent local PASS or issue
+   completeness proof; missing that pass means a ready-for-local-review
+   handoff, not permission to create a draft.
 5. Once a review starts, the owner obtains reviewer status and records PR-ledger
    activity at every milestone and at least every thirty minutes. The owner
    relays milestones and blockers immediately and provides interim reports during
@@ -387,6 +517,9 @@ below apply to agent routes only; human review has no timed waiver.
 
 Disposition each finding as corrected, evidenced non-actionable, explicitly
 deferred as non-blocking to a linked issue, or an unresolved merge blocker.
+Unimplemented in-scope requirements and missing acceptance evidence are always
+blockers, never eligible Low deferrals. Return them to IMPLEMENTATION, rerun
+local behavioral evidence, and obtain independent review before advancement.
 Batch coherent corrections, run the reproducer and affected local gates, push
 without rewriting reviewed history, and request correction review. The
 rereviewer must return an item-by-item disposition for all findings carried
@@ -417,8 +550,8 @@ round and do not change the reviewed head to correct them. Before finalization:
 If the third rereview is clean or no eligible finding remains, do not create an
 empty follow-up issue.
 
-Security, data-loss, acceptance, failing-CI, and material-correctness defects
-are never deferrable. Correct them, rerun affected evidence, and request a
+Security, data-loss, acceptance, issue incompleteness, failing-CI, and
+material-correctness defects are never deferrable. Correct them, rerun affected evidence, and request a
 targeted cap-exception review. Record the exception, and do not run CI or merge
 until the blocker is resolved. A deferred finding that makes CI fail becomes a
 current-PR blocker.
@@ -426,7 +559,19 @@ current-PR blocker.
 Review converges only when every requested review has completed or has an exact
 head/range unavailability waiver, every finding is dispositioned, required
 correction rereviews are complete, no actionable thread remains, and the
-current head equals the latest reviewed or waived head.
+current head equals the latest reviewed or waived head. This also requires
+the pre-PR independent local PASS and complete issue-resolution evidence for
+the declared scope, preserved through subsequent reviewed changes.
+
+## Merge-Queue Head Identity
+
+When the queue is enabled, eligibility is evaluated on the **CURRENT PR HEAD
+SHA**, not the destination-branch tip or synthetic merge-group SHA. A PR being
+behind the target tip alone does not invalidate reviews bound to its unchanged
+head. New commits on the PR do require the applicable evidence and review.
+Queue CI validates the combined group separately; existing target-sync rules
+still govern a synchronization that changes the head. This does not authorize
+queue cutover, change queue gates, or substitute group CI for completeness.
 
 ## Auto-Merge Finalization
 
@@ -657,8 +802,10 @@ retain it for one bounded rerun. Releasing the lock means removing the
 - Merge only when the current head equals the reviewed or precisely waived head,
   the target branch is still current, the PR is mergeable, required checks are
   green for that exact head, and actionable conversations are resolved.
-- After merge, confirm issue closure, update the owning roadmap epic when
-  applicable, and synchronize local `main`. Clean up the PR's disposable
+- After merge, confirm closure only for fully resolved issues. For a partial
+  slice, record what shipped and keep its incomplete parent issue open. Update
+  the owning roadmap epic when applicable, and synchronize local `main`.
+  Clean up the PR's disposable
   resources: those created only for this PR and used by nothing else. That
   means:
   - its worktrees and local branch, and the remote branch if it remains;
@@ -690,3 +837,6 @@ range, cap and follow-up issue, waiver, finalization lock, base synchronization,
 ready transition, CI terminal result, merge, and cleanup. Every entry includes a
 UTC timestamp, relevant SHAs, what finished, what is running, the next step, and
 any blocker.
+Before PR creation, retain the original-source requirement mapping, candidate
+evidence, explicit owner completeness verdict, and independent local report in
+the local evidence pack. Carry them into the authorized Kepler/PR handoff.

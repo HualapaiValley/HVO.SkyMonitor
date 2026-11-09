@@ -161,7 +161,12 @@ stay `false` on `main` so promotion can use a merge commit.
 `required_approving_review_count` is 0 on purpose: GitHub refuses self-approval
 when the reviewer and implementer share an account, and the review record lives
 in the bot-posted comment and the resolved threads, which `required_conversation_resolution`
-enforces.
+enforces. GitHub may also reject native `request_changes` from the PR author.
+Record an independent reviewer's actual verdict honestly; do not manufacture a
+native approval or rejection. Issue completeness and the associated
+`CHANGES REQUESTED` state are enforced by agent/Kepler policy, not by a claimed
+GitHub-native completeness check. The protection example above does not
+establish completeness or configure a new gate.
 
 ## 6. Workflows to copy
 
@@ -187,11 +192,60 @@ Labels the process uses (create with `gh label create`): `review:mechanical`,
 `review:converged`, `risk:security`, `risk:durability`, `risk:concurrency`,
 `risk:ci-control`, `risk:deployment`, `workflow:in-progress`, `workflow:blocked`.
 
+### Owner and reviewer completeness contract
+
+Install the [AGENTS.md Issue Completeness contract](../../AGENTS.md#issue-completeness)
+and the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md#issue-completeness-and-independent-local-review)
+with the process documentation. They govern pre-PR readiness even where an
+older walkthrough starts at draft creation. Use the skill's compact owner and
+reviewer evidence tables; copying workflows alone does not establish this
+process requirement.
+
+1. The owner reads the original GitHub issue, all discussion and acceptance
+   criteria, governing specifications, and approved scope decisions. Roy's
+   latest instructions win conflicts. Map every in-scope requirement to
+   implemented behavior and local behavioral evidence at the candidate SHA,
+   including normal, negative, failure, recovery, and interaction cases as
+   relevant. Tests/criteria derived only from the implemented behavior are
+   insufficient. Preserve assigned HIGH/LOW tiers and their validation depth.
+2. Prove resolution before requesting independent local review. The reviewer
+   independently reads the original sources as well as the implementation and
+   evidence, and reports completeness, supporting evidence, and every uncovered
+   requirement. A focused interaction review alone cannot establish full issue
+   resolution. A PR or draft means the declared scope is completed, tested
+   locally, and independently vetted locally by complexity.
+3. Missing in-scope behavior or required evidence means `CHANGES REQUESTED` and
+   return to implementation, never a silent Low deferral. Keep or return any
+   existing PR to draft through its authorized owner; do not advance CI/queue.
+   The loop is reject -> implementation -> local tests/evidence -> independent
+   local review -> Kepler PR lifecycle. Formal review, green CI, coverage, and
+   code-only CLEAN verdicts cannot carry implementation completeness.
+4. Distinguish existing bugs, test gaps, fix-introduced regressions, and
+   mechanical-only invariants in the evidence. Report missing hardware/state
+   and remaining validation to Kepler/Roy; never assert unobserved passes.
+   Required acceptance remains blocked until evidenced or explicitly re-scoped
+   by Roy. Preserve accepted coverage exceptions.
+5. Accurately describe an authorized partial slice and track its remaining
+   requirements. Keep the parent issue **OPEN** until its full scope is done;
+   avoid automatic parent-closing references. Hand off candidate SHA, changed
+   files, evidence, limitations, and the independent local review result. When
+   Kepler owns PR/status/queue writes, stop at that handoff.
+
+When merge queue support is enabled, eligibility attaches to the **CURRENT PR
+HEAD SHA**, not the target-branch tip or temporary group commit. Tip-behind
+alone does not invalidate head reviews. An actual PR-head change needs the
+applicable evidence and review; group CI and target synchronization retain
+their separate contracts. This documentation does not enable the queue or add
+executable CI, coverage, or test-harness enforcement.
+
 ## 7. Prove it before calling it done
 
 In this order, because each step depends on the last:
 
-1. Open a trivial PR to `development/v1`. Preflight runs hosted; Build and Unit
+1. For the setup-verification change, first satisfy the completeness contract
+   above with candidate evidence and a passing independent local review. Only
+   then have the authorized PR owner open a trivial draft PR to `development/v1`.
+   Preflight runs hosted; Build and Unit
    starts on a `hvo-skymonitor` runner after review and the ready transition.
    Confirm the job's `runner_group_name`.
 2. `gh workflow run agentcontrol.yml -f operation=verify-identity`. The summary

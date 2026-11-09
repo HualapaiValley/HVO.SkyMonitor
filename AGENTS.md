@@ -211,7 +211,13 @@ must not redefine its policy inconsistently.
   removal of scheduling-only holds in the issue and roadmap before claiming.
   Distinguish start, integration, and release gates; preparation can precede
   qualification, but supported adoption cannot.
-- Every PR uses a draft-first convergence cycle. Protected CI must not run until
+- Reaching a PR, including a draft, means the declared issue scope is completed,
+  tested locally, and independently vetted locally at the required complexity.
+  Apply the Issue Completeness contract below before PR creation; draft-first
+  convergence is the subsequent Kepler/PR lifecycle, not permission to offload
+  unfinished implementation or acceptance discovery onto formal review or CI.
+- Every PR uses a draft-first convergence cycle after the local completeness
+  and independent-review gates pass. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
   integration-reviewed when synchronization changes the target base. A freshly
   fetched target SHA already covered by the converged review needs a recorded
@@ -233,7 +239,9 @@ must not redefine its policy inconsistently.
   particular provider pair.
   Allow at most three correction rereviews per PR before moving remaining
   non-blocking findings to one linked follow-up issue. Security, data-loss,
-  acceptance, failing-CI, and material-correctness defects always block.
+  acceptance, issue incompleteness, failing-CI, and material-correctness defects
+  always block. Missing in-scope behavior or evidence cannot become a Low
+  deferral or disappear under the rereview cap.
 - Tier A/B PRs receive one initial exact-range review plus only finding-driven
   correction rereviews. Use `standard` by default and promote Tier B to `deep`
   for concurrency, durability, security, CI-control, or cross-boundary risk.
@@ -263,6 +271,12 @@ must not redefine its policy inconsistently.
   - Auto-merge does not switch itself off on a push with write access. Turn it
     off (`gh pr merge <n> --disable-auto`) before pushing to a finalized PR. The
     automation also withdraws it from any head it wasn't enabled for.
+- When the merge queue is enabled, eligibility is tied to the **CURRENT PR HEAD
+  SHA**, not the target-branch tip or the temporary queue commit. Being behind
+  the target tip alone does not invalidate reviews of an unchanged PR head.
+  Actual head changes require the applicable evidence and review; target
+  synchronization and queue CI retain their separate contracts. This rule does
+  not authorize queue cutover or change executable gates.
 - When auto-merge is unavailable or the operator reserves the merge, use the
   finalization lock. Only one PR may hold the repository-wide finalization
   lock. Acquire it before final target synchronization and hold it through any
@@ -282,6 +296,52 @@ must not redefine its policy inconsistently.
 - After merge, report completion and release the claim. Taking another issue
   requires explicit assignment or opt-in queue authorization, not a routine
   prompt between steps of the already assigned issue.
+
+### Issue Completeness
+
+- Before claiming done, the owner reads the original GitHub issue body,
+  **all discussion and acceptance criteria**, linked governing requirements,
+  and approved scope clarifications. Roy's latest instructions win conflicts;
+  record the source and resulting scope explicitly. A PR description, code diff,
+  generated test list, or previous review summary cannot replace those sources.
+- Before requesting independent local review, map every in-scope requirement to
+  implemented behavior and local behavioral evidence at the immutable candidate
+  SHA. Include normal, negative, failure, recovery, and interaction cases as
+  relevant; explain any inapplicable case. Tests and acceptance criteria derived
+  only from the implemented behavior do not prove the original issue is solved.
+  For docs-only or mechanical work, evidence checks the required policy or
+  invariant directly, without inventing runtime results.
+- Missing behavior or required evidence returns the owner to **IMPLEMENTATION**.
+  Do not claim completion, silently downgrade it to Low, or defer it through a
+  review-round cap. Keep the assigned HIGH/LOW risk tier and existing validation
+  and review-depth rules; every tier must satisfy issue completeness.
+- A partial slice must name its delivered scope, exclusions, remaining parent
+  requirements, and tracking. The parent issue stays **OPEN** while any of its
+  scope remains incomplete; do not use an automatic closing reference for it.
+- The independent reviewer reads the original sources as well as the code,
+  checks the owner's requirement/evidence mapping independently, and records
+  an explicit completeness verdict, supporting evidence, and every uncovered
+  requirement. A focused interaction review alone cannot establish full issue
+  resolution. Use the compact owner and reviewer evidence templates in
+  `.agents/skills/pr-lifecycle/SKILL.md`.
+- Blocking incompleteness means **CHANGES REQUESTED**, owner implementation,
+  and no PR creation or CI/queue advancement. Keep an existing PR draft or
+  return it to draft through the authorized owner. Green CI, coverage, and a
+  code-only CLEAN verdict cannot substitute for issue-resolution evidence.
+- Classify findings as an existing bug, test gap, fix-introduced regression, or
+  mechanical-only change, citing expected versus observed behavior. Missing
+  hardware or state means evidence is unavailable: report the limitation and
+  exact remaining validation to Kepler/Roy, never assert a pass. Required
+  acceptance remains blocked until evidenced or explicitly re-scoped by Roy.
+- The rejection loop is **reject -> IMPLEMENTATION -> local tests/evidence ->
+  independent local review -> Kepler PR lifecycle**. Prove resolution before
+  the local review; obtain its tier-appropriate pass before any PR/draft. A
+  review-unavailability waiver cannot satisfy this local pass requirement.
+- These are agent/Kepler process requirements. GitHub may disallow a PR author
+  from submitting native `request_changes` on their own PR, just as it forbids
+  self-approval. Record the honest process verdict and enforce the state/handoff;
+  never fabricate a native review or claim branch protection enforces
+  completeness. Respect an operator's reservation of GitHub/queue writes.
 
 ### Progress Reporting
 
