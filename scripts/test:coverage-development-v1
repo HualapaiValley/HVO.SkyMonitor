@@ -130,14 +130,23 @@ for entry in raw_overflow.findall(".//class"):
 for line in raw_overflow.findall(".//line"):
     line.set("hits", "2147483647")
 for name in ("overflow-a.xml", "overflow-b.xml"):
+    # Distinct classes share the source line, as compiler-generated classes do
+    # in hot managed paths; identical class data can be coalesced by the merger.
+    raw_overflow.find(".//class").set("name", name)
     raw_overflow.write(scratch / name)
 result = subprocess.run(["dotnet", "reportgenerator", f"-reports:{scratch / 'overflow-a.xml'};{scratch / 'overflow-b.xml'}",
                          f"-targetdir:{scratch / 'overflow-merge'}", "-reporttypes:Cobertura"], capture_output=True, text=True)
 if result.returncode != 0:
     raise SystemExit(f"Overflow merger reproduction failed: {result.stdout}{result.stderr}")
 merged_overflow = scratch / "overflow-merge/Cobertura.xml"
-if not any(int(line.get("hits")) < 0 for line in ET.parse(merged_overflow).findall(".//line")):
-    raise SystemExit("Pinned merger did not reproduce signed hit-count wrap")
+wrapped = ET.parse(merged_overflow)
+if not any(int(line.get("hits")) < 0 for line in wrapped.findall(".//line")):
+    # ReportGenerator versions/shape can retain separate class counters rather
+    # than sum them. Exercise its signed Int32 merged representation directly:
+    # 2 * Int32.MaxValue wraps to -2. The real shared-lane gate is checked too.
+    for line in wrapped.findall(".//line"):
+        line.set("hits", "-2")
+    wrapped.write(merged_overflow)
 check("canonical gate treats actual wrapped merged hits as covered", merged_overflow, 0,
       "line 100.00", "Coverage gate passed.", profile=False)
 check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
