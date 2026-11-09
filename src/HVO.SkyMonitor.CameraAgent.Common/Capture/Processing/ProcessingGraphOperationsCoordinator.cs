@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -30,6 +31,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ProcessingGraphExecutionOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ProcessingReplayWakeup _replayWakeup;
+    private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
+    private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
     /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
@@ -51,13 +54,17 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         SqliteCaptureProcessingStore store,
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
-        ProcessingReplayWakeup replayWakeup)
+        ProcessingReplayWakeup replayWakeup,
+        ICameraAgentConfigurationAccessor? configurationAccessor = null,
+        Func<CameraModuleConfig?>? currentCaptureProfile = null)
     {
         _pipelineFactory = pipelineFactory;
         _store = store;
         _options = options.Value.ProcessingGraphs;
         _timeProvider = timeProvider;
         _replayWakeup = replayWakeup;
+        _configurationAccessor = configurationAccessor;
+        _currentCaptureProfile = currentCaptureProfile;
     }
 
     public ProcessingGraphAgentCapabilities Capabilities =>
@@ -151,7 +158,15 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
+        // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
+        // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
+    }
+
+    internal async ValueTask EnsureLiveStoragePolicyAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false) ?? configuration;
+        CaptureStoragePolicy.EnsureMatchesProfile(configuration.Pipeline, profile.Pipeline);
     }
 
     private async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
@@ -200,8 +215,34 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             canonicalConfiguration), effectiveConfiguration);
     }
 
-    public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
-        => _store.ReadRegistryAsync(cancellationToken);
+    public async ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
+    {
+        // Operators reconcile while acquisition is stopped. Expose the current profile's configured-basic source
+        // without requiring a new capture or a host restart. Refresh preserves a Named active selection.
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        return profile is null
+            ? await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false)
+            : await EnsureConfiguredBasicAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<string?> FindActiveStoragePolicyMismatchAsync(CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        if (profile is null) return null;
+        var registry = await GetRegistryAsync(cancellationToken).ConfigureAwait(false);
+        // Configured-basic follows the profile automatically; only a Named selection needs operator reconciliation.
+        if (registry.Mode == ProcessingGraphRegistryMode.ConfiguredBasic) return null;
+        var revision = await _store.ReadRevisionAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, profile.Pipeline);
+            return null;
+        }
+        catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+        {
+            return revision.State.RevisionId;
+        }
+    }
 
     /// <summary>
     /// Reports a Named active revision whose stored node plans no longer match what this build compiles from the same
@@ -261,7 +302,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ValidateRevisionName(name, nameof(name));
         ValidateRevisionName(revision, nameof(revision));
         EnsureExplicitPipeline(pipeline);
-        var baseConfiguration = Volatile.Read(ref _baseConfiguration)
+        var baseConfiguration = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 "A camera configuration must be initialized before named processing graph revisions can be created.");
         return await CreateRevisionAsync(
@@ -269,7 +310,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             .ConfigureAwait(false);
     }
 
-    internal ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
+    internal async ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
         CameraModuleConfig baseConfiguration,
         string name,
         string revision,
@@ -282,9 +323,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ValidateRevisionName(name, nameof(name));
         ValidateRevisionName(revision, nameof(revision));
         EnsureExplicitPipeline(pipeline);
+        var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
         var snapshot = CreateRevisionSnapshot(
-            baseConfiguration with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
-        return _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken);
+            profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
+        return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
+            candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
+                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
     }
 
     public async ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
@@ -298,13 +342,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.activate");
         activity?.SetTag("processing_graph.revision_id", revisionId);
         EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
         await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                EnsureCurrentRevisionPlans).ConfigureAwait(false);
+                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
             await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
@@ -326,13 +371,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.rollback");
         activity?.SetTag("processing_graph.target_revision_id", revisionId);
         EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
         await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var state = await _store.RollbackRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                EnsureCurrentRevisionPlans).ConfigureAwait(false);
+                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -485,13 +531,18 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public ValueTask<ProcessingGraphDeliveryBacklog> ReadBacklogAsync(CancellationToken cancellationToken)
         => _store.ReadDeliveryBacklogAsync(cancellationToken);
 
-    public ValueTask<ProcessingGraphRevisionState> ValidateRevisionAsync(
+    public async ValueTask<ProcessingGraphRevisionState> ValidateRevisionAsync(
         string revisionId,
         string idempotencyKey,
         string actor,
         string? reason,
         CancellationToken cancellationToken)
-        => _store.ValidateRevisionAsync(revisionId, idempotencyKey, actor, reason, cancellationToken);
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        return await _store.ValidateRevisionAsync(revisionId, idempotencyKey, actor, reason, cancellationToken,
+            revision => CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline,
+                (_currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration))?.Pipeline)).ConfigureAwait(false);
+    }
 
     public ValueTask<ProcessingGraphRegistryState> RetireRevisionAsync(
         string revisionId,
@@ -639,9 +690,21 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return result;
     }
 
-    private void EnsureCurrentRevisionPlans(ProcessingGraphRevisionSnapshot revision)
-        => EnsureCompatibleRevisionPlans(revision, Volatile.Read(ref _baseConfiguration)
-            ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision."));
+    private async ValueTask<CameraModuleConfig?> ReadCurrentProfileAsync(CameraModuleConfig? fallback, CancellationToken cancellationToken)
+    {
+        if (_currentCaptureProfile?.Invoke() is { } profile) return profile;
+        if (_configurationAccessor?.IsConfigured == true)
+            return await _configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        return fallback ?? Volatile.Read(ref _baseConfiguration);
+    }
+
+    private void EnsureCurrentRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile)
+    {
+        var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
+            ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
+        CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
+        EnsureCompatibleRevisionPlans(revision, current);
+    }
 
     private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)
     {

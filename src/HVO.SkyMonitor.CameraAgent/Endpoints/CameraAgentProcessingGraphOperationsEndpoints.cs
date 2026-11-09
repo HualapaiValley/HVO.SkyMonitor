@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
@@ -337,6 +338,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         catch (ArgumentException)
         {
             return Problem(StatusCodes.Status400BadRequest, "The processing graph command is invalid.");
+        }
+        catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+        {
+            return Problem(StatusCodes.Status409Conflict, CaptureStoragePolicy.RejectionMessage);
         }
         catch (Exception exception) when (exception is KeyNotFoundException or FileNotFoundException)
         {

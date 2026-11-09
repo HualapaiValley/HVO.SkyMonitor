@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -118,7 +119,8 @@ internal sealed class FrameProcessingWorker
         ICaptureProcessingFaultInjector? faultInjector = null,
         int? durableAttempt = null,
         Func<CaptureLaneHandlerResult>? cancellationDisposition = null,
-        bool frozenPlanSuperseded = false)
+        bool frozenPlanSuperseded = false,
+        Func<CancellationToken, ValueTask>? ensureLiveStoragePolicy = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -150,6 +152,11 @@ internal sealed class FrameProcessingWorker
             logger.CaptureProcessingGraphCompleted(outcome);
             return result;
         }
+        CaptureLaneHandlerResult AbandonStorageMismatch(string reason)
+        {
+            logger.CaptureLaneTerminal("standard", "abandoned", reason);
+            return Finish(CaptureLaneHandlerResult.Abandon(reason));
+        }
         try
         {
             var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
@@ -158,6 +165,22 @@ internal sealed class FrameProcessingWorker
             if (persistence is not null)
             {
                 await persistence.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            var storagePolicyMismatch = false;
+            if (ensureLiveStoragePolicy is not null)
+            {
+                try
+                {
+                    await ensureLiveStoragePolicy(cancellationToken).ConfigureAwait(false);
+                }
+                catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+                {
+                    // Preserve capture-time scene evidence through the ordinary durable node commit below before
+                    // abandoning unsafe processing. Replay cannot rebuild this evidence after its transient stage
+                    // is gone. No image or Storage node may run under the mismatched policy.
+                    await EnsureEvidenceIntactAsync(context, persistence, item.Execution, cancellationToken).ConfigureAwait(false);
+                    storagePolicyMismatch = true;
+                }
             }
             if (frozenPlanSuperseded)
             {
@@ -188,6 +211,10 @@ internal sealed class FrameProcessingWorker
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
+                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep || rawCapture?.Manifest.Scene is null))
+                    continue;
+                // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
+                var required = node.Required;
                 context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
                 var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
@@ -224,10 +251,12 @@ internal sealed class FrameProcessingWorker
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     dependencyStopwatch.Stop();
                     telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
-                    if (node.Required)
+                    if (required)
                     {
                         return Finish(CaptureLaneHandlerResult.Terminal(dependencyReason));
                     }
+                    if (storagePolicyMismatch)
+                        return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                     continue;
                 }
 
@@ -265,10 +294,12 @@ internal sealed class FrameProcessingWorker
                             durable.Duration ?? TimeSpan.Zero,
                             durable.Status == DurableProcessingNodeStatus.Completed,
                             durable.Reason));
-                        if (node.Required && durable.Status == DurableProcessingNodeStatus.Skipped)
+                        if (required && durable.Status == DurableProcessingNodeStatus.Skipped)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.skipped"));
                         }
+                        if (storagePolicyMismatch && durable.Status == DurableProcessingNodeStatus.Skipped)
+                            return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                         continue;
                     }
                     if (!memoryOnly && durable?.Status == DurableProcessingNodeStatus.TerminalFailure)
@@ -279,10 +310,12 @@ internal sealed class FrameProcessingWorker
                             durable.Duration ?? TimeSpan.Zero,
                             false,
                             durable.Reason));
-                        if (node.Required)
+                        if (required)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.terminal"));
                         }
+                        if (storagePolicyMismatch)
+                            return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                         continue;
                     }
                 }
@@ -414,13 +447,13 @@ internal sealed class FrameProcessingWorker
                     });
                 }
                 var (status, reason) = ResolveStatus(node, outcome, exception);
-                if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
+                if (!required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-exhausted";
                 }
-                if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure &&
-                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live)
+                if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-degraded";
@@ -500,7 +533,7 @@ internal sealed class FrameProcessingWorker
                     }
                 }
                 statuses[node.Id] = status;
-                if (node.Required)
+                if (required)
                 {
                     if (status == DurableProcessingNodeStatus.RetryableFailure)
                     {
@@ -515,8 +548,19 @@ internal sealed class FrameProcessingWorker
                 }
                 else if (status == DurableProcessingNodeStatus.RetryableFailure)
                 {
+                    if (storagePolicyMismatch)
+                        return Finish(RetryOrWait(reason ?? "processing.retryable"));
                     deferredRetryReason ??= reason ?? "processing.retryable";
                 }
+                else if (storagePolicyMismatch && status is
+                    (DurableProcessingNodeStatus.TerminalFailure or DurableProcessingNodeStatus.Skipped))
+                {
+                    return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
+                }
+            }
+            if (storagePolicyMismatch)
+            {
+                return AbandonStorageMismatch(CaptureStoragePolicy.LiveMismatchLaneReason);
             }
             return Finish(deferredRetryReason is null
                 ? CaptureLaneHandlerResult.Success

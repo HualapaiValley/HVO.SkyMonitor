@@ -81,7 +81,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
     {
         ValidateRevisionId(revisionId);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -102,6 +103,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         var target = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false);
         if (target.State.Lifecycle == ProcessingGraphRevisionLifecycle.Retired)
             throw new ProcessingGraphStoreConflictException("A retired processing graph revision cannot be validated.");
+        // Replayed acknowledgements above remain immutable; new validation commands recheck current local policy.
+        ensureCompatible?.Invoke(target);
         if (target.State.Lifecycle == ProcessingGraphRevisionLifecycle.Draft)
         {
             using var update = connection.CreateCommand();
@@ -128,7 +131,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
     {
         ArgumentNullException.ThrowIfNull(revision);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -144,6 +148,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return (await ReadRevisionAsync(connection, null, prior.ResultReference, cancellationToken).ConfigureAwait(false)).State;
         }
+        // A committed acknowledgement precedes current-policy checks, just as validate/activate/rollback do.
+        // The command fingerprint above still rejects a different request reusing the key.
+        ensureCompatible?.Invoke(revision);
         await InsertRevisionAsync(
             connection, transaction, revision, ProcessingGraphRevisionLifecycle.Draft, cancellationToken)
             .ConfigureAwait(false);
