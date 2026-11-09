@@ -1,7 +1,9 @@
 # CameraAgent custom-script adapter (#1137)
 
 Owner-registered scripts integrate with the predefined automation wizard from
-#1133 and the durable schedule contract from #1136. The custom step, explicit
+#1133 and the durable schedule contract from #1136. The merged predefined-wizard
+slice is available; #1133 itself remains open with blocked follow-up work, so this
+is not a claim that the whole prerequisite issue is closed. The custom step, explicit
 run-now and per-running-script stop controls are implemented here. #1137 remains
 open: installer/runtime prerequisite provisioning, supported production adoption,
 independent review convergence and selected protected CI/finalization are not
@@ -110,8 +112,12 @@ cgroup namespaces, drops capabilities and starts a new session. It disables and
 asserts the disabling of further user namespaces. The only host files mounted
 are the static BusyBox executable at `/bin/sh` and `/bin/sleep`, plus `/dev/null`.
 Private proc is read-only. It can still expose host-wide kernel/system information
-(such as aggregate CPU or memory statistics); this sandbox does not promise
-confidentiality of that information or provide a multi-tenant host boundary. No loader, libc, host home, configuration, archive,
+(including boot command line, aggregate CPU/memory statistics and sysctls),
+its namespace init's non-secret launcher environment, and the init executable
+through `/proc/1/exe` (Bubblewrap). It does not expose a general host filesystem
+capability, but the boundary must not be described as hiding every host-backed
+executable through proc references. This sandbox does not promise confidentiality
+of that system information or provide a multi-tenant host boundary. No loader, libc, host home, configuration, archive,
 SDK/device, rig/module, raw-ingress, identity, provisioning, socket or secret is
 mounted. Host networking/firewall configuration is unchanged.
 
@@ -146,9 +152,14 @@ locator is supplied to the scope launcher. Bubblewrap clears that locator too.
 The script receives only `PATH=/bin`, `HOME=/work`, `TMPDIR=/work` and `LC_ALL=C`.
 Registered content is a literal `sh -c` argument, with separately supplied positional
 arguments. The host's process table can expose that content and those arguments
-to users with process-inspection authority; the content-free logging guarantee
-does not conceal argv from privileged host observers. Never place secrets there.
-It is never interpolated into a host shell or logged. After verifying
+to host users allowed to read `/proc/<pid>/cmdline`, which can include
+unprivileged users on default proc configurations. Hosts using a piped core
+handler such as systemd-coredump can additionally journal `COREDUMP_CMDLINE` or
+`COREDUMP_CONTAINER_CMDLINE` after a script crash, even with `RLIMIT_CORE=0`.
+The content-free application/scope lifecycle logging guarantee does not conceal
+argv or cover host crash-reporting services; that channel is unqualified here.
+Never place secrets in content or arguments. The adapter never interpolates
+them into a host shell or writes them to application logs. After verifying
 the cgroup, the host sends only a finite binary seccomp policy to Bubblewrap's
 stdin. Bubblewrap must consume/install it before exec; the script itself receives
 `/dev/null` as stdin, so `read` cannot consume later script lines.
@@ -173,7 +184,8 @@ limited to 256 bytes–1 MiB (64 KiB default); crossing it terminates execution.
 Two fixed 4 KiB buffers drain/discard the streams. Raw output retention is
 **zero bytes**, including launch failures, so diagnostic output cannot become
 operator history/log text. Only fixed outcome labels, exit code and byte counts
-are returned. No exception message or script/argument text is logged.
+are returned. The adapter logs no exception message or script/argument text;
+the host process/crash-reporting exposure above remains separate.
 
 Every launch first enters its own transient systemd user scope: 64 MiB aggregate
 memory (including charged kernel/scratch metadata), zero swap, 16 processes/threads
@@ -241,6 +253,8 @@ remains Docker-free; unavailable hosts are qualified as unavailable in Unit test
 Non-Linux Integration execution explicitly reports Linux-only qualification.
 The development-v1 protected profile still runs only Preflight and Build and Unit;
 local Linux Integration evidence remains separately required for this adapter.
+The full-CI `--provision` path still needs its first real disposable-runner
+execution; a local verify-only pass does not establish that workflow result.
 
 Native fixtures are freestanding, bounded C helpers compiled under the test's
 scratch root. They prove memfd rejection, namespace/mount refusal, socket refusal,
