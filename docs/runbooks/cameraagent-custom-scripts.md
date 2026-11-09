@@ -15,11 +15,18 @@ Only the host owner, through protected startup configuration, can enable
 `CameraAgent:CustomScripts`, affirm `OwnerAuthorized`, and register script content.
 Both switches default to false. The ordinary authenticated owner automation
 mutation policies and antiforgery checks remain in force for definitions.
-The same authenticated owner policy protects script run-now and stop mutations,
-and the HTTP endpoints require antiforgery validation. They grant permission to select an existing registration; they do not
+The same authenticated owner policy protects script run-now and stop mutations.
+All six automation mutation endpoints reject session requests unless the real
+antiforgery middleware reports successful validation, before invoking a durable
+command or cancelling a worker. Missing and invalid session tokens return a
+content-free HTTP 400. As with other operations mutations, an authenticated
+owner ReadWrite API key is accepted without a session antiforgery token;
+read-only keys and non-owner credentials cannot mutate. Keys are accepted only
+through the existing Authorization header policy, never through operator JSON.
+These endpoints grant permission to select an existing registration; they do not
 grant permission to upload content, choose an executable, bind a directory,
-change the environment or request a network capability. No new anonymous or
-API-key execution endpoint is introduced. Do not put credentials in content,
+change the environment or request a network capability. Anonymous execution is
+not permitted. Do not put credentials in content,
 arguments, definition names, IDs, reasons or other operator text.
 
 Example startup configuration (illustrative, not enabled by any shipped profile):

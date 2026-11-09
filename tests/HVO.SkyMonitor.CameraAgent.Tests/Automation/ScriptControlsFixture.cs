@@ -39,6 +39,7 @@ internal sealed class ScriptControlsFixture : IDisposable
                 ObservingDayCalendar.ForDeployment(LocalAutomationWindowTests.Site()))), Clock, Commands);
     }
 
+    internal string DatabasePath => Path.Combine(_root, ".automation", "local-automations.db");
     internal MutableTimeProvider Clock { get; }
     internal ScriptRegistry Stub { get; } = new();
     internal ILocalAutomationTaskRegistry Registry { get; }

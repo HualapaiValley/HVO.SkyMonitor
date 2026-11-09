@@ -299,6 +299,29 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         Assert.AreEqual(LocalAutomationRunOutcome.Queued, run.Outcome);
     }
 
+    [TestMethod]
+    [DataRow("SaveCameraAgentAutomation", "{\"definitionId\":\"script\",\"name\":\"Check\",\"enabled\":true,\"taskKind\":\"CustomScript\",\"taskTarget\":\"registered.digest\",\"triggerKind\":\"Periodic\",\"triggerInterval\":60,\"expectedVersion\":1}")]
+    [DataRow("RemoveCameraAgentAutomation", "{\"expectedVersion\":1}")]
+    [DataRow("BackfillCameraAgentAutomation", "{\"expectedVersion\":1,\"reportDate\":\"2026-11-09\"}")]
+    [DataRow("RetryCameraAgentAutomation", "{\"expectedVersion\":1,\"previousRunKey\":\"run\"}")]
+    [DataRow("RunCameraAgentScriptNow", "{\"expectedVersion\":1}")]
+    [DataRow("StopCameraAgentScriptRun", "{\"expectedDefinitionVersion\":1,\"runKey\":\"run\"}")]
+    public async Task EveryMutationFailsClosedWithoutSuccessfulAntiforgery(string name, string payload)
+    {
+        foreach (bool? valid in new bool?[] { null, false })
+        {
+            var store = new RecordingStore();
+            using var app = CreateApp(store);
+            var response = await PostAsync(app, name, payload, routeValues: new Dictionary<string, object?>
+            { ["definitionId"] = "script" }, antiforgeryValid: valid).ConfigureAwait(false);
+            Assert.AreEqual(400, response.Status, $"{name}, feature valid = {valid}");
+            Assert.IsEmpty(store.SaveRequests);
+            Assert.IsEmpty(store.RemoveRequests);
+            Assert.IsEmpty(store.BackfillRequests);
+            Assert.IsEmpty(store.RetryRequests);
+        }
+    }
+
     private static WebApplication CreateApp(ILocalAutomationStore store)
     {
         var builder = WebApplication.CreateBuilder();
@@ -325,8 +348,9 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         string json,
         string? idempotencyKey = null,
         bool anonymous = false,
-        IReadOnlyDictionary<string, object?>? routeValues = null)
-        => InvokeAsync(app, name, HttpMethods.Post, json, idempotencyKey, anonymous, routeValues);
+        IReadOnlyDictionary<string, object?>? routeValues = null,
+        bool? antiforgeryValid = true)
+        => InvokeAsync(app, name, HttpMethods.Post, json, idempotencyKey, anonymous, routeValues, antiforgeryValid);
 
     private static async Task<(int Status, string Body)> InvokeAsync(
         WebApplication app,
@@ -335,7 +359,8 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         string? json,
         string? idempotencyKey,
         bool anonymous,
-        IReadOnlyDictionary<string, object?>? routeValues)
+        IReadOnlyDictionary<string, object?>? routeValues,
+        bool? antiforgeryValid = true)
     {
         var endpoint = FindEndpoint(app, name);
         var context = new DefaultHttpContext
@@ -352,6 +377,10 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
                     ],
                     IdentityConstants.ApplicationScheme))
         };
+        if (antiforgeryValid is { } valid)
+        {
+            context.Features.Set<IAntiforgeryValidationFeature>(new AntiforgeryFeature(valid));
+        }
         context.Request.Method = method;
         if (routeValues is not null)
         {
@@ -379,6 +408,12 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         context.Response.Body = body;
         await endpoint.RequestDelegate!(context).ConfigureAwait(false);
         return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()));
+    }
+
+    private sealed class AntiforgeryFeature(bool valid) : IAntiforgeryValidationFeature
+    {
+        public bool IsValid => valid;
+        public Exception? Error => valid ? null : new AntiforgeryValidationException("Invalid test token.");
     }
 
     private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature

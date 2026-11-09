@@ -247,6 +247,14 @@ internal static class CameraAgentAutomationOperationsEndpoints
                 statusCode: StatusCodes.Status403Forbidden,
                 title: "The automation command is not authorized.");
         }
+        // Antiforgery middleware records validation; JSON handlers must enforce it before mutation.
+        // The credential-aware helper preserves the existing owner ReadWrite API-key policy.
+        if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "The automation request is invalid.");
+        }
         try
         {
             var result = await command(actor).ConfigureAwait(false);
