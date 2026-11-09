@@ -21,14 +21,14 @@ public sealed partial class CustomScriptSandboxIntegrationTests
             using var file = File.OpenHandle(marker, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
             // F_DUPFD deliberately clears CLOEXEC. Use fds above the script's RLIMIT_NOFILE too.
             using var inheritedFile = Duplicate(file, 512);
-            using var directory = new SafeFileHandle((IntPtr)OpenPath(Path.Combine(root, "directory"), 0x10000), true);
+            using var directory = new SafeFileHandle((IntPtr)OpenPath(Path.Combine(root, "directory"), 0), true);
             Assert.IsFalse(directory.IsInvalid);
             using var inheritedDirectory = Duplicate(directory, 1024);
             var fileFd = inheritedFile.DangerousGetHandle().ToInt32().ToString(CultureInfo.InvariantCulture);
             var directoryFd = inheritedDirectory.DangerousGetHandle().ToInt32().ToString(CultureInfo.InvariantCulture);
             Assert.AreEqual(original, await File.ReadAllTextAsync($"/proc/self/fd/{fileFd}").ConfigureAwait(false));
             // Use native open: .NET normalizes /fd/N/../marker before the kernel can traverse N.
-            using (var traversal = new SafeFileHandle((IntPtr)OpenPath($"/proc/self/fd/{directoryFd}/../marker", 0x80000), true))
+            using (var traversal = new SafeFileHandle((IntPtr)OpenPath($"/proc/self/fd/{directoryFd}/../marker", 0), true))
             {
                 Assert.IsFalse(traversal.IsInvalid, "Positive control: the host directory fd can traverse outside its directory.");
                 var bytes = new byte[128];

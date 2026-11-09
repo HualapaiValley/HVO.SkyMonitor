@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class CustomScriptPreStartCancellationTests
 {
     [TestMethod]
