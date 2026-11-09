@@ -28,9 +28,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
-      - name: Checkout merge group commit
+      # Use the actual branch tip: base_sha is documented only as the group's
+      # parent commit, which does not establish trust for chained entries.
+      # A missing checkout/script must fail; never fall back to the queued tree.
+      - name: Checkout trusted development base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/heads/development/v1
           persist-credentials: false
 
       - name: Require the reviewed-head status on the queued pull request head
@@ -41,4 +45,4 @@ jobs:
           GROUP_SHA: ${{ github.event.merge_group.head_sha }}
           BASE_REF: ${{ github.event.merge_group.base_ref }}
           ALLOWED_SETTERS: RoySalisbury
-        run: ./scripts/ci:queue-reviewed-head
+        run: BASE_SHA="$(git rev-parse HEAD)" ./scripts/ci:queue-reviewed-head

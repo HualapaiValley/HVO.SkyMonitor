@@ -18,6 +18,7 @@ short = (root / ".github/workflows/development-v1.yml").read_text()
 full = (root / ".github/workflows/ci.yml").read_text()
 promotion = (root / ".github/workflows/promote-main.yml").read_text()
 queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_text()
+workflows = {path.name: path.read_text() for path in (root / ".github/workflows").glob("*.yml")}
 
 
 def job(workflow, name):
@@ -60,7 +61,23 @@ merge_group_trigger = (
 )
 
 
-def violations(short, full, queue=None):
+preflight_timeout = "    timeout-minutes: ${{ github.event_name == 'merge_group' && 6 || 4 }}"
+queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
+trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/development/v1
+          persist-credentials: false"""
+queue_execution = """        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          ALLOWED_SETTERS: RoySalisbury
+        run: BASE_SHA="$(git rev-parse HEAD)" ./scripts/ci:queue-reviewed-head"""
+
+
+def violations(short, full, queue=None, extra=None):
     queue = queue_gate if queue is None else queue
     errors = []
     preflight = job(short, "preflight")
@@ -90,8 +107,56 @@ def violations(short, full, queue=None):
     require(queue_on.strip() == merge_group_trigger.strip(), "queue reviewed-head runs only on merge_group")
     require("pull_request" not in queue_on and "push" not in queue_on and "workflow_" not in queue_on,
             "queue reviewed-head has no PR, push or dispatch trigger")
-    require(queue.count("    name: hvo/reviewed-head\n") == 1, "queue reviewed-head reports the required context")
-    require("        run: ./scripts/ci:queue-reviewed-head\n" in queue, "queue reviewed-head re-checks the PR head")
+    # Scan every workflow, not just the intended producers. Restrict job/name
+    # layout to the repository's canonical block form so alternate YAML shapes
+    # cannot silently escape this dependency-free guard. actionlint checks YAML.
+    sources = dict(workflows, **{"development-v1.yml": short, "ci.yml": full,
+                                "merge-queue-reviewed-head.yml": queue})
+    sources.update(extra or {})
+    names = []
+    for path, workflow in sources.items():
+        require(workflow.count("\njobs:\n") == 1, f"canonical jobs block: {path}")
+        section = workflow.split("\njobs:\n", 1)[-1]
+        headers = re.findall(r"^  ([\w-]+):\n", section, re.M)
+        direct_children = [line for line in section.splitlines()
+                           if re.match(r"^  [^\s#]", line)]
+        require(bool(headers) and direct_children == [f"  {header}:" for header in headers],
+                f"canonical job headers: {path}")
+        for header in headers:
+            body = job(workflow, header)
+            values = re.findall(r"^    name: ([^\n]+)$", body, re.M)
+            properties = [line for line in body.splitlines() if re.match(r"^    [^\s#]", line)]
+            require(bool(properties) and all(re.match(r"^    [\w-]+:", line) for line in properties),
+                    f"canonical job properties: {path}/{header}")
+            require(len(values) <= 1 and len(values) == len(re.findall(r"^    name:", body, re.M)),
+                    f"one single-line name per job: {path}/{header}")
+            value = values[0].strip() if values else header
+            # Decode ordinary quoted names too; reject folded/anchored names.
+            if value.startswith('"'):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    value = None
+            elif value.startswith("'"):
+                value = value[1:-1].replace("''", "'") if value.endswith("'") else None
+            else:
+                value = value.split(" #", 1)[0].strip()
+            require(isinstance(value, str) and not value.startswith(("|", ">", "&", "*", "{", "!")),
+                    f"canonical job name: {path}/{header}")
+            names.append(value)
+    for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
+        require(names.count(required) == 1, f"globally unique required job name: {required}")
+    require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
+            queue_permissions.split("\n", 1)[1].strip() and
+            len(re.findall(r"^\s*permissions:", queue, re.M)) == 1,
+            "queue exact read-only permissions without job overrides")
+    require(step(queue, "Checkout trusted development base").strip() == trusted_checkout.strip(),
+            "queue trusted branch checkout with credentials disabled")
+    require(step(queue, "Require the reviewed-head status on the queued pull request head").strip() ==
+            queue_execution.strip(), "queue exact environment and trusted-base execution")
+    require(len(re.findall(r"^      - ", queue, re.M)) == 2 and
+            re.findall(r"^  ([\w-]+):$", queue.split("\njobs:\n", 1)[-1], re.M) == ["reviewed-head"],
+            "queue has only the trusted checkout and gate steps in one job")
     require("        if:" not in queue and "    if:" not in queue and "continue-on-error:" not in queue,
             "queue reviewed-head is unconditional and fails closed")
     require("hvo/reviewed-head" not in short, "the v1 checks never report hvo/reviewed-head")
@@ -105,7 +170,7 @@ def violations(short, full, queue=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
-    require(re.search(r"^    timeout-minutes: 4$", preflight, re.M), "Preflight keeps its 240-second budget")
+    require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for merge_group and 240 otherwise")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -204,10 +269,11 @@ mutations = (
     ("hard timeout reverted", short.replace("timeout-minutes: 22", "timeout-minutes: 15"), full),
     ("summary workload drift", short.replace("workloadBudgetSeconds:1080", "workloadBudgetSeconds:720"), full),
     ("summary hard timeout drift", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:900"), full),
-    ("Preflight budget reverted", short.replace("timeout-minutes: 4", "timeout-minutes: 3"), full),
-    ("Preflight budget inflated to 40", short.replace("timeout-minutes: 4", "timeout-minutes: 40"), full),
-    ("Preflight budget raised", short.replace("timeout-minutes: 4", "timeout-minutes: 5"), full),
-    ("Preflight budget removed", short.replace("    timeout-minutes: 4\n", ""), full),
+    ("Preflight budget reverted", short.replace(preflight_timeout, "    timeout-minutes: 3"), full),
+    ("Preflight budget inflated to 40", short.replace(preflight_timeout, "    timeout-minutes: 40"), full),
+    ("Preflight budget raised", short.replace(preflight_timeout, "    timeout-minutes: 5"), full),
+    ("Preflight budget removed", short.replace(preflight_timeout + "\n", ""), full),
+    ("merge queue Preflight budget lost", short.replace(preflight_timeout, "    timeout-minutes: 4"), full),
     ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
@@ -278,6 +344,40 @@ mutations = (
     ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
     ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
+# Bind every credential, environment and trust source independently.
+queue_mutations = [
+    ("statuses write", queue_gate.replace("statuses: read", "statuses: write")),
+    ("contents write", queue_gate.replace("contents: read", "contents: write")),
+    ("job permissions override", queue_gate.replace("    runs-on:", "    permissions: write-all\n    runs-on:")),
+    ("credentials persisted", queue_gate.replace("persist-credentials: false", "persist-credentials: true")),
+    ("credential setting removed", queue_gate.replace("          persist-credentials: false\n", "")),
+    ("queued checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.head_sha }}")),
+    ("base_sha checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.base_sha }}")),
+    ("checkout failure ignored", queue_gate.replace("        with:", "        continue-on-error: true\n        with:")),
+    ("trusted base execution removed", queue_gate.replace('BASE_SHA="$(git rev-parse HEAD)" ', "")),
+    ("execution failure ignored", queue_gate.replace("./scripts/ci:queue-reviewed-head\n", "./scripts/ci:queue-reviewed-head || true\n")),
+]
+for key in ("GH_TOKEN", "REPOSITORY", "HEAD_REF", "GROUP_SHA", "BASE_REF", "ALLOWED_SETTERS"):
+    line = next(line for line in queue_gate.splitlines() if line.startswith(f"          {key}:"))
+    queue_mutations.append((f"{key} removed", queue_gate.replace(line + "\n", "")))
+    queue_mutations.append((f"{key} miswired", queue_gate.replace(line, f"          {key}: wrong")))
+queue_mutations.extend([
+    ("setter allowlist expanded", queue_gate.replace("ALLOWED_SETTERS: RoySalisbury", "ALLOWED_SETTERS: RoySalisbury someone")),
+    ("GROUP_SHA sourced from PR", queue_gate.replace("GROUP_SHA: ${{ github.event.merge_group.head_sha }}",
+                                                    "GROUP_SHA: ${{ github.event.pull_request.head.sha }}")),
+])
+mutations += tuple((name, short, full, candidate) for name, candidate in queue_mutations)
+for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
+    spoof = f"name: Spoof\non: push\njobs:\n  spoof:\n    name: {json.dumps(required)}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+    mutations += ((f"spoof workflow: {required}", short, full, queue_gate, {"spoof.yml": spoof}),)
+mutations += (("inline jobs spoof", short, full, queue_gate,
+               {"spoof.yml": "name: Spoof\non: push\njobs: {spoof: {name: hvo/reviewed-head}}\n"}),)
+for spoof in (
+    'name: Spoof\non: push\njobs:\n  benign:\n    runs-on: ubuntu-24.04\n  spoof: {name: hvo/reviewed-head}\n',
+    'name: Spoof\non: push\njobs:\n  spoof:\n    "name": hvo/reviewed-head\n',
+    'name: Spoof\non: push\njobs:\n  spoof:\n    name:\n      hvo/reviewed-head\n',
+):
+    mutations += (("alternate YAML spoof", short, full, queue_gate, {"spoof.yml": spoof}),)
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")

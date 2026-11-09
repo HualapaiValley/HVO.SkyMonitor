@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline controls for scripts/ci:queue-reviewed-head with a substitute gh."""
+"""Offline API and mutation controls for the trusted-base merge-queue gate."""
+import copy
 import json
 import os
 import pathlib
@@ -9,43 +10,98 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GATE = ROOT / "scripts/ci:queue-reviewed-head"
-BASE = "b" * 40
-GROUP = "c" * 40
-HEAD = "a" * 40
-REF = f"refs/heads/gh-readonly-queue/development/v1/pr-42-{BASE}"
+REPO = "example/repo"
+BASE, GROUP, HEAD = "b" * 40, "c" * 40, "a" * 40
+REF = f"refs/heads/gh-readonly-queue/development/v1/pr-42-{HEAD}"
 
-GH = r"""#!/usr/bin/env python3
-import json, os, sys
-state = json.load(open(os.environ["FAKE_GH_STATE"]))
+# No endpoint interpretation or filtering here. Like gh, pass each raw response
+# through the caller's actual jq program; pagination controls which pages exist.
+GH = r'''#!/usr/bin/env python3
+import json, os, subprocess, sys
 args = sys.argv[1:]
-path = next(a for a in args[1:] if not a.startswith("-"))
-jq = args[args.index("--jq") + 1] if "--jq" in args else None
-if path.endswith("/commits/" + state["group"]):
-    if state.get("fail") == "commit":
-        sys.exit(1)
-    print(" ".join(state["parents"]))
-elif path.endswith("/pulls/42"):
-    if state.get("fail") == "pull":
-        sys.exit(1)
-    print(" ".join([state["pr_state"], state["pr_base"], state["pr_head"]]))
-elif "/statuses" in path:
-    if state.get("fail") == "statuses":
-        sys.exit(1)
-    for s in state["statuses"]:
-        if s["context"] == "hvo/reviewed-head":
-            print("\t".join([str(s["id"]), s["state"], s["login"]]))
-else:
+with open(os.environ["FAKE_GH_CALLS"], "a") as output:
+    output.write(json.dumps(args) + "\n")
+if not args or args.pop(0) != "api":
     sys.exit(2)
-"""
+path, query, paginate = None, None, False
+while args:
+    arg = args.pop(0)
+    if arg == "--jq" and args:
+        query = args.pop(0)
+    elif arg == "--paginate":
+        paginate = True
+    elif not arg.startswith("-") and path is None:
+        path = arg
+    else:
+        sys.exit(2)
+with open(os.environ["FAKE_GH_STATE"]) as source:
+    endpoints = json.load(source)
+if path not in endpoints:
+    print("unknown API path: " + str(path), file=sys.stderr)
+    sys.exit(2)
+response = endpoints[path]
+pages = response["pages"] if paginate else response["pages"][:1]
+for index, page in enumerate(pages):
+    if index == response.get("fail_page"):
+        print("simulated API failure", file=sys.stderr)
+        sys.exit(1)
+    raw = page if isinstance(page, str) else json.dumps(page)
+    if query is None:
+        print(raw)
+    else:
+        result = subprocess.run(["jq", "-r", query], input=raw, text=True)
+        if result.returncode:
+            sys.exit(result.returncode)
+'''
+
+
+def endpoint(path):
+    return f"repos/{REPO}/{path}"
+
+
+def statuses(sha=HEAD):
+    return endpoint(f"commits/{sha}/statuses?per_page=100")
 
 
 def status(id_, state="success", login="RoySalisbury", context="hvo/reviewed-head"):
-    return {"id": id_, "state": state, "login": login, "context": context}
+    return {"id": id_, "state": state, "creator": {"login": login}, "context": context}
+
+
+def pull(number=42, head=HEAD):
+    return {"number": number, "state": "open",
+            "base": {"ref": "development/v1", "repo": {"full_name": REPO}},
+            "head": {"sha": head, "repo": {"full_name": REPO}}}
+
+
+def fixture():
+    return {
+        endpoint(f"git/commits/{GROUP}"): {"pages": [{"parents": [{"sha": BASE}, {"sha": HEAD}]}]},
+        endpoint("pulls/42"): {"pages": [pull()]},
+        statuses(): {"pages": [[status(10)], []]},
+    }
+
+
+def chain(entries):
+    result = fixture()
+    previous = BASE
+    for index in range(entries):
+        last = index == entries - 1
+        sha = GROUP if last else str(index + 1) * 40
+        head = HEAD if last else str(index + 4) * 40
+        number = 42 if last else index + 40
+        record = pull(number, head)
+        result[endpoint(f"git/commits/{sha}")] = {
+            "pages": [{"parents": [{"sha": previous}, {"sha": head}]}]}
+        result[endpoint(f"commits/{head}/pulls?per_page=100")] = {"pages": [[copy.deepcopy(record)], []]}
+        result[endpoint(f"pulls/{number}")] = {"pages": [record]}
+        result[statuses(head)] = {"pages": [[status(10)], []]}
+        previous = sha
+    return result
 
 
 class QueueReviewedHead(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="hvo-queue-")
         self.dir = pathlib.Path(self.temp.name)
         gh = self.dir / "gh"
         gh.write_text(GH)
@@ -54,21 +110,23 @@ class QueueReviewedHead(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_gate(self, ref=REF, group=GROUP, **overrides):
-        state = {
-            "group": group, "parents": [BASE, HEAD], "pr_state": "open",
-            "pr_base": "development/v1", "pr_head": HEAD,
-            "statuses": [status(10)],
-        }
-        state.update(overrides)
+    def run_gate(self, data=None, gate=GATE, **env_overrides):
         state_file = self.dir / "state.json"
-        state_file.write_text(json.dumps(state))
+        state_file.write_text(json.dumps(fixture() if data is None else data))
+        self.calls = self.dir / "calls.jsonl"
+        self.calls.write_text("")
         env = dict(
             os.environ, PATH=f"{self.dir}:{os.environ['PATH']}", FAKE_GH_STATE=str(state_file),
-            REPOSITORY="example/repo", HEAD_REF=ref, GROUP_SHA=group,
-            BASE_REF="refs/heads/development/v1", ALLOWED_SETTERS="RoySalisbury",
+            FAKE_GH_CALLS=str(self.calls), REPOSITORY=REPO, HEAD_REF=REF, GROUP_SHA=GROUP,
+            BASE_REF="refs/heads/development/v1", BASE_SHA=BASE, ALLOWED_SETTERS="RoySalisbury",
         )
-        return subprocess.run([str(GATE)], env=env, capture_output=True, text=True)
+        env.update(env_overrides)
+        return subprocess.run([str(gate)], env=env, capture_output=True, text=True, timeout=15)
+
+    def with_statuses(self, *pages):
+        data = fixture()
+        data[statuses()] = {"pages": list(pages)}
+        return data
 
     def assertPass(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -77,45 +135,166 @@ class QueueReviewedHead(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(text, result.stderr)
 
-    def test_reviewed_head_passes(self):
+    def test_reviewed_head_passes_and_uses_git_commit_endpoint(self):
         self.assertPass(self.run_gate())
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(calls[0][1], endpoint(f"git/commits/{GROUP}"))
 
-    def test_newest_status_wins(self):
-        self.assertFail(self.run_gate(statuses=[status(10), status(11, "failure")]), "is failure")
-        self.assertPass(self.run_gate(statuses=[status(11), status(10, "failure")]))
-        self.assertFail(self.run_gate(statuses=[status(10), status(12, "pending")]), "is pending")
+    def test_fake_api_exact_paths_jq_and_pagination(self):
+        self.run_gate()
+        env = dict(os.environ, FAKE_GH_STATE=str(self.dir / "state.json"),
+                   FAKE_GH_CALLS=str(self.calls))
+        for flags, expected in (([], "1\n"), (["--paginate"], "1\n0\n")):
+            result = subprocess.run([str(self.dir / "gh"), "api", *flags, statuses(),
+                                     "--jq", "length"], env=env, text=True, capture_output=True)
+            self.assertEqual(result.stdout, expected)
+            self.assertEqual(result.returncode, 0)
+        result = subprocess.run([str(self.dir / "gh"), "api", statuses(GROUP)], env=env,
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+
+    def test_status_on_different_sha_fails(self):
+        for wrong_sha in (GROUP, BASE):
+            data = self.with_statuses([], [])
+            data[statuses(wrong_sha)] = {"pages": [[status(99)], []]}
+            with self.subTest(sha=wrong_sha):
+                self.assertFail(self.run_gate(data), "has no hvo/reviewed-head")
+
+    def test_newest_numeric_id_and_context(self):
+        self.assertFail(self.run_gate(self.with_statuses([status(9), status(10, "failure")])), "is failure")
+        self.assertPass(self.run_gate(self.with_statuses([status(10), status(9, "failure")])))
+        self.assertFail(self.run_gate(self.with_statuses([status(10), status(12, "pending")])), "is pending")
+        self.assertFail(self.run_gate(self.with_statuses([
+            status(10, "failure"), status(11, context="another-check")])), "is failure")
 
     def test_missing_status_fails(self):
-        self.assertFail(self.run_gate(statuses=[]), "has no hvo/reviewed-head")
-        self.assertFail(self.run_gate(statuses=[status(10, context="other")]), "has no hvo/reviewed-head")
+        for page in ([], [status(10, context="other")]):
+            self.assertFail(self.run_gate(self.with_statuses(page)), "has no hvo/reviewed-head")
 
-    def test_unallowed_setter_fails(self):
-        self.assertFail(self.run_gate(statuses=[status(10, login="someone")]), "not allowed")
-        self.assertFail(self.run_gate(statuses=[status(10, login="RoySalisbury2")]), "not allowed")
+    def test_unallowed_null_and_empty_creators_fail(self):
+        for login in ("someone", "RoySalisbury2", "xRoySalisbury", "", None):
+            with self.subTest(login=login):
+                self.assertFail(self.run_gate(self.with_statuses([status(10, login=login)])), "not allowed")
+        record = status(10)
+        record["creator"] = None
+        self.assertFail(self.run_gate(self.with_statuses([record])), "not allowed")
+
+    def test_newest_status_and_revocation_on_page_two(self):
+        filler = [status(i + 20, context="other") for i in range(99)]
+        self.assertPass(self.run_gate(self.with_statuses([status(9, "failure"), *filler], [status(10)])))
+        self.assertFail(self.run_gate(self.with_statuses([status(9), *filler], [status(10, "failure")])),
+                        "is failure")
+
+    def test_partial_pagination_failure_fails(self):
+        data = self.with_statuses([status(10)], [])
+        data[statuses()]["fail_page"] = 1
+        self.assertFail(self.run_gate(data), "cannot read commit statuses")
+
+    def test_malformed_responses_fail(self):
+        for page in ("{invalid", {"message": "unexpected"}, [{"id": "10"}], [status(None)]):
+            with self.subTest(page=page):
+                self.assertFail(self.run_gate(self.with_statuses(page)), "cannot read commit statuses")
+        for path in (endpoint(f"git/commits/{GROUP}"), endpoint("pulls/42")):
+            data = fixture()
+            data[path]["pages"] = ["{invalid"]
+            self.assertFail(self.run_gate(data), "cannot read")
 
     def test_head_must_be_queued_parent(self):
-        self.assertFail(self.run_gate(pr_head="d" * 40), "is not the queued head")
-        self.assertFail(self.run_gate(parents=[BASE]), "has 1 parents")
-        self.assertFail(self.run_gate(parents=[BASE, HEAD, "e" * 40]), "has 3 parents")
+        data = fixture()
+        data[endpoint("pulls/42")]["pages"][0]["head"]["sha"] = "d" * 40
+        self.assertFail(self.run_gate(data), "is not the queued head")
+        for parents in ([BASE], [BASE, HEAD, "e" * 40], [BASE, "short"]):
+            data = fixture()
+            data[endpoint(f"git/commits/{GROUP}")]["pages"][0]["parents"] = [
+                {"sha": sha} for sha in parents]
+            self.assertFail(self.run_gate(data), "parents" if len(parents) != 2 else "malformed parent")
 
-    def test_pull_request_must_be_open_on_base(self):
-        self.assertFail(self.run_gate(pr_state="closed"), "is closed")
-        self.assertFail(self.run_gate(pr_base="main"), "targets main")
+    def test_pull_request_must_be_open_on_expected_base_repo(self):
+        for field in ("state", "branch", "repo"):
+            data = fixture()
+            record = data[endpoint("pulls/42")]["pages"][0]
+            if field == "state":
+                record["state"] = "closed"
+            elif field == "branch":
+                record["base"]["ref"] = "main"
+            else:
+                record["base"]["repo"]["full_name"] = "another/repo"
+            self.assertFail(self.run_gate(data), "is closed" if field == "state" else "targets")
+
+    def test_fork_head_uses_base_repository_status_path(self):
+        data = fixture()
+        data[endpoint("pulls/42")]["pages"][0]["head"]["repo"]["full_name"] = "contributor/fork"
+        self.assertPass(self.run_gate(data))
+        data[statuses()]["pages"] = [[], []]
+        data["repos/contributor/fork/commits/" + HEAD + "/statuses?per_page=100"] = {
+            "pages": [[status(10)], []]}
+        self.assertFail(self.run_gate(data), "has no hvo/reviewed-head")
+
+    def test_chained_groups_require_every_exact_head(self):
+        for entries in (2, 3):
+            data = chain(entries)
+            with self.subTest(entries=entries):
+                self.assertPass(self.run_gate(data))
+                for index in range(entries - 1):
+                    broken = copy.deepcopy(data)
+                    broken[statuses(str(index + 4) * 40)]["pages"] = [[status(11, "failure")], []]
+                    self.assertFail(self.run_gate(broken), "is failure")
+                broken = copy.deepcopy(data)
+                broken[endpoint("pulls/40")]["pages"][0]["head"]["sha"] = "f" * 40
+                self.assertFail(self.run_gate(broken), "is not the queued head")
+
+    def test_chain_resolution_must_be_unique_and_reach_trusted_base(self):
+        data = chain(2)
+        path = endpoint(f"commits/{'4' * 40}/pulls?per_page=100")
+        for records in ([], [pull(40, "4" * 40), pull(41, "4" * 40)]):
+            broken = copy.deepcopy(data)
+            broken[path]["pages"] = [records]
+            self.assertFail(self.run_gate(broken), "exactly one open PR")
+        self.assertFail(self.run_gate(BASE_SHA="e" * 40), "cannot read merge group commit")
+        self.assertFail(self.run_gate(BASE_SHA=GROUP), "no queued PRs")
+        broken = fixture()
+        broken[endpoint(f"git/commits/{GROUP}")]["pages"][0]["parents"][0]["sha"] = GROUP
+        self.assertFail(self.run_gate(broken), "cycle")
 
     def test_malformed_inputs_fail(self):
-        self.assertFail(self.run_gate(ref="refs/heads/feature"), "unexpected merge group ref")
-        self.assertFail(self.run_gate(ref="refs/heads/gh-readonly-queue/main/pr-42-" + BASE),
-                        "unexpected merge group ref")
-        self.assertFail(self.run_gate(ref="refs/heads/gh-readonly-queue/development/v1/pr-x-" + BASE),
-                        "cannot read the pull request number")
-        self.assertFail(self.run_gate(group="short"), "not a full commit SHA")
+        for env, message in (({"HEAD_REF": "refs/heads/feature"}, "unexpected merge group ref"),
+                             ({"HEAD_REF": REF.replace("pr-42-", "pr-x-")}, "cannot read the pull request number"),
+                             ({"BASE_REF": "refs/heads/main"}, "unexpected base ref"),
+                             ({"GROUP_SHA": "short"}, "not a full commit SHA"),
+                             ({"BASE_SHA": "short"}, "not a full commit SHA")):
+            self.assertFail(self.run_gate(**env), message)
 
     def test_api_errors_fail_closed(self):
-        for stage, text in (("commit", "cannot read merge group commit"),
-                            ("pull", "cannot read pull request"),
-                            ("statuses", "cannot read commit statuses")):
-            with self.subTest(stage=stage):
-                self.assertFail(self.run_gate(fail=stage), text)
+        for path, message in ((endpoint(f"git/commits/{GROUP}"), "cannot read merge group commit"),
+                              (endpoint("pulls/42"), "cannot read pull request"),
+                              (statuses(), "cannot read commit statuses")):
+            data = fixture()
+            data[path]["fail_page"] = 0
+            self.assertFail(self.run_gate(data), message)
+
+    def test_mutation_controls(self):
+        wrong_sha = self.with_statuses([], [])
+        wrong_sha[statuses(GROUP)] = {"pages": [[status(10)], []]}
+        mutations = (
+            ("pagination removed", "--paginate ", "", self.with_statuses([status(9)], [status(10, "failure")])),
+            ("group SHA queried", "commits/${pr_head}/statuses", "commits/${GROUP_SHA}/statuses", wrong_sha),
+            ("context filter removed", 'select(.context == \\"${context}\\")', "select(true)",
+             self.with_statuses([status(10, "failure"), status(11, context="other")])),
+            ("lexical id ordering", "-k1,1nr", "-k1,1r", self.with_statuses([status(9), status(10, "failure")])),
+            ("substring creator match", '"$creator" == "$login"', '"$creator" == *"$login"*',
+             self.with_statuses([status(10, login="RoySalisbury2")])),
+        )
+        source = GATE.read_text()
+        for name, before, after, data in mutations:
+            with self.subTest(mutation=name):
+                self.assertIn(before, source, "mutation must actually change the gate")
+                self.assertNotEqual(self.run_gate(data).returncode, 0)
+                mutant = self.dir / "mutant"
+                mutant.write_text(source.replace(before, after))
+                mutant.chmod(0o700)
+                self.assertEqual(self.run_gate(data, gate=mutant).returncode, 0,
+                                 f"mutation was not exposed by its regression: {name}")
+                print(f"Killed gate mutation: {name}")
 
 
 if __name__ == "__main__":
