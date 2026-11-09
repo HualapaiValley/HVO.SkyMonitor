@@ -103,7 +103,7 @@ public sealed class DailySummaryIntegrationTests : IDisposable
         await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         var empty = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
         Assert.AreEqual(NightlyProductLibraryState.NotProduced, empty.State);
-        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, empty.Daily.Status.Disposition);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, empty.Daily!.Status.Disposition);
         Assert.IsNull(empty.Product);
         _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10)));
         await harness.Generator.RunAsync(occurrence, CancellationToken.None);
@@ -133,7 +133,7 @@ public sealed class DailySummaryIntegrationTests : IDisposable
             Assert.IsEmpty(day.Products);
             var entry = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
             Assert.AreEqual(NightlyProductLibraryState.NotProduced, entry.State);
-            Assert.AreEqual(1, entry.Daily.Status.CandidateCount);
+            Assert.AreEqual(1, entry.Daily!.Status.CandidateCount);
             Assert.AreEqual(1, entry.Daily.Status.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
             Assert.IsNull(entry.Product);
         }
@@ -280,15 +280,15 @@ public sealed class DailySummaryIntegrationTests : IDisposable
             DateTimeOffset startUtc, DateTimeOffset endUtc, int maximumCount, Action<string> unsupported,
             CancellationToken cancellationToken) => inner.ReadCandidatesAsync(nodeId, startUtc, endUtc, maximumCount, unsupported, cancellationToken);
 
-        public ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
+        public async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
             CancellationToken cancellationToken)
         {
             if (cancel)
             {
-                cancellation.Cancel();
+                await cancellation.CancelAsync();
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            return ValueTask.FromException<IReadOnlyList<ProcessingArtifact>>(new IOException("Synthetic source read failure."));
+            throw new IOException("Synthetic source read failure.");
         }
     }
 
