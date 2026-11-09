@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class CameraAgentAutomationOperationsEndpointsTests
 {
     [TestMethod]
@@ -101,7 +102,7 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         CollectionAssert.Contains(
             read.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
             CameraAgentAuthorizationPolicyNames.OperationsReadV1);
-        foreach (var mutation in new[] { save, remove, backfill, retry })
+        foreach (var mutation in new[] { save, remove, backfill, retry, FindEndpoint(app, "RunCameraAgentScriptNow"), FindEndpoint(app, "StopCameraAgentScriptRun") })
         {
             CollectionAssert.Contains(
                 mutation.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
@@ -268,10 +269,42 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         Assert.IsEmpty(store.SaveRequests);
     }
 
+    [TestMethod]
+    [DataRow("RunCameraAgentScriptNow", "{\"expectedVersion\":1}")]
+    [DataRow("StopCameraAgentScriptRun", "{\"runKey\":\"missing\",\"expectedDefinitionVersion\":1}")]
+    public async Task ScriptEndpointsRejectAnonymousUnknownFieldsAndMissingInputs(string name, string payload)
+    {
+        using var app = CreateApp(new RecordingStore());
+        var route = new Dictionary<string, object?> { ["definitionId"] = "script" };
+        Assert.AreEqual(403, (await PostAsync(app, name, payload, anonymous: true, routeValues: route).ConfigureAwait(false)).Status);
+        Assert.AreEqual(400, (await PostAsync(app, name, "{}", routeValues: route).ConfigureAwait(false)).Status);
+        Assert.AreEqual(400, (await PostAsync(app, name, payload[..^1] + ",\"content\":\"synthetic-secret\"}", routeValues: route).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task ScriptRunNowEndpointUsesTheOwnerAndDurableIdempotencyAndRejectsStaleVersions()
+    {
+        using var fixture = new Automation.ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(Automation.ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        using var app = CreateApp(fixture.Store);
+        var route = new Dictionary<string, object?> { ["definitionId"] = "script" };
+        Assert.AreEqual(409, (await PostAsync(app, "RunCameraAgentScriptNow", "{\"expectedVersion\":2}", "stale", routeValues: route).ConfigureAwait(false)).Status);
+        foreach (var attempt in new[] { 1, 2 })
+        {
+            Assert.AreEqual(200, (await PostAsync(app, "RunCameraAgentScriptNow", "{\"expectedVersion\":1}", "run", routeValues: route).ConfigureAwait(false)).Status, "Attempt " + attempt);
+        }
+        var run = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual("owner", run.Preparation!.Actor);
+        Assert.AreEqual(LocalAutomationRunOutcome.Queued, run.Outcome);
+    }
+
     private static WebApplication CreateApp(ILocalAutomationStore store)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton<LocalAutomationOffSweepWorker>();
+        builder.Services.AddSingleton<LocalAutomationScriptCommands>();
         var app = builder.Build();
         app.MapCameraAgentAutomationOperationsEndpoints();
         return app;

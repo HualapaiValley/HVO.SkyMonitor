@@ -34,6 +34,11 @@ public sealed partial class CustomScriptSandboxIntegrationTests
         script.Arguments = [new(CustomScriptArgumentKind.Text, "$(exit 42); a b"),
             new(CustomScriptArgumentKind.WholeNumber, "-12"), new(CustomScriptArgumentKind.Boolean, "true")];
         var adapter = CustomScriptTaskAdapterTests.Adapter(script);
+        var projection = System.Text.Json.JsonSerializer.Serialize(adapter.Describe());
+        Assert.IsFalse(projection.Contains("synthetic-credential", StringComparison.Ordinal));
+        Assert.IsFalse(projection.Contains("internal-protected-path", StringComparison.Ordinal));
+        Assert.IsFalse(projection.Contains(script.Arguments[0].Value, StringComparison.Ordinal));
+        Assert.AreEqual(3, adapter.Describe().ScriptInvocations.Single().ArgumentCount);
         var result = await adapter.ExecuteAsync(CustomScriptTaskAdapterTests.Occurrence(script), default).ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, result.Outcome, result.Detail);
         StringAssert.Contains(result.Detail, "stdoutBytes=20", StringComparison.Ordinal);
@@ -56,7 +61,7 @@ public sealed partial class CustomScriptSandboxIntegrationTests
                 [ -z "${HVO_SCRIPT_TEST_SENTINEL+x}" ] && [ -z "${XDG_RUNTIME_DIR+x}" ] || exit 81
                 [ "$HOME" = /work ] && [ "$PATH" = /bin ] || exit 82
                 [ ! -e "$1" ] && [ ! -e /etc/passwd ] && [ ! -e /sys ] && [ ! -e /dev/sda ] || exit 83
-                [ ! -e /proc/1/root/home/roys ] || exit 84
+                [ ! -e "/proc/1/root$1" ] || exit 84
                 ( : > /dev/escape ) 2>/dev/null && exit 85
                 while read -r name rest; do
                     case "$name" in eth*|en*|wl*) exit 86;; esac
@@ -437,6 +442,44 @@ public sealed partial class CustomScriptSandboxIntegrationTests
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, true);
         }
+    }
+
+    [TestMethod]
+    public async Task OwnerRunNowAndExactRunStopDrainTheRealSandboxAndPreserveTheResultAfterRestart()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 9, 12, 0, 0, TimeSpan.Zero));
+        var script = CustomScriptTaskAdapterTests.Script("printf abc; sleep 30");
+        var adapter = new CustomScriptTaskAdapter(Options.Create(new CustomScriptOptions
+        { Enabled = true, OwnerAuthorized = true, Scripts = [script] }), clock);
+        using var registry = new PeriodicRegistryHarness(clock, [adapter]);
+        using var fixture = new ScriptControlsFixture(registry.Registry, clock);
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        Assert.IsTrue((await fixture.Service.SaveAsync(ScriptControlsFixture.Save(script.Target), default).ConfigureAwait(false)).IsSuccess);
+        var queued = await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        Assert.IsTrue(queued.IsSuccess, queued.Message);
+        var prepared = queued.Value!.State.Runs.Single();
+        var scope = new OwnedSandboxScope();
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        await scope.WaitForSleepAsync(fixture.Worker.WhenIdleAsync()).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromSeconds(7));
+        var stopped = await fixture.Service.StopScriptAsync(new("script", prepared.RunKey, 1, "untrusted"), default).ConfigureAwait(false);
+        Assert.IsTrue(stopped.IsSuccess, stopped.Message);
+        var terminal = stopped.Value!.State.Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, terminal.Outcome);
+        Assert.AreEqual(clock.GetUtcNow(), terminal.CompletedAtUtc);
+        Assert.AreEqual(prepared.Occurrence, terminal.Occurrence);
+        Assert.AreEqual("script-owner", terminal.Preparation!.Actor);
+        StringAssert.Contains(terminal.Detail, "script.cancelled; exit=", StringComparison.Ordinal);
+        StringAssert.Contains(terminal.Detail, "stdoutBytes=3; stderrBytes=0", StringComparison.Ordinal);
+        Assert.IsFalse(terminal.Detail.Contains("exit=;", StringComparison.Ordinal));
+        Assert.IsTrue(stopped.Value.State.Definitions.Single().Definition.Enabled, "Stop must not disable the schedule.");
+        scope.AssertDrained();
+        fixture.Runner.Dispose();
+        fixture.Store.Dispose();
+        clock.Advance(TimeSpan.FromDays(1));
+        using var reopened = fixture.NewStore();
+        await reopened.InitializeAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(terminal, (await reopened.GetStateAsync(default).ConfigureAwait(false)).Runs.Single());
     }
 
     [TestMethod]

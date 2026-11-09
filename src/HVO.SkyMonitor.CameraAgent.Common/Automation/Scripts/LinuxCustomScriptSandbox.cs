@@ -32,8 +32,11 @@ internal static class LinuxCustomScriptSandbox
 
     internal static bool Probe() => ProbeUnavailableReason() is null;
 
-    internal static string? ProbeUnavailableReason()
+    internal static string? ProbeUnavailableReason() => ProbeUnavailableReason(RuntimeInformation.ProcessArchitecture);
+
+    internal static string? ProbeUnavailableReason(Architecture architecture)
     {
+        if (architecture != Architecture.X64) return "script.sandbox-architecture-unqualified";
         if (!OperatingSystem.IsLinux()) return "script.sandbox-linux-required";
         if (!FilesAvailable()) return "script.sandbox-tools-required";
         if (IsRoot()) return "script.sandbox-nonroot-required";
@@ -44,10 +47,14 @@ internal static class LinuxCustomScriptSandbox
         return result.Status == "completed" && result.ExitCode == 0 ? null : "script.sandbox-probe-failed";
     }
 
+    internal static ValueTask<CustomScriptSandboxResult> ExecuteAsync(CustomScriptRegistration script,
+        CancellationToken cancellationToken) => ExecuteAsync(script, RuntimeInformation.ProcessArchitecture, cancellationToken);
+
     internal static async ValueTask<CustomScriptSandboxResult> ExecuteAsync(CustomScriptRegistration script,
-        CancellationToken cancellationToken)
+        Architecture architecture, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (architecture != Architecture.X64) return new("isolation-unavailable", null, 0, 0);
         if (script.ScratchBytes < Environment.SystemPageSize)
             return new("isolation-unavailable", null, 0, 0);
         if (!HasProtectedCgroupMount(await File.ReadAllTextAsync("/proc/self/mountinfo", cancellationToken).ConfigureAwait(false)))
@@ -201,7 +208,7 @@ internal static class LinuxCustomScriptSandbox
         }
     }
 
-    private static bool FilesAvailable() => RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64 &&
+    private static bool FilesAvailable() => RuntimeInformation.ProcessArchitecture == Architecture.X64 &&
         new[] { "/sys/fs/cgroup/cgroup.controllers", SystemdRun, Bubblewrap, Prlimit, "/usr/bin/busybox" }.All(File.Exists);
 
     internal static bool HasProtectedCgroupMount(string mountInfo) => mountInfo.Split('\n')

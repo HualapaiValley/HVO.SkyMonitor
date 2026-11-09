@@ -1,0 +1,28 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Automation
+
+<div class="automation-script-controls" aria-label="Script run controls">
+    @if (_runNow is null && _stop is null)
+    {
+        @if (Definition?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+        {
+            <button type="button" class="button secondary small" data-script-action="run-now"
+                    disabled="@(!Available || Pending || !Definition.Definition.Enabled || _busy)" @onclick="ReviewRunNow">Run now</button>
+        }
+        @if (Run is { Outcome: LocalAutomationRunOutcome.Running, Occurrence.Definition.TaskKind: LocalAutomationTaskKind.CustomScript })
+        {
+            <button type="button" class="button secondary small" data-script-action="stop" disabled="@_busy" @onclick="ReviewStop">Stop this run</button>
+        }
+    }
+    else
+    {
+        <div role="group" aria-label="Confirm script command">
+            <p>@(_stop is null ? "Queue this registered revision once. Side effects can repeat; an interrupted run is not replayed automatically." : "Stop only this run and wait for its process tree and result to drain. Its schedule stays enabled and prior side effects cannot be undone.")</p>
+            <button type="button" class="button secondary small" data-script-action="cancel" disabled="@_busy" @onclick="Cancel">Cancel</button>
+            <button type="button" class="button primary small" data-script-action="confirm" disabled="@_busy" @onclick="ConfirmAsync">@(_busy ? "Waiting for command…" : _stop is null ? "Confirm run now" : "Confirm stop")</button>
+        </div>
+    }
+    @if (_message is not null)
+    {
+        <p role="@(_error ? "alert" : "status")">@_message</p>
+    }
+</div>

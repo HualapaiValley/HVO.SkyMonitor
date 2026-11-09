@@ -333,6 +333,10 @@ public sealed record LocalAutomationCalendarEntry(
     public LocalAutomationOccurrence? Occurrence { get; init; }
 }
 
+/// <summary>Non-secret invocation policy for the custom-task wizard; content and argument values are never projected.</summary>
+public sealed record LocalAutomationScriptInvocation(
+    string Target, string RegistrationId, int TimeoutSeconds, long ScratchBytes, long OutputBytes, int ArgumentCount);
+
 /// <summary>One registered task kind, the triggers it accepts, and the targets it can name.</summary>
 public sealed record LocalAutomationTaskDescriptor(
     LocalAutomationTaskKind TaskKind,
@@ -344,6 +348,8 @@ public sealed record LocalAutomationTaskDescriptor(
 {
     /// <summary>Only the source-window presets that this installed adapter actually accepts.</summary>
     public IReadOnlyList<LocalAutomationSourceWindowKind> SupportedSourceWindows { get; init; } = [];
+
+    public IReadOnlyList<LocalAutomationScriptInvocation> ScriptInvocations { get; init; } = [];
 }
 
 /// <summary>The complete operator projection of the local automation contract.</summary>
@@ -356,6 +362,9 @@ public sealed record LocalAutomationOperatorState(
     IReadOnlyList<LocalAutomationCalendarEntry> Calendar,
     IReadOnlyList<LocalAutomationRun> Runs)
 {
+    /// <summary>Bounded running occurrences, including those older than the recent history page.</summary>
+    public IReadOnlyList<LocalAutomationRun> ActiveRuns { get; init; } = [];
+
     /// <summary>Exact journal totals, independent of the bounded recent-run projection.</summary>
     public int? RunningRunCount { get; init; }
     public int? QueuedRunCount { get; init; }

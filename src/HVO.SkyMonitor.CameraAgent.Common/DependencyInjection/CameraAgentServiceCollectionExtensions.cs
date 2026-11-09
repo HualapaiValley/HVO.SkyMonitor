@@ -479,6 +479,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddCameraAgentOrbitalElements();
         services.AddCameraAgentSpaceWeather();
         services.AddSingleton<LocalAutomationOffSweepWorker>();
+        services.AddSingleton<LocalAutomationScriptCommands>();
         services.AddHostedService(static provider => provider.GetRequiredService<LocalAutomationOffSweepWorker>());
         services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();

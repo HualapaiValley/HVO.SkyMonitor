@@ -1,10 +1,11 @@
 # CameraAgent custom-script adapter (#1137)
 
-This is the adapter preparation slice integrated with the predefined wizard from
-#1133. The wizard's
-custom-task step, individual running-task stop controls, installer provisioning
-and production adoption are not delivered here. Keep #1137 open until those
-integration and qualification gates are complete. No hardware is required.
+Owner-registered scripts integrate with the predefined automation wizard from
+#1133 and the durable schedule contract from #1136. The custom step, explicit
+run-now and per-running-script stop controls are implemented here. #1137 remains
+open: installer/runtime prerequisite provisioning, supported production adoption,
+independent review convergence and selected protected CI/finalization are not
+complete. Roy has not approved a partial issue delivery. No hardware is required.
 
 ## Authorization and registration
 
@@ -12,8 +13,8 @@ Only the host owner, through protected startup configuration, can enable
 `CameraAgent:CustomScripts`, affirm `OwnerAuthorized`, and register script content.
 Both switches default to false. The ordinary authenticated owner automation
 mutation policies and antiforgery checks remain in force for definitions.
-The durable run-now seam is tested below, but a generic operator script run-now
-endpoint/control is not delivered in this slice. They grant permission to select an existing registration; they do not
+The same authenticated owner policy protects script run-now and stop mutations,
+and the HTTP endpoints require antiforgery validation. They grant permission to select an existing registration; they do not
 grant permission to upload content, choose an executable, bind a directory,
 change the environment or request a network capability. No new anonymous or
 API-key execution endpoint is introduced. Do not put credentials in content,
@@ -64,15 +65,31 @@ registration publishes an unavailable descriptor with no selectable targets. Ava
 fixed content-free codes (`script.disabled`, `script.owner-authorization-required`,
 `script.binding-invalid`, `script.registration-invalid`, `script.registration-duplicate`,
 and specific `script.sandbox-*` prerequisite/probe codes), logged once at adapter
-construction without rejected values. The existing generic editor continues to
-list this registered kind as disabled when unavailable, and exposes opaque digest
-targets only when enabled. That limited setup is accepted for this adapter slice;
-The custom step remains incomplete under #1137 after #1133's predefined wizard
-delivery. No wizard files are changed by the script corrections.
+construction without rejected values. The custom wizard option is absent when
+the adapter has no qualified invocation. Its second step selects an immutable
+registration and shows only its ID, version digest, argument count and byte/time
+limits. Content, argument values and host paths are not projected. Validation
+and review precede the existing optimistic-version/idempotent save contract.
+
+An enabled script definition has an explicit, confirmed **Run now** control. It
+queues one durable invocation without moving the periodic schedule; duplicate
+keys replay the original result, and another pending run-now is refused. A lost
+response keeps the exact key for retry. **Run history** shows safe fixed outcome
+labels, numeric exit/count metadata, and **Stop this run** for running scripts.
+Stop names the exact retained run and definition revision, including after the
+definition is edited or removed, and acknowledges only after process/result drain.
+It does not disable the schedule, affect built-in tasks, or undo prior effects.
+Queued invocations cannot be stopped by this control; stop becomes available when
+execution has acquired its slot. Active runs are projected separately from the
+recent-history page so newer terminal runs cannot hide the stop control.
+
+Fixed safe errors explain unavailable registrations, stale versions, pending runs
+and missing/nonlocal runs. Neither UI nor HTTP accepts script uploads, executable
+paths, environment overrides or credentials.
 
 ## Execution boundary
 
-The qualified implementation requires non-root Linux x64 or arm64 with
+The qualified implementation requires non-root Linux x64 with
 `/usr/bin/systemd-run`, `/usr/bin/bwrap` (supporting `--disable-userns` and
 `--assert-userns-disabled`), `/usr/bin/prlimit`, a **statically linked**
 `/usr/bin/busybox`, and a systemd user manager with delegated cgroup v2 memory,
@@ -81,13 +98,18 @@ and every execution fail closed without it. The interpreter ELF is checked for
 absence of a dynamic interpreter. The complete launch is probed before targets
 are published. No weaker fallback exists. Stock runtime images without these
 prerequisites remain unavailable; installer/runtime deployment provisioning is
-outside this PR. ARM64 is not physical-target qualification.
+not delivered by this PR. Every non-x64 architecture, including ARM64,
+returns `script.sandbox-architecture-unqualified` before probing or launching;
+there is no arm64 syscall table or support claim. ARM64 requires a separately
+qualified architecture policy and real subprocess evidence before enablement.
 
 Bubblewrap creates private user, PID, mount, network, IPC, UTS and supported
 cgroup namespaces, drops capabilities and starts a new session. It disables and
 asserts the disabling of further user namespaces. The only host files mounted
 are the static BusyBox executable at `/bin/sh` and `/bin/sleep`, plus `/dev/null`.
-Private proc is read-only. No loader, libc, host home, configuration, archive,
+Private proc is read-only. It can still expose host-wide kernel/system information
+(such as aggregate CPU or memory statistics); this sandbox does not promise
+confidentiality of that information or provide a multi-tenant host boundary. No loader, libc, host home, configuration, archive,
 SDK/device, rig/module, raw-ingress, identity, provisioning, socket or secret is
 mounted. Host networking/firewall configuration is unchanged.
 
@@ -99,8 +121,8 @@ files, SysV IPC, io_uring, keys, tracing and executable mmap/mprotect are denied
 There is no dynamic loader or LD_PRELOAD injection path. Ordinary named files,
 including O_TMPFILE, remain confined to the size-limited `/work` mount; proc and
 the rest of the root are read-only. The policy version is part of each target
-identity; this correction is `hvo-custom-script-linux-v3`, so earlier registrations
-are deliberately not reinterpreted. The x64 and arm64 policies both permit the
+identity; this correction is `hvo-custom-script-linux-x64-v4`, so earlier registrations
+are deliberately not reinterpreted. The qualified x64 policy permits the
 verified shell operations for background jobs and `wait`, glob expansion,
 readability tests and `touch`, while retaining the native-code restrictions.
 
@@ -121,7 +143,10 @@ The launch environment is cleared; only the non-secret `XDG_RUNTIME_DIR` user-bu
 locator is supplied to the scope launcher. Bubblewrap clears that locator too.
 The script receives only `PATH=/bin`, `HOME=/work`, `TMPDIR=/work` and `LC_ALL=C`.
 Registered content is a literal `sh -c` argument, with separately supplied positional
-arguments. It is never interpolated into a host shell or logged. After verifying
+arguments. The host's process table can expose that content and those arguments
+to users with process-inspection authority; the content-free logging guarantee
+does not conceal argv from privileged host observers. Never place secrets there.
+It is never interpolated into a host shell or logged. After verifying
 the cgroup, the host sends only a finite binary seccomp policy to Bubblewrap's
 stdin. Bubblewrap must consume/install it before exec; the script itself receives
 `/dev/null` as stdin, so `read` cannot consume later script lines.
@@ -237,10 +262,10 @@ sleep processes and other owners' script scopes cannot affect the assertions.
   implemented; real subprocess and SQLite regressions qualify this host.
 - Retry/missed policy and failure isolation: reuse the delivered durable runner;
   no exactly-once promise or automatic script retry.
-- Custom wizard step and run-now/stop/history UI: pending custom-step integration
-  with the delivered #1133 predefined wizard,
-  an authenticated generic script run-now control and a separately qualified
-  running-task stop command; no wizard files changed here.
+- Custom wizard step, confirmed run-now and running-script stop/history UI:
+  implemented with safe registration metadata, durable replay, exact-run stop,
+  retained active visibility and fixed meaningful errors. Local behavioral proof
+  is recorded at the candidate SHA in the PR requirement/evidence map.
 - Unit/Integration, independent deep review and selected CI: record actual
   results in the issue/PR ledger. Protected development-v1 Preflight + Build and
   Unit require the finalization reservation and a converged, synchronized head.

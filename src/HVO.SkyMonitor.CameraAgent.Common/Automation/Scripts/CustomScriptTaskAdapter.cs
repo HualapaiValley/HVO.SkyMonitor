@@ -52,7 +52,12 @@ public sealed class CustomScriptTaskAdapter : ILocalAutomationPeriodicTaskAdapte
     public LocalAutomationTaskDescriptor Describe() => new(TaskKind,
         "Runs an owner-registered non-secret POSIX script in an isolated, bounded Linux sandbox.",
         [LocalAutomationTriggerKind.Periodic], _available ? [.. _scripts.Keys.Order(StringComparer.Ordinal)] : [],
-        _available, _unavailableReason);
+        _available, _unavailableReason)
+    {
+        ScriptInvocations = _available ? _scripts.Values.OrderBy(static script => script.Id, StringComparer.Ordinal)
+            .Select(static script => new LocalAutomationScriptInvocation(script.Target, script.Id,
+                script.TimeoutSeconds, script.ScratchBytes, script.OutputBytes, script.Arguments.Count)).ToArray() : []
+    };
 
     public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition)
     {

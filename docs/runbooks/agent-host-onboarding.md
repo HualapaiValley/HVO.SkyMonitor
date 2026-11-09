@@ -44,7 +44,8 @@ Do this before any agent session starts. None of it requires the agent.
   Mailpit containers through Testcontainers. A machine without a working Docker
   daemon can run the unit selection but not the integration one, and must say so
   rather than reporting a partial run as a pass.
-- **Linux script qualification.** The CameraAgent sandbox Integration cases also
+- **Linux x64 script qualification.** Other architectures, including ARM64, fail
+  closed as unqualified; do not enable script support there. The CameraAgent sandbox Integration cases also
   require Bubblewrap 0.8 or newer, **static** BusyBox (`busybox-static`, not the
   dynamic package), util-linux `prlimit`, `gcc` for the bounded native fixtures,
   and a running non-root systemd user manager. Cgroup v2 must expose delegated

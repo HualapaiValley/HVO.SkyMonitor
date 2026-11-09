@@ -167,9 +167,9 @@ else
                 <section class="ops-panel" aria-labelledby="automation-runs-heading">
                     <header class="ops-panel-heading">
                         <div><h3 id="automation-runs-heading">Recent retained runs</h3><p>Every occurrence is recorded once with its outcome. A retry is a new run; a recorded run is never rewritten.</p></div>
-                        <span>@Plural(automation.Runs.Count, "run", "runs") retained</span>
+                        <span>@Plural(DisplayRuns.Count, "run", "runs") retained or active</span>
                     </header>
-                    @if (automation.Runs.Count == 0)
+                    @if (DisplayRuns.Count == 0)
                     {
                         <p class="automation-empty">No automation run has been recorded on this CameraAgent.</p>
                     }
@@ -179,7 +179,7 @@ else
                             <table class="ops-table automation-run-table">
                                 <thead><tr><th scope="col">Run</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
                                 <tbody>
-                                    @foreach (var run in automation.Runs)
+                                    @foreach (var run in DisplayRuns)
                                     {
                                         <tr @key="run.Sequence">
                                             <td>@DayClock(run.StartedAtUtc)</td>
@@ -193,7 +193,12 @@ else
                                                 }
                                             </td>
                                             <td><span class="state-chip @OutcomeClass(run.Outcome)">@Split(run.Outcome.ToString())</span></td>
-                                            <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)</td>
+                                            <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)
+                                                @if (run.Outcome == LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+                                                {
+                                                    <AutomationScriptRunControls Run="run" Changed="LoadAsync" />
+                                                }
+                                            </td>
                                         </tr>
                                     }
                                 </tbody>
@@ -305,6 +310,11 @@ else
                                     <button type="button" id="@RemoveTriggerId(definition)" class="button secondary small" aria-label="@($"Remove {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginRemove(definition)">Remove</button>
                                 </div>
                             </footer>
+                            @if (item.TaskKind == LocalAutomationTaskKind.CustomScript)
+                            {
+                                <AutomationScriptRunControls Definition="definition" Run="@(DisplayRuns.FirstOrDefault(run => run.DefinitionId == item.DefinitionId && run.Outcome == LocalAutomationRunOutcome.Running))"
+                                    Available="@(!unavailable)" Pending="@(DisplayRuns.Any(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))" Changed="LoadAsync" />
+                            }
                         </article>
                     }
                     <article class="automation-card unsupported" aria-labelledby="automation-card-restart">
@@ -358,7 +368,7 @@ else
                 <fieldset disabled="@(_busy || _loading)">
                     <legend class="visually-hidden">Local automation definition</legend>
                     <div class="automation-dialog-grid">
-                        @if (!_windowStep)
+                        @if (!_windowStep && !_scriptStep)
                         {
                             <label class="ops-field">Identifier
                                 <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || ReservedTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
@@ -375,6 +385,8 @@ else
                                     }
                                 </select>
                             </label>
+                            @if (!ScriptTask)
+                            {
                             <label class="ops-field">Task target
                                 <select id="automation-target" disabled="@ReservedTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
                                     @if (!ReservedTaskSelected)
@@ -387,8 +399,9 @@ else
                                     }
                                 </select>
                             </label>
+                            }
                             <label class="ops-field">Trigger
-                                <select id="automation-trigger" disabled="@ReservedTaskSelected" @bind="_triggerKindInput" @bind:after="TriggerChanged">
+                                <select id="automation-trigger" disabled="@(ReservedTaskSelected || ScriptTask)" @bind="_triggerKindInput" @bind:after="TriggerChanged">
                                     @foreach (var trigger in CompatibleTriggers())
                                     {
                                         <option value="@trigger">@Split(trigger.ToString())</option>
@@ -406,6 +419,35 @@ else
                             <label class="ops-field full">Reason (recorded with the revision)
                                 <input id="automation-reason" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
                             </label>
+                        }
+                        else if (_scriptStep)
+                        {
+                            <section id="automation-script-step" class="full" aria-labelledby="automation-script-heading">
+                                <h3 id="automation-script-heading">Step 2 of 3: Registered script and schedule</h3>
+                                <p>Choose an owner-registered POSIX invocation. Content and typed argument values stay pinned to its version; this wizard cannot upload commands, credentials or host paths.</p>
+                                <label class="ops-field">Registered invocation
+                                    <select id="automation-script-target" @bind="_targetInput" @bind:after="FormChanged">
+                                        @foreach (var script in Descriptor(LocalAutomationTaskKind.CustomScript)?.ScriptInvocations ?? [])
+                                        {
+                                            <option value="@script.Target">@script.RegistrationId</option>
+                                        }
+                                    </select>
+                                </label>
+                                @if (SelectedScript is { } selectedScript)
+                                {
+                                    <dl class="ops-facts">
+                                        <div><dt>Version identity</dt><dd>@selectedScript.Target</dd></div>
+                                        <div><dt>Runtime limit</dt><dd>@selectedScript.TimeoutSeconds seconds</dd></div>
+                                        <div><dt>Temporary bytes</dt><dd>@selectedScript.ScratchBytes</dd></div>
+                                        <div><dt>Output limit</dt><dd>@selectedScript.OutputBytes bytes; raw output is discarded</dd></div>
+                                        <div><dt>Arguments</dt><dd>@selectedScript.ArgumentCount pinned typed arguments</dd></div>
+                                    </dl>
+                                }
+                                <p>No capture hardware, host files, secrets or network access is granted. Files are not published. Cancellation cannot undo earlier side effects.</p>
+                                <label class="ops-field">Interval (seconds)
+                                    <input id="automation-script-interval" inputmode="numeric" @bind="_intervalInput" @bind:after="FormChanged" />
+                                </label>
+                            </section>
                         }
                         else
                         {
@@ -444,11 +486,11 @@ else
                 }
                 <footer>
                     <button type="button" id="automation-editor-cancel" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
-                    @if (_windowStep)
+                    @if (_windowStep || _scriptStep)
                     {
                         <button type="button" id="automation-back-task" class="button secondary" disabled="@_busy" @onclick="BackToTask">Back to task</button>
                     }
-                    <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSaveAsync">@(WindowTask ? _windowStep ? "Preview and review" : "Next: source window" : "Review and save")</button>
+                    <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSaveAsync">@(ScriptTask ? _scriptStep ? "Review script" : "Next: registered script" : WindowTask ? _windowStep ? "Preview and review" : "Next: source window" : "Review and save")</button>
                 </footer>
             }
             else
