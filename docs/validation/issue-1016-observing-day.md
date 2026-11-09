@@ -42,6 +42,12 @@ are 369.20px wide and appear in one column before events and automations.
   including coincident or visually overlapping markers. Transparent enlarged
   targets no longer intercept clicks on a neighbouring circle. Partial history
   names the most recent records shown and states that earlier records are absent.
+  The list link qualifies the selected date and calendar so the app's root
+  `<base>` cannot route it home. Interactive activation prevents navigation
+  and focuses/scrolls the list; without JavaScript the qualified fragment and
+  focusable section provide the native fallback. A real-host browser test clicks
+  the link at both requested sizes, verifies date/calendar, list focus/scroll,
+  and keyboard continuation to the equivalent candidate control.
   The period's ticks use actual elapsed time, including 23/25-hour DST periods,
   with offsets when the period crosses a clock change.
 - A failed representative preview retains its exact capture link and a visible
@@ -131,3 +137,22 @@ The PR's append-only ledger records the exact head, classifier, full gate
 results/counts and independent review. Local logs, TRX and coverage are retained
 under `TestResults/issue-1016/` in this worktree; they are not production visual
 acceptance evidence.
+
+## Browser execution and qualification limitation (review O1)
+
+`ObservingDayTimelineBrowserTests` in CameraAgent.AcceptanceTests is tagged
+Integration. Run it explicitly with the Integration category and class filter,
+after provisioning the pinned Playwright Chromium headless shell. The owner
+ledger records executed/passed/skipped counters, browser version and artifacts.
+The real-host navigation cases use a disposable Kestrel host and synthetic day
+read model, with real app/base, authentication, router, CSS and Blazor. They
+exercise JavaScript-enabled focus and native no-JavaScript navigation at
+1440x900 and 390x844; they are not retained real-day production acceptance.
+
+The development-v1 protected profile executes Unit, so it does not execute these
+browser cases. The full `ci.yml` Integration selections include the AcceptanceTests
+project, but no workflow provisions Chromium. `LaunchOrInconclusiveAsync` reports
+a missing browser or required system library as Inconclusive. Consequently a
+green CI run alone cannot establish that these browser cases executed. Keep
+explicit successful local execution evidence; no CI configuration change or
+full-qualification dispatch is part of this correction.

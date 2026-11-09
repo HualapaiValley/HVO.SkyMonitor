@@ -334,7 +334,9 @@ public sealed class ArchivePagesTests
             Assert.HasCount(3, cut.FindAll(".timeline-bar--captures"));
             Assert.HasCount(2, cut.FindAll(".timeline-marker"));
             Assert.AreEqual("Candidate recorded 21:00", cut.FindAll(".timeline-marker")[0].GetAttribute("title"));
-            Assert.AreEqual("#day-candidates", cut.Find(".night-timeline__note a").GetAttribute("href"));
+            Assert.AreEqual("/archive/day/2026-07-21?calendar=" + day.CalendarVersion + "#day-candidates",
+                cut.Find(".night-timeline__note a").GetAttribute("href"));
+            Assert.AreEqual("-1", cut.Find("#day-candidates").GetAttribute("tabindex"));
             var listLinks = cut.FindAll("#day-candidates .candidate-list a");
             CollectionAssert.AreEqual(new[] { candidate, olderCandidate }.Select(item => $"/transients/{item.CandidateId:D}").ToArray(),
                 listLinks.Select(link => link.GetAttribute("href")).ToArray());

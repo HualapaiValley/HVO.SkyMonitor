@@ -99,7 +99,8 @@
 
             <ObservingDayTimeline Day="@view.Day.Day" ExposureInstantsUtc="@view.ExposureInstantsUtc"
                                   ScheduleWindows="@view.Schedule?.OpenWindows" Candidates="@view.Candidates"
-                                  CandidatesTruncated="@view.CandidatesTruncated" ActiveRevisionCaveat="@(view.Schedule?.ActiveRevisionCaveat == true)" />
+                                  CandidatesTruncated="@view.CandidatesTruncated" ActiveRevisionCaveat="@(view.Schedule?.ActiveRevisionCaveat == true)"
+                                  OnCandidatesRequested="FocusCandidatesAsync" />
 
             <section class="daily-products" aria-label="Generated products" aria-busy="@(_nightlyLoading ? "true" : "false")">
                 <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="@ProductsPage.RetainedPath">Browse retained outputs</a></header>
@@ -298,7 +299,7 @@
             </section>
 
             <div class="day-columns">
-                <section id="day-candidates" class="day-events" aria-label="Detected candidates">
+                <section id="day-candidates" class="day-events" aria-label="Detected candidates" tabindex="-1" @ref="_candidateList">
                     <header><div><h2>Local candidates</h2><p>Detection records, not confirmed meteors or reviewed events.</p></div><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
                     @if (view.Candidates.Count == 0)
                     {

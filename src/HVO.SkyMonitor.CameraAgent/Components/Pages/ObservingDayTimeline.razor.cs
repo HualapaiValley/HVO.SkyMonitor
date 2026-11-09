@@ -18,9 +18,12 @@ public sealed partial class ObservingDayTimeline : ComponentBase
     [Parameter] public IReadOnlyList<CameraAgentTransientOperatorCandidate> Candidates { get; set; } = [];
     [Parameter] public bool CandidatesTruncated { get; set; }
     [Parameter] public bool ActiveRevisionCaveat { get; set; }
+    [Parameter] public EventCallback OnCandidatesRequested { get; set; }
 
     private string TimeZoneId => Day.TimeZoneFallback ? TimeZoneInfo.Utc.Id : Day.TimeZoneId;
     private string CandidatesUrl => ArchiveCalendarPage.CandidatesUrl(Day);
+    private string CandidateListUrl => ArchiveCalendarPage.DayUrl(Day.Date)
+        + "?calendar=" + Uri.EscapeDataString(Day.CalendarVersion) + "#day-candidates";
     private static string CoverageBinLabel => FormattableString.Invariant($"{CameraAgentObservingDayUiService.CoverageBin.TotalMinutes:0.######}-minute");
 
     private string RangeLabel => $"{LocalBoundary(Day.StartUtc)} – {LocalBoundary(Day.EndUtc)} ({TimeZoneId})";

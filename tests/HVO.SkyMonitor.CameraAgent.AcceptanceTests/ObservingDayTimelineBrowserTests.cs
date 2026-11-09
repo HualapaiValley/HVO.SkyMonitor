@@ -4,15 +4,17 @@ using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
-/// <summary>Real component/CSS hit-testing with synthetic records; no host, camera or production data.</summary>
+/// <summary>Real component/CSS and disposable-host regressions with synthetic records; no physical camera or production data.</summary>
 [TestClass]
 [TestCategory("Integration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
@@ -76,7 +78,7 @@ public sealed class ObservingDayTimelineBrowserTests
         await page.Locator(".timeline-marker").First.FocusAsync().ConfigureAwait(false);
         Assert.IsTrue(await page.Locator(".timeline-marker").First.EvaluateAsync<bool>(
             "a => a.matches(':focus-visible') && getComputedStyle(a).outlineStyle === 'solid' && parseFloat(getComputedStyle(a).outlineWidth) >= 3").ConfigureAwait(false));
-        Assert.AreEqual("#day-candidates", await page.GetByRole(AriaRole.Link,
+        Assert.AreEqual("/archive/day/2026-07-21?calendar=" + day.CalendarVersion + "#day-candidates", await page.GetByRole(AriaRole.Link,
             new() { Name = "Use the full-size candidate list controls" }).GetAttributeAsync("href").ConfigureAwait(false));
 
         // The same stylesheet gives retained and unavailable hourly slots equal, centred geometry (Sol L2).
@@ -115,7 +117,87 @@ public sealed class ObservingDayTimelineBrowserTests
                 })).ConfigureAwait(false);
                 return rendered.ToHtmlString();
             }).ConfigureAwait(false);
-            await page.SetContentAsync($"<!doctype html><html><head><style>html{{font-size:16px}}body{{margin:8px}}{css}</style></head><body>{markup}</body></html>").ConfigureAwait(false);
+            await page.SetContentAsync($"<!doctype html><html><head><base href=\"/\"><style>html{{font-size:16px}}body{{margin:8px}}{css}</style></head><body>{markup}</body></html>").ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(1440, 900)]
+    [DataRow(390, 844)]
+    public async Task CandidateListLinkStaysOnTheSelectedDayAndReachesTheList(int width, int height)
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        // Replace only the day read model. App/base, routing, authentication, layouts, CSS and Blazor are real.
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
+            services.Replace(ServiceDescriptor.Singleton<ICameraAgentObservingDayUiService>(new CandidateDayService()))).ConfigureAwait(false);
+        var measurements = new List<object>();
+        foreach (var javaScriptEnabled in new[] { true, false })
+        {
+            await using var context = await browser.NewContextAsync(new()
+            {
+                BaseURL = host.BaseAddress.ToString(),
+                ViewportSize = new() { Width = width, Height = height },
+                JavaScriptEnabled = javaScriptEnabled
+            }).ConfigureAwait(false);
+            var page = await context.NewPageAsync().ConfigureAwait(false);
+            await page.GotoAsync("/Account/Login").ConfigureAwait(false);
+            await page.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+            await page.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+            await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
+            await page.WaitForURLAsync(url => new Uri(url).AbsolutePath != "/Account/Login").ConfigureAwait(false);
+
+            const string path = "/archive/day/2026-07-21";
+            var query = "?calendar=" + ObservingDayCalendar.LegacyNoonVersion;
+            await page.GotoAsync(path + query).ConfigureAwait(false);
+            if (javaScriptEnabled)
+            {
+                await page.Locator(".app-frame[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+            }
+            Assert.AreEqual(host.BaseAddress.AbsoluteUri, await page.Locator("base").EvaluateAsync<string>("base => base.href").ConfigureAwait(false));
+            var dayHeading = await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false);
+            await page.GetByRole(AriaRole.Link, new() { Name = "Use the full-size candidate list controls" }).ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const list = document.getElementById('day-candidates');
+                    if (!list) return false;
+                    const box = list.getBoundingClientRect();
+                    return document.activeElement === list && box.top >= 0 && box.top < innerHeight;
+                }
+                """).ConfigureAwait(false);
+            var destination = new Uri(page.Url);
+            Assert.AreEqual(path, destination.AbsolutePath, "The app's root base must not send this link to Current sky.");
+            Assert.AreEqual(query, destination.Query, "Keep the selected calendar interpretation.");
+            Assert.AreEqual(javaScriptEnabled ? string.Empty : "#day-candidates", destination.Fragment);
+            Assert.AreEqual(dayHeading, await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false));
+            var candidate = page.Locator("#day-candidates .candidate-list a");
+            Assert.AreEqual("/transients/10000000-0000-0000-0000-000000000001",
+                await candidate.GetAttributeAsync("href").ConfigureAwait(false));
+            var bounds = await candidate.BoundingBoxAsync().ConfigureAwait(false);
+            Assert.IsNotNull(bounds);
+            Assert.IsTrue(bounds.Height >= 44);
+            await page.Keyboard.PressAsync("Tab").ConfigureAwait(false);
+            Assert.IsTrue(await candidate.EvaluateAsync<bool>("a => document.activeElement === a").ConfigureAwait(false),
+                "Keyboard navigation must continue into the equivalent candidate control.");
+            measurements.Add(new { width, height, javaScriptEnabled, browserVersion = browser.Version, url = page.Url, candidateHeight = bounds.Height, focusedAndScrolled = true });
+            var screenshot = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.png");
+            await page.ScreenshotAsync(new() { Path = screenshot, FullPage = true }).ConfigureAwait(false);
+            TestContext.AddResultFile(screenshot);
+        }
+        var metrics = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}.json");
+        await File.WriteAllTextAsync(metrics, JsonSerializer.Serialize(measurements)).ConfigureAwait(false);
+        TestContext.AddResultFile(metrics);
+    }
+
+    private sealed class CandidateDayService : ICameraAgentObservingDayUiService
+    {
+        public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
+        {
+            var day = ObservingDayCalendar.Create("America/Phoenix").Resolve(observingDate);
+            var candidate = Candidate(day.StartUtc.AddHours(12), Guid.Parse("10000000-0000-0000-0000-000000000001"));
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 1, null, null, null, null),
+                [], TimeSpan.Zero, null, [candidate], false, [], null, null, null)));
         }
     }
 

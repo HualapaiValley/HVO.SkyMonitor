@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -42,6 +43,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private readonly HashSet<Guid> _failedPreviews = [];
     // Retain failures by capture identity across day navigation; another day's image never substitutes for it.
     private readonly HashSet<Guid> _failedRepresentativePreviews = [];
+    private ElementReference _candidateList;
     // The tile whose viewer is open: a nightly product kind, or the time-lapse sample when no kind is set.
     private NightlyProductKind? _viewerKind;
     private bool _viewerOpen;
@@ -60,6 +62,8 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private DateOnly Date { get; set; }
 
     private string PageTitleText => _invalidDate ? "Observing day" : $"Observing day {DateText}";
+
+    private async Task FocusCandidatesAsync() => await _candidateList.FocusAsync().ConfigureAwait(false);
 
     private string DayTitle => Date.ToString("d MMMM yyyy", CultureInfo.InvariantCulture);
 

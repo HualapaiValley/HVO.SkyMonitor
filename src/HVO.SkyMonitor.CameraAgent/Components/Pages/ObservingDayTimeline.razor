@@ -61,7 +61,7 @@
     <p class="night-timeline__note">Blank capture intervals are gaps in retained exposure starts, not evidence of cloud or unusable sky. The @CoverageBinLabel bins are a coverage estimate, not exposure duration. Candidate observations and confirmed-event times are unavailable in this summary.</p>
     @if (Candidates.Any(candidate => Day.Contains(candidate.CreatedUtc)))
     {
-        <p class="night-timeline__note">Close markers may overlap visually. <a href="#day-candidates">Use the full-size candidate list controls</a> to select any record.</p>
+        <p class="night-timeline__note">Close markers may overlap visually. <a href="@CandidateListUrl" @onclick="OnCandidatesRequested" @onclick:preventDefault="OnCandidatesRequested.HasDelegate">Use the full-size candidate list controls</a> to select any record.</p>
     }
     @if (CandidatesTruncated)
     {

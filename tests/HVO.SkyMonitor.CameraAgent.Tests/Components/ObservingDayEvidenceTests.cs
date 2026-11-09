@@ -1,5 +1,7 @@
 using System.Globalization;
 using Bunit;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -85,6 +87,26 @@ public sealed class ObservingDayEvidenceTests
         Assert.AreEqual("left: 0%", marker.GetAttribute("style"));
         Assert.AreEqual("Candidate recorded 12:00", marker.TextContent);
         StringAssert.Contains(cut.Markup, "not verified observation times", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(ObservingDayCalendar.LegacyNoonVersion)]
+    [DataRow(SunriseReportingPeriod.CurrentVersion)]
+    public void CandidateListLinkResolvesToTheSelectedDayWithAnAppRootBase(string calendarVersion)
+    {
+        using var context = new BunitContext();
+        var calendar = ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create(
+            "fixture", 1, "Fixture site", null, DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 850, "America/Phoenix"));
+        var day = calendar.SelectVersion(calendarVersion).Resolve(Day.Date);
+        var cut = context.Render<ObservingDayTimeline>(parameters => parameters
+            .Add(component => component.Day, day).Add(component => component.Candidates, [Candidate(day.StartUtc)]));
+
+        var href = cut.Find(".night-timeline__note a").GetAttribute("href");
+        Assert.IsNotNull(href);
+        var destination = new Uri(new Uri("https://cameraagent.test/"), href);
+        Assert.AreEqual("/archive/day/2026-07-21", destination.AbsolutePath);
+        Assert.AreEqual("?calendar=" + Uri.EscapeDataString(calendarVersion), destination.Query);
+        Assert.AreEqual("#day-candidates", destination.Fragment);
     }
 
     [TestMethod]
