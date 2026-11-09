@@ -5,7 +5,7 @@ public static class StorageOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "capture-storage-options-v1", "Storage", "cameraagent-step-v2:Storage", "Artifact storage",
-        "Storage is owned by the active capture profile. Enabled Storage nodes must match that profile's directory, retention, latest-frame/upload flags and artifact policies. Preview, save, validation, activation and rollback reject differences. Pause acquisition and finish in-flight processing before changing the profile, then reconcile, validate and activate this graph before resuming. Raw captures continue to be retained while incompatible standard processing is skipped.",
+        "Storage is owned by the active capture profile. Enabled Storage nodes must match that profile's directory, retention, latest-frame/upload flags and artifact policies. Preview, save, validation, activation and rollback reject differences. Pause acquisition and drain standard processing before changing the profile, then refresh Graphs to obtain its matching configured-basic source, reconcile, validate and activate before resuming. Raw and capture-time scene evidence are retained while other incompatible standard processing is skipped; explicitly replay retained captures to recover their results.",
         [
             ProcessingOptionDescriptor.Text("storageRoot", "storageRoot", "Storage directory",
                 "Must match the active capture profile. This directory cannot be changed independently in a graph draft; editing does not move existing artifacts.", "/tmp/camera", null, isRequired: true),

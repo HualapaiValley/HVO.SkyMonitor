@@ -32,26 +32,55 @@ profile-policy guidance when they reject a mismatch. Disabled Storage nodes do
 not publish and can retain their options.
 
 Raw acquisition and startup recovery retain the original immutable graph binding
-even if that graph's Storage no longer matches the active profile. Before any
-standard processing node runs, CameraAgent checks the current profile. A mismatch
-abandons standard processing with lane reason `storage-policy-mismatch` and
+even if that graph's Storage no longer matches the active profile. Before
+standard processing, CameraAgent checks the current profile. On a mismatch it
+first commits the capture-time ProjectedScene product through the existing durable
+node path, when the capture carries scene evidence. Image and Storage nodes do not
+run. A missing scene stage remains retryable under the existing live-work limits;
+the capture is not reported as an intact, recoverable skip before its required
+scene evidence commits. Once that evidence is committed, the mismatch abandons
+the remaining standard processing with lane reason `storage-policy-mismatch` and
 execution reason `processing.storage-policy-mismatch`. Raw bytes and sidecars
 remain retained under the existing raw retention/upload rules; this condition does
 not turn raw ingress unhealthy or stop recovery at the first incompatible capture.
 Later compatible work can continue. No Storage publication runs for skipped work.
+Processing health reports `active-storage-policy-mismatch` while the active graph
+still differs from the profile, with one error log on entry and one recovery log
+when it clears, rather than appearing healthy while captures keep being skipped.
 
 For a planned Storage change:
 
 1. Pause acquisition and let in-flight standard processing finish before changing
-   the profile. Already running processing is not transactionally migrated.
+   the profile. Drain pending standard work too if those captures must complete
+   under the old policy, even for a retention-only edit in the same directory.
+   Already running processing is not transactionally migrated: switching before
+   it finishes can still publish to an old root that the new profile will not drain.
 2. Change Storage through the local capture-profile configuration owner. Reconcile
    a graph draft with that policy, then save, validate and activate it. If retained
-   artifact-policy collections differ, start from the current configured-basic
-   revision; this scalar panel does not edit those collections.
+   artifact-policy collections differ, refresh **Operations → Pipeline → Graphs**
+   and start from the current configured-basic revision. Reading the registry
+   refreshes that source from the active profile while acquisition stays stopped;
+   it preserves the active Named graph. No capture or restart is needed. This
+   scalar panel does not edit those collections.
 3. Resume acquisition after the matching graph is active. Pending work bound to
    an incompatible old graph is skipped; activation resumes compatible/new work
    and does not silently replay or rewrite old captures. Only matching-policy
    graphs can be selected by an explicit activation or rollback command.
+
+Find skipped captures in **Operations → Pipeline → Executions**
+(`/operations/pipeline/executions`). Open an expired live execution and check
+`processing.storage-policy-mismatch`; its capture/artifact IDs identify the
+retained source. From that capture's archive page, use **Submit replay**, choose
+the reconciled validated/active revision, review the frozen inputs and confirm.
+Replay uses the committed capture-time scene product, including after restart;
+it does not recreate a scene from current settings or rewrite the original raw
+manifest, graph binding or expired execution. Replay results do not publish or
+upload automatically. Recovery requires the raw and scene products still to be
+retained; normal retention and live retry/deadline limits continue to apply.
+
+Retries of an acknowledged create with the same request/key return the recorded
+revision even after a profile change or restart. Reusing that key for a different
+request conflicts; a new key does not bypass current Storage-policy validation.
 
 Other graph settings can still be edited and activated while preserving Storage.
 This panel does not update the profile or teach retention/upload workers to read

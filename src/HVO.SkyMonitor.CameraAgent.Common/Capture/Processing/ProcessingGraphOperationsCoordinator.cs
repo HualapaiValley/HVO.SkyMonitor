@@ -215,8 +215,32 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             canonicalConfiguration), effectiveConfiguration);
     }
 
-    public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
-        => _store.ReadRegistryAsync(cancellationToken);
+    public async ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
+    {
+        // Operators reconcile while acquisition is stopped. Expose the current profile's configured-basic source
+        // without requiring a new capture or a host restart. Refresh preserves a Named active selection.
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        return profile is null
+            ? await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false)
+            : await EnsureConfiguredBasicAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<string?> FindActiveStoragePolicyMismatchAsync(CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        if (profile is null) return null;
+        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        var revision = await _store.ReadRevisionAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, profile.Pipeline);
+            return null;
+        }
+        catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+        {
+            return revision.State.RevisionId;
+        }
+    }
 
     /// <summary>
     /// Reports a Named active revision whose stored node plans no longer match what this build compiles from the same
@@ -298,10 +322,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ValidateRevisionName(revision, nameof(revision));
         EnsureExplicitPipeline(pipeline);
         var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
-        CaptureStoragePolicy.EnsureMatchesProfile(pipeline, profile.Pipeline);
         var snapshot = CreateRevisionSnapshot(
             profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
-        return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+        return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
+            candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
+                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
     }
 
     public async ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(

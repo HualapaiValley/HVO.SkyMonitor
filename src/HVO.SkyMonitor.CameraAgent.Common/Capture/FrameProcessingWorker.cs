@@ -161,6 +161,7 @@ internal sealed class FrameProcessingWorker
             {
                 await persistence.InitializeAsync(cancellationToken).ConfigureAwait(false);
             }
+            var storagePolicyMismatch = false;
             if (ensureLiveStoragePolicy is not null)
             {
                 try
@@ -169,11 +170,11 @@ internal sealed class FrameProcessingWorker
                 }
                 catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
                 {
-                    // Keep raw ingress/recovery moving without publishing under stale Storage policy. As with
-                    // superseded plans, damaged evidence must still fail instead of being abandoned as intact.
+                    // Preserve capture-time scene evidence through the ordinary durable node commit below before
+                    // abandoning unsafe processing. Replay cannot rebuild this evidence after its transient stage
+                    // is gone. No image or Storage node may run under the mismatched policy.
                     await EnsureEvidenceIntactAsync(context, persistence, item.Execution, cancellationToken).ConfigureAwait(false);
-                    logger.CaptureLaneTerminal("standard", "abandoned", CaptureStoragePolicy.LiveMismatchLaneReason);
-                    return Finish(CaptureLaneHandlerResult.Abandon(CaptureStoragePolicy.LiveMismatchLaneReason));
+                    storagePolicyMismatch = true;
                 }
             }
             if (frozenPlanSuperseded)
@@ -205,6 +206,10 @@ internal sealed class FrameProcessingWorker
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
+                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep || rawCapture?.Manifest.Scene is null))
+                    continue;
+                // A scene commit is required for recovery even if the graph normally treats that node as optional.
+                var required = node.Required || storagePolicyMismatch;
                 context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
                 var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
@@ -241,7 +246,7 @@ internal sealed class FrameProcessingWorker
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     dependencyStopwatch.Stop();
                     telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
-                    if (node.Required)
+                    if (required)
                     {
                         return Finish(CaptureLaneHandlerResult.Terminal(dependencyReason));
                     }
@@ -282,7 +287,7 @@ internal sealed class FrameProcessingWorker
                             durable.Duration ?? TimeSpan.Zero,
                             durable.Status == DurableProcessingNodeStatus.Completed,
                             durable.Reason));
-                        if (node.Required && durable.Status == DurableProcessingNodeStatus.Skipped)
+                        if (required && durable.Status == DurableProcessingNodeStatus.Skipped)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.skipped"));
                         }
@@ -296,7 +301,7 @@ internal sealed class FrameProcessingWorker
                             durable.Duration ?? TimeSpan.Zero,
                             false,
                             durable.Reason));
-                        if (node.Required)
+                        if (required)
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.terminal"));
                         }
@@ -431,12 +436,12 @@ internal sealed class FrameProcessingWorker
                     });
                 }
                 var (status, reason) = ResolveStatus(node, outcome, exception);
-                if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
+                if (!required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-exhausted";
                 }
-                if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure &&
+                if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
                     item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
@@ -517,7 +522,7 @@ internal sealed class FrameProcessingWorker
                     }
                 }
                 statuses[node.Id] = status;
-                if (node.Required)
+                if (required)
                 {
                     if (status == DurableProcessingNodeStatus.RetryableFailure)
                     {
@@ -534,6 +539,11 @@ internal sealed class FrameProcessingWorker
                 {
                     deferredRetryReason ??= reason ?? "processing.retryable";
                 }
+            }
+            if (storagePolicyMismatch)
+            {
+                logger.CaptureLaneTerminal("standard", "abandoned", CaptureStoragePolicy.LiveMismatchLaneReason);
+                return Finish(CaptureLaneHandlerResult.Abandon(CaptureStoragePolicy.LiveMismatchLaneReason));
             }
             return Finish(deferredRetryReason is null
                 ? CaptureLaneHandlerResult.Success

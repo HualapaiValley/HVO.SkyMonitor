@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class StoragePolicyRawIngressIntegrationTests
+public sealed partial class StoragePolicyRawIngressIntegrationTests
 {
     private const string LaneReason = "storage-policy-mismatch";
 
@@ -248,7 +248,7 @@ public sealed class StoragePolicyRawIngressIntegrationTests
         { StorageRoot = Path.Combine(Path.GetDirectoryName(StorageOptions(profile).StorageRoot)!, "storage-b"), RetentionDays = 90, QueueForUpload = true, UpdateLatestFrame = false }) } : step)]
         };
 
-    private static async Task<CameraModuleConfig> ChangeProfileAsync(ServiceProvider provider, CameraModuleConfig profile)
+    internal static async Task<CameraModuleConfig> ChangeProfileAsync(ServiceProvider provider, CameraModuleConfig profile)
     {
         var runtime = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
         var state = await provider.GetRequiredService<SqliteCaptureScheduleStore>().GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);

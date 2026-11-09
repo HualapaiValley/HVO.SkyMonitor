@@ -3916,7 +3916,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),
             "agent-test");
 
-    private static ValueTask<VisibleScene> CreateProjectedSceneAsync() =>
+    internal static ValueTask<VisibleScene> CreateProjectedSceneAsync() =>
         new VisibleSceneBuilder(new InMemoryCelestialCatalog([
             new CelestialCatalogObject("star", "Star", 0, 0, 1)
         ])).BuildAsync(new VisibleSceneRequest(
@@ -3926,7 +3926,7 @@ public sealed partial class ProcessingGraphOperationsTests
             new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1"),
             projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1"));
 
-    private static CaptureLoopSubmission WithSceneProvenance(CaptureLoopSubmission submission, string sceneId, string stageKey)
+    internal static CaptureLoopSubmission WithSceneProvenance(CaptureLoopSubmission submission, string sceneId, string stageKey)
     {
         var frame = submission.Result.Frame!;
         var provenance = new SceneProvenance(
@@ -3946,7 +3946,7 @@ public sealed partial class ProcessingGraphOperationsTests
         };
     }
 
-    private static List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)> ReadProjectedSceneOutputs(string root, Guid captureId)
+    internal static List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)> ReadProjectedSceneOutputs(string root, Guid captureId)
     {
         using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         connection.Open();
@@ -3984,7 +3984,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private static string Sha256OfFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 
-    private static async Task<ProcessingGraphExecutionDetail> RunReplayToCompletionAsync(ServiceProvider provider, Guid executionId)
+    internal static async Task<ProcessingGraphExecutionDetail> RunReplayToCompletionAsync(ServiceProvider provider, Guid executionId)
     {
         var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
         var worker = provider.GetRequiredService<ProcessingReplayWorker>();

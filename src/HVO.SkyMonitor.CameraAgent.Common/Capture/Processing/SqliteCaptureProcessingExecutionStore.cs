@@ -131,7 +131,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
     {
         ArgumentNullException.ThrowIfNull(revision);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -147,6 +148,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return (await ReadRevisionAsync(connection, null, prior.ResultReference, cancellationToken).ConfigureAwait(false)).State;
         }
+        // A committed acknowledgement precedes current-policy checks, just as validate/activate/rollback do.
+        // The command fingerprint above still rejects a different request reusing the key.
+        ensureCompatible?.Invoke(revision);
         await InsertRevisionAsync(
             connection, transaction, revision, ProcessingGraphRevisionLifecycle.Draft, cancellationToken)
             .ConfigureAwait(false);
