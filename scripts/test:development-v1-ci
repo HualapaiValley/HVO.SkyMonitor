@@ -28,13 +28,27 @@ def read_workflows(directory):
 workflows = read_workflows(root / ".github/workflows")
 
 
+def jobs_section(workflow):
+    # Bound lookup to the top-level jobs mapping, including when another root
+    # mapping follows it. An event name must never shadow a job with that id.
+    match = re.search(r"^jobs:\n(.*?)(?=^[^\s#]|\Z)", workflow, re.M | re.S)
+    return match.group(1) if match else ""
+
+
 def job(workflow, name):
     # This guard binds the checked-in job/command shape; actionlint validates YAML.
     match = re.search(
         rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:\n|\Z)",
-        workflow, re.M | re.S,
+        jobs_section(workflow), re.M | re.S,
     )
     return match.group(1) if match else ""
+
+
+def normalized_name(value):
+    return " ".join(value.split()).casefold() if isinstance(value, str) else None
+
+
+required_names = ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit")
 
 
 classifier_run_line = (
@@ -123,7 +137,7 @@ def violations(short, full, queue=None, extra=None):
     names = []
     for path, workflow in sources.items():
         require(workflow.count("\njobs:\n") == 1, f"canonical jobs block: {path}")
-        section = workflow.split("\njobs:\n", 1)[-1]
+        section = jobs_section(workflow)
         headers = re.findall(r"^  ([\w-]+):\n", section, re.M)
         direct_children = [line for line in section.splitlines()
                            if re.match(r"^  [^\s#]", line)]
@@ -160,13 +174,22 @@ def violations(short, full, queue=None, extra=None):
             require(isinstance(value, str) and "${{" not in value and
                     all(" " <= char <= "~" for char in value),
                     f"decoded static printable job name: {path}/{header}")
-            if isinstance(value, str) and value.strip().casefold() == "hvo/reviewed-head":
+            if normalized_name(value) == normalized_name("hvo/reviewed-head"):
                 require(path == "merge-queue-reviewed-head.yml" and header == "reviewed-head" and
                         raw_name == "hvo/reviewed-head",
                         f"reviewed-head name belongs only to the approved queue gate: {path}/{header}")
-            names.append(value)
-    for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
-        require(names.count(required) == 1, f"globally unique required job name: {required}")
+            label = normalized_name(value)
+            if label is not None and re.search(r"^    uses:", body, re.M):
+                # A reusable workflow reports "caller label / callee label".
+                # Reserve every caller prefix that could form a required context,
+                # for local and external calls alike, regardless of callee ids.
+                require(not any(normalized_name(required).startswith(label + " / ")
+                                for required in required_names),
+                        f"reusable caller can compose a required job name: {path}/{header}")
+            names.append(label)
+    for required in required_names:
+        require(names.count(normalized_name(required)) == 1,
+                f"globally unique required job name: {required}")
     require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
             queue_permissions.split("\n", 1)[1].strip() and
             len(re.findall(r"^\s*permissions:", queue, re.M)) == 1,
@@ -176,7 +199,7 @@ def violations(short, full, queue=None, extra=None):
     require(step(queue, "Require the reviewed-head status on the queued pull request head").strip() ==
             queue_execution.strip(), "queue exact environment and trusted-base execution")
     require(len(re.findall(r"^      - ", queue, re.M)) == 2 and
-            re.findall(r"^  ([\w-]+):$", queue.split("\njobs:\n", 1)[-1], re.M) == ["reviewed-head"],
+            re.findall(r"^  ([\w-]+):$", jobs_section(queue), re.M) == ["reviewed-head"],
             "queue has only the trusted checkout and gate steps in one job")
     require("        if:" not in queue and "    if:" not in queue and "continue-on-error:" not in queue,
             "queue reviewed-head is unconditional and fails closed")
@@ -452,6 +475,42 @@ with tempfile.TemporaryDirectory(prefix="hvo-v1-workflows-") as directory:
     if not violations(short, full, queue_gate, read_workflows(fixture)):
         raise SystemExit("Discovered .yaml spoof workflow was not rejected")
     print("R2 file discovery: benign .yml/.yaml pass; .yaml spoof rejected.")
+# R3: on.pull_request must not shadow jobs.pull_request in the job helper.
+shadow = ("name: Event shadow\non:\n  pull_request:\n    types: [opened]\n"
+          "jobs:\n  pull_request:\n    name: Benign\n    runs-on: ubuntu-24.04\n"
+          "    steps:\n      - run: 'true'\n")
+if "types:" in job(shadow, "pull_request") or "name: Benign" not in job(shadow, "pull_request"):
+    raise SystemExit("Event block shadowed a job with the same id")
+if violations(short, full, queue_gate, {"shadow.yml": shadow}):
+    raise SystemExit("Benign event/job id overlap must pass")
+mutations += (("event name shadows reserved job", short, full, queue_gate,
+               {"shadow.yml": shadow.replace("name: Benign", "name: hvo/reviewed-head")}),)
+# Also verify that a later root-level event mapping is outside the jobs block.
+trailing_event = "name: Trailing event\njobs:\n  build:\n    runs-on: ubuntu-24.04\non:\n  pull_request:\n"
+if job(trailing_event, "pull_request") or re.search(r"^on:", job(trailing_event, "build"), re.M):
+    raise SystemExit("Job lookup escaped the top-level jobs mapping")
+
+# R3: local reusable callers compose names even though neither label alone is
+# reserved. Include named and id-fallback callees, plus normalized caller labels.
+for check in ("Preflight", "Build and Unit"):
+    for named in (True, False) if check == "Preflight" else (True,):
+        callee = ("name: Callee\non:\n  workflow_call:\njobs:\n  Preflight:\n" +
+                  (f"    name: {check}\n" if named else "") +
+                  "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+        caller = ("name: Caller\non:\n  pull_request:\njobs:\n  call:\n"
+                  "    name: Fixture\n    uses: ./.github/workflows/callee.yml\n")
+        sources = {"caller.yml": caller, "callee.yml": callee}
+        if violations(short, full, queue_gate, sources):
+            raise SystemExit("Benign reusable caller/callee must pass")
+        for label in ("Development v1", "  dEvElOpMeNt   V1  "):
+            sources = {"caller.yml": caller.replace("name: Fixture", f"name: {json.dumps(label)}"),
+                       "callee.yml": callee}
+            mutations += ((f"composed {check} (named={named}, caller={label!r})",
+                           short, full, queue_gate, sources),)
+for required in required_names:
+    for label in (required.swapcase(), "  " + required.replace(" ", "   ") + "  "):
+        mutations += ((f"normalized required name: {label!r}", short, full, queue_gate,
+                       {"normalized.yml": spoof_workflow(json.dumps(label))}),)
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
