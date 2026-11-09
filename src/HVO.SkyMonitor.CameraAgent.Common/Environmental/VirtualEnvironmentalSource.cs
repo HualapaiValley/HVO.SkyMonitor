@@ -79,7 +79,9 @@ public sealed class VirtualEnvironmentalSource : IEnvironmentalSource
             _options.Quality,
             context.DeploymentLocation.CanonicalSha256
         }));
-        var schemaVersion = Descriptor.Kind == EnvironmentalObservationKind.CameraSensorTemperature
+        var schemaVersion = Descriptor.Kind is EnvironmentalObservationKind.SkyTemperature or EnvironmentalObservationKind.SeaLevelPressure
+            ? EnvironmentalObservationSchemaVersions.V3
+            : Descriptor.Kind == EnvironmentalObservationKind.CameraSensorTemperature
             ? EnvironmentalObservationSchemaVersions.V2
             : EnvironmentalObservationSchemaVersions.V1;
         double? numericValue = _options.NumericValue is { } baseline
@@ -158,10 +160,10 @@ public sealed class VirtualEnvironmentalSource : IEnvironmentalSource
     private static EnvironmentalObservationUnit UnitFor(EnvironmentalObservationKind kind)
         => kind switch
         {
-            EnvironmentalObservationKind.AirTemperature or EnvironmentalObservationKind.CameraSensorTemperature =>
+            EnvironmentalObservationKind.AirTemperature or EnvironmentalObservationKind.CameraSensorTemperature or EnvironmentalObservationKind.SkyTemperature =>
                 EnvironmentalObservationUnit.DegreesCelsius,
             EnvironmentalObservationKind.RelativeHumidity => EnvironmentalObservationUnit.Percent,
-            EnvironmentalObservationKind.AtmosphericPressure => EnvironmentalObservationUnit.Pascals,
+            EnvironmentalObservationKind.AtmosphericPressure or EnvironmentalObservationKind.SeaLevelPressure => EnvironmentalObservationUnit.Pascals,
             EnvironmentalObservationKind.WindSpeed or EnvironmentalObservationKind.WindGust =>
                 EnvironmentalObservationUnit.MetersPerSecond,
             EnvironmentalObservationKind.WindDirection => EnvironmentalObservationUnit.DegreesTrue,
