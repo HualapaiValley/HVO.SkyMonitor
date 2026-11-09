@@ -82,7 +82,7 @@
     <!-- The terminal programs: the installer's wizard and hvo-sky ui (#1317), the version RoofController pins. -->
     <PackageVersion Include="Terminal.Gui" Version="2.5.0" />
     <!-- Terminal.Gui's syntax highlighting, which the terminal programs leave out (Directory.Build.targets): its versions. -->
-    <PackageVersion Include="TextMateSharp" Version="2.0.4" />
+    <PackageVersion Include="TextMateSharp" Version="2.0.5" />
     <PackageVersion Include="TextMateSharp.Grammars" Version="2.0.4" />
     <PackageVersion Include="Onigwrap" Version="1.0.11" />
     <!-- Terminal.Gui 2.5.0 asks for these at 10.0.11; pinned to the current .NET NuGet servicing patch. Runtime images and the SDK are upgraded separately. -->
