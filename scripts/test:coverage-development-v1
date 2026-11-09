@@ -291,12 +291,19 @@ for number in ("0", "1"):
 switch_file = scratch / "raw-switch.xml"
 switch_report.write(switch_file)
 result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
-                         "--development-v1", "--validate-reports", str(baseline_file), str(switch_file)],
+                         "--validate-reports", str(baseline_file), str(switch_file)],
                         capture_output=True, text=True)
 if result.returncode != 0:
     raise SystemExit(f"Raw switch validation incorrectly evaluated canonical branch arities: {result.stdout}{result.stderr}")
 cases += 1
 print("PASS raw switch validation accepts unequal condition arities")
+result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--development-v1", "--validate-reports", str(baseline_file), str(switch_file)],
+                        capture_output=True, text=True)
+if result.returncode != 1 or "requires --unit-results" not in result.stderr:
+    raise SystemExit("V1 input validation accepted structural checks without an independent inventory")
+cases += 1
+print("PASS v1 input validation cannot bypass the independent Unit inventory")
 
 # Exercise the actual policy, including the rule against turning arbitrary
 # low-coverage files into new local-only exceptions. This fixture is not a Git

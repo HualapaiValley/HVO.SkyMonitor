@@ -26,6 +26,12 @@ if (args.Length < 2)
     throw new ArgumentException("A baseline file and at least one Cobertura report are required.");
 }
 
+if (developmentV1 && validateReportsOnly && unitResultsDirectory is null)
+{
+    Console.Error.WriteLine("Development v1 input validation requires --unit-results with the complete fresh TRX/report root; structural XML validation alone cannot establish completeness.");
+    return 1;
+}
+
 using var baselineDocument = JsonDocument.Parse(File.ReadAllText(args[0]));
 using var policyDocument = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "policy.json")));
 var retiredSourcePaths = policyDocument.RootElement.GetProperty("retiredSourcePaths").EnumerateArray()
@@ -172,7 +178,7 @@ if (validateReportsOnly)
         {
             UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys);
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException or JsonException)
         {
             Console.Error.WriteLine($"Coverage input inventory failed: {exception.Message} Restore complete coverage collection from the current Release build and rerun in a fresh directory.");
             return 1;
