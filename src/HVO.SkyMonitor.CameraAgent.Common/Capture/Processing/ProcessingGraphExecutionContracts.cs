@@ -168,12 +168,15 @@ public sealed record ProcessingGraphExecutionNodeState(
     public string? MixedGainDiagnosticsUnavailableReason { get; init; }
 
     /// <summary>Safe master identities retained in the execution's frozen normalization plan.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> CalibrationInputs { get; init; } = [];
 
     /// <summary>Whether the bounded manifest read retained every recorded artifact input binding.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool ArtifactBindingsRetained { get; init; } = true;
 
     /// <summary>Actual output cardinality recorded atomically at node completion, independent of retention.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public int? CommittedOutputCount { get; init; }
 
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
@@ -191,6 +194,7 @@ public sealed record ProcessingGraphExecutionDetail(
     IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes)
 {
     /// <summary>Expected node count from the bounded manifest snapshot's frozen plan, when read.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public int? FrozenNodeCount { get; init; }
 }
 

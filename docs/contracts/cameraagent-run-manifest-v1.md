@@ -38,7 +38,9 @@ removes artifact metadata or historical input bindings, export is refused with
 a specific reason rather than returning partial evidence. Output association
 ordinals retain their original values after partial deletion. Declared output contracts
 are upper bounds: conditional outputs that were never produced do not count as
-missing evidence. Each terminal node's actual output count is recorded in the existing
+missing evidence. Every completed node attempt, including a retryable or terminal
+failure after recording a `Produced` outcome, records its actual committed output count
+(zero when the step throws) in the existing
 execution evidence JSON, atomically with its output associations. Original plan
 members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
@@ -49,11 +51,24 @@ that its original produced-output evidence was not recorded completely, rather
 than claiming that it was deleted. If the existing frozen-plan byte limit leaves
 no room to record a count, processing continues and export applies the same
 fail-closed completeness rule. New completions record conditional and zero-output
-counts without consulting mutable current-capture state.
-Optional count metadata is validated only for manifest downloads. If that member is
-corrupt, the ordinary execution API, run journal, replay detail and central evidence
-export remain readable; the run page disables the download with the corrupt-evidence
-reason. Removing the corrupt member restores the legacy completeness rules above.
+counts without consulting mutable current-capture state. A successful retry updates
+the zero-output attempt's count atomically with its committed output associations.
+Roy explicitly accepted refusal for older runs only when their output-history
+completeness cannot be proven (Nov 9, 7:45 AM PST, card `t305s1760`). This is not
+a waiver for other manifest failures or for an unreadable ordinary journal.
+
+Optional count metadata is excluded before primary plan parsing, including when it
+is deeply nested. Primary normalization-plan depth, shape and identity validation
+remain unchanged. Corrupt optional counts do not roll back node completion: the
+corrupt member remains unchanged, so download still fails closed with its corruption
+reason. The ordinary execution API, run journal, replay detail and central evidence
+export remain readable; the run page disables the download with that reason.
+Removing the corrupt member restores the legacy completeness rules above.
+Historical pinned-output descriptors are inspected for checksums only in the bounded
+manifest snapshot. Ordinary detail and central evidence preserve the pre-existing
+null payload hash for those pins; corruption in a historical descriptor disables
+only the consuming run's manifest, without hiding its journal. Manifest-only
+completeness fields are omitted from ordinary detail JSON.
 
 The database read holds one SQLite WAL snapshot. It allows at most 64 nodes and
 4096 rows in each attempts/inputs/output-input-pins/outputs/source-reference collection,

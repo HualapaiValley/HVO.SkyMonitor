@@ -9,7 +9,9 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed partial class CameraAgentBrowserAcceptanceTests
 {
     [TestMethod]
-    public async Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(bool deeplyNested)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
@@ -32,7 +34,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var downloadLink = page.GetByRole(AriaRole.Link, new() { Name = "Download manifest", Exact = true });
         await VisibleAsync(downloadLink).ConfigureAwait(false);
         var download = await page.RunAndWaitForDownloadAsync(() => downloadLink.ClickAsync()).ConfigureAwait(false);
-        var beforePath = Path.Combine(TestContext.TestResultsDirectory!, "manifest-before-corruption.json");
+        var scenario = deeplyNested ? "deep" : "flat";
+        var beforePath = Path.Combine(TestContext.TestResultsDirectory!, $"manifest-{scenario}-before-corruption.json");
         await download.SaveAsAsync(beforePath).ConfigureAwait(false);
         TestContext.AddResultFile(beforePath);
         using var before = JsonDocument.Parse(await File.ReadAllBytesAsync(beforePath).ConfigureAwait(false));
@@ -43,10 +46,11 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE processing_executions SET frozen_plan_json =
-                CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts', json('{"preview":-1}')) AS BLOB)
+                CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts', json($counts)) AS BLOB)
             WHERE execution_id = $execution;
             """;
         command.Parameters.AddWithValue("$execution", id.ToString("N"));
+        command.Parameters.AddWithValue("$counts", deeplyNested ? new string('[', 70) + "0" + new string(']', 70) : "{\"preview\":-1}");
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         var ordinary = await context.APIRequest.GetAsync(api).ConfigureAwait(false);
         Assert.AreEqual(200, ordinary.Status);
@@ -70,7 +74,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(downloadLink).ConfigureAwait(false);
         var recovered = await page.RunAndWaitForDownloadAsync(() => downloadLink.ClickAsync()).ConfigureAwait(false);
-        var afterPath = Path.Combine(TestContext.TestResultsDirectory!, "manifest-after-recovery.json");
+        var afterPath = Path.Combine(TestContext.TestResultsDirectory!, $"manifest-{scenario}-after-recovery.json");
         await recovered.SaveAsAsync(afterPath).ConfigureAwait(false);
         TestContext.AddResultFile(afterPath);
         CollectionAssert.AreEqual(await File.ReadAllBytesAsync(beforePath).ConfigureAwait(false), await File.ReadAllBytesAsync(afterPath).ConfigureAwait(false));

@@ -14,6 +14,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 {
     [TestMethod]
+    public void OrdinaryDetailJsonOmitsManifestOnlySnapshotFields()
+    {
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(ManifestDetail(), JsonSerializerOptions.Web));
+        Assert.IsFalse(json.RootElement.TryGetProperty("frozenNodeCount", out _));
+        var node = json.RootElement.GetProperty("nodes")[0];
+        Assert.IsFalse(node.TryGetProperty("artifactBindingsRetained", out _));
+        Assert.IsFalse(node.TryGetProperty("committedOutputCount", out _));
+        Assert.IsFalse(node.TryGetProperty("calibrationInputs", out _));
+    }
+
+    [TestMethod]
     public async Task ManifestContainsFrozenIdentityAttemptsChecksumsAndLineageWithoutPrivateDetails()
     {
         var detail = ManifestDetail();

@@ -8,6 +8,43 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     private const string CommittedOutputCountsMember = "committedOutputCounts";
 
+    // The optional member is not part of the processing plan. Walk its tokens iteratively
+    // under the existing byte bound, then validate the primary plan with its original
+    // depth/shape rules. Raising the primary plan's depth limit would hide corruption.
+    private static byte[] WithoutCommittedOutputCounts(byte[] frozenJson)
+    {
+        if (frozenJson.Length > MaximumFrozenExecutionPlanBytes)
+            throw new InvalidDataException("The frozen execution plan exceeds its byte bound.");
+        var reader = new Utf8JsonReader(frozenJson, new JsonReaderOptions { MaxDepth = MaximumFrozenExecutionPlanBytes });
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException("The frozen execution plan is not a JSON object.");
+        var buffer = new ArrayBufferWriter<byte>(frozenJson.Length);
+        buffer.Write("{"u8);
+        var removed = false;
+        var written = false;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                throw new JsonException("The frozen execution plan has an invalid member.");
+            var start = checked((int)reader.TokenStartIndex);
+            var optional = reader.ValueTextEquals(CommittedOutputCountsMember);
+            if (!reader.Read()) throw new JsonException("The frozen execution plan member has no value.");
+            reader.Skip();
+            if (optional)
+            {
+                removed = true;
+                continue;
+            }
+            if (written) buffer.Write(","u8);
+            buffer.Write(frozenJson.AsSpan(start, checked((int)reader.BytesConsumed) - start));
+            written = true;
+        }
+        if (reader.TokenType != JsonTokenType.EndObject || reader.Read())
+            throw new JsonException("The frozen execution plan has an invalid root.");
+        buffer.Write("}"u8);
+        return removed ? buffer.WrittenSpan.ToArray() : frozenJson;
+    }
+
     private static Dictionary<string, int> ReadCommittedOutputCounts(byte[] frozenJson)
     {
         try
@@ -44,14 +81,23 @@ internal sealed partial class SqliteCaptureProcessingStore
         string nodeId, int outputCount, CancellationToken cancellationToken)
     {
         var frozenJson = await ReadExecutionFrozenPlanJsonAsync(connection, transaction, executionId, cancellationToken).ConfigureAwait(false);
-        var counts = ReadCommittedOutputCounts(frozenJson);
-        if (counts.TryGetValue(nodeId, out var existing))
+        // Validate primary evidence independently. Corrupt optional counts cannot roll
+        // back a processing completion; preserve them so export reports corruption.
+        Dictionary<string, int> counts;
+        try
         {
-            if (existing != outputCount)
-                throw new ProcessingGraphStoreConflictException("The committed output count cannot be replaced.");
+            counts = ReadCommittedOutputCounts(frozenJson);
+        }
+        catch (InvalidDataException)
+        {
+            using var primary = JsonDocument.Parse(WithoutCommittedOutputCounts(frozenJson));
             return;
         }
-        counts.Add(nodeId, outputCount);
+        if (counts.TryGetValue(nodeId, out var existing) && existing == outputCount) return;
+        // A failed attempt commits zero outputs; a successful retry can later commit
+        // its actual outputs. The execution lease protects both updates, and counts
+        // commit in the same transaction as the node/attempt/output associations.
+        counts[nodeId] = outputCount;
         using var document = JsonDocument.Parse(frozenJson);
         var buffer = new ArrayBufferWriter<byte>(frozenJson.Length + 256);
         using (var writer = new Utf8JsonWriter(buffer))

@@ -1305,6 +1305,23 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         foreach (var width in new[] { 1440, 390, 320 })
         {
             await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            // Chromium can resolve SetViewportSize before the responsive navigation
+            // finishes laying out. Keep the no-overflow assertion after a bounded wait.
+            await page.WaitForFunctionAsync(
+                """
+                () => {
+                    const root = document.documentElement;
+                    const signature = `${innerWidth}:${root.clientWidth}:${root.scrollWidth}`;
+                    const now = performance.now();
+                    const previous = window.__hvoRunViewport;
+                    if (!previous || previous.signature !== signature) {
+                        window.__hvoRunViewport = { signature, since: now };
+                        return false;
+                    }
+                    return root.scrollWidth <= root.clientWidth + 1 && now - previous.since >= 200;
+                }
+                """,
+                options: new() { Timeout = DefaultTimeoutMilliseconds }).ConfigureAwait(false);
             Assert.IsFalse(await page.EvaluateAsync<bool>(
                 "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
                 $"Pipeline run overflowed at {width}px.");

@@ -764,11 +764,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             update.Parameters.AddWithValue("$route", executionRoute.ToString());
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        if (status is DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped)
-        {
-            await RecordCommittedOutputCountAsync(connection, transaction, execution.ExecutionId,
-                node.Id, outputs.Count, cancellationToken).ConfigureAwait(false);
-        }
+        await RecordCommittedOutputCountAsync(connection, transaction, execution.ExecutionId,
+            node.Id, outputs.Count, cancellationToken).ConfigureAwait(false);
         for (var ordinal = 0; ordinal < outputs.Count; ordinal++)
         {
             using var association = connection.CreateCommand();
@@ -1078,7 +1075,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 var published = await ReadExecutionOutputAssociationsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
                 var inputs = await ReadExecutionInputsAsync(
-                    connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                    connection, executionId, row.NodeId, manifestOnly, cancellationToken).ConfigureAwait(false);
                 var outputs = durableOutputs.Select((output, ordinal) =>
                 {
                     (int Ordinal, bool Published) association = published.TryGetValue(output.OutputIdentitySha256, out var saved)
@@ -1154,20 +1151,23 @@ internal sealed partial class SqliteCaptureProcessingStore
         SqliteConnection connection,
         Guid executionId,
         string nodeId,
+        bool manifestOnly,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT input_ordinal, window_position, 'RawCapture', capture_id, artifact_id,
-                   descriptor_sha256, payload_sha256, NULL
+                   descriptor_sha256, payload_sha256, NULL, 1
             FROM processing_execution_inputs
             WHERE execution_id = $execution AND node_id = $node
             UNION ALL
             SELECT pin.input_ordinal, pin.window_position, 'ProcessingOutput',
                    output.capture_id, output.artifact_id, NULL,
-                   COALESCE(json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.checksumSha256'),
-                            json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.checksumSha256')),
-                   pin.output_identity_sha256
+                   CASE WHEN $manifest THEN CASE WHEN json_valid(CAST(output.descriptor_json AS TEXT)) THEN
+                       COALESCE(json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.checksumSha256'),
+                                json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.checksumSha256')) END END,
+                   pin.output_identity_sha256,
+                   CASE WHEN $manifest THEN json_valid(CAST(output.descriptor_json AS TEXT)) ELSE 1 END
             FROM processing_execution_output_input_pins pin
             JOIN processing_outputs output
               ON output.output_identity_sha256 = pin.output_identity_sha256
@@ -1176,10 +1176,12 @@ internal sealed partial class SqliteCaptureProcessingStore
             """;
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$manifest", manifestOnly);
         var inputs = new List<ProcessingGraphExecutionInputState>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (!reader.GetBoolean(8)) throw new InvalidDataException("A retained manifest input descriptor is corrupt.");
             inputs.Add(new(
                 reader.GetInt32(0),
                 reader.GetInt32(1),
