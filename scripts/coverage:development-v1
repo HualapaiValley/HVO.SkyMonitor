@@ -33,7 +33,9 @@ for path, floor in baseline["files"].items():
         if not isinstance(reason, str) or not reason.strip():
             raise SystemExit(f"Invalid developmentV1LocalOnlyReason: {path}")
         continue
-    assemblies.add(path.split("/")[1 if path.startswith("tools/") else 0])
+    if path.startswith("tools/"):
+        raise SystemExit(f"Development v1 inventory supports active src/ floor owners only; extend the DLL/PDB inventory before enforcing tools/ floor {path}")
+    assemblies.add(path.split("/")[0])
 if not assemblies:
     raise SystemExit("Development v1 has no measurable per-file coverage assemblies")
 settings = ET.parse(root / "tests/coverage.runsettings")

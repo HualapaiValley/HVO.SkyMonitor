@@ -184,6 +184,13 @@ source_dir.mkdir(parents=True)
 for filename, type_name in (("CameraGeometry.cs", "InventoryA"), ("InventorySentinel.cs", "InventoryB")):
     (source_dir / filename).write_text(f"namespace CoverageFixture; public static class {type_name} {{ public static int Value() => 1; }}\n")
 (source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static int Excluded() => 1;\n}\npublic static class InventoryC { public static int Value() => 1; }\n")
+# One covered line out of 37 reproduces the review's 2.70% -> 100%
+# denominator-pruning failure, using independent compiled method metadata.
+with (source_dir / "CameraGeometry.cs").open("a") as source:
+    source.write("public static class InventoryPruning\n{\n    public static int Value(int value)\n    {\n")
+    for number in range(31):
+        source.write(f"        if (value == {number}) value++;\n")
+    source.write("        return value;\n    }\n    [System.Runtime.CompilerServices.CompilerGenerated] public static int Generated() => 1;\n}\n")
 (source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
 fixture_project = inventory_repo / "Inventory.csproj"
 fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
@@ -198,6 +205,7 @@ if result.returncode != 0:
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
 (inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
+shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
 shutil.copytree(root / "scripts/coverage", fixture_scripts / "coverage", ignore=shutil.ignore_patterns("bin", "obj"))
@@ -222,7 +230,8 @@ ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventor
 classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name=assembly_name), "classes")
 for type_name, filename, numbers in (("InventoryA", "CameraGeometry.cs", (3, 4)),
                                       ("InventoryB", "InventorySentinel.cs", (1,)),
-                                      ("InventoryC", "CameraGeometry.cs", (7,))):
+                                      ("InventoryC", "CameraGeometry.cs", (7,)),
+                                      ("InventoryPruning", "CameraGeometry.cs", range(11, 45))):
     entry = ET.SubElement(classes, "class", name=f"CoverageFixture.{type_name}", filename=str(source_dir / filename),
                           **{"line-rate":"1", "branch-rate":"1"})
     lines = ET.SubElement(entry, "lines")
@@ -247,7 +256,72 @@ def wrapper_case(name, expected, *needles):
 
 
 write_fixture(composite)
-wrapper_case("complete wrapper accepts a report matching independent DLL/PDB inventory", 0, "Coverage gate passed.")
+wrapper_case("complete wrapper accepts DLL/PDB inventory with excluded and generated points omitted", 0, "Coverage gate passed.")
+# Remove a whole ordinary method while retaining its source and class.
+missing_method = copy.deepcopy(composite)
+lines = missing_method.find(".//class/lines")
+lines.remove(lines.findall("line")[1])
+write_fixture(missing_method)
+wrapper_case("pruned ordinary method cannot pass with its class still present", 1,
+             "CameraGeometry.cs", "ordinary-method executable lines", "4")
+
+# Sol repro: real counters fail at 1/37 (2.70%) line and 0% branch;
+# pruning all uncovered class/method data must not convert that to a pass.
+low = copy.deepcopy(composite)
+for entry in low.findall(".//class"):
+    if not entry.get("filename").endswith("CameraGeometry.cs"):
+        continue
+    for line in entry.findall("lines/line"):
+        line.set("hits", "1" if line.get("number") == "3" else "0")
+        line.set("condition-coverage", "0% (0/2)")
+write_fixture(low)
+wrapper_case("Sol repro unpruned 2.70 percent line and zero branch actually fails floors", 1,
+             "line 2.70", "branch 0.00", "min 95.00")
+pruned = copy.deepcopy(low)
+for entry in pruned.findall(".//class"):
+    if not entry.get("name").endswith("InventoryA"):
+        continue
+    lines = entry.find("lines")
+    lines.remove(lines.findall("line")[1])
+write_fixture(pruned)
+wrapper_case("Sol repro pruned missing method data is rejected before floor evaluation", 1,
+             "CameraGeometry.cs", "ordinary-method executable lines")
+
+# Opus repro: delete 11 uncovered points inside a surviving multiline method.
+pruned_lines = copy.deepcopy(composite)
+lines = pruned_lines.findall(".//class")[-1].find("lines")
+for line in list(lines)[1:12]:
+    lines.remove(line)
+write_fixture(pruned_lines)
+wrapper_case("Opus repro eleven pruned uncovered lines fail with all classes surviving", 1,
+             "missing 11 ordinary-method executable lines", "CameraGeometry.cs")
+
+settings_source = inventory_repo / "tests/coverage.runsettings"
+settings_bytes = settings_source.read_bytes()
+settings_source.write_bytes(settings_bytes.replace(b"**/Migrations/**", b"**/Migrations/**,**/Future/**"))
+write_fixture(composite)
+wrapper_case("new canonical exclusion fails explicitly until inventory supports it", 1,
+             "Unsupported canonical coverage settings", "DLL/PDB inventory")
+settings_source.write_bytes(settings_bytes)
+
+# Future tools floors must fail clearly instead of mapping to an owner 'tools'.
+tool_path = "tools/HVO.SkyMonitor.FutureTool/Program.cs"
+tool_source = inventory_repo / tool_path
+tool_source.parent.mkdir(parents=True)
+tool_source.touch()
+tool_baseline = copy.deepcopy(fixture_baseline)
+tool_baseline["files"][tool_path] = {"line": 0.5, "branch": 0.35}
+fixture_baseline_path = fixture_scripts / "coverage/baseline.json"
+fixture_baseline_path.write_text(json.dumps(tool_baseline))
+result = subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", str(scratch / "tool.runsettings")],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "extend the DLL/PDB inventory" in result.stderr, result.stdout + result.stderr
+cases += 1
+print("PASS future active tools floor fails settings generation with inventory remedy")
+wrapper_case("future active tools floor also fails coverage inventory explicitly", 1,
+             "supports active src/ floor owners only")
+fixture_baseline_path.write_text(json.dumps(fixture_baseline))
+
 valid.write_text("<coverage")
 shutil.copy2(valid, attachment)
 wrapper_case("one malformed report cannot be discarded by the merger", 1, str(valid), "Coverage input validation failed")
@@ -266,7 +340,7 @@ wrapper_case("partial report still covering every floor fails independent source
              "materially incomplete", "InventorySentinel.cs")
 partial_classes = copy.deepcopy(composite)
 classes = partial_classes.find(".//classes")
-classes.remove(classes.findall("class")[-1])
+classes.remove(classes.findall("class")[2])
 write_fixture(partial_classes)
 wrapper_case("partial class data with every source still present fails DLL/PDB inventory", 1,
              "materially incomplete", "compiled classes")

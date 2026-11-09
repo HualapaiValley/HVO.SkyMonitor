@@ -34,8 +34,29 @@ a malformed input, omit it and still exit zero. Legitimate classless reports fro
 projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
-PDBs. This independent build inventory rejects partial reports even when other
-reports still cover all floor paths. An enforced file missing from
+PDBs, plus every ordinary compiled class in each executable source. For floored
+files, each report must also contain every nonhidden sequence-point start line
+from ordinary methods in the Release DLL/PDB. Removing a method or its uncovered
+class-level lines therefore fails before merging, even if its class survives and
+other reports cover that file. Method-level Cobertura records are redundant;
+the canonical measurement and inventory both use class-level line entries.
+
+This is a bounded completeness check: generated types/methods (including lambdas,
+local functions, async/iterator state machines and generated accessors) are not
+required to contribute individual lines. Coverlet legitimately omits some of
+these PDB points. A removed line belonging only to generated code can still
+escape independent line-inventory detection; branch denominators are structurally
+validated rather than reconstructed from IL. Non-floored sources receive file
+and ordinary-class completeness checks only. TRX attachment checksums bind inputs
+to their copied attachments, not to an authenticated collector output. These
+limits do not waive floors for any observed data. Collector exclusions and other
+options are guarded against the inventory's supported canonical configuration;
+an unsupported setting change fails with an inventory-update remedy. A future
+active `tools/` floor also fails explicitly until its inventory is supported
+(the existing catalog-dependent ReleaseTool skip is unchanged). These checks run
+in Build and Unit's coverage stage and add no Preflight work.
+
+An enforced file missing from
 the reports, present without executable line data, or declaring branches without
 their counts **fails**. Explicitly branchless lines remain valid. Both evaluator
 profiles reject missing/empty enforced-file data and missing declared branch

@@ -10,9 +10,16 @@ internal static class UnitCoverageInputs
 {
     internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths)
     {
-        var owners = floorPaths.Select(static path => path.Split('/')[0]).ToHashSet(StringComparer.Ordinal);
+        ValidateCollectorSettings(repositoryRoot);
+        var floors = floorPaths.ToHashSet(StringComparer.Ordinal);
+        if (floors.Any(static path => path.StartsWith("tools/", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("Development v1 inventory supports active src/ floor owners only; extend the DLL/PDB inventory before enforcing a tools/ floor.");
+        }
+
+        var owners = floors.Select(static path => path.Split('/')[0]).ToHashSet(StringComparer.Ordinal);
         var reportsByHash = reports.GroupBy(Hash).ToDictionary(static group => group.Key, static group => new Queue<string>(group));
-        var inventories = new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
+        var inventories = new Dictionary<string, Dictionary<string, SourceInventory>>(StringComparer.Ordinal);
         var seenProjects = new HashSet<string>(StringComparer.Ordinal);
         XNamespace trxNamespace = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
         foreach (var trx in Directory.GetFiles(resultsDirectory, "*.trx"))
@@ -54,7 +61,7 @@ internal static class UnitCoverageInputs
             }
 
             var assemblyDirectory = Path.GetDirectoryName(expectedTestAssembly)!;
-            var expected = new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
+            var expected = new Dictionary<string, Dictionary<string, SourceInventory>>(StringComparer.Ordinal);
             using var dependencies = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(expectedTestAssembly, ".deps.json")));
             var runtimeTarget = dependencies.RootElement.GetProperty("runtimeTarget").GetProperty("name").GetString()!;
             var runtimeAssemblies = dependencies.RootElement.GetProperty("targets").GetProperty(runtimeTarget).EnumerateObject()
@@ -83,7 +90,7 @@ internal static class UnitCoverageInputs
                 }
             }
 
-            ValidateReportSources(report, expected, repositoryRoot);
+            ValidateReportSources(report, expected, repositoryRoot, floors);
         }
 
         var expectedProjects = Directory.GetDirectories(Path.Combine(repositoryRoot, "tests"))
@@ -99,15 +106,15 @@ internal static class UnitCoverageInputs
             throw new InvalidDataException($"Unit coverage/TRX inventory differs from the Unit-bearing project set; missing: {string.Join(", ", expectedProjects.Except(seenProjects))}.");
         }
 
-        Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source inventories against Release portable PDBs.");
+        Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source/class inventories and ordinary-method lines of floored files against Release portable PDBs.");
     }
 
-    private static Dictionary<string, HashSet<string>> ReadExecutableSources(string pdb, string repositoryRoot)
+    private static Dictionary<string, SourceInventory> ReadExecutableSources(string pdb, string repositoryRoot)
     {
         using var stream = File.OpenRead(pdb);
         using var provider = MetadataReaderProvider.FromPortablePdbStream(stream);
         var reader = provider.GetMetadataReader();
-        var sources = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, SourceInventory>(StringComparer.Ordinal);
         using var assemblyStream = File.OpenRead(Path.ChangeExtension(pdb, ".dll"));
         using var assembly = new PEReader(assemblyStream);
         var metadata = assembly.GetMetadataReader();
@@ -200,6 +207,10 @@ internal static class UnitCoverageInputs
             var typeName = TypeName(declaringType);
             var generated = typeName.Contains('<', StringComparison.Ordinal) ||
                 HasAttribute(typeDefinition.GetCustomAttributes(), "CompilerGeneratedAttribute");
+            var methodDefinition = metadata.GetMethodDefinition(definition);
+            var ordinaryMethod = !generated &&
+                !metadata.GetString(methodDefinition.Name).Contains('<', StringComparison.Ordinal) &&
+                !HasAttribute(methodDefinition.GetCustomAttributes(), "CompilerGeneratedAttribute");
             foreach (var point in method.GetSequencePoints())
             {
                 if (point.IsHidden)
@@ -213,18 +224,23 @@ internal static class UnitCoverageInputs
                 if (relative.StartsWith("src/", StringComparison.Ordinal) &&
                     !relative.Split('/').Any(static part => part is "obj" or "bin" or "Migrations"))
                 {
-                    if (!sources.TryGetValue(relative[4..], out var lines))
+                    if (!sources.TryGetValue(relative[4..], out var source))
                     {
-                        lines = [];
-                        sources.Add(relative[4..], lines);
+                        source = new SourceInventory();
+                        sources.Add(relative[4..], source);
                     }
 
-                    // Coverlet may omit individual local-function points. Use
-                    // PDBs to identify sources and ordinary compiled classes,
-                    // rather than inventing a one-to-one line requirement.
                     if (!generated)
                     {
-                        lines.Add(typeName);
+                        source.Classes.Add(typeName);
+                    }
+
+                    // Coverlet legitimately omits some generated/local-function
+                    // points. Ordinary methods have an independent line inventory;
+                    // never derive that denominator from the coverage report.
+                    if (ordinaryMethod)
+                    {
+                        source.OrdinaryMethodLines.Add(point.StartLine);
                     }
                 }
             }
@@ -233,7 +249,7 @@ internal static class UnitCoverageInputs
         return sources;
     }
 
-    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, HashSet<string>>> expected, string repositoryRoot)
+    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, SourceInventory>> expected, string repositoryRoot, HashSet<string> floors)
     {
         var document = XDocument.Load(report);
         var packages = document.Descendants("package").ToArray();
@@ -246,7 +262,7 @@ internal static class UnitCoverageInputs
         foreach (var package in packages)
         {
             var name = (string)package.Attribute("name")!;
-            var observed = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            var observed = new Dictionary<string, SourceInventory>(StringComparer.Ordinal);
             foreach (var entry in package.Descendants("class"))
             {
                 var filename = (string?)entry.Attribute("filename") ?? string.Empty;
@@ -260,13 +276,14 @@ internal static class UnitCoverageInputs
 
                 foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
                 {
-                    if (!observed.TryGetValue(relative, out var lines))
+                    if (!observed.TryGetValue(relative, out var source))
                     {
-                        lines = [];
-                        observed.Add(relative, lines);
+                        source = new SourceInventory();
+                        observed.Add(relative, source);
                     }
 
-                    lines.Add((string)entry.Attribute("name")!);
+                    source.Classes.Add((string)entry.Attribute("name")!);
+                    source.OrdinaryMethodLines.Add((int)line.Attribute("number")!);
                 }
             }
 
@@ -276,15 +293,60 @@ internal static class UnitCoverageInputs
                 throw new InvalidDataException($"Report '{report}' is materially incomplete for '{name}': missing {missing.Length} executable source files from its Release PDB, including {string.Join(", ", missing.Take(8))}.");
             }
 
-            foreach (var (source, requiredClasses) in expected[name])
+            foreach (var (source, required) in expected[name])
             {
-                var missingClasses = requiredClasses.Except(observed[source]).Order(StringComparer.Ordinal).ToArray();
+                var missingClasses = required.Classes.Except(observed[source].Classes).Order(StringComparer.Ordinal).ToArray();
                 if (missingClasses.Length > 0)
                 {
                     throw new InvalidDataException($"Report '{report}' is materially incomplete for '{source}': missing compiled classes from its Release DLL/PDB, including {string.Join(", ", missingClasses.Take(8))}.");
                 }
+
+                if (floors.Contains(source))
+                {
+                    var missingLines = required.OrdinaryMethodLines.Except(observed[source].OrdinaryMethodLines).Order().ToArray();
+                    if (missingLines.Length > 0)
+                    {
+                        throw new InvalidDataException($"Report '{report}' is materially incomplete for floored file '{source}': missing {missingLines.Length} ordinary-method executable lines from its Release DLL/PDB, including {string.Join(", ", missingLines.Take(12))}. Restore complete XPlat collection; omitted lines cannot be counted as covered.");
+                    }
+                }
             }
         }
+    }
+
+    // Fail explicitly when collector exclusions outgrow the inventory model.
+    // This guard runs in the coverage stage, never adds Preflight work, and
+    // prevents a future setting from silently disagreeing with the PDB scan.
+    private static void ValidateCollectorSettings(string repositoryRoot)
+    {
+        var document = XDocument.Load(Path.Combine(repositoryRoot, "tests", "coverage.runsettings"));
+        var configurations = document.Descendants("DataCollector")
+            .Where(static collector => (string?)collector.Attribute("friendlyName") == "XPlat Code Coverage")
+            .Elements("Configuration").ToArray();
+        if (configurations.Length != 1)
+        {
+            throw new InvalidDataException("Expected one canonical XPlat coverage configuration for the DLL/PDB inventory.");
+        }
+
+        var supported = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Format"] = "cobertura",
+            ["Exclude"] = "[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*,[HVO.SkyMonitor.LogicHost.TestInfrastructure]*",
+            ["ExcludeByFile"] = "**/obj/**,**/bin/**,**/Migrations/**",
+            ["ExcludeByAttribute"] = "ExcludeFromCodeCoverage",
+            ["IncludeTestAssembly"] = "false",
+        };
+        var settings = configurations[0].Elements().Where(static setting => setting.Name.LocalName is not ("Include" or "SingleHit")).ToArray();
+        if (settings.Length != supported.Count || settings.Select(static setting => setting.Name.LocalName).Distinct(StringComparer.Ordinal).Count() != settings.Length ||
+            settings.Any(setting => !supported.TryGetValue(setting.Name.LocalName, out var value) || setting.Value.Trim() != value))
+        {
+            throw new InvalidDataException("Unsupported canonical coverage settings for the DLL/PDB inventory (exclusions/attributes/options changed). Update and verify UnitCoverageInputs against genuine Coverlet output before changing collector scope.");
+        }
+    }
+
+    private sealed class SourceInventory
+    {
+        internal HashSet<string> Classes { get; } = new(StringComparer.Ordinal);
+        internal HashSet<int> OrdinaryMethodLines { get; } = [];
     }
 
     private static string Hash(string path)
