@@ -46,6 +46,76 @@ The branch currently requires:
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
+### Workflow contract YAML parser
+
+`scripts/test:development-v1-ci` requires PyYAML and fails closed if it is
+unavailable. Job IDs, names and reusable-workflow `uses` values come from parsed
+YAML nodes; the canonical source view must agree on job boundaries, locations and
+field values. Quoted or flow syntax cannot hide a producer from the parse.
+
+The local Ubuntu 24.04 host was checked with Python 3 and PyYAML 6.0.1. Install
+`python3-yaml` for local system Python if needed. Hosted `ubuntu-24.04` images
+[include yamllint](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
+[installed with pipx](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-pipx-packages.sh);
+[PyYAML is a yamllint dependency](https://github.com/adrienverge/yamllint/blob/master/pyproject.toml).
+The image's [Python setup](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-python.sh)
+sets `PIPX_HOME=/opt/pipx`. The contract first probes `python3`, then the Python in
+`${PIPX_HOME:-/opt/pipx}/venvs/yamllint`. It reports the selected interpreter and
+parser version. Tests cover the hosted fallback and refusal when neither parser
+is available. This availability check uses the published hosted-image build;
+no hosted CI run was dispatched for this correction.
+
+### Pending merge queue rollout (not yet live)
+
+The checked-in queue support is preparation, not evidence that the queue or its
+rules are enabled. Roy must approve the cutover separately, after this code is on
+`development/v1`. It requires **ALLGREEN** (every grouped PR passes required
+checks) and **MERGE** (merge commits). AGENTS.md and lifecycle documentation are
+reserved for the post-cutover documentation PR.
+
+Both v1 checks are wired for `merge_group`, which tests the combined changes of
+the queued PR and entries ahead of it. Preflight has six minutes for queue events
+because their classifier selects full mode; PR/push Preflight retains four
+minutes. This changes the timeout, not the qualification profile.
+
+The queue's temporary commit has no operator review status. The
+`merge-queue-reviewed-head.yml` job checks out the **fresh `development/v1` tip**
+and runs that trusted copy of `scripts/ci:queue-reviewed-head`. A missing checkout
+or script fails the job; it never falls back to the queued tree. The first queue
+run must therefore wait until the script has landed on the trusted branch.
+The gate walks first parents from the group SHA to the checked-out tip, requiring
+exactly two parents per entry (at most 100). Every second parent must equal an
+open PR's current head targeting this repository's `development/v1`; fork PRs are
+supported using statuses in the base repository. Each head's numeric newest
+`hvo/reviewed-head` status, across all API pages, must be `success` from exactly
+`RoySalisbury`. Unsupported topology, ambiguous PR association, a changed PR head,
+an unreadable page, or a base that advanced beyond the group fails closed.
+On PRs, `hvo/reviewed-head` remains the operator's commit status.
+
+The [published webhook schema](https://github.com/octokit/webhooks/blob/main/payload-schemas/api.github.com/merge_group/checks_requested.schema.json)
+describes `base_sha` only as “the SHA of the merge group's parent commit”; it does
+not establish that a grouped parent excludes earlier queued entries. GitHub's
+[queue documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)
+explicitly includes changes ahead of a PR. We therefore do **not** treat event
+`base_sha` as a trust root. The supported topology assumes GitHub's MERGE mode
+forms a two-parent chain ending at the actual destination tip, and verifies that
+chain at runtime. Offline two- and three-entry fixtures cover this assumption;
+actual GitHub queue topology still needs cutover validation. A stale group must
+be rebuilt against the new destination tip.
+
+**Remaining trust boundary:** the workflow file itself still comes from the
+queued commit. Trusted script checkout and the all-workflow unique-name contract
+reduce accidental or direct script self-approval, but a PR can still change the
+workflow or its tests. They do not create an independently enforced review
+authority. The durable fix is an external GitHub App producer whose required
+check pins its integration id. That is a separate decision for Roy and is not
+implemented by this change.
+
+A successful queue check is a point-in-time API observation. To revoke review
+after that check succeeds, **dequeue the PR** as well as changing its review
+status; re-entry must create a fresh group and rerun the checks. Merely publishing
+a failure does not retract an already successful queue check.
+
 The target controlling path is under ten minutes, with a 1080-second cumulative
 workload budget and a 22-minute hard job timeout. Each self-hosted run retains
 restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the
