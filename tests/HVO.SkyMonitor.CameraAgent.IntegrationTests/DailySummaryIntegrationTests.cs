@@ -233,14 +233,73 @@ public sealed class DailySummaryIntegrationTests : IDisposable
         Assert.AreEqual(1L, await check.ExecuteScalarAsync());
     }
 
-    private Harness Create()
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InterruptedRefreshPreservesPublishedSummaryAndRecoversAfterRestart(bool cancel)
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10)));
+        Guid original;
+        byte[] provenance;
+        using (var initial = Create())
+        {
+            await initial.Generator.RunAsync(occurrence, CancellationToken.None);
+            original = (await initial.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Single().ProductId;
+            provenance = (await initial.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray();
+        }
+        _reader.Add(NightlyProductFixture.Frame(2, occurrence.SourceWindow.StartUtc.AddHours(11)));
+        using var cancellation = new CancellationTokenSource();
+        using (var interrupted = Create(new InterruptedReader(_reader, cancellation, cancel)))
+        {
+            if (cancel)
+                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    await interrupted.Generator.RunAsync(occurrence, cancellation.Token));
+            else
+            {
+                var failure = await interrupted.Generator.RunAsync(occurrence, CancellationToken.None);
+                Assert.AreEqual(1, failure.FailedWindows);
+                Assert.AreEqual(0, failure.ProductsPublished);
+            }
+            var retained = (await interrupted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(original, retained.Product!.ProductId, "An interrupted refresh must not retire the last good summary.");
+            CollectionAssert.AreEqual(provenance, (await interrupted.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+        }
+        using var recovered = Create();
+        Assert.AreEqual(1, (await recovered.Generator.RunAsync(occurrence, CancellationToken.None)).ProductsPublished);
+        var latest = (await recovered.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+        Assert.AreNotEqual(original, latest.Product!.ProductId);
+        Assert.AreEqual(2, (await recovered.Store.GetPresentationAsync(latest.Product.ProductId, CancellationToken.None))!.DailySummary!.CaptureCount);
+        CollectionAssert.AreEqual(provenance, (await recovered.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+    }
+
+    private sealed class InterruptedReader(INightlyProductSourceReader inner, CancellationTokenSource cancellation, bool cancel)
+        : INightlyProductSourceReader
+    {
+        public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(string nodeId,
+            DateTimeOffset startUtc, DateTimeOffset endUtc, int maximumCount, Action<string> unsupported,
+            CancellationToken cancellationToken) => inner.ReadCandidatesAsync(nodeId, startUtc, endUtc, maximumCount, unsupported, cancellationToken);
+
+        public ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
+            CancellationToken cancellationToken)
+        {
+            if (cancel)
+            {
+                cancellation.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            return ValueTask.FromException<IReadOnlyList<ProcessingArtifact>>(new IOException("Synthetic source read failure."));
+        }
+    }
+
+    private Harness Create(INightlyProductSourceReader? reader = null)
     {
         Directory.CreateDirectory(_root);
         var host = NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options());
         var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
         var store = new SqliteNightlyProductStore(host, clock);
         var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
-            _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
+            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
         return new(store, generator);
     }
 

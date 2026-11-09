@@ -41,12 +41,13 @@ public sealed class GeneratedProductsLibraryTests
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Queued, "Queued for generation", "Not started")]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Running, "Running generation", "2026-10-02 19:10:00 UTC")]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Interrupted, "Stalled: generation was interrupted", "2026-10-02 19:10:00 UTC")]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Running, "Running generation", "2026-10-02 19:10:00 UTC", NightlyProductKind.DailySummary)]
     public void Library_ProgressCardsShowStateStartAndSourceWindowWithoutPublishedMedia(
-        Common.Automation.LocalAutomationRunOutcome outcome, string description, string started)
+        Common.Automation.LocalAutomationRunOutcome outcome, string description, string started, NightlyProductKind kind = NightlyProductKind.Keogram)
     {
         using var context = new BunitContext();
         var (_, nightly) = Configure(context);
-        var previous = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced);
+        var previous = Entry(Newest, kind, NightlyProductWindowDisposition.Produced);
         var occurrence = previous.Occurrence;
         var run = new Common.Automation.LocalAutomationRun(1, occurrence.Definition.DefinitionId,
             occurrence.RunKey, occurrence.RevisionSha256, occurrence.Definition.TriggerKind, occurrence.ScheduledForUtc,

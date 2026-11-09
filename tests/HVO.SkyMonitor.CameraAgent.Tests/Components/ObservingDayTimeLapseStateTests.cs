@@ -50,7 +50,11 @@ public sealed class ObservingDayTimeLapseStateTests
     [DataRow(true, false)]
     [DataRow(false, true)]
     [DataRow(false, false)]
-    public async Task EmptySqliteCatalog_ProjectsConfiguredStateIntoTileAndSampleViewer(bool storeAvailable, bool enabled)
+    [DataRow(true, true, true)]
+    [DataRow(true, false, true)]
+    [DataRow(false, true, true)]
+    [DataRow(false, false, true)]
+    public async Task SqliteCatalog_ProjectsConfiguredStateIntoTileAndSampleViewer(bool storeAvailable, bool enabled, bool hasSummary = false)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-observing-day-video");
         try
@@ -70,6 +74,18 @@ public sealed class ObservingDayTimeLapseStateTests
             var clock = new FixedTimeProvider(NightlyProductFixture.DayEndUtc.AddDays(1));
             using var nightly = new SqliteNightlyProductStore(options, clock);
             using var videos = new SqliteTimeLapseStore(options, clock);
+            Guid? summaryId = null;
+            if (hasSummary)
+            {
+                var reader = new InMemoryNightlySourceReader();
+                reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(10)));
+                using var generator = new NightlyProductGenerator(
+                    NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options()),
+                    new FixedConfigurationAccessor(NightlyProductFixture.Configuration()), reader, nightly,
+                    new HVO.SkyMonitor.Astronomy.AstronomyEnginePlanetEphemeris(), static () => null, clock);
+                await generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary), CancellationToken.None).ConfigureAwait(false);
+                summaryId = (await nightly.ListAsync(NightlyDayFixture.Date, CancellationToken.None).ConfigureAwait(false)).Single().ProductId;
+            }
             context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(services => new CameraAgentNightlyProductUiService(
                 services.GetRequiredService<AuthenticationStateProvider>(),
                 services.GetRequiredService<IAuthorizationService>(), nightly, options,
@@ -83,7 +99,7 @@ public sealed class ObservingDayTimeLapseStateTests
             Assert.AreEqual(storeAvailable, result.Value.TimeLapses is not null);
             if (result.Value.TimeLapses is { } day) Assert.IsEmpty(day.Jobs);
 
-            AssertState(context, storeAvailable, enabled, hasSample: true);
+            AssertState(context, storeAvailable, enabled, hasSample: true, summaryId);
         }
         finally
         {
@@ -104,7 +120,7 @@ public sealed class ObservingDayTimeLapseStateTests
         return context;
     }
 
-    private static void AssertState(BunitContext context, bool storeAvailable, bool enabled, bool hasSample)
+    private static void AssertState(BunitContext context, bool storeAvailable, bool enabled, bool hasSample, Guid? summaryId = null)
     {
         var message = !storeAvailable ? "Time-lapse state could not be read."
             : enabled ? "No time-lapse has been requested for this period."
@@ -118,6 +134,14 @@ public sealed class ObservingDayTimeLapseStateTests
             Assert.DoesNotContain("not yet available", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Not yet generated", tile.TextContent, StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("video"));
+            if (summaryId is { } id)
+            {
+                var summary = cut.Find("[data-product-kind='daily summary']");
+                Assert.AreEqual("partial", summary.GetAttribute("data-nightly-state"));
+                Assert.AreEqual(NightlyProductLinks.Preview(id), summary.QuerySelector("img")!.GetAttribute("src"));
+                StringAssert.Contains(summary.TextContent, "1 admitted previews", StringComparison.Ordinal);
+                Assert.DoesNotContain("Sample", summary.TextContent, StringComparison.Ordinal);
+            }
             if (hasSample)
             {
                 StringAssert.Contains(tile.TextContent, "it was not generated from this night and is not counted as a product.", StringComparison.Ordinal);
