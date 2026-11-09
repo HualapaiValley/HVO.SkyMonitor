@@ -75,7 +75,7 @@ public sealed class ArchitectureBoundaryTests
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
             [StorageFileSystem] = Set(),
-            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, StorageFileSystem),
+            [CameraAgentCommon] = Set(DeploymentContracts, AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, StorageFileSystem),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),

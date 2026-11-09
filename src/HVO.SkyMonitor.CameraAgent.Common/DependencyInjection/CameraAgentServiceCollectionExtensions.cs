@@ -248,6 +248,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAcquisitionCoordinator>();
         services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
         services.AddSingleton<EnvironmentalAssociationService>();
+        services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore>();
+        services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentRestartAutomationAdapter>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
         services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
