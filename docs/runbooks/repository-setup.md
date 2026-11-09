@@ -7,6 +7,12 @@ promotion, org-level self-hosted runners, and an independent review identity.
 Every step below was performed on `HVO.SkyMonitor` in September 2026; where a
 step has a known trap, the trap is recorded next to it.
 
+Coding threads stop at the tested candidate/evidence/independent-local-review
+handoff and push only when instructed. They never create PRs, even drafts,
+mark ready, set `hvo/reviewed-head`, or enqueue. Kepler alone performs those
+actions and controls formal review and any direct/auto-merge fallback. The
+setup/PR commands here are for Kepler/operator operation, not coding authority.
+
 The model in one picture:
 
 ```text
@@ -201,22 +207,38 @@ older walkthrough starts at draft creation. Use the skill's compact owner and
 reviewer evidence tables; copying workflows alone does not establish this
 process requirement.
 
+| Review tier | Scope | Required CLEAN reports on the same candidate SHA |
+| --- | --- | --- |
+| LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix with no HIGH concern | One Sol |
+| HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component; when unsure, HIGH | Sol and Opus |
+
+HIGH concerns override LOW categories. Apply this at each required local/formal
+stage; profiles and the A/B/C/M validation ladder do not replace reviewers.
+Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
+cannot substitute for the required named CLEAN reports. Only High/Medium
+review findings block; Critical is High. Lows become follow-up issues through
+Kepler. Incompleteness or missing required evidence is always at least Medium,
+never Low or deferrable. Required tests and CI remain separate gates.
+
 1. The owner reads the original GitHub issue, all discussion and acceptance
    criteria, governing specifications, and approved scope decisions. Roy's
    latest instructions win conflicts. Map every in-scope requirement to
    implemented behavior and local behavioral evidence at the candidate SHA,
-   including normal, negative, failure, recovery, and interaction cases as
-   relevant. Tests/criteria derived only from the implemented behavior are
+   including normal, negative, failure, cancellation, recovery, durable-state,
+   and interaction cases, with explicit N/A reasons where inapplicable.
+   Tests/criteria derived only from the implemented behavior are
    insufficient. Preserve assigned HIGH/LOW tiers and their validation depth.
 2. Prove resolution before requesting independent local review. The reviewer
    independently reads the original sources as well as the implementation and
    evidence, and reports completeness, supporting evidence, and every uncovered
-   requirement. A focused interaction review alone cannot establish full issue
-   resolution. A PR or draft means the declared scope is completed, tested
-   locally, and independently vetted locally by complexity.
+   requirement. For each requirement the reviewer independently checks normal,
+   negative, failure, cancellation, recovery, durable-state, and interaction
+   evidence or the explicit N/A reasons. A focused interaction review alone
+   cannot establish full issue resolution. A PR or draft means the declared
+   scope is completed, tested locally, and independently vetted by complexity.
 3. Missing in-scope behavior or required evidence means `CHANGES REQUESTED` and
    return to implementation, never a silent Low deferral. Keep or return any
-   existing PR to draft through its authorized owner; do not advance CI/queue.
+   existing PR to draft through Kepler; do not advance CI/queue.
    The loop is reject -> implementation -> local tests/evidence -> independent
    local review -> Kepler PR lifecycle. Formal review, green CI, coverage, and
    code-only CLEAN verdicts cannot carry implementation completeness.
@@ -228,10 +250,10 @@ process requirement.
 5. Accurately describe an authorized partial slice and track its remaining
    requirements. Keep the parent issue **OPEN** until its full scope is done;
    avoid automatic parent-closing references. Hand off candidate SHA, changed
-   files, evidence, limitations, and the independent local review result. When
-   Kepler owns PR/status/queue writes, stop at that handoff.
+   files, evidence, limitations, and the required tier's local CLEAN reports.
+   Stop at that handoff; Kepler alone owns PR/readiness/reviewed-head/queue writes.
 
-When merge queue support is enabled, eligibility attaches to the **CURRENT PR
+For the operated merge queue, eligibility attaches to the **CURRENT PR
 HEAD SHA**, not the target-branch tip or temporary group commit. Tip-behind
 or age alone does not invalidate head reviews, block submission/resubmission,
 or require automatic base-only synchronization or re-testing against latest
@@ -244,13 +266,33 @@ Completeness and required local/formal reviews remain mandatory. This
 documentation does not enable the queue or add executable CI, coverage, or
 test-harness enforcement.
 
+### Operated queue and separate fallback
+
+Kepler creates/maintains the draft after the complete local handoff, obtains
+required formal reviews, and marks ready only after convergence. After fresh
+required CI, Kepler revalidates the **CURRENT PR HEAD SHA**, completeness,
+required local/formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus on that SHA),
+passing required checks, and resolved conversations. Kepler alone publishes
+`hvo/reviewed-head` on that exact head, then calls GraphQL `enqueuePullRequest`
+with `expectedHeadOid` bound to it and verifies queue admission. Queue CI tests
+combined integration. Actual conflicts or changed heads require the applicable
+implementation/tests/reviews before Kepler advances them.
+
+Under the operated queue, `gh pr merge --merge` warns and **does not enqueue**.
+The [Kepler queue procedure](../../.agents/skills/pr-lifecycle/SKILL.md#keplers-operated-merge-queue-route)
+uses GraphQL. Direct merge or auto-merge is a separate Kepler-only fallback
+when the queue is unavailable or an operator explicitly selects it; it retains
+the same completeness, named-reviewer, check, and conversation requirements.
+Neither fallback nor queue admission imposes the deferred latest-base
+submission/resubmission policy. No coding thread performs either route.
+
 ## 7. Prove it before calling it done
 
 In this order, because each step depends on the last:
 
 1. For the setup-verification change, first satisfy the completeness contract
    above with candidate evidence and a passing independent local review. Only
-   then have the authorized PR owner open a trivial draft PR to `development/v1`.
+   then have Kepler open a trivial draft PR to `development/v1`.
    Preflight runs hosted; Build and Unit
    starts on a `hvo-skymonitor` runner after review and the ready transition.
    Confirm the job's `runner_group_name`.
@@ -258,8 +300,14 @@ In this order, because each step depends on the last:
    must show the App slug and that the token sees exactly this repository.
 3. Commit a review body under `.agentcontrol/reviews/PR-<n>-R0-<head8>.md`,
    dispatch `post-review`, confirm the comment author is `hvo-agentcontrol[bot]`.
-   Delete the file before marking ready.
-4. Merge. Wait for the push run on `development/v1` to go green.
+   Delete the file before marking ready. These are Kepler's setup-verification
+   operations. If staging/deletion changes the candidate SHA, obtain applicable
+   local evidence and the required tier's reviews on that new candidate before
+   advancement; never carry old CLEAN reports or the gate to a new head.
+4. Kepler revalidates, publishes the reviewed-head gate, and enqueues through
+   GraphQL using the operated route above. Kepler monitors queue CI/merge and
+   the push run on `development/v1`; use direct/auto-merge only as the explicitly
+   selected fallback.
 5. `gh workflow run promote-main.yml`. Confirm a draft promotion PR opens,
    authored by the bot. After review and operator authorization for the promotion
    window, mark it ready and verify `main`'s full pipeline. Merge only when green,
