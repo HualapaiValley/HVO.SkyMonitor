@@ -152,6 +152,11 @@ internal sealed class FrameProcessingWorker
             logger.CaptureProcessingGraphCompleted(outcome);
             return result;
         }
+        CaptureLaneHandlerResult AbandonStorageMismatch(string reason)
+        {
+            logger.CaptureLaneTerminal("standard", "abandoned", reason);
+            return Finish(CaptureLaneHandlerResult.Abandon(reason));
+        }
         try
         {
             var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
@@ -208,8 +213,8 @@ internal sealed class FrameProcessingWorker
             {
                 if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep || rawCapture?.Manifest.Scene is null))
                     continue;
-                // A scene commit is required for recovery even if the graph normally treats that node as optional.
-                var required = node.Required || storagePolicyMismatch;
+                // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
+                var required = node.Required;
                 context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
                 var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
@@ -250,6 +255,8 @@ internal sealed class FrameProcessingWorker
                     {
                         return Finish(CaptureLaneHandlerResult.Terminal(dependencyReason));
                     }
+                    if (storagePolicyMismatch)
+                        return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                     continue;
                 }
 
@@ -291,6 +298,8 @@ internal sealed class FrameProcessingWorker
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.skipped"));
                         }
+                        if (storagePolicyMismatch && durable.Status == DurableProcessingNodeStatus.Skipped)
+                            return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                         continue;
                     }
                     if (!memoryOnly && durable?.Status == DurableProcessingNodeStatus.TerminalFailure)
@@ -305,6 +314,8 @@ internal sealed class FrameProcessingWorker
                         {
                             return Finish(CaptureLaneHandlerResult.Terminal(durable.Reason ?? "processing.terminal"));
                         }
+                        if (storagePolicyMismatch)
+                            return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                         continue;
                     }
                 }
@@ -442,7 +453,7 @@ internal sealed class FrameProcessingWorker
                     reason = "processing.optional-exhausted";
                 }
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
-                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live)
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-degraded";
@@ -537,13 +548,19 @@ internal sealed class FrameProcessingWorker
                 }
                 else if (status == DurableProcessingNodeStatus.RetryableFailure)
                 {
+                    if (storagePolicyMismatch)
+                        return Finish(RetryOrWait(reason ?? "processing.retryable"));
                     deferredRetryReason ??= reason ?? "processing.retryable";
+                }
+                else if (storagePolicyMismatch && status is
+                    (DurableProcessingNodeStatus.TerminalFailure or DurableProcessingNodeStatus.Skipped))
+                {
+                    return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                 }
             }
             if (storagePolicyMismatch)
             {
-                logger.CaptureLaneTerminal("standard", "abandoned", CaptureStoragePolicy.LiveMismatchLaneReason);
-                return Finish(CaptureLaneHandlerResult.Abandon(CaptureStoragePolicy.LiveMismatchLaneReason));
+                return AbandonStorageMismatch(CaptureStoragePolicy.LiveMismatchLaneReason);
             }
             return Finish(deferredRetryReason is null
                 ? CaptureLaneHandlerResult.Success

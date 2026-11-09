@@ -36,17 +36,28 @@ even if that graph's Storage no longer matches the active profile. Before
 standard processing, CameraAgent checks the current profile. On a mismatch it
 first commits the capture-time ProjectedScene product through the existing durable
 node path, when the capture carries scene evidence. Image and Storage nodes do not
-run. A missing scene stage remains retryable under the existing live-work limits;
-the capture is not reported as an intact, recoverable skip before its required
-scene evidence commits. Once that evidence is committed, the mismatch abandons
+run. A missing scene stage remains retryable under the existing live-work limits.
+A required scene node keeps its normal required-node failure behavior. An optional
+scene node is not promoted to required: if its stage stays missing, corrupt or
+mismatched through the retry limit, or it has another terminal/skipped outcome,
+standard work expires with lane reason `storage-policy-mismatch-scene-unavailable`
+and execution reason `processing.storage-policy-mismatch-scene-unavailable`.
+This optional failure does not quarantine the lane or refuse the next raw capture,
+including after restart. The node retains its failure evidence; no scene is invented.
+The capture is not reported as an intact, scene-recoverable skip before its scene
+evidence commits. Once that evidence is committed, the mismatch abandons
 the remaining standard processing with lane reason `storage-policy-mismatch` and
 execution reason `processing.storage-policy-mismatch`. Raw bytes and sidecars
-remain retained under the existing raw retention/upload rules; this condition does
-not turn raw ingress unhealthy or stop recovery at the first incompatible capture.
+remain retained under the existing raw retention/upload rules. Storage-policy
+skips, including exhausted optional scenes, do not turn raw ingress unhealthy or
+stop recovery at the first incompatible capture. Genuine raw corruption or a
+required-node failure retains the normal evidence/required-lane failure rules.
 Later compatible work can continue. No Storage publication runs for skipped work.
-Processing health reports `active-storage-policy-mismatch` while the active graph
-still differs from the profile, with one error log on entry and one recovery log
-when it clears, rather than appearing healthy while captures keep being skipped.
+For a Named graph, processing health reports `active-storage-policy-mismatch`
+while it still differs from the profile, with one error log on entry and one recovery
+log when it clears. Configured-basic refreshes from the active profile in the same
+health check and needs no manual reconciliation or activation; a routine profile
+change in that mode raises no mismatch alarm.
 
 For a planned Storage change:
 
@@ -62,6 +73,9 @@ For a planned Storage change:
    refreshes that source from the active profile while acquisition stays stopped;
    it preserves the active Named graph. No capture or restart is needed. This
    scalar panel does not edit those collections.
+   In configured-basic mode, the profile refresh supplies and selects the matching
+   revision automatically; manual graph reconciliation/activation is only needed
+   when a Named graph remains active.
 3. Resume acquisition after the matching graph is active. Pending work bound to
    an incompatible old graph is skipped; activation resumes compatible/new work
    and does not silently replay or rewrite old captures. Only matching-policy
@@ -70,7 +84,10 @@ For a planned Storage change:
 Find skipped captures in **Operations → Pipeline → Executions**
 (`/operations/pipeline/executions`). Open an expired live execution and check
 `processing.storage-policy-mismatch`; its capture/artifact IDs identify the
-retained source. From that capture's archive page, use **Submit replay**, choose
+retained source. The `processing.storage-policy-mismatch-scene-unavailable`
+variant means an optional scene could not commit. A replay graph requiring that
+scene cannot replay this capture; archived replay cannot reconstruct the missing
+scene from a transient stage or current settings. From that capture's archive page, use **Submit replay**, choose
 the reconciled validated/active revision, review the frozen inputs and confirm.
 Replay uses the committed capture-time scene product, including after restart;
 it does not recreate a scene from current settings or rewrite the original raw

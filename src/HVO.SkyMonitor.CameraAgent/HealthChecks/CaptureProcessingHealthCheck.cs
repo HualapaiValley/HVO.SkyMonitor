@@ -47,7 +47,7 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
                 "Capture processing is completing durable graphs.", data),
             CaptureProcessingAvailability.Degraded => HealthCheckResult.Degraded(
                 snapshot.StoragePolicyMismatchActiveRevisionId is not null
-                    ? "The active processing graph Storage settings differ from the capture profile; reconcile and activate a matching graph. Raw and capture-time scene evidence are retained while other standard processing is skipped."
+                    ? "The active processing graph Storage settings differ from the capture profile; reconcile and activate a matching graph. Raw is retained while other standard processing is skipped; inspect execution reasons for unavailable optional scene evidence."
                     : snapshot.SupersededActiveRevisionId is null
                     ? "Capture processing has retryable graph work."
                     : "The active processing graph revision was compiled by an earlier version; activate a compatible revision or roll back to configured-basic.",

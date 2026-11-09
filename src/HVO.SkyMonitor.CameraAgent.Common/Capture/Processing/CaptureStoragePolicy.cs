@@ -12,6 +12,8 @@ public static class CaptureStoragePolicy
 
     public const string LiveMismatchLaneReason = "storage-policy-mismatch";
 
+    public const string SceneUnavailableLaneReason = "storage-policy-mismatch-scene-unavailable";
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }

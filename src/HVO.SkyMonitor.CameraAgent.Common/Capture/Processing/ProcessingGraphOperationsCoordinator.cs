@@ -229,7 +229,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     {
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         if (profile is null) return null;
-        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        var registry = await GetRegistryAsync(cancellationToken).ConfigureAwait(false);
+        // Configured-basic follows the profile automatically; only a Named selection needs operator reconciliation.
+        if (registry.Mode == ProcessingGraphRegistryMode.ConfiguredBasic) return null;
         var revision = await _store.ReadRevisionAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
         try
         {

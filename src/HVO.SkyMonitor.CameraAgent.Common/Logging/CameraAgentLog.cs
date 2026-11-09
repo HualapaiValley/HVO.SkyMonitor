@@ -203,7 +203,7 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2098, Level = LogLevel.Information, Message = "Processing graph selection no longer uses superseded revision {RevisionId}; standard processing resumes")]
     public static partial void ProcessingActiveRevisionSupersededCleared(this ILogger logger, string revisionId);
 
-    [LoggerMessage(EventId = 2100, Level = LogLevel.Error, Message = "Active processing graph revision {RevisionId} has Storage settings that differ from the active capture profile. Raw captures and capture-time scene evidence are retained, but other standard processing is skipped. Pause acquisition, drain in-flight processing, then reconcile and activate a matching graph before resuming.")]
+    [LoggerMessage(EventId = 2100, Level = LogLevel.Error, Message = "Active processing graph revision {RevisionId} has Storage settings that differ from the active capture profile. Raw is retained; other standard processing is skipped after scene handling. Inspect execution reasons for unavailable optional scene evidence. Pause acquisition, drain in-flight processing, then reconcile and activate a matching graph before resuming.")]
     public static partial void ProcessingActiveStoragePolicyMismatch(this ILogger logger, string revisionId);
 
     [LoggerMessage(EventId = 2101, Level = LogLevel.Information, Message = "Active processing graph Storage policy no longer conflicts with the capture profile (previous revision {RevisionId}); compatible standard processing can resume")]
