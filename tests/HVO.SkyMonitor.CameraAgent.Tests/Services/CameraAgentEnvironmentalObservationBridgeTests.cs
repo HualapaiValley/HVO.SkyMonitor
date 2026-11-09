@@ -22,6 +22,23 @@ public sealed class CameraAgentEnvironmentalObservationBridgeTests
     private static readonly DateTimeOffset Epoch = new(2026, 7, 17, 6, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public async Task MissingLineageConflictRetriesWithoutTreatingIdentityConflictsAsRetryable()
+    {
+        var responses = new Queue<HttpResponseMessage>([
+            Response(HttpStatusCode.Conflict, "{\"reasonCode\":\"environment.lineage-missing\"}"u8.ToArray()),
+            Response(HttpStatusCode.Conflict, "{\"reasonCode\":\"environment.content-conflict\"}"u8.ToArray()),
+            Response(HttpStatusCode.Conflict, "{\"reasonCode\":\"environment.content-conflict\",\"reasonCode\":\"environment.lineage-missing\"}"u8.ToArray())]);
+        using var bridge = CreateBridge(new StubHandler(_ => responses.Dequeue()));
+        var missing = await bridge.SendAsync(CreateObservation(), CancellationToken.None).ConfigureAwait(false);
+        var conflict = await bridge.SendAsync(CreateObservation(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalObservationTransportDisposition.Retry, missing.Disposition);
+        Assert.AreEqual("environment.lineage-missing", missing.Reason);
+        Assert.AreEqual(EnvironmentalObservationTransportDisposition.Terminal, conflict.Disposition);
+        Assert.AreEqual(EnvironmentalObservationTransportDisposition.Terminal,
+            (await bridge.SendAsync(CreateObservation(), CancellationToken.None).ConfigureAwait(false)).Disposition);
+    }
+
+    [TestMethod]
     public async Task MatchingAcknowledgementIsAcceptedAndMalformedOrMismatchedAcknowledgementRetries()
     {
         var observation = CreateObservation();

@@ -17,6 +17,26 @@ public sealed class EnvironmentalObservationContractTests
         CultureInfo.InvariantCulture);
 
     [TestMethod]
+    [DataRow(EnvironmentalObservationKind.SkyTemperature, EnvironmentalObservationUnit.DegreesCelsius, -30d)]
+    [DataRow(EnvironmentalObservationKind.SeaLevelPressure, EnvironmentalObservationUnit.Pascals, 101325d)]
+    public void VersionThreeAddsAdapterKindsAndSampleMetadataWithoutChangingLegacyEnvelopes(
+        EnvironmentalObservationKind kind, EnvironmentalObservationUnit unit, double numeric)
+    {
+        var legacy = CreateObservation();
+        var observation = legacy with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            Value = new(kind, unit, numeric, null, EnvironmentalObservationQuality.Good,
+                Metadata: new(legacy.ObservedAtUtc, 15))
+        };
+        Assert.IsTrue(EnvironmentalObservationJson.Validate(observation).IsValid);
+        Assert.IsNotNull(EnvironmentalObservationJson.Parse(EnvironmentalObservationJson.Serialize(observation)).Observation);
+        Assert.IsFalse(EnvironmentalObservationJson.Validate(observation with { SchemaVersion = EnvironmentalObservationSchemaVersions.V1 }).IsValid);
+        Assert.IsFalse(EnvironmentalObservationJson.Validate(observation with { SchemaVersion = EnvironmentalObservationSchemaVersions.V2 }).IsValid);
+        Assert.IsFalse(Encoding.UTF8.GetString(EnvironmentalObservationJson.Serialize(legacy)).Contains("metadata", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void CanonicalRoundTripAndContentIdentityAreStable()
     {
         var observation = CreateObservation();
@@ -411,7 +431,7 @@ public sealed class EnvironmentalObservationContractTests
         var caseCollidingMember = source.Insert(1, "\"SchemaVersion\":\"other\",");
         var unsupportedSchema = source.Replace(
             "\"schemaVersion\":\"environmental-observation-v1\"",
-            "\"schemaVersion\":\"environmental-observation-v3\"",
+            "\"schemaVersion\":\"environmental-observation-v4\"",
             StringComparison.Ordinal);
         var oversized = Encoding.UTF8.GetBytes(source + new string(' ', EnvironmentalObservationJson.MaximumPayloadBytes));
 
@@ -527,7 +547,7 @@ public sealed class EnvironmentalObservationContractTests
     public void TargetlessFactValidationCoversStrictBoundsVersionsAndLineage()
     {
         var fact = CreateFact(CreateObservation());
-        var unsupported = fact with { SchemaVersion = "environmental-observation-v3" };
+        var unsupported = fact with { SchemaVersion = "environmental-observation-v4" };
         var v2 = fact with { SchemaVersion = EnvironmentalObservationSchemaVersions.V2 };
         var derived = v2 with
         {

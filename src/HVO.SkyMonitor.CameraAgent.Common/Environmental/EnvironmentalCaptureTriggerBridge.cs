@@ -26,18 +26,8 @@ public sealed class EnvironmentalCaptureTriggerBridge(
             _ = service.TryEnqueue(request);
             return;
         }
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(budget));
-        try
-        {
-            _ = await coordinator.AcquireTriggerAsync(
-                request.Trigger,
-                request.ObservedAtUtc,
-                cancellationToken: timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-        }
+        _ = await coordinator.AcquireTriggerWithBudgetAsync(request.Trigger, request.ObservedAtUtc, budget,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask AfterCaptureAsync(
