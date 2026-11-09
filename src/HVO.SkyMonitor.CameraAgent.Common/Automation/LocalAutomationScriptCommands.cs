@@ -26,7 +26,11 @@ public sealed class LocalAutomationScriptCommands(ILocalAutomationStore store,
             LocalAutomationContract.UnknownDefinitionReasonCode, null, state);
         if (definition.Definition.TaskKind != LocalAutomationTaskKind.CustomScript)
             return new(LocalAutomationCommandStatus.Invalid, ScriptOnlyReason, null, state);
-        // The store owns actor/idempotency validation, version/availability checks, queue bounds and replay.
+        // Bind the script-kind check to the requested revision. The store rechecks this version
+        // atomically: a concurrent replacement must never turn a script-only request into a built-in run.
+        if (definition.Version != request.ExpectedVersion)
+            return new(LocalAutomationCommandStatus.Conflict, LocalAutomationContract.ExpectedVersionConflictReasonCode, null, state);
+        // The store owns actor/idempotency validation, atomic version/availability checks, queue bounds and replay.
         return await occurrences.RunNowAsync(request, cancellationToken).ConfigureAwait(false);
     }
 

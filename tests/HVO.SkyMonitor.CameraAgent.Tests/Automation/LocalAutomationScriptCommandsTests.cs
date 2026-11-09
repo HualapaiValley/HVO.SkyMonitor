@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Services;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
@@ -36,6 +37,46 @@ public sealed class LocalAutomationScriptCommandsTests
         await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
         await fixture.Worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single().Outcome);
+    }
+
+    [TestMethod]
+    [DataRow(1L)]
+    [DataRow(2L)]
+    public async Task ScriptRunNowCannotCrossAConcurrentReplacementWithABuiltIn(long expectedVersion)
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var store = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        var occurrences = store.As<ILocalAutomationOccurrenceStore>();
+        async ValueTask<LocalAutomationOperatorState> ReadThenReplaceAsync(CancellationToken token)
+        {
+            var oldState = await fixture.Store.GetStateAsync(token).ConfigureAwait(false);
+            var replacement = await fixture.Store.SaveAsync(ScriptControlsFixture.Save("built-in") with
+            { TaskKind = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition, ExpectedVersion = 1, IdempotencyKey = "replace" }, token).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, replacement.Status);
+            return oldState;
+        }
+        store.Setup(item => item.GetStateAsync(It.IsAny<CancellationToken>())).Returns(ReadThenReplaceAsync);
+        occurrences.Setup(item => item.FindRunNowReplayAsync(It.IsAny<LocalAutomationRunNowRequest>(), It.IsAny<CancellationToken>()))
+            .Returns((LocalAutomationRunNowRequest request, CancellationToken token) => fixture.Store.FindRunNowReplayAsync(request, token));
+        occurrences.Setup(item => item.RunNowAsync(It.IsAny<LocalAutomationRunNowRequest>(), It.IsAny<CancellationToken>()))
+            .Returns((LocalAutomationRunNowRequest request, CancellationToken token) => fixture.Store.RunNowAsync(request, token));
+        var commands = new LocalAutomationScriptCommands(store.Object, fixture.Worker);
+        var result = await commands.RunNowAsync(ScriptControlsFixture.RunNow() with { ExpectedVersion = expectedVersion }, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict, result.Status);
+        Assert.AreEqual(LocalAutomationContract.ExpectedVersionConflictReasonCode, result.ReasonCode);
+        var state = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(2L, state.Definitions.Single().Version);
+        Assert.AreEqual(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition, state.Definitions.Single().Definition.TaskKind);
+        Assert.IsEmpty(state.Runs, "Neither a stale script revision nor a newer built-in revision may be queued through this script control.");
+        occurrences.Verify(item => item.RunNowAsync(It.IsAny<LocalAutomationRunNowRequest>(), It.IsAny<CancellationToken>()),
+            expectedVersion == 2 ? Times.Never() : Times.Once());
+        var positiveControl = await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow("builtin-control") with
+        { ExpectedVersion = 2 }, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, positiveControl.Status,
+            "The fixture must prove the replacement really supports run-now through its owning store contract.");
+        Assert.AreEqual(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition, positiveControl.State.Runs.Single().Occurrence!.Definition.TaskKind);
     }
 
     [TestMethod]
