@@ -37,7 +37,7 @@ local implementation
   -> Kepler PR lifecycle (when authorized)
   -> draft PR
   -> formal review convergence or permitted unavailability waiver
-  -> final target-branch synchronization and review if the target advanced
+  -> resolve actual merge/product conflicts; test and review resulting head changes
   -> ready for review
   -> target-branch protected CI
   -> merge, synchronize main, and clean up
@@ -51,7 +51,7 @@ reviewed head without explicit operator approval.
 ## Local Work and Draft PR
 
 1. Inspect the worktree, branch, target branch, issue, dependencies, and related
-   PRs. Start from the current target branch. Read the original issue including
+   PRs. Record the target ref and branch point. Read the original issue including
    its discussion and acceptance criteria, not just the planned implementation.
 2. Use the risk-tiered validation ladder: focused inner-loop tests, then one
    tier-appropriate candidate gate before the first push. Record the commands
@@ -200,9 +200,10 @@ Original issue body, discussion, governing sources and read/snapshot time:
 Approved scope, exclusions, and remaining parent requirements:
 Candidate completeness mapping and prior local independent review report:
   (report N/A for the first local review)
-Target base SHA: (the tip of the base branch read from the repository by
-  branch name; retained for staleness checks, not the initial range's left
-  endpoint, which is the computed merge base)
+Target base SHA: (the observed tip of the base branch read by branch name;
+  provenance and mergeability context, not a latest-base submission gate or
+  the initial range's left endpoint, which is the computed merge base;
+  tip movement alone does not invalidate unchanged-head review evidence)
 Target base ref: (the remote and branch used to transport that tip, verified
   to contain it; transport only, never the source of the endpoint)
 PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
@@ -567,11 +568,18 @@ the declared scope, preserved through subsequent reviewed changes.
 
 When the queue is enabled, eligibility is evaluated on the **CURRENT PR HEAD
 SHA**, not the destination-branch tip or synthetic merge-group SHA. A PR being
-behind the target tip alone does not invalidate reviews bound to its unchanged
-head. New commits on the PR do require the applicable evidence and review.
-Queue CI validates the combined group separately; existing target-sync rules
-still govern a synchronization that changes the head. This does not authorize
-queue cutover, change queue gates, or substitute group CI for completeness.
+behind the target tip, or its age, alone does not invalidate unchanged-head
+reviews, require automatic base-only synchronization or re-testing against
+latest `development/v1`, or block submission/resubmission. Roy deferred the
+stricter latest-base pre-submit policy: monitor merge queue and CI first; adopt
+stricter policy only if evidence shows a need and Roy authorizes it. This rule
+governs any synchronization language elsewhere in the lifecycle procedure.
+
+Actual CONFLICTING merges and real product conflicts still require resolution.
+New commits on the PR require applicable local evidence and independent review,
+including base-sync review when integration changes the head. Queue CI validates
+the combined group separately. This does not authorize queue cutover, change
+queue gates, or substitute group CI for completeness or required reviews.
 
 ## Auto-Merge Finalization
 
@@ -579,13 +587,16 @@ This is the default route while the repository allows auto-merge
 (`allow_auto_merge` is true). It replaces the finalization lock below, because
 GitHub serializes merges itself. On `development/v1`, branch protection
 requires:
-- an up-to-date head;
+
 - green required checks;
 - resolved conversations;
 - the `hvo/reviewed-head` commit status on the exact head being merged.
 
 That status is the merge gate. It is published only on a head whose review
 converged, so on `development/v1` no other commit can merge, whoever pushes it.
+Any configured direct-merge freshness restriction governs merge execution;
+waiting for queue integration does not impose owner base-only synchronization
+before submission/resubmission or invalidate unchanged-head reviews.
 
 Other targets don't require the status today. `main` requires only
 `Required CI`, so the status adds no server-side guarantee there. PRs into
@@ -596,8 +607,9 @@ The operator's tooling (`hvo finalize`) performs steps 2–5 in one command. By
 hand:
 
 1. When review has converged and no ordinary product correction is expected,
-   fetch the target and confirm the PR is mergeable (`mergeable: true`; stop on
-   conflicts).
+   confirm the current PR head matches the reviewed SHA and the PR is
+   structurally mergeable (`mergeable: true`; retry a bounded unknown result,
+   stop on actual conflicts). Being behind the tip alone is not a conflict.
 2. Mark the PR ready. That transition starts the protected CI profile.
 3. Wait until the required checks pass on the reviewed head **in runs started
    after the ready transition**. The draft's skipped Build and Unit result does
@@ -615,9 +627,10 @@ hand:
 If a required check fails, return the PR to draft before correcting it, so the
 correction doesn't run protected CI before review.
 
-When the target advances while the PR waits, the operator's merge-train
-automation brings it current. It acts on one queued PR at a time and
-synchronizes by merge, never by rebase or force-push:
+Where the operator's existing merge-train automation performs an integration
+merge, it acts on one queued PR at a time, never by rebase or force-push. These
+automation rules do not require an owner to sync before submission/resubmission
+merely because the target tip moved:
 
 - **It pushes the merge** only when two conditions hold. First, the only
   conflicts are in `tests/*/test-categories.json`, the
@@ -631,9 +644,9 @@ synchronizes by merge, never by rebase or force-push:
 - **It hands the PR back** in every other case: a conflict elsewhere, a changed
   non-count diff, a failed required check, or required checks cancelled twice.
   It disables auto-merge, returns the PR to draft and comments the reason. The
-  owner then follows steps 2–4 of the lock procedure below (merge, local gates,
-  base-sync review) without taking the lock, and re-enters this route on the
-  new reviewed head.
+  owner diagnoses the cause and follows applicable conflict-resolution, local
+  gate, and review steps below without taking the lock, then re-enters this
+  route on the reviewed head. A failed check alone does not mandate a base merge.
 
 Auto-merge does **not** switch itself off when someone with write access
 pushes; pinning it to the reviewed head is checked only when it is enabled. A
@@ -744,13 +757,15 @@ protected CI, or merge.
    query fields, or put the encoded query in the URL; otherwise `-f` fields
    default to a POST and can accidentally target issue creation instead of
    performing a read.
-2. Fetch the target branch and compare its exact SHA with the target-base SHA
-   already covered by the converged review. When they are equal, append `base
-   unchanged at <sha>; no merge and no base-sync review required` and proceed
-   without changing the head. When the target advanced at all, merge it into the
-   topic branch; do not rebase or force-push reviewed history.
-3. After an advancing-target merge, resolve conflicts, run affected local gates,
-   and obtain a base-sync review. Use `standard` when there was no conflict,
+2. Verify the current PR head still matches its reviewed SHA and inspect
+   structural mergeability and any reported product conflict. Resolve actual
+   CONFLICTING merges or real product conflicts; target-tip movement or age
+   alone requires no base merge, re-testing, or new review. If resolution needs
+   a target merge, preserve existing conflict resolutions and reviewed history;
+   do not rebase or force-push it.
+3. After conflict resolution or another authorized integration changes the
+   head, run affected local gates and obtain a base-sync review. Use `standard`
+   when there was no conflict,
    shared-file/contract overlap, or material changed interaction; use `deep` for
    any of those conditions. Run the CI-control guards on the merged head before
    requesting that review, and do not expect the review to substitute for them:
@@ -759,19 +774,16 @@ protected CI, or merge.
    separately is violated by their union. PR #740 is the case; its base-sync
    reviewer said so itself rather than letting a CLEAN verdict look wider than
    it was.
-4. Fetch again and prove the target base and PR head are current, mergeable, and
-   reviewed. If either moved, repeat synchronization or review as applicable.
+4. Re-read the current PR head and confirm it is mergeable and reviewed. A
+   changed head requires applicable evidence and review; an advanced target
+   alone does not require synchronization or re-testing.
    At this draft pre-ready gate, use the provider's structural mergeability
    result: for GitHub, require `mergeable: true`, retry a bounded `null` or
    unknown result, and stop on `false` or conflicts. Do not require
-   `mergeable_state: clean` here. Two states are ordinary at this gate and they
-   are not the same thing. The intentionally failing draft `Required CI`
+   `mergeable_state: clean` here. The intentionally failing draft `Required CI`
    placeholder keeps policy state `blocked` until the ready transition starts
-   protected CI, and that resolves itself at the ready transition. `behind` has
-   a different cause and a different remedy: the target branch advanced, which
-   is step 2's trigger, and it does not resolve itself. Read the value rather
-   than assuming which one applies. Measured on 2026-09-09 across the four open
-   drafts, three were `blocked` and one was `behind`.
+   protected CI. `behind` alone does not invalidate head reviews or require
+   base-only synchronization; actual merge or product conflicts still block.
 5. Mark the PR ready only now. This transition starts the target branch's
    authoritative protected CI profile: Development v1 checks for v1 PRs,
    classifier-selected full CI for main/release PRs.
@@ -781,9 +793,11 @@ protected CI, or merge.
    step 4. The operator's merge decision is unchanged: publishing the gate
    doesn't merge anything.
 
-If the target branch advances during CI, cancel the stale run when possible,
-return the PR to draft, release the lock, synchronize and review again, then
-re-enter finalization. A product correction also releases the lock. A diagnosed
+If actual conflicts or a product correction require a changed PR head during
+CI, return the PR to draft, release the lock, resolve, test, and review the new
+head before re-entering finalization. Cancel checks tied to a superseded head
+when possible. Target-tip movement alone does not cancel head reviews or
+require this loop; queue CI handles combined integration. A diagnosed
 infrastructure-only, timeout, cancellation, or flaky failure on the same SHA may
 retain it for one bounded rerun. Releasing the lock means removing the
 `workflow:finalizing` label and recording the reason in the ledger.
@@ -800,8 +814,8 @@ retain it for one bounded rerun. Releasing the lock means removing the
   it on a head that review didn't converge on, or before fresh required checks
   have passed.
 - Merge only when the current head equals the reviewed or precisely waived head,
-  the target branch is still current, the PR is mergeable, required checks are
-  green for that exact head, and actionable conversations are resolved.
+  the PR has no unresolved merge or product conflicts, applicable required
+  head/queue checks are green, and actionable conversations are resolved.
 - After merge, confirm closure only for fully resolved issues. For a partial
   slice, record what shipped and keep its incomplete parent issue open. Update
   the owning roadmap epic when applicable, and synchronize local `main`.

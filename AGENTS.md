@@ -218,11 +218,10 @@ must not redefine its policy inconsistently.
   unfinished implementation or acceptance discovery onto formal review or CI.
 - Every PR uses a draft-first convergence cycle after the local completeness
   and independent-review gates pass. Protected CI must not run until
-  review has converged and the target branch has been finally synchronized and
-  integration-reviewed when synchronization changes the target base. A freshly
-  fetched target SHA already covered by the converged review needs a recorded
-  unchanged-base proof, not a redundant base-sync review. Use a
-   PR-owner-requested independent human or agent reviewer, or an
+  review has converged on the current PR head and any actual merge or product
+  conflicts are resolved, tested, and independently reviewed. Target-tip
+  movement alone does not require synchronization, re-testing, or a new review.
+  Use a PR-owner-requested independent human or agent reviewer, or an
   equivalent execution route that can bind the requested immutable range and
   record its actual provider, model, and reasoning effort, for convergence
   evidence. Provider-side PR bots may supplement this with a current-head audit
@@ -255,10 +254,12 @@ must not redefine its policy inconsistently.
   merge gate there; `main` doesn't require it, and promotion PRs stay
   owner-approved. Then
   merge, or enable auto-merge (merge commit) pinned to that head. Branch
-  protection also enforces green required checks, an up-to-date head and
-  resolved conversations. The PR lifecycle skill gives the steps and commands.
-  - When the target branch advances, the operator's merge-train automation
-    merges it into one queued PR at a time.
+  protection and queue integration still govern merge execution, including
+  required checks and resolved conversations; they do not add a latest-base
+  submission requirement. The PR lifecycle skill gives the steps and commands.
+  - Where the operator's existing merge-train automation performs an integration
+    merge, it handles one queued PR at a time. This is not an owner requirement
+    to sync before submission or resubmission merely because the tip moved.
   - It pushes that merge only when two conditions hold. First, the only
     conflicts are in the test-count inventories, the CI runbook totals and
     CHANGELOG lines. Second, the non-count diff is byte-identical to the
@@ -266,23 +267,29 @@ must not redefine its policy inconsistently.
     needs no base-sync review.
   - In every other case, including a failed required check, the automation
     disables auto-merge, returns the PR to draft and hands it back to the
-    owner. The owner synchronizes, obtains the base-sync review, and enables
-    auto-merge again on the new reviewed head.
+    owner. The owner fixes the reported cause, resolves actual conflicts, and
+    obtains affected local evidence and required review for resulting head
+    changes before enabling auto-merge on that reviewed head.
   - Auto-merge does not switch itself off on a push with write access. Turn it
     off (`gh pr merge <n> --disable-auto`) before pushing to a finalized PR. The
     automation also withdraws it from any head it wasn't enabled for.
 - When the merge queue is enabled, eligibility is tied to the **CURRENT PR HEAD
-  SHA**, not the target-branch tip or the temporary queue commit. Being behind
-  the target tip alone does not invalidate reviews of an unchanged PR head.
-  Actual head changes require the applicable evidence and review; target
-  synchronization and queue CI retain their separate contracts. This rule does
-  not authorize queue cutover or change executable gates.
+  SHA**, not the target-branch tip or the temporary queue commit. Tip-behind or
+  age alone does not invalidate head reviews or require automatic base-only
+  synchronization, re-testing against the latest `development/v1`, or blocking
+  submission/resubmission. Roy deferred a stricter latest-base pre-submit policy:
+  monitor merge queue and CI first; adopt stricter policy only if evidence shows
+  a need and Roy authorizes it. Actual CONFLICTING merges and real product
+  conflicts still require resolution, local tests, and required independent
+  review of resulting head changes. Queue CI validates integration separately.
+  This rule does not authorize queue cutover or change executable gates.
 - When auto-merge is unavailable or the operator reserves the merge, use the
   finalization lock. Only one PR may hold the repository-wide finalization
-  lock. Acquire it before final target synchronization and hold it through any
-  required base-sync review, protected CI, and merge. If the target branch
-  advances, return the PR to draft, release the lock, synchronize and review
-  again, then run CI on the new reviewed head.
+  lock. Acquire it before finalization and hold it through any required conflict
+  resolution, resulting head review, protected CI, and merge. If actual
+  conflicts or a product correction require a head change, return the PR to
+  draft, release the lock, resolve, test, and review before CI on the new head.
+  Target-tip movement alone does not trigger this loop.
 - Opening a PR assigns its implementing agent ownership of the complete lifecycle:
   request review, actively monitor review and checks, disposition findings, drive
   corrections and bounded rereviews, mark the converged head ready, monitor final

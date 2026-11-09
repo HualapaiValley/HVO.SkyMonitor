@@ -233,10 +233,16 @@ process requirement.
 
 When merge queue support is enabled, eligibility attaches to the **CURRENT PR
 HEAD SHA**, not the target-branch tip or temporary group commit. Tip-behind
-alone does not invalidate head reviews. An actual PR-head change needs the
-applicable evidence and review; group CI and target synchronization retain
-their separate contracts. This documentation does not enable the queue or add
-executable CI, coverage, or test-harness enforcement.
+or age alone does not invalidate head reviews, block submission/resubmission,
+or require automatic base-only synchronization or re-testing against latest
+`development/v1`. Roy deferred a stricter latest-base pre-submit policy:
+monitor merge queue and CI first; adopt stricter policy only if evidence shows
+a need and Roy authorizes it. Actual CONFLICTING merges and real product
+conflicts still require resolution; resulting head changes need applicable
+local tests and independent review. Group CI handles combined integration.
+Completeness and required local/formal reviews remain mandatory. This
+documentation does not enable the queue or add executable CI, coverage, or
+test-harness enforcement.
 
 ## 7. Prove it before calling it done
 
