@@ -190,6 +190,27 @@ internal sealed class AnnotationCaptureProcessingStep(
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
 
+        HorizonObstructionSceneSelection? curatedHorizon = null;
+        if (context.Config.Rig.HorizonObstruction is { } horizon)
+        {
+            var observer = HorizonCaptureObserver.Resolve(context, serviceProvider);
+            var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer,
+                context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance());
+            if (projectedScene is not null)
+            {
+                var eligibility = new HorizonObstructionSceneEligibility(evaluator, context.Config.Rig, projectedScene);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(eligibility, objects, segments);
+                if (projectedScene.DeepSky is not null) curatedHorizon = eligibility.SelectDeepSky(projectedScene);
+                context.RecordCanonicalInput("horizon-scene-eligibility", "1", eligibility.IdentitySha256);
+            }
+            else
+            {
+                var imageTransform = ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(evaluator, imageTransform, objects, segments);
+            }
+            context.RecordCanonicalInput("horizon-obstruction", HorizonObstructionProfile.CurrentSchemaVersion, horizon.ComputeIdentitySha256());
+        }
+
         var previewProduct = context.GetProcessingProduct(preview.ArtifactId);
         MetadataCornerOverlay? metadataOverlay = null;
         if (Options.DrawMetadataCorners)
@@ -217,6 +238,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         var executionInputs = new List<ProcessingArtifact> { input };
         var auxiliaryInputs = new List<ProcessingAuxiliaryInput>();
+        if (curatedHorizon is not null) auxiliaryInputs.Add(curatedHorizon.ToAuxiliaryInput());
         if (projectedSceneProduct is not null)
         {
             var projectedSceneArtifactId = CaptureProcessingContext.CreateArtifactId(

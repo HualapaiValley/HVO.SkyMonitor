@@ -432,9 +432,10 @@ printf 'phase,elapsed_seconds\n' > "$RESULTS/phase-durations.csv"
 phase_started=$SECONDS
 
 dotnet tool restore
+"$SCRIPT_DIR/test:linux-build-rids" --output "$RESULTS/build-rid-contract.json"
 for project in "$CAMERA_PROJECT" "$REPLAY_RUNNER_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS" "$CLI_TESTS"; do
-    dotnet restore "$project"
-    dotnet build "$project" --no-restore --configuration Release -warnaserror
+    dotnet restore "$project" --runtime linux-arm64
+    dotnet build "$project" --no-restore --configuration Release --runtime linux-arm64 -warnaserror
 done
 printf 'build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
@@ -453,7 +454,7 @@ for entry in \
     # lane refuses any result that is not Passed, so the bundle the script was given is passed through.
     HVO_PRODUCTION_CATALOG_BUNDLE="$BUNDLE" \
     DOCKER_HOST="unix://$TEMP_ROOT/unit-docker-must-not-exist.sock" \
-        dotnet test "$project" --no-build --configuration Release --filter "$UNIT_FILTER" \
+        dotnet test "$project" --no-build --configuration Release --runtime linux-arm64 --filter "$UNIT_FILTER" \
         --results-directory "$RESULTS/unit-$name" --logger "trx;LogFileName=unit-$name-arm64.trx"
     trx="$RESULTS/unit-$name/unit-$name-arm64.trx"
     # Shared with scripts/test:cameraagent-ui; anchored to the result element rather than to the
