@@ -14,7 +14,7 @@
     A release ships the client as one self-contained file, hvo-sky-<rid> (install contract section 4), which the operator
     installs as hvo-sky. Ordinary builds stay framework-dependent so tests can load the client in-process.
   -->
-  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+  <PropertyGroup>
     <PublishSelfContained>true</PublishSelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>

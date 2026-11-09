@@ -6,9 +6,14 @@
     <LangVersion>latest</LangVersion>
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
-    <!-- Linux is the supported platform. Select one native asset set for ordinary dev/test builds; an explicit
-         runtime (including linux-arm64 publishing) wins. Keep runtime bundling a publish concern. -->
-    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
+    <!-- Linux is the supported platform. Ordinary dev/test builds select x64 native assets without changing their
+         output paths. An implicit publish follows the SDK host (including native ARM64 container builds); explicit
+         runtimes win. Restore both supported targets so publishing without restoring works after an ordinary restore. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' != 'true'">linux-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers Condition="'$(RuntimeIdentifiers)' == ''">linux-x64;linux-arm64</RuntimeIdentifiers>
+    <UseCurrentRuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' == 'true' and '$(UseCurrentRuntimeIdentifier)' == ''">true</UseCurrentRuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath Condition="'$(_IsPublishing)' != 'true' and '$(AppendRuntimeIdentifierToOutputPath)' == ''">false</AppendRuntimeIdentifierToOutputPath>
+    <!-- Keep runtime bundling a publish concern. -->
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
   </PropertyGroup>
   <!--
