@@ -26,9 +26,12 @@ emitted or mapped to ambient temperature.
 - source timeout: 5 seconds
 - before-capture budget: 250 milliseconds
 
-The fixture covers all 12 kinds. `RainState` uses `BooleanValue`; the other
-current kinds use `NumericValue`. `CameraSensorTemperature` uses v2 and requires
-a non-empty `RigId`.
+This v1 fixture is frozen to the original 12 ordered kinds. Later additions to
+`EnvironmentalObservationKind` do not expand its virtual sources, tracking
+sources or recorded fixture metadata. `RainState` uses `BooleanValue`; the other
+11 fixture kinds use `NumericValue`. `CameraSensorTemperature` uses v2 and
+requires a non-empty `RigId`. Fast Unit regressions exercise both source-building
+paths and pin the original kinds, order and baselines independently of the enum.
 
 ```json
 {

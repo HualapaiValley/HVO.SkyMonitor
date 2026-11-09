@@ -467,7 +467,8 @@ public sealed class ArchivePagesTests
 
             var timeLapse = cut.Find("[data-product-kind='time-lapse']");
             StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
-            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "Time-lapse state could not be read.", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "State unavailable", StringComparison.Ordinal);
             StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
             Assert.AreEqual(ObservingDayPage.TimeLapseTileId, timeLapse.QuerySelector("button.product-slot__media")!.Id);
             // The sample is fetched only once its viewer is opened.

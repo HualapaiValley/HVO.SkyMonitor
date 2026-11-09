@@ -75,6 +75,10 @@ else
         </section>
     }
 
+    @if (HasMixedSources)
+    {
+        <p class="environment-source-group" role="status">Mixed-source Environment: each reading retains its own source and sample age.</p>
+    }
     <div class="ops-reading-grid" aria-label="Latest readings" role="list">
         @foreach (var slot in ReadingSlots)
         {

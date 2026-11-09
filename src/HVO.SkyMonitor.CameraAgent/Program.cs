@@ -326,6 +326,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddSingleton<ICameraAgentControlRestartWindow, CameraAgentControlRestartWindow>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
         builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
         builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
@@ -445,6 +446,7 @@ public class Program
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();
         app.MapCameraAgentLifecycleEndpoints();
+        app.MapCameraAgentControlLifecycleEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();

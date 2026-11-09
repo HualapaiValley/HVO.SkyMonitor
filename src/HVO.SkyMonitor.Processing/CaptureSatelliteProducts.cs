@@ -114,6 +114,9 @@ public static class CaptureSatelliteProducts
             input.UnavailableReason is null && plan.DescriptorSha256 == CaptureContractJson.ComputeDescriptorSha256(input.Descriptor) &&
             plan.Observer == input.Observer && plan.Availability.TimeDataAvailableUtc == input.TimeAvailableUtc &&
             plan.Geometry.Projection == RigProjectionContextFactory.Create(input.Rig) &&
+            (input.Rig.HorizonObstruction is null ? plan.ObstructionRig is null :
+                plan.ObstructionRig is not null && CameraRigProfileIdentity.ComputeSha256(plan.ObstructionRig) ==
+                    CameraRigProfileIdentity.ComputeSha256(input.Rig)) &&
             (plan.SnapshotManifest is null ? input.SnapshotManifest is null :
                 input.SnapshotManifest is { } manifestBytes && manifestBytes.Span.SequenceEqual(OrbitalContract.SerializeCanonical(plan.SnapshotManifest))) &&
             plan.Model == OrbitalPredictionModel.Create(RestoreTime(input), plan.Model.ObserverHeightDatum == "wgs84-ellipsoidal-assumed"),
@@ -185,7 +188,10 @@ public static class CaptureSatelliteProducts
             try
             {
                 (trackPayload, sourceFacts) = OrbitalTrackPresentation.CreatePayloadAndSourceFacts(
-                    input.Descriptor.Layout.Width, input.Descriptor.Layout.Height, prediction.Tracks,
+                    input.Descriptor.Layout.Width, input.Descriptor.Layout.Height,
+                    prediction.Tracks.Where((_, index) => prediction.Obstruction is null ||
+                        (prediction.Obstruction[index].Eligibility.All(static value => value == HorizonObstructionEligibility.Clear) &&
+                         prediction.Obstruction[index].ClearSegments.All(static clear => clear))).ToArray(),
                     displayNames: null, queryIncomplete: prediction.Status == OrbitalExecutionStatus.Partial);
                 status = status with { Renderable = true };
             }

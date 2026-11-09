@@ -30,6 +30,7 @@
                       LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentAppsettings.json" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="../fixtures/virtual-sky/installer-controlled-night.json" Link="Fixtures/installer-controlled-night.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -354,7 +354,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var existing = BackupToAbort(request, manifest,
             await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false));
         var name = BackupVaultFiles.NameFor(manifest.InstanceId, existing.StartedUtc, existing.OperationId);
-        await EnsureBackupUnpublishedAsync(vault, name, cancellationToken).ConfigureAwait(false);
+        await EnsureBackupUnpublishedAsync(vault, name, manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         EnsureBackupRestartAdmitted(existing, hostLimits);
         if (existing.PreMutationContinuity is not null)
         {
@@ -378,11 +378,14 @@ internal sealed partial class CameraAgentLifecycleManager
             existing.PreMutationContinuity is not null, request.Json, error, recovery.Token).ConfigureAwait(false);
     }
 
-    private static async Task EnsureBackupUnpublishedAsync(IBackupVault vault, string name, CancellationToken cancellationToken)
+    private static async Task EnsureBackupUnpublishedAsync(
+        IBackupVault vault, string name, Guid instanceId, CancellationToken cancellationToken)
     {
-        if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is not null)
+        if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is not null ||
+            (await vault.ListPartialsAsync(instanceId, cancellationToken).ConfigureAwait(false))
+                .Any(partial => partial.Name == name && partial.PublicationStarted))
         {
-            throw InstallerException.Refused("The backup archive is already committed; rerun the backup with --resume instead of --abort to finish its record.");
+            throw InstallerException.Refused("The backup publication has already started; rerun the backup with --resume instead of --abort to finish its record.");
         }
     }
 

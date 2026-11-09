@@ -90,10 +90,12 @@ public static class PresentationDeepSkyLayerProducer
     public static PresentationDeepSkyLayerV1 Create(ProjectedSceneV1 scene, PresentationDeepSkyStyleV1? style = null,
         PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null,
         IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null,
-        int maximumPrimitives = MaximumPrimitives)
+        int maximumPrimitives = MaximumPrimitives,
+        HorizonObstructionSceneSelection? horizon = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
+        horizon?.ValidateScene(scene);
         style ??= new PresentationDeepSkyStyleV1();
         if (style.MaximumLabels is < 0 or > 24 ||
             style.MaximumLabelCharacters is < 0 or > PresentationLayerPayloadV1.MaximumLineCharacters ||
@@ -136,7 +138,7 @@ public static class PresentationDeepSkyLayerProducer
             item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
             item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
     }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
-        var ordered = deepSky.Objects.Select(item => item with
+        var ordered = deepSky.Objects.Where(item => horizon is null || horizon.Contains(item.Id)).Select(item => item with
         {
             Pixel = item.Pixel is { } pixel ? transform.Apply(pixel) : null,
             MajorAxisPixels = item.MajorAxisPixels * Math.Sqrt(transform.ScaleX * transform.ScaleY)

@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.Deployment;
@@ -66,7 +67,7 @@ public sealed class QuarantinedReadinessStoreTests
     [DataRow("count")]
     [DataRow("bytes")]
     [DataRow("age")]
-    public async Task QuarantinedSqliteLane_WithRealActivePressure_IsRefused(string limit)
+    public async Task QuarantinedSqliteLane_WithQueuedWorkBlockedBehindQuarantine_IsRefused(string limit)
     {
         using var fixture = DurableCaptureDistributionTests.CreateFixture(new CaptureDistributionOptions
         {
@@ -78,7 +79,11 @@ public sealed class QuarantinedReadinessStoreTests
         Assert.IsNotNull(quarantine);
         await fixture.Store.FailAsync(quarantine, CaptureLaneHandlerResult.Terminal("test-quarantine"), CancellationToken.None).ConfigureAwait(false);
         if (limit == "age") fixture.Time.Advance(TimeSpan.FromMinutes(10_081));
+        Assert.IsNull(await fixture.ClaimAsync("standard").ConfigureAwait(false), "ordered work cannot pass the quarantined head");
+        var beforeRestart = await fixture.Store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false);
         var restarted = fixture.RestartLaneStore();
+        Assert.IsNull(await restarted.ClaimAsync(fixture.Policy.Definitions.Single(static lane => lane.Name == "standard"),
+            "after-restart", fixture.Configuration, CancellationToken.None).ConfigureAwait(false));
         // A restart can apply a stricter policy to an existing queue; seed through normal admission first.
         var healthOptions = Options.Create(new CameraAgentHostOptions
         {
@@ -90,16 +95,78 @@ public sealed class QuarantinedReadinessStoreTests
                 RequiredMaximumOldestAgeMinutes = 10_080
             }
         });
-        var state = new CaptureLaneState(fixture.Time, healthOptions);
-        state.Update(await restarted.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false));
+        var afterRestart = await restarted.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false);
+        foreach (var backlogs in new[] { beforeRestart, afterRestart })
+        {
+            var standard = backlogs.Single(static lane => lane.Lane == "standard");
+            Assert.IsNotNull(standard.ActiveWork, "SQLite must supply active-work evidence");
+            Assert.AreEqual(1L, standard.ActiveWork.Count);
+            var state = new CaptureLaneState(fixture.Time, healthOptions);
+            state.Update(backlogs);
+            var lanes = await new CaptureLanesHealthCheck(state).CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+            Assert.AreEqual(1, lanes.Data["RequiredPressureLaneCount"]);
+            using var health = await WriteReadinessAsync(fixture, lanes).ConfigureAwait(false);
+
+            Assert.IsFalse(QuarantinedReadiness.TryAccept(health.RootElement, Catalog, out var reason));
+            StringAssert.Contains(reason, "required-lane backlog pressure", StringComparison.Ordinal);
+            StringAssert.Contains(reason, "queued behind a quarantined head", StringComparison.Ordinal);
+            StringAssert.Contains(reason, "acknowledge", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    public async Task QuarantinedSqliteLane_UnrelatedRequiredLaneAgePressure_IsRefused()
+    {
+        using var fixture = DurableCaptureDistributionTests.CreateFixture(new CaptureDistributionOptions
+        {
+            SecondaryLanes = [new() { Name = "independent", Enabled = true, Required = true }]
+        });
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var lease = await fixture.ClaimAsync("standard").ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await fixture.Store.FailAsync(lease, CaptureLaneHandlerResult.Terminal("test-quarantine"), CancellationToken.None).ConfigureAwait(false);
+        fixture.Time.Advance(TimeSpan.FromMinutes(10_081));
+        var restarted = fixture.RestartLaneStore();
+        var backlogs = await restarted.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0L, backlogs.Single(static lane => lane.Lane == "standard").ActiveWork!.Count);
+        Assert.AreEqual(1L, backlogs.Single(static lane => lane.Lane == "independent").ActiveWork!.Count);
+        var state = new CaptureLaneState(fixture.Time, fixture.Options);
+        state.Update(backlogs);
         var lanes = await new CaptureLanesHealthCheck(state).CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
         Assert.AreEqual(1, lanes.Data["RequiredPressureLaneCount"]);
         using var health = await WriteReadinessAsync(fixture, lanes).ConfigureAwait(false);
 
-        Assert.IsFalse(QuarantinedReadiness.TryAccept(health.RootElement, Catalog, out _));
+        Assert.IsFalse(QuarantinedReadiness.TryAccept(health.RootElement, Catalog, out var reason));
+        StringAssert.Contains(reason, "required-lane backlog pressure", StringComparison.Ordinal);
     }
 
-    private static async Task<JsonDocument> WriteReadinessAsync(DurableCaptureDistributionTests.Fixture fixture, HealthCheckResult lanes)
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task EvidenceInvalidSqliteQuarantine_OnlyDegradedRawIngressIsAccepted(bool unhealthyRaw)
+    {
+        using var fixture = DurableCaptureDistributionTests.CreateFixture(new CaptureDistributionOptions());
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var lease = await fixture.ClaimAsync("standard").ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await fixture.Store.FailAsync(lease, CaptureLaneHandlerResult.Terminal("evidence-invalid"), CancellationToken.None).ConfigureAwait(false);
+        var restarted = fixture.RestartLaneStore();
+        var state = new CaptureLaneState(fixture.Time, fixture.Options);
+        state.Update(await restarted.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false));
+        var lanes = await new CaptureLanesHealthCheck(state).CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        var rawState = new RawIngressState(fixture.Time);
+        rawState.Set(unhealthyRaw ? RawIngressAvailability.Unhealthy : RawIngressAvailability.Degraded,
+            "evidence-invalid", quarantineCount: 1, quarantineBytes: 4);
+        var raw = await new RawIngressHealthCheck(rawState).CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        using var health = await WriteReadinessAsync(fixture, lanes, raw).ConfigureAwait(false);
+
+        Assert.AreEqual(!unhealthyRaw, QuarantinedReadiness.TryAccept(health.RootElement, Catalog, out _));
+        Assert.AreEqual(1L, (await restarted.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+            .Single(static lane => lane.Lane == "standard").QuarantineCount, "readiness must not mutate the row");
+    }
+
+    private static async Task<JsonDocument> WriteReadinessAsync(
+        DurableCaptureDistributionTests.Fixture fixture, HealthCheckResult lanes, HealthCheckResult? raw = null)
     {
         using var store = new SqliteCaptureProcessingStore(fixture.Options);
         var processingState = new CaptureProcessingState();
@@ -107,7 +174,7 @@ public sealed class QuarantinedReadinessStoreTests
         await refresh.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
         var processing = await new CaptureProcessingHealthCheck(processingState).CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
         Assert.AreEqual(1L, processing.Data["LaneQuarantineTerminalCount"]);
-        var report = new HealthReport(new Dictionary<string, HealthReportEntry>(StringComparer.Ordinal)
+        var entries = new Dictionary<string, HealthReportEntry>(StringComparer.Ordinal)
         {
             ["capture-lanes"] = Entry(lanes),
             ["capture-processing"] = Entry(processing),
@@ -120,7 +187,9 @@ public sealed class QuarantinedReadinessStoreTests
                 ["RowCount"] = Catalog.RowCount,
                 ["PackageVersion"] = Catalog.PackageVersionPrefix + "1"
             }))
-        }, TimeSpan.Zero);
+        };
+        if (raw is { } rawResult) entries["raw-ingress"] = Entry(rawResult);
+        var report = new HealthReport(entries, TimeSpan.Zero);
         using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
         var context = new DefaultHttpContext { RequestServices = services };
         using var output = new MemoryStream();

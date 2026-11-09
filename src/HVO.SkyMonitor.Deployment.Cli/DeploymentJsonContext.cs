@@ -7,6 +7,10 @@ namespace HVO.SkyMonitor.Deployment;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = true,
     UseStringEnumConverter = true)]
+[JsonSerializable(typeof(CameraAgentControlExchange))]
+[JsonSerializable(typeof(CameraAgentControlSnapshot))]
+[JsonSerializable(typeof(CameraAgentControlRestart))]
+[JsonSerializable(typeof(InstallerControlJournalState))]
 [JsonSerializable(typeof(InstanceManifest))]
 [JsonSerializable(typeof(InstallationState))]
 [JsonSerializable(typeof(InstallationResult))]

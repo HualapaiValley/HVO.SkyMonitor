@@ -349,6 +349,10 @@ schema version. The members are those `--config` reads, under the same names:
   `--json` on the command line.
 - No secret is ever an answer. A password is given in its own owner-only file
   (`passwordFile`) or generated (`generatePassword`).
+- `illuminationMode` optionally selects `LegacyScalarSolar`, `SolarDriven` or
+  `ControlledNight` for the VirtualSky module. The direct CLI equivalent is
+  `--illumination-mode ControlledNight`. Put the member in the answers file when
+  using `--answers`; it is not a command-line override beside that file.
 - Only `--cpus`, `--memory`, `--release`, `--image-source`, `--catalog-bundle` and
   `--no-download` may accompany `--answers`. Each replaces the file's member: the
   limits, so a re-run with the same file changes the limits (see
@@ -426,6 +430,37 @@ terminal's own colours with bold, underline and reverse video, and a locale that
 Every page's screenshot, at both sizes and in each fallback, is in [`docs/images/terminal`](../images/terminal). The
 wizard's tests draw them on Terminal.Gui's in-memory driver, Development v1 CI draws them as SVG in Build and Unit and
 keeps them with its evidence, and `scripts/docs:terminal-screenshots` refreshes the folder.
+
+### VirtualSky illumination baseline and active rig
+
+For a fresh virtual-camera installation, add `"illuminationMode": "ControlledNight"`
+to the answers file, or pass `--illumination-mode ControlledNight` to a direct
+`cameraagent install` invocation. The generated `camera-module.json` then explicitly
+sets `module.options.illuminationMode`; its canonical hash is recorded in the
+installation manifest and result. The VirtualAsi174Mm rig, processing graph and
+sunset-to-sunrise schedule keep their existing semantics. `ControlledNight`
+selects simulated night lighting, while celestial time still advances normally.
+
+Omitting the setting preserves the historical `LegacyScalarSolar` default and the
+existing generated configuration and request identities. All three named modes
+can be explicit; values are case-sensitive and misspellings are usage errors.
+Omission and explicit `LegacyScalarSolar` select the same lighting but have
+different configuration and request identities. Keep the setting omitted when
+resuming or re-running an installation begun without it, including interrupted
+installations with a legacy request hash. An explicit lighting choice cannot
+resume a legacy journal that never bound that choice. Changing the
+baseline lighting of a completed installation through a re-run is refused, just
+as other camera configuration changes are.
+
+The installer baseline is separate from the active named-rig revision. The
+supported `camera.skyLighting` setting stages a rig revision for the next start;
+it does not rewrite the manifest-bound baseline. Installation verification
+continues to hash that baseline file. Upgrade and reinstall preserve it and its
+canonical identity. Editing `camera-module.json` by hand changes the bound
+identity and causes verification to refuse. A raw-byte file checksum is not the
+canonical JSON checksum: whitespace or property-order differences alone do not
+indicate drift. For existing installations, use the active-rig setting to change
+lighting without editing the baseline or manifest.
 
 ### Re-running an install
 
@@ -2138,6 +2173,10 @@ From then on, it reads the archive back, proves it whole, commits it and finishe
 never restorable. If recovery already discarded that partial, `--resume` puts the instance back and settles the
 operation with no backup, so it no longer blocks a later command.
 
+A backup whose publication record exists beside its `.partial` archive has crossed the publication boundary,
+including a crash before the archive rename. `--abort` refuses without discarding it; use `--resume` to verify the
+recorded checksum and complete publication. A malformed publication record is not permission to discard the partial.
+
 **A processing-lane quarantine.** `/health` stays unavailable while a required lane is quarantined, which makes the
 restart after a backup or an upgrade fail and leaves the backup operation incomplete. That incomplete operation then
 refuses every later lifecycle command until it is resumed or aborted. Pass `--allow-quarantined-readiness` to treat
@@ -2148,8 +2187,15 @@ that quarantine as backup-safe:
   Optional-lane quarantines cannot justify a required-lane failure. For this readiness decision, required pressure
   means a hard count, byte or oldest-age limit reached by `pending`, `leased` or `retry_wait` work. Quarantined rows
   are excluded from those three measurements: their age and the persisted admission `pressure_state=2` do not
-  constitute active-work pressure. Genuine active-work pressure is still refused, including on the quarantined
-  lane. Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
+  constitute active-work pressure. Pending captures queued behind an ordered lane's quarantined head remain
+  active work, even though they cannot drain. They still count toward the count, byte and oldest-age limits, before
+  and after restart. With the default `RequiredMaximumOldestAgeMinutes=10080`, that queued backlog reaches the age
+  limit after seven days; `--allow-quarantined-readiness` then refuses required-lane backlog pressure. This is the
+  retained fail-closed policy, including pressure caused by work blocked behind the quarantine. Review the failed
+  capture and use the owner **Processing lane quarantine** acknowledgement in [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade)
+  when its raw evidence is still valid, let the ordered backlog drain, then retry. Unrelated required-lane pressure
+  must also recover; acknowledging one quarantine does not waive other pressure or admission safeguards.
+  Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
   Worker, claim and lane-state failures remain recorded across backlog refreshes until the matching worker/claim
   operation or state refresh succeeds.
 - If `capture-processing` is Unhealthy, its `TerminalCount` and `LaneQuarantineTerminalCount` must both equal the
@@ -2158,6 +2204,10 @@ that quarantine as backup-safe:
   refused. The reason must exactly match `terminal`, or `terminal;processing-quarantine` when processing quarantine
   evidence is present. Missing, malformed or inconsistent evidence fails closed, including older image payloads.
 - Every other unhealthy check is still refused. Degraded checks do not make `/health` unavailable and are unchanged.
+  This deliberately includes a standard-lane `evidence-invalid` quarantine alongside Degraded raw ingress, provided
+  all the per-cause conditions above hold. Backup, upgrade and rollback readiness do not acknowledge, revalidate or
+  repair that row. Invalid raw evidence cannot use processing-lane acknowledgement; inspect and follow Raw Evidence
+  Recovery instead. Unhealthy raw ingress remains refused even with the flag.
 - The catalog check must still be Healthy and must still name this instance's catalog. Installation identity, container
   ownership, and the archive's SHA-256 are unchanged. A partial whose bytes differ from the hash recorded when it was
   written is not committed.

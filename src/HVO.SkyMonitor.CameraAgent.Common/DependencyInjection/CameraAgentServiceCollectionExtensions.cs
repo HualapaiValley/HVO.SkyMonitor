@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -236,10 +237,19 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton(new EnvironmentalSourceRegistration(
             "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("LocalWeatherStation", typeof(LocalWeatherStationSource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("InfraredSky", typeof(InfraredSkySource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("SkyQualityMeter", typeof(SkyQualityMeterSource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("OnlineWeather", typeof(OnlineWeatherSource), typeof(OnlineWeatherSourceOptions)));
+        services.AddSingleton(provider => new WeatherProviderClient(
+            new HttpClient(SwpcSource.CreatePrimaryHandler()), provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<IEnvironmentalAcquisitionStateStore>(), provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot));
         services.AddSingleton<EnvironmentalSourceFactory>();
         services.AddSingleton<EnvironmentalAcquisitionCoordinator>();
         services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
         services.AddSingleton<EnvironmentalAssociationService>();
+        services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore>();
+        services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentRestartAutomationAdapter>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
         services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();

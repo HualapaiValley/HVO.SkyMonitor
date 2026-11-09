@@ -40,6 +40,14 @@ tooling used on the host.
 On Windows, use WSL2 and keep the checkout on its Linux filesystem. Repository
 scripts assume Linux filesystem semantics and GNU tools.
 
+Ordinary builds and tests default to the Linux host architecture, with framework-dependent
+output under `bin/<Configuration>/net10.0/`. Pass `--runtime` to select another
+architecture. Publishing without a runtime follows the Linux SDK host;
+release commands select `linux-x64` or `linux-arm64` explicitly. The runners,
+installer, and terminal client remain self-contained when published. Clean existing
+`bin` and `obj` directories once when adopting these defaults or switching build
+architectures, since incremental builds do not remove obsolete native files.
+
 ### Getting Started
 
 #### Native host or SSH

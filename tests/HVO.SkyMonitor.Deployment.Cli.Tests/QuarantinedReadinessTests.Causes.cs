@@ -111,6 +111,22 @@ public sealed partial class QuarantinedReadinessTests
         Assert.IsTrue(AcceptCauseReport(report));
     }
 
+    [TestMethod]
+    public void TryAccept_RequiredPressureWithoutRequiredQuarantine_ReportsPressureWithoutAttributingItToQuarantine()
+    {
+        var report = JsonNode.Parse(Health(1, "terminal"))!;
+        var lane = CauseData(report, "capture-lanes");
+        lane["Reason"] = "required-pressure";
+        lane["RequiredPressureLaneCount"] = 1;
+        lane["RequiredQuarantinedLaneCount"] = 0;
+        lane["RequiredProcessingQuarantineCount"] = 0;
+        using var document = JsonDocument.Parse(report.ToJsonString());
+
+        Assert.IsFalse(QuarantinedReadiness.TryAccept(document.RootElement, Catalog, out var reason));
+        StringAssert.Contains(reason, "required-lane backlog pressure", StringComparison.Ordinal);
+        Assert.DoesNotContain("queued behind a quarantined head", reason);
+    }
+
     private static JsonObject CauseData(JsonNode report, string name)
         => report["checks"]!.AsArray().Single(check => check!["name"]!.GetValue<string>() == name)!["data"]!.AsObject();
 

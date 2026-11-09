@@ -34,6 +34,7 @@ public sealed class ExitCodeContractTests
         ("status", ["status", "--instance-id", Id]),
         ("cameraagent install",
             ["cameraagent", "install", "--friendly-name", "North Camera", "--catalog-bundle", "/srv/hvo/catalog.bundle", "--image-ref", ImageRef]),
+        ("cameraagent lifecycle-worker", ["cameraagent", "lifecycle-worker", "--instance-id", Id, "--once"]),
         ("cameraagent recover-owner", ["cameraagent", "recover-owner", "--instance-id", Id, "--generate-password"]),
         ("cameraagent preflight", ["cameraagent", "preflight", "--instance-id", Id, "--image-ref", ImageRef]),
         ("cameraagent reset-state", ["cameraagent", "reset-state", "--instance-id", Id, "--confirm-instance-id", Id]),
@@ -84,6 +85,10 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent install", "failed", 1)]
     [DataRow("cameraagent install", "refused", 3)]
     [DataRow("cameraagent install", "interrupted", 130)]
+    [DataRow("cameraagent lifecycle-worker", "done", 0)]
+    [DataRow("cameraagent lifecycle-worker", "failed", 1)]
+    [DataRow("cameraagent lifecycle-worker", "refused", 3)]
+    [DataRow("cameraagent lifecycle-worker", "interrupted", 130)]
     [DataRow("cameraagent recover-owner", "done", 0)]
     [DataRow("cameraagent recover-owner", "failed", 1)]
     [DataRow("cameraagent recover-owner", "refused", 3)]
@@ -161,6 +166,7 @@ public sealed class ExitCodeContractTests
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
+    [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
     [DataRow("cameraagent reset-state")]
@@ -194,6 +200,7 @@ public sealed class ExitCodeContractTests
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
+    [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
     [DataRow("cameraagent reset-state")]
@@ -228,6 +235,7 @@ public sealed class ExitCodeContractTests
     [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
+    [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
     [DataRow("cameraagent reset-state")]
@@ -385,6 +393,19 @@ public sealed class ExitCodeContractTests
         StringAssert.StartsWith(human.Error, "Warning: --migration-backward-compatible is deprecated", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public async Task RunAsync_LifecycleWorkerOnceJson_ReportsAPollWithoutInventingOperationSuccess()
+    {
+        using var host = new PolicyHost();
+        var (code, output, error) = await RunAsync([.. Arguments("cameraagent lifecycle-worker"), "--json"],
+            Substituted(host, "done"), CancellationToken.None);
+        Assert.AreEqual(0, code, error);
+        using var document = JsonDocument.Parse(output);
+        Assert.AreEqual("poll-completed", document.RootElement.GetProperty("status").GetString());
+        Assert.AreEqual(Guid.Parse(Id), document.RootElement.GetProperty("instanceId").GetGuid());
+        Assert.IsFalse(document.RootElement.TryGetProperty("succeeded", out _));
+    }
+
     private static string[] Arguments(string command) => Commands.Single(entry => entry.Name == command).Arguments;
 
     private static ProgramServices Real(PolicyHost host)
@@ -414,6 +435,7 @@ public sealed class ExitCodeContractTests
                 1, request.Operation, "completed", Guid.NewGuid(), request.InstanceId, null, request.ProductRoot, null, null, null,
                 null, null, null, null, null, [], null, DateTimeOffset.UtcNow)))
         {
+            ControlWorker = (_, _) => Run(static () => true),
             SplitHostPreflight = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
             ExistingDown = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
             PartialPrepare = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" })

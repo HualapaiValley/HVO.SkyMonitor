@@ -96,6 +96,58 @@ public sealed class GeneratedTimeLapsePagesTests
         Assert.IsEmpty(cut.FindAll("video"));
     }
 
+    [TestMethod]
+    [DataRow(CameraAgentTimeLapseState.Queued, null, "Queued")]
+    [DataRow(CameraAgentTimeLapseState.Queued, "timelapse.recovering", "Retrying (queued)")]
+    [DataRow(CameraAgentTimeLapseState.Working, null, "Running")]
+    public void LibraryShowsGenerationWithoutAProducedLink(CameraAgentTimeLapseState state, string? reason, string label)
+    {
+        using var context = new BunitContext();
+        var window = NightlyDayFixture.Daily(NightlyProductKind.Keogram).SourceWindow!;
+        var service = new TestNightlyProductUiService
+        {
+            VideoLibrary = new([new(Guid.NewGuid(), window.ReportingPeriod.ReportDate, window, state,
+                state == CameraAgentTimeLapseState.Working ? window.EndUtc : null, reason, null, false)], null, null)
+        };
+        context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
+        var cut = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "running"));
+        var item = cut.Find("li");
+        Assert.AreEqual("running", item.GetAttribute("data-video-state"));
+        StringAssert.Contains(item.TextContent, label, StringComparison.Ordinal);
+        StringAssert.Contains(item.TextContent, "Source window:", StringComparison.Ordinal);
+        StringAssert.Contains(item.TextContent, window.ReportingPeriod.Site.TimeZoneId, StringComparison.Ordinal);
+        Assert.AreEqual(ArchiveCalendarPage.DayUrl(window.ReportingPeriod.ReportDate), item.QuerySelector("a")!.GetAttribute("href"));
+        Assert.IsFalse(item.TextContent.Contains("Produced", StringComparison.Ordinal));
+        service.VideoLibrary = new([service.VideoLibrary!.Entries.Single() with { GenerationEnabled = false }], null, null);
+        var disabled = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "stalled"));
+        Assert.AreEqual("stalled", disabled.Find("li").GetAttribute("data-video-state"));
+        StringAssert.Contains(disabled.Find("li").TextContent, "Generation disabled", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void LibraryClearsPreviousSearchBoundaryWhileTheNextPageIsLoading()
+    {
+        using var context = new BunitContext();
+        var boundary = new DateOnly(2026, 9, 1);
+        var service = new TestNightlyProductUiService { VideoLibrary = new([], boundary, boundary) };
+        context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
+        var cut = context.Render<TimeLapseLibraryView>(parameters => parameters.Add(page => page.Type, "time-lapse"));
+        StringAssert.Contains(cut.Markup, "Bounded search through 2026-09-01", StringComparison.Ordinal);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentTimeLapseLibraryPage>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.VideoLibraryHandler = (_, _) => new(pending.Task);
+        cut.Render(parameters => parameters.Add(page => page.Before, boundary));
+        try
+        {
+            StringAssert.Contains(cut.Markup, "Loading time-lapses", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("Bounded search through", StringComparison.Ordinal));
+            Assert.IsEmpty(cut.FindAll("a[href*='videoBefore']"));
+        }
+        finally { pending.TrySetResult(OperatorUiResult<CameraAgentTimeLapseLibraryPage>.Success(new([], null, null))); }
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Markup.Contains("Loading time-lapses", StringComparison.Ordinal)));
+    }
+
     private sealed class CurrentSite : IObservingDayCalendarProvider
     {
         public ObservingDayCalendar Current => ObservingDayCalendar.Create("Asia/Kolkata");

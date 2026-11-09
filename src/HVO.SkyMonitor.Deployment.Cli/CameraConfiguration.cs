@@ -24,8 +24,9 @@ internal static class CameraConfiguration
     private static readonly string[] ProjectedSceneDependency = ["ProjectedScene"];
     private static readonly string[] RollingDependency = ["RollingCombination"];
     private static readonly string[] CombinedPreviewDependencies = ["ProjectedScene", "CombinedPreview"];
-    private static readonly string[] ManifestDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation"];
-    private static readonly string[] MaterializerDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"];
+    private static readonly string[] CloudDependency = ["CloudAssessment"];
+    private static readonly string[] ManifestDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation"];
+    private static readonly string[] MaterializerDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation", "OverlayManifest"];
     private static readonly string[] PresentationDependencies = ["$raw", "ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"];
     private static readonly string[] TelemetryDependencies =
         ["ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer", "LocalStorage", "ArchiveStorage"];
@@ -40,24 +41,29 @@ internal static class CameraConfiguration
         }
 
         var rig = CreateRig();
+        var moduleOptions = JsonSerializer.SerializeToNode(new
+        {
+            seed = 2025,
+            maximumMagnitude = 6.5,
+            maximumResults = 2000,
+            magnitudeZeroElectronsPerSecond = 300.0,
+            bortleClass = 3,
+            asi174Sensor = new { enabled = true, blackLevelAdu = 64.0 },
+            constellationIds = ConstellationIds,
+            includeConstellationEndpointStars = true,
+            solarSystemBodies = SolarSystemBodies
+        })!.AsObject();
+        if (request.IlluminationMode is { } illuminationMode)
+        {
+            moduleOptions["illuminationMode"] = illuminationMode;
+        }
         var config = new CameraModuleConfig(
             new ObservatoryLocation(
                 request.LatitudeDegrees,
                 request.LongitudeDegrees,
                 request.ElevationMeters,
                 request.TimeZoneId),
-            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
-            {
-                seed = 2025,
-                maximumMagnitude = 6.5,
-                maximumResults = 2000,
-                magnitudeZeroElectronsPerSecond = 300.0,
-                bortleClass = 3,
-                asi174Sensor = new { enabled = true, blackLevelAdu = 64.0 },
-                constellationIds = ConstellationIds,
-                includeConstellationEndpointStars = true,
-                solarSystemBodies = SolarSystemBodies
-            })),
+            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(moduleOptions)),
             rig,
             new CapturePipelineConfig(CreateProcessingSteps()),
             AgentId: applicationIdentity.ToString("D"))
@@ -169,6 +175,10 @@ internal static class CameraConfiguration
             whitePercentile = 0.9997,
             asinhStrength = 8.0
         }, RollingDependency),
+        Step("CloudAssessment", "CloudAssessment", 60, new
+        {
+            clearReferenceManifestPath = "references/cloud/clear-reference.manifest.json"
+        }, RawDependency, durable: true, required: false),
         Step("ScenePresentation", "ScenePresentationLayer", 70, new
         {
             annotationOutputVariant = "scene-annotation-layer-v1",
@@ -177,6 +187,12 @@ internal static class CameraConfiguration
             constellationOutputVariant = "scene-constellation-layer-v1",
             constellationIds = ConstellationIds
         }, ProjectedSceneDependency, durable: true),
+        Step("CloudPresentation", "CloudPresentationLayer", 71, new
+        {
+            widthPixels = 1936,
+            heightPixels = 1216,
+            requireQuantifiedAssessment = true
+        }, CloudDependency, durable: true, required: false),
         Step("EnvironmentPresentation", "EnvironmentPresentationLayer", 72, new
         {
             widthPixels = 1936,
@@ -211,8 +227,10 @@ internal static class CameraConfiguration
         int order,
         object options,
         IReadOnlyList<string>? dependsOn = null,
-        bool durable = false)
+        bool durable = false,
+        bool required = true)
         => new(type, id, order, JsonSerializer.SerializeToElement(options), dependsOn,
+            Required: required,
             Publication: durable ? new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal) : null);
 
     private static CaptureScheduleDefinition CreateSchedule()

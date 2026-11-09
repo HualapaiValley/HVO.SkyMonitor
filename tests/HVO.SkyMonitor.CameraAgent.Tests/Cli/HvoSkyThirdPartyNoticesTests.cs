@@ -32,7 +32,8 @@ public sealed class HvoSkyThirdPartyNoticesTests
     private static SortedSet<string> ClientClosure()
     {
         using var deps = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "HVO.SkyMonitor.CameraAgent.Tests.deps.json")));
-        var target = deps.RootElement.GetProperty("targets").EnumerateObject().First().Value;
+        var runtimeTarget = deps.RootElement.GetProperty("runtimeTarget").GetProperty("name").GetString()!;
+        var target = deps.RootElement.GetProperty("targets").GetProperty(runtimeTarget);
         var libraries = deps.RootElement.GetProperty("libraries");
         var byName = target.EnumerateObject().ToDictionary(entry => entry.Name.Split('/')[0], entry => entry, StringComparer.Ordinal);
         Assert.IsTrue(byName.ContainsKey(Client), $"{Client} is in this test's dependency graph");

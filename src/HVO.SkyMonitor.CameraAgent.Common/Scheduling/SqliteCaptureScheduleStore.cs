@@ -1368,9 +1368,9 @@ public sealed class SqliteCaptureScheduleStore(
 
     internal static bool SameEquipment(LocalCaptureProfileDefinition profile, CameraModuleDescriptor module, CameraRigConfig rig)
         => string.Equals(CaptureContractJson.ComputeCanonicalJsonSha256(new
-        { profile.Module, profile.Rig.Sensor, profile.Rig.Readout, profile.Rig.Optics, profile.Rig.Orientation }),
+        { profile.Module, profile.Rig.Sensor, profile.Rig.Readout, profile.Rig.Optics, profile.Rig.Orientation, Horizon = profile.Rig.HorizonObstruction == null ? null : profile.Rig.HorizonObstruction.ComputeIdentitySha256() }),
         CaptureContractJson.ComputeCanonicalJsonSha256(new
-        { Module = module, rig.Sensor, rig.Readout, rig.Optics, rig.Orientation }), StringComparison.OrdinalIgnoreCase);
+        { Module = module, rig.Sensor, rig.Readout, rig.Optics, rig.Orientation, Horizon = rig.HorizonObstruction == null ? null : rig.HorizonObstruction.ComputeIdentitySha256() }), StringComparison.OrdinalIgnoreCase);
 
     private sealed record NamedRigEquipment(CameraModuleDescriptor Module, CameraRigConfig Rig);
 
