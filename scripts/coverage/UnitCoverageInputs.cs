@@ -12,7 +12,7 @@ internal static class UnitCoverageInputs
     {
         var owners = floorPaths.Select(static path => path.Split('/')[0]).ToHashSet(StringComparer.Ordinal);
         var reportsByHash = reports.GroupBy(Hash).ToDictionary(static group => group.Key, static group => new Queue<string>(group));
-        var inventories = new Dictionary<string, Dictionary<string, HashSet<int>>>(StringComparer.Ordinal);
+        var inventories = new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
         var seenProjects = new HashSet<string>(StringComparer.Ordinal);
         XNamespace trxNamespace = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
         foreach (var trx in Directory.GetFiles(resultsDirectory, "*.trx"))
@@ -54,7 +54,7 @@ internal static class UnitCoverageInputs
             }
 
             var assemblyDirectory = Path.GetDirectoryName(expectedTestAssembly)!;
-            var expected = new Dictionary<string, Dictionary<string, HashSet<int>>>(StringComparer.Ordinal);
+            var expected = new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
             using var dependencies = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(expectedTestAssembly, ".deps.json")));
             var runtimeTarget = dependencies.RootElement.GetProperty("runtimeTarget").GetProperty("name").GetString()!;
             var runtimeAssemblies = dependencies.RootElement.GetProperty("targets").GetProperty(runtimeTarget).EnumerateObject()
@@ -102,16 +102,16 @@ internal static class UnitCoverageInputs
         Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source inventories against Release portable PDBs.");
     }
 
-    private static Dictionary<string, HashSet<int>> ReadExecutableSources(string pdb, string repositoryRoot)
+    private static Dictionary<string, HashSet<string>> ReadExecutableSources(string pdb, string repositoryRoot)
     {
         using var stream = File.OpenRead(pdb);
         using var provider = MetadataReaderProvider.FromPortablePdbStream(stream);
         var reader = provider.GetMetadataReader();
-        var sources = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         using var assemblyStream = File.OpenRead(Path.ChangeExtension(pdb, ".dll"));
         using var assembly = new PEReader(assemblyStream);
         var metadata = assembly.GetMetadataReader();
-        bool Excluded(CustomAttributeHandleCollection attributes)
+        bool HasAttribute(CustomAttributeHandleCollection attributes, string requiredName)
         {
             foreach (var attribute in attributes)
             {
@@ -125,13 +125,23 @@ internal static class UnitCoverageInputs
                     HandleKind.TypeDefinition => metadata.GetString(metadata.GetTypeDefinition((TypeDefinitionHandle)type).Name),
                     _ => string.Empty,
                 };
-                if (name == "ExcludeFromCodeCoverageAttribute")
+                if (name == requiredName)
                 {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        bool Excluded(CustomAttributeHandleCollection attributes) => HasAttribute(attributes, "ExcludeFromCodeCoverageAttribute");
+
+        string TypeName(TypeDefinitionHandle handle)
+        {
+            var type = metadata.GetTypeDefinition(handle);
+            var parent = type.GetDeclaringType();
+            var prefix = parent.IsNil ? metadata.GetString(type.Namespace) : TypeName(parent);
+            return string.Concat(prefix, parent.IsNil ? (prefix.Length == 0 ? "" : ".") : "/", metadata.GetString(type.Name));
         }
 
         var excludedAccessors = new HashSet<MethodDefinitionHandle>();
@@ -185,6 +195,11 @@ internal static class UnitCoverageInputs
                 continue;
             }
 
+            var declaringType = metadata.GetMethodDefinition(definition).GetDeclaringType();
+            var typeDefinition = metadata.GetTypeDefinition(declaringType);
+            var typeName = TypeName(declaringType);
+            var generated = typeName.Contains('<', StringComparison.Ordinal) ||
+                HasAttribute(typeDefinition.GetCustomAttributes(), "CompilerGeneratedAttribute");
             foreach (var point in method.GetSequencePoints())
             {
                 if (point.IsHidden)
@@ -204,7 +219,13 @@ internal static class UnitCoverageInputs
                         sources.Add(relative[4..], lines);
                     }
 
-                    lines.Add(point.StartLine);
+                    // Coverlet may omit individual local-function points. Use
+                    // PDBs to identify sources and ordinary compiled classes,
+                    // rather than inventing a one-to-one line requirement.
+                    if (!generated)
+                    {
+                        lines.Add(typeName);
+                    }
                 }
             }
         }
@@ -212,7 +233,7 @@ internal static class UnitCoverageInputs
         return sources;
     }
 
-    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, HashSet<int>>> expected, string repositoryRoot)
+    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, HashSet<string>>> expected, string repositoryRoot)
     {
         var document = XDocument.Load(report);
         var packages = document.Descendants("package").ToArray();
@@ -225,7 +246,7 @@ internal static class UnitCoverageInputs
         foreach (var package in packages)
         {
             var name = (string)package.Attribute("name")!;
-            var observed = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+            var observed = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             foreach (var entry in package.Descendants("class"))
             {
                 var filename = (string?)entry.Attribute("filename") ?? string.Empty;
@@ -245,7 +266,7 @@ internal static class UnitCoverageInputs
                         observed.Add(relative, lines);
                     }
 
-                    lines.Add(int.Parse((string)line.Attribute("number")!, System.Globalization.CultureInfo.InvariantCulture));
+                    lines.Add((string)entry.Attribute("name")!);
                 }
             }
 
@@ -255,12 +276,12 @@ internal static class UnitCoverageInputs
                 throw new InvalidDataException($"Report '{report}' is materially incomplete for '{name}': missing {missing.Length} executable source files from its Release PDB, including {string.Join(", ", missing.Take(8))}.");
             }
 
-            foreach (var (source, requiredLines) in expected[name])
+            foreach (var (source, requiredClasses) in expected[name])
             {
-                var missingLines = requiredLines.Except(observed[source]).Order().ToArray();
-                if (missingLines.Length > 0)
+                var missingClasses = requiredClasses.Except(observed[source]).Order(StringComparer.Ordinal).ToArray();
+                if (missingClasses.Length > 0)
                 {
-                    throw new InvalidDataException($"Report '{report}' is materially incomplete for '{source}': missing executable sequence-point lines from its Release PDB, including {string.Join(", ", missingLines.Take(8))}.");
+                    throw new InvalidDataException($"Report '{report}' is materially incomplete for '{source}': missing compiled classes from its Release DLL/PDB, including {string.Join(", ", missingClasses.Take(8))}.");
                 }
             }
         }

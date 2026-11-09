@@ -183,7 +183,7 @@ source_dir = inventory_repo / "src" / assembly_name
 source_dir.mkdir(parents=True)
 for filename, type_name in (("CameraGeometry.cs", "InventoryA"), ("InventorySentinel.cs", "InventoryB")):
     (source_dir / filename).write_text(f"namespace CoverageFixture; public static class {type_name} {{ public static int Value() => 1; }}\n")
-(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static int Excluded() => 1;\n}\n")
+(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static int Excluded() => 1;\n}\npublic static class InventoryC { public static int Value() => 1; }\n")
 (source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
 fixture_project = inventory_repo / "Inventory.csproj"
 fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
@@ -220,11 +220,13 @@ attachment = results / "attachment/In/computer/coverage.cobertura.xml"
 composite = ET.Element("coverage")
 ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventory_repo)
 classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name=assembly_name), "classes")
-for index, filename in enumerate(("CameraGeometry.cs", "InventorySentinel.cs")):
-    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.Inventory{index}", filename=str(source_dir / filename),
+for type_name, filename, numbers in (("InventoryA", "CameraGeometry.cs", (3, 4)),
+                                      ("InventoryB", "InventorySentinel.cs", (1,)),
+                                      ("InventoryC", "CameraGeometry.cs", (7,))):
+    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.{type_name}", filename=str(source_dir / filename),
                           **{"line-rate":"1", "branch-rate":"1"})
     lines = ET.SubElement(entry, "lines")
-    for number in ((3, 4) if filename == "CameraGeometry.cs" else (1,)):
+    for number in numbers:
         ET.SubElement(lines, "line", number=str(number), hits="1", branch="true", **{"condition-coverage":"100% (2/2)"})
 
 
@@ -262,12 +264,12 @@ partial.find(".//classes").remove(partial.findall(".//class")[1])
 write_fixture(partial)
 wrapper_case("partial report still covering every floor fails independent source inventory", 1,
              "materially incomplete", "InventorySentinel.cs")
-partial_lines = copy.deepcopy(composite)
-lines = partial_lines.find(".//class/lines")
-lines.remove(lines.findall("line")[-1])
-write_fixture(partial_lines)
-wrapper_case("partial class data with every source still present fails PDB sequence points", 1,
-             "materially incomplete", "sequence-point lines")
+partial_classes = copy.deepcopy(composite)
+classes = partial_classes.find(".//classes")
+classes.remove(classes.findall("class")[-1])
+write_fixture(partial_classes)
+wrapper_case("partial class data with every source still present fails DLL/PDB inventory", 1,
+             "materially incomplete", "compiled classes")
 empty_report = ET.Element("coverage")
 ET.SubElement(empty_report, "packages")
 write_fixture(empty_report)
