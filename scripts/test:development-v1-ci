@@ -2,16 +2,35 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-python3 - "$repo_root" <<'PY'
+# Hosted Ubuntu 24.04 supplies PyYAML through yamllint's pipx environment.
+# Prefer the developer's python3 when it already supplies the parser.
+yaml_python=python3
+if ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
+    yaml_python="${PIPX_HOME:-/opt/pipx}/venvs/yamllint/bin/python"
+    if [[ ! -x "$yaml_python" ]] || ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
+        printf 'test:development-v1-ci requires PyYAML in python3 or the yamllint pipx environment; install python3-yaml locally.\n' >&2
+        exit 1
+    fi
+fi
+"$yaml_python" - "$repo_root" <<'PY'
 import json
+import functools
 import itertools
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import textwrap
+
+try:
+    import yaml
+except ImportError:
+    raise SystemExit("test:development-v1-ci requires PyYAML; install python3-yaml locally")
+
+print(f"Workflow YAML parser: PyYAML {yaml.__version__} ({sys.executable})")
 
 root = pathlib.Path(sys.argv[1])
 short = (root / ".github/workflows/development-v1.yml").read_text()
@@ -28,11 +47,51 @@ def read_workflows(directory):
 workflows = read_workflows(root / ".github/workflows")
 
 
+def regex_jobs(workflow):
+    return re.search(r"^jobs:\n(.*?)(?=^[^\s#]|\Z)", workflow, re.M | re.S)
+
+
 def jobs_section(workflow):
-    # Bound lookup to the top-level jobs mapping, including when another root
-    # mapping follows it. An event name must never shadow a job with that id.
-    match = re.search(r"^jobs:\n(.*?)(?=^[^\s#]|\Z)", workflow, re.M | re.S)
+    # This view binds canonical command formatting only. Parsed nodes below
+    # decide which jobs exist, and must agree with these exact source bounds.
+    match = regex_jobs(workflow)
     return match.group(1) if match else ""
+
+
+def unique_mapping(node, label):
+    if not isinstance(node, yaml.MappingNode):
+        raise ValueError(f"{label} must be a mapping")
+    result = {}
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode) or key.value == "<<" or key.value in result:
+            raise ValueError(f"{label} has a complex, duplicate or merge key")
+        result[key.value] = (key, value)
+    return result
+
+
+def scalar(node, label):
+    if not isinstance(node, yaml.ScalarNode):
+        raise ValueError(f"{label} must be a scalar")
+    return node.value
+
+
+@functools.lru_cache(maxsize=256)
+def parsed_jobs(workflow):
+    # BaseLoader preserves strings such as the root `on` key (YAML 1.1 boolean
+    # resolution would turn it into True). Compose never constructs tagged code.
+    document = unique_mapping(yaml.compose(workflow, Loader=yaml.BaseLoader), "workflow")
+    if "jobs" not in document:
+        raise ValueError("workflow has no jobs mapping")
+    jobs_key, jobs_node = document["jobs"]
+    result = {}
+    for header, (key, node) in unique_mapping(jobs_node, "jobs").items():
+        properties = unique_mapping(node, f"job {header}")
+        result[header] = {
+            "index": key.start_mark.index,
+            "name": scalar(properties["name"][1], "job name") if "name" in properties else header,
+            "uses": scalar(properties["uses"][1], "job uses") if "uses" in properties else None,
+        }
+    return jobs_key.start_mark.index, jobs_node.end_mark.index, result
 
 
 def job(workflow, name):
@@ -128,22 +187,36 @@ def violations(short, full, queue=None, extra=None):
     require(queue_on.strip() == merge_group_trigger.strip(), "queue reviewed-head runs only on merge_group")
     require("pull_request" not in queue_on and "push" not in queue_on and "workflow_" not in queue_on,
             "queue reviewed-head has no PR, push or dispatch trigger")
-    # Scan every workflow, not just the intended producers. Restrict job/name
-    # layout to the repository's canonical block form so alternate YAML shapes
-    # cannot silently escape this dependency-free guard. actionlint checks YAML.
+    # The YAML parse is authoritative for producer identities. Retain canonical
+    # source checks for command/wiring contracts, but require their view to agree
+    # with parsed job locations, names and reusable calls. Fail closed on either
+    # malformed YAML or a disagreement; actionlint remains the workflow linter.
     sources = dict(workflows, **{"development-v1.yml": short, "ci.yml": full,
                                 "merge-queue-reviewed-head.yml": queue})
     sources.update(extra or {})
     names = []
     for path, workflow in sources.items():
+        try:
+            jobs_index, jobs_end, actual_jobs = parsed_jobs(workflow)
+        except (yaml.YAMLError, ValueError) as error:
+            require(False, f"valid workflow YAML jobs: {path}: {error}")
+            continue
+        match = regex_jobs(workflow)
+        require(match is not None and match.start() == jobs_index and match.end(1) == jobs_end,
+                f"YAML/regex jobs bounds agree: {path}")
         require(workflow.count("\njobs:\n") == 1, f"canonical jobs block: {path}")
         section = jobs_section(workflow)
-        headers = re.findall(r"^  ([\w-]+):\n", section, re.M)
+        header_matches = list(re.finditer(r"^  ([\w-]+):\n", section, re.M))
+        headers = [header.group(1) for header in header_matches]
+        require(headers == list(actual_jobs) and match is not None and all(
+            match.start(1) + header.start() + 2 == actual_jobs[header.group(1)]["index"]
+            for header in header_matches if header.group(1) in actual_jobs),
+            f"YAML/regex job ids and locations agree: {path}")
         direct_children = [line for line in section.splitlines()
                            if re.match(r"^  [^\s#]", line)]
         require(bool(headers) and direct_children == [f"  {header}:" for header in headers],
                 f"canonical job headers: {path}")
-        for header in headers:
+        for header, actual in actual_jobs.items():
             body = job(workflow, header)
             values = re.findall(r"^    name: ([^\n]+)$", body, re.M)
             properties = [line for line in body.splitlines() if re.match(r"^    [^\s#]", line)]
@@ -171,6 +244,16 @@ def violations(short, full, queue=None, extra=None):
                 value = value.split(" #", 1)[0].strip()
             require(isinstance(value, str) and not value.startswith(("|", ">", "&", "*", "{", "!")),
                     f"canonical job name: {path}/{header}")
+            require(value == actual["name"], f"YAML/regex job name agrees: {path}/{header}")
+            uses_lines = re.findall(r"^    uses: ([^\n]+)$", body, re.M)
+            require(len(uses_lines) <= 1, f"one uses field per job: {path}/{header}")
+            try:
+                view_uses = scalar(yaml.compose(uses_lines[0], Loader=yaml.BaseLoader), "uses") if uses_lines else None
+            except (yaml.YAMLError, ValueError):
+                view_uses = None
+                require(False, f"canonical uses scalar: {path}/{header}")
+            require(view_uses == actual["uses"], f"YAML/regex job uses agrees: {path}/{header}")
+            value = actual["name"]
             require(isinstance(value, str) and "${{" not in value and
                     all(" " <= char <= "~" for char in value),
                     f"decoded static printable job name: {path}/{header}")
@@ -179,7 +262,7 @@ def violations(short, full, queue=None, extra=None):
                         raw_name == "hvo/reviewed-head",
                         f"reviewed-head name belongs only to the approved queue gate: {path}/{header}")
             label = normalized_name(value)
-            if label is not None and re.search(r"^    uses:", body, re.M):
+            if label is not None and actual["uses"] is not None:
                 # A reusable workflow reports "caller label / callee label".
                 # Reserve every caller prefix that could form a required context,
                 # for local and external calls alike, regardless of callee ids.
@@ -511,6 +594,47 @@ for required in required_names:
     for label in (required.swapcase(), "  " + required.replace(" ", "   ") + "  "):
         mutations += ((f"normalized required name: {label!r}", short, full, queue_gate,
                        {"normalized.yml": spoof_workflow(json.dumps(label))}),)
+# R4 fixtures are valid YAML/actionlint workflows whose quoted/flow values
+# conceal producers from the old line-regex view. Parsing them must succeed;
+# the semantic producer checks and source agreement must reject every one.
+r4_fixtures = root / "tests/fixtures/development-v1-ci"
+r4_callee = (r4_fixtures / "r4-callee.yml").read_text()
+r4_paths = sorted(path for path in r4_fixtures.glob("*.yml") if path.name != "r4-callee.yml")
+if len(r4_paths) != 10:
+    raise SystemExit("Expected all ten R4 producer-name repro fixtures")
+for path in r4_paths:
+    source = path.read_text()
+    parsed_jobs(source)
+    sources = {path.name: source, "r4-callee.yml": r4_callee}
+    if not violations(short, full, queue_gate, sources):
+        raise SystemExit(f"R4 spoof was not rejected: {path.name}")
+    print(f"R4 spoof rejected: {path.name}")
+    mutations += ((f"R4 {path.name}", short, full, queue_gate, sources),)
+
+# Exercise the actual interpreter-selection prologue without running this suite
+# recursively. This also proves missing system PyYAML cannot silently skip it.
+with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
+    fixture = pathlib.Path(directory)
+    bin_dir = fixture / "bin"
+    bin_dir.mkdir()
+    missing_python = bin_dir / "python3"
+    missing_python.write_text("#!/usr/bin/env bash\nexit 1\n")
+    missing_python.chmod(0o700)
+    selector = fixture / "select-parser"
+    prologue = (root / "scripts/test:development-v1-ci").read_text().split("<<'PY'\n", 1)[0]
+    selector.write_text(prologue + "<<'PY'\nimport yaml\nprint('PyYAML available')\nPY\n")
+    environment = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", PIPX_HOME=str(fixture / "pipx"))
+    result = subprocess.run(["bash", str(selector)], env=environment, capture_output=True, text=True)
+    if result.returncode == 0 or "requires PyYAML" not in result.stderr:
+        raise SystemExit("Missing YAML parser did not fail closed")
+    fallback = fixture / "pipx/venvs/yamllint/bin/python"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text(f'#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} "$@"\n')
+    fallback.chmod(0o700)
+    result = subprocess.run(["bash", str(selector)], env=environment, capture_output=True, text=True)
+    if result.returncode != 0 or result.stdout.strip() != "PyYAML available":
+        raise SystemExit(f"Hosted yamllint parser fallback failed: {result.stderr}")
+    print("PyYAML availability controls: absent parser fails; hosted pipx fallback passes.")
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")

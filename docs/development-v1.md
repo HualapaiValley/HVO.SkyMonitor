@@ -46,6 +46,25 @@ The branch currently requires:
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
+### Workflow contract YAML parser
+
+`scripts/test:development-v1-ci` requires PyYAML and fails closed if it is
+unavailable. Job IDs, names and reusable-workflow `uses` values come from parsed
+YAML nodes; the canonical source view must agree on job boundaries, locations and
+field values. Quoted or flow syntax cannot hide a producer from the parse.
+
+The local Ubuntu 24.04 host was checked with Python 3 and PyYAML 6.0.1. Install
+`python3-yaml` for local system Python if needed. Hosted `ubuntu-24.04` images
+[include yamllint](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
+[installed with pipx](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-pipx-packages.sh);
+[PyYAML is a yamllint dependency](https://github.com/adrienverge/yamllint/blob/master/pyproject.toml).
+The image's [Python setup](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-python.sh)
+sets `PIPX_HOME=/opt/pipx`. The contract first probes `python3`, then the Python in
+`${PIPX_HOME:-/opt/pipx}/venvs/yamllint`. It reports the selected interpreter and
+parser version. Tests cover the hosted fallback and refusal when neither parser
+is available. This availability check uses the published hosted-image build;
+no hosted CI run was dispatched for this correction.
+
 ### Pending merge queue rollout (not yet live)
 
 The checked-in queue support is preparation, not evidence that the queue or its
