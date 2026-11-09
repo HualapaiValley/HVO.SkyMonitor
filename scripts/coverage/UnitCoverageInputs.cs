@@ -77,7 +77,7 @@ internal static class UnitCoverageInputs
                 }
 
                 var pdb = Path.ChangeExtension(assembly, ".pdb");
-                var inventoryIdentity = Hash(pdb);
+                var inventoryIdentity = Hash(assembly) + Hash(pdb);
                 if (!inventories.TryGetValue(inventoryIdentity, out var sources))
                 {
                     sources = ReadExecutableSources(pdb, repositoryRoot);
@@ -106,7 +106,15 @@ internal static class UnitCoverageInputs
             throw new InvalidDataException($"Unit coverage/TRX inventory differs from the Unit-bearing project set; missing: {string.Join(", ", expectedProjects.Except(seenProjects))}.");
         }
 
-        Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source/class inventories and ordinary-method lines of floored files against Release portable PDBs.");
+        foreach (var source in inventories.Values.SelectMany(static sources => sources)
+            .Where(entry => floors.Contains(entry.Key) && entry.Value.SharedGeneratedLines.Count > 0)
+            .GroupBy(static entry => entry.Key).OrderBy(static group => group.Key, StringComparer.Ordinal))
+        {
+            var lines = source.SelectMany(static entry => entry.Value.SharedGeneratedLines).Distinct().Order();
+            Console.WriteLine($"PDB inventory bound for '{source.Key}': state-machine lines shared with other generated methods [{string.Join(", ", lines)}] rely on the declared emitted-line inventory; Coverlet can legitimately omit those overlapping points.");
+        }
+
+        Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source/class inventories and statement lines (ordinary and state-machine methods) of floored files against Release portable PDBs.");
     }
 
     private static Dictionary<string, SourceInventory> ReadExecutableSources(string pdb, string repositoryRoot)
@@ -118,6 +126,16 @@ internal static class UnitCoverageInputs
         using var assemblyStream = File.OpenRead(Path.ChangeExtension(pdb, ".dll"));
         using var assembly = new PEReader(assemblyStream);
         var metadata = assembly.GetMetadataReader();
+        var pdbId = new BlobContentId(reader.DebugMetadataHeader!.Id);
+        var associated = assembly.ReadDebugDirectory().Any(entry =>
+            entry.Type == DebugDirectoryEntryType.CodeView && entry.Stamp == pdbId.Stamp &&
+            assembly.ReadCodeViewDebugDirectoryData(entry).Guid == pdbId.Guid &&
+            assembly.ReadCodeViewDebugDirectoryData(entry).Age == 1);
+        if (!associated)
+        {
+            throw new InvalidDataException($"Portable PDB '{pdb}' does not match its DLL debug identifier. Restore the matching Release DLL/PDB pair and rerun collection.");
+        }
+
         bool HasAttribute(CustomAttributeHandleCollection attributes, string requiredName)
         {
             foreach (var attribute in attributes)
@@ -192,11 +210,86 @@ internal static class UnitCoverageInputs
             return sources;
         }
 
+        // Iterator finally helpers can carry user source without their own
+        // kickoff record. The MoveNext record associates the whole state type
+        // with its original method, including those cleanup helpers.
+        var stateMachineKickoffs = new Dictionary<TypeDefinitionHandle, MethodDefinitionHandle>();
+        foreach (var handle in reader.MethodDebugInformation)
+        {
+            var kickoff = reader.GetMethodDebugInformation(handle).GetStateMachineKickoffMethod();
+            if (!kickoff.IsNil)
+            {
+                var definition = MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle));
+                stateMachineKickoffs[metadata.GetMethodDefinition(definition).GetDeclaringType()] = kickoff;
+            }
+        }
+
+        // Coverlet can omit a source line shared by a state machine and a
+        // separate generated lambda/local function (the two PDB records have
+        // ambiguous ownership). Keep those lines under the emitted-count check
+        // instead of falsely requiring every generated point. Derive the bound
+        // from this build's metadata, never from a file/line exception list.
+        var sharedGeneratedLines = new Dictionary<DocumentHandle, HashSet<int>>();
+        foreach (var handle in reader.MethodDebugInformation)
+        {
+            var definition = MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle));
+            var methodDefinition = metadata.GetMethodDefinition(definition);
+            var type = methodDefinition.GetDeclaringType();
+            if (stateMachineKickoffs.ContainsKey(type) ||
+                (!TypeName(type).Contains('<', StringComparison.Ordinal) &&
+                 !metadata.GetString(methodDefinition.Name).Contains('<', StringComparison.Ordinal) &&
+                 !HasAttribute(metadata.GetTypeDefinition(type).GetCustomAttributes(), "CompilerGeneratedAttribute") &&
+                 !HasAttribute(methodDefinition.GetCustomAttributes(), "CompilerGeneratedAttribute")))
+            {
+                continue;
+            }
+
+            var method = reader.GetMethodDebugInformation(handle);
+            foreach (var point in method.GetSequencePoints().Where(static point => !point.IsHidden))
+            {
+                var document = point.Document.IsNil ? method.Document : point.Document;
+                if (!sharedGeneratedLines.TryGetValue(document, out var lines))
+                {
+                    lines = [];
+                    sharedGeneratedLines.Add(document, lines);
+                }
+
+                for (var line = point.StartLine; line <= point.EndLine; line++)
+                {
+                    lines.Add(line);
+                }
+            }
+        }
+
+        var excludedSections = new Dictionary<DocumentHandle, List<(int Start, int End)>>();
         foreach (var handle in reader.MethodDebugInformation)
         {
             var method = reader.GetMethodDebugInformation(handle);
             var definition = MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle));
-            var kickoff = method.GetStateMachineKickoffMethod();
+            var kickoff = stateMachineKickoffs.GetValueOrDefault(metadata.GetMethodDefinition(definition).GetDeclaringType());
+            if (!ExcludedMethod(definition) && (kickoff.IsNil || !ExcludedMethod(kickoff)))
+            {
+                continue;
+            }
+
+            foreach (var group in method.GetSequencePoints().Where(static point => !point.IsHidden)
+                .GroupBy(point => point.Document.IsNil ? method.Document : point.Document))
+            {
+                if (!excludedSections.TryGetValue(group.Key, out var sections))
+                {
+                    sections = [];
+                    excludedSections.Add(group.Key, sections);
+                }
+
+                sections.Add((group.Min(static point => point.StartLine), group.Max(static point => point.EndLine)));
+            }
+        }
+
+        foreach (var handle in reader.MethodDebugInformation)
+        {
+            var method = reader.GetMethodDebugInformation(handle);
+            var definition = MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle));
+            var kickoff = stateMachineKickoffs.GetValueOrDefault(metadata.GetMethodDefinition(definition).GetDeclaringType());
             if (ExcludedMethod(definition) || (!kickoff.IsNil && ExcludedMethod(kickoff)))
             {
                 continue;
@@ -219,6 +312,12 @@ internal static class UnitCoverageInputs
                 }
 
                 var document = point.Document.IsNil ? method.Document : point.Document;
+                if (excludedSections.TryGetValue(document, out var sections) &&
+                    sections.Any(section => point.StartLine >= section.Start && point.StartLine <= section.End))
+                {
+                    continue;
+                }
+
                 var path = reader.GetString(reader.GetDocument(document).Name).Replace('\\', '/');
                 var relative = Path.GetRelativePath(repositoryRoot, path).Replace('\\', '/');
                 if (relative.StartsWith("src/", StringComparison.Ordinal) &&
@@ -235,15 +334,30 @@ internal static class UnitCoverageInputs
                         source.Classes.Add(typeName);
                     }
 
-                    // Coverlet legitimately omits some generated/local-function
-                    // points. Ordinary methods have an independent line inventory;
-                    // never derive that denominator from the coverage report.
-                    if (ordinaryMethod)
+                    // State-machine MoveNext has a PDB link to its original
+                    // async/iterator method. Its user source is measurable too.
+                    // Coverlet emits every line of an instrumented point's span.
+                    if (ordinaryMethod || !kickoff.IsNil)
                     {
-                        source.OrdinaryMethodLines.Add(point.StartLine);
+                        for (var line = point.StartLine; line <= point.EndLine; line++)
+                        {
+                            if (!ordinaryMethod && sharedGeneratedLines.TryGetValue(document, out var shared) && shared.Contains(line))
+                            {
+                                source.SharedGeneratedLines.Add(line);
+                            }
+                            else
+                            {
+                                source.StatementLines.Add(line);
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        foreach (var source in sources.Values)
+        {
+            source.SharedGeneratedLines.ExceptWith(source.StatementLines);
         }
 
         return sources;
@@ -252,6 +366,18 @@ internal static class UnitCoverageInputs
     private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, SourceInventory>> expected, string repositoryRoot, HashSet<string> floors)
     {
         var document = XDocument.Load(report);
+        // Coverlet declares an exact emitted line count even for generated
+        // methods whose PDB points are not all coverable. Preserve that input
+        // inventory too; use unique source lines as the canonical denominator.
+        var emittedLines = document.Descendants("class")
+            .SelectMany(entry => (entry.Element("lines")?.Elements("line") ?? [])
+                .Select(line => ((string?)entry.Attribute("filename"), (int)line.Attribute("number")!)))
+            .Distinct().Count();
+        if (!int.TryParse((string?)document.Root?.Attribute("lines-valid"), out var declaredLines) || declaredLines != emittedLines)
+        {
+            throw new InvalidDataException($"Report '{report}' has inconsistent emitted line inventory: declared lines-valid='{(string?)document.Root?.Attribute("lines-valid")}', observed {emittedLines} unique source lines. Restore the complete original Coverlet report; generated lines must not silently disappear.");
+        }
+
         var packages = document.Descendants("package").ToArray();
         var names = packages.Select(static package => (string?)package.Attribute("name") ?? string.Empty).ToArray();
         if (names.Distinct(StringComparer.Ordinal).Count() != names.Length || !expected.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(names))
@@ -283,7 +409,7 @@ internal static class UnitCoverageInputs
                     }
 
                     source.Classes.Add((string)entry.Attribute("name")!);
-                    source.OrdinaryMethodLines.Add((int)line.Attribute("number")!);
+                    source.StatementLines.Add((int)line.Attribute("number")!);
                 }
             }
 
@@ -303,10 +429,10 @@ internal static class UnitCoverageInputs
 
                 if (floors.Contains(source))
                 {
-                    var missingLines = required.OrdinaryMethodLines.Except(observed[source].OrdinaryMethodLines).Order().ToArray();
+                    var missingLines = required.StatementLines.Except(observed[source].StatementLines).Order().ToArray();
                     if (missingLines.Length > 0)
                     {
-                        throw new InvalidDataException($"Report '{report}' is materially incomplete for floored file '{source}': missing {missingLines.Length} ordinary-method executable lines from its Release DLL/PDB, including {string.Join(", ", missingLines.Take(12))}. Restore complete XPlat collection; omitted lines cannot be counted as covered.");
+                        throw new InvalidDataException($"Report '{report}' is materially incomplete for floored file '{source}': missing {missingLines.Length} ordinary/state-machine statement lines from its Release DLL/PDB, including {string.Join(", ", missingLines.Take(12))}. Restore complete XPlat collection; omitted lines cannot be counted as covered.");
                     }
                 }
             }
@@ -346,7 +472,8 @@ internal static class UnitCoverageInputs
     private sealed class SourceInventory
     {
         internal HashSet<string> Classes { get; } = new(StringComparer.Ordinal);
-        internal HashSet<int> OrdinaryMethodLines { get; } = [];
+        internal HashSet<int> StatementLines { get; } = [];
+        internal HashSet<int> SharedGeneratedLines { get; } = [];
     }
 
     private static string Hash(string path)

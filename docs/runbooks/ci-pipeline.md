@@ -34,22 +34,35 @@ a malformed input, omit it and still exit zero. Legitimate classless reports fro
 projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
-PDBs, plus every ordinary compiled class in each executable source. For floored
-files, each report must also contain every nonhidden sequence-point start line
-from ordinary methods in the Release DLL/PDB. Removing a method or its uncovered
-class-level lines therefore fails before merging, even if its class survives and
-other reports cover that file. Method-level Cobertura records are redundant;
-the canonical measurement and inventory both use class-level line entries.
+PDBs, plus every ordinary compiled class in each executable source. A portable
+PDB must match its DLL's debug identifier before its inventory is trusted;
+inventories are cached by the associated DLL/PDB pair. Excluded methods' source
+sections also exclude synthesized lambdas/local functions within those sections.
+For floored files, each report must contain the full line span of each nonhidden
+sequence point in ordinary methods and in async/iterator state-machine methods
+linked to their kickoff method by the PDB (including iterator cleanup helpers).
+For state machines, lines also mapped to a separate generated lambda/local
+function are excluded from the independent PDB line set: Coverlet can omit those
+overlapping points even on current tip. This metadata-derived bound is printed
+with source paths and line numbers; it is not a file/line exception list. Removing
+unambiguous measured lines or
+multiline statement continuations fails before merging, even if their class
+survives and other reports cover the file. Method-level Cobertura records are
+redundant; the canonical measurement and inventory both use class-level lines.
+The report's declared `lines-valid` count must also equal its unique emitted
+source-line count, including generated methods and legitimate classless reports.
 
-This is a bounded completeness check: generated types/methods (including lambdas,
-local functions, async/iterator state machines and generated accessors) are not
-required to contribute individual lines. Coverlet legitimately omits some of
-these PDB points. A removed line belonging only to generated code can still
-escape independent line-inventory detection; branch denominators are structurally
+This remains a bounded completeness check: other generated methods (for example,
+lambdas/local functions without a state-machine kickoff link and generated
+accessors) are not required to contribute individual lines. Coverlet legitimately
+omits some generated points; this check does not infer their inventory from other
+reports. A removed line belonging only to those methods, or shared with a state machine,
+can escape independent PDB line-inventory detection only if the report's declared
+line count is also rewritten to conceal that deletion. Branch denominators are structurally
 validated rather than reconstructed from IL. Non-floored sources receive file
 and ordinary-class completeness checks only. TRX attachment checksums bind inputs
-to their copied attachments, not to an authenticated collector output. These
-limits do not waive floors for any observed data. Collector exclusions and other
+to their copied attachments, not to authenticated collector output. These limits
+do not waive floors for observed data. Collector exclusions and other
 options are guarded against the inventory's supported canonical configuration;
 an unsupported setting change fails with an inventory-update remedy. A future
 active `tools/` floor also fails explicitly until its inventory is supported
@@ -137,12 +150,14 @@ The existing Build and Unit check reports failure on non-draft PRs, v1 pushes an
 and ruleset 26838822 need no change. No new check, permission, catalog provision,
 Integration selection, workflow dispatch or repository setting is introduced.
 
-Independent review measured approximately 65 seconds of added CI work with
-SingleHit: 44.5 seconds in Unit collection and 20.3 seconds in the coverage
-stage, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts growing
-about 18 MB. Earlier variable local controls did not establish that coverage was
-faster; they are not evidence of a speedup. Observe hosted timing and memory
-alongside the existing workload budget when evaluating further changes.
+Earlier independent review measured about 44.5 seconds added to Unit collection
+with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
+growing about 18 MB. That review's 20.3-second coverage stage predates the stronger
+input inventory. Subsequent coverage-stage measurements were 29–35 seconds in
+independent reviews and 45.35 seconds in the owner's 57d17c94 replay; these are
+separate samples, not a controlled incremental comparison. Earlier variable local
+controls did not establish that coverage was faster. Observe hosted timing and
+memory alongside the existing workload budget when evaluating further changes.
 
 ## Development v1 Preflight Budget
 

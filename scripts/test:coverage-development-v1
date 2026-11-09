@@ -192,6 +192,14 @@ with (source_dir / "CameraGeometry.cs").open("a") as source:
         source.write(f"        if (value == {number}) value++;\n")
     source.write("        return value;\n    }\n    [System.Runtime.CompilerServices.CompilerGenerated] public static int Generated() => 1;\n}\n")
 (source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
+async_source = source_dir / "InventoryAsync.cs"
+async_source.write_text("namespace CoverageFixture; public static class InventoryAsync\n{\n    public static async System.Threading.Tasks.Task<int> ExecuteAsync(int value)\n    {\n        await System.Threading.Tasks.Task.CompletedTask;\n" +
+                        "".join("        value++;\n" for _ in range(175)) + "        return value;\n    }\n}\n")
+# Iterator source spans are also state-machine source, not an exempt generated
+# implementation. A multiline ordinary expression checks continuation lines.
+(source_dir / "InventoryIterator.cs").write_text("namespace CoverageFixture; public static class InventoryIterator\n{\n    public static System.Collections.Generic.IEnumerable<int> Values()\n    {\n        yield return 1;\n        yield return 2;\n    }\n    public static int Sum() =>\n        1 +\n        int.Parse(\"2\");\n}\n")
+# Coverlet excludes the synthesized lambda inside this excluded-only method.
+(source_dir / "ExcludedLambda.cs").write_text("namespace CoverageFixture; public static class ExcludedLambda\n{\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]\n    public static int Value()\n    {\n        System.Func<int> value = () => 1;\n        return value();\n    }\n}\n")
 fixture_project = inventory_repo / "Inventory.csproj"
 fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <TargetFramework>net10.0</TargetFramework><AssemblyName>{assembly_name}</AssemblyName>
@@ -213,6 +221,8 @@ for name in ("coverage:development-v1", "coverage:enforce"):
     shutil.copy2(root / "scripts" / name, fixture_scripts / name)
 fixture_baseline = copy.deepcopy(canonical)
 fixture_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
+for filename in ("InventoryAsync.cs", "InventoryIterator.cs"):
+    fixture_baseline["files"][f"{assembly_name}/{filename}"] = {"line": 0.95, "branch": 0.90}
 (fixture_scripts / "coverage/baseline.json").write_text(json.dumps(fixture_baseline))
 results = inventory_repo / "results"
 (results / "original").mkdir(parents=True)
@@ -238,8 +248,21 @@ for type_name, filename, numbers in (("InventoryA", "CameraGeometry.cs", (3, 4))
     for number in numbers:
         ET.SubElement(lines, "line", number=str(number), hits="1", branch="true", **{"condition-coverage":"100% (2/2)"})
 
+# Include synthetic counters independently of DLL/PDB metadata, so the real
+# inventory (rather than fixture-derived expectations) must validate the lines.
+for name, filename, numbers in (("InventoryAsync/<ExecuteAsync>d__0", "InventoryAsync.cs", range(1, 184)),
+                                ("InventoryIterator/<Values>d__0", "InventoryIterator.cs", (4, 5, 6, 7)),
+                                ("InventoryIterator", "InventoryIterator.cs", (9, 10))):
+    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.{name}", filename=str(source_dir / filename),
+                          **{"line-rate": "1", "branch-rate": "1"})
+    lines = ET.SubElement(entry, "lines")
+    for number in numbers:
+        ET.SubElement(lines, "line", number=str(number), hits="1", branch="false")
+
 
 def write_fixture(document):
+    document.set("lines-valid", str(len({(entry.get("filename"), line.get("number"))
+                                       for entry in document.findall(".//class") for line in entry.findall("lines/line")})))
     ET.ElementTree(document).write(valid)
     shutil.copy2(valid, attachment)
 
@@ -256,14 +279,23 @@ def wrapper_case(name, expected, *needles):
 
 
 write_fixture(composite)
-wrapper_case("complete wrapper accepts DLL/PDB inventory with excluded and generated points omitted", 0, "Coverage gate passed.")
+wrapper_case("complete wrapper accepts excluded-only lambda source and omitted generated points", 0, "Coverage gate passed.")
+# A declared collector inventory cannot survive deleted emitted records,
+# including records from otherwise exempt generated methods.
+write_fixture(composite)
+corrupt_count = ET.parse(valid)
+corrupt_count.getroot().set("lines-valid", str(int(corrupt_count.getroot().get("lines-valid")) + 1))
+corrupt_count.write(valid)
+shutil.copy2(valid, attachment)
+wrapper_case("declared emitted line inventory mismatch cannot silently pass", 1,
+             "inconsistent emitted line inventory", "lines-valid")
 # Remove a whole ordinary method while retaining its source and class.
 missing_method = copy.deepcopy(composite)
 lines = missing_method.find(".//class/lines")
 lines.remove(lines.findall("line")[1])
 write_fixture(missing_method)
 wrapper_case("pruned ordinary method cannot pass with its class still present", 1,
-             "CameraGeometry.cs", "ordinary-method executable lines", "4")
+             "CameraGeometry.cs", "ordinary/state-machine statement lines", "4")
 
 # Sol repro: real counters fail at 1/37 (2.70%) line and 0% branch;
 # pruning all uncovered class/method data must not convert that to a pass.
@@ -285,17 +317,69 @@ for entry in pruned.findall(".//class"):
     lines.remove(lines.findall("line")[1])
 write_fixture(pruned)
 wrapper_case("Sol repro pruned missing method data is rejected before floor evaluation", 1,
-             "CameraGeometry.cs", "ordinary-method executable lines")
+             "CameraGeometry.cs", "ordinary/state-machine statement lines")
 
 # Opus repro: delete 11 uncovered points inside a surviving multiline method.
 pruned_lines = copy.deepcopy(composite)
-lines = pruned_lines.findall(".//class")[-1].find("lines")
+lines = pruned_lines.findall(".//class")[3].find("lines")
 for line in list(lines)[1:12]:
     lines.remove(line)
 write_fixture(pruned_lines)
 wrapper_case("Opus repro eleven pruned uncovered lines fail with all classes surviving", 1,
-             "missing 11 ordinary-method executable lines", "CameraGeometry.cs")
+             "missing 11 ordinary/state-machine statement lines", "CameraGeometry.cs")
 
+# Sol 57d17c94 repro: 12 measured async points are uncovered, alongside
+# one other uncovered line. 170/183 -> 170/171 crosses the unchanged95% floor.
+async_low = copy.deepcopy(composite)
+async_entry = next(entry for entry in async_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in async_entry.find("lines"):
+    if int(line.get("number")) in range(5, 18):
+        line.set("hits", "0")
+write_fixture(async_low)
+wrapper_case("measured async 92.90 percent is a genuine floor failure", 1,
+             "InventoryAsync.cs", "line 92.90", "min 95.00")
+async_pruned = copy.deepcopy(async_low)
+entry = next(entry for entry in async_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in list(entry.find("lines")):
+    if int(line.get("number")) in range(5, 17):
+        entry.find("lines").remove(line)
+write_fixture(async_pruned)
+wrapper_case("pruning async points cannot turn 92.90 percent into 99.42 percent", 1,
+             "InventoryAsync.cs", "statement lines")
+iterator_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in iterator_pruned.findall(".//class") if "<Values>" in entry.get("name"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "5"))
+write_fixture(iterator_pruned)
+wrapper_case("a measured iterator line cannot silently disappear", 1,
+             "InventoryIterator.cs", "statement lines")
+span_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in span_pruned.findall(".//class") if entry.get("name") == "CoverageFixture.InventoryIterator")
+entry.find("lines").remove(entry.findall("lines/line")[-1])
+write_fixture(span_pruned)
+wrapper_case("ordinary multiline expression continuation cannot silently disappear", 1,
+             "InventoryIterator.cs", "statement lines", "10")
+# A valid unrelated PDB must never shrink the trusted inventory of this DLL.
+pdb_path = assembly_output / f"{assembly_name}.pdb"
+pdb_bytes = pdb_path.read_bytes()
+stale_output = scratch / "stale-pdb"
+async_source.write_text(async_source.read_text().replace("        value++;\n", "", 1))
+result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(stale_output),
+                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr
+pdb_path.write_bytes((stale_output / f"{assembly_name}.pdb").read_bytes())
+write_fixture(composite)
+wrapper_case("valid stale PDB is rejected before trusting its smaller inventory", 1,
+             "does not match its DLL debug identifier", "matching Release DLL/PDB pair")
+result = subprocess.run(["dotnet", str(fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--validate-reports", "--unit-results", str(results), str(fixture_scripts / "coverage/baseline.json"), str(valid)],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "does not match its DLL debug identifier" in result.stderr, result.stdout + result.stderr
+cases += 1
+print("PASS default inventory also rejects stale mismatched PDB")
+pdb_path.write_bytes(pdb_bytes)
+write_fixture(composite)
+wrapper_case("matching PDB restores acceptance after stale identity rejection", 0,
+             "Coverage gate passed.")
 settings_source = inventory_repo / "tests/coverage.runsettings"
 settings_bytes = settings_source.read_bytes()
 settings_source.write_bytes(settings_bytes.replace(b"**/Migrations/**", b"**/Migrations/**,**/Future/**"))
