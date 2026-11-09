@@ -22,6 +22,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [TestMethod]
     [DataRow("temporary")]
     [DataRow("bounded")]
+    [DataRow("corrupt")]
     [DataRow("missing")]
     public async Task ManifestFailureKeepsReadableJournalAndShowsSpecificSafeReason(string failure)
     {
@@ -31,7 +32,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
             .ReturnsAsync(new ProcessingGraphExecutionDetail(execution, []));
         var setup = operations.Setup(value => value.ReadRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()));
         if (failure == "temporary") setup.ThrowsAsync(new IOException("/private/sentinel?password=secret"));
-        else if (failure == "bounded") setup.ThrowsAsync(new InvalidDataException("/private/sentinel"));
+        else if (failure == "bounded") setup.ThrowsAsync(new ProcessingRunManifestBoundsException());
+        else if (failure == "corrupt") setup.ThrowsAsync(new InvalidDataException("/private/sentinel"));
         else setup.ReturnsAsync((ProcessingGraphExecutionDetail?)null);
         var result = await CreateService(operations.Object, authorized: true)
             .GetExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
@@ -41,6 +43,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         {
             "temporary" => "The run manifest is temporarily unavailable. Refresh the run to try again.",
             "bounded" => ProcessingRunManifestBounds.UnavailableReason,
+            "corrupt" => CameraAgentRunManifest.CorruptReason,
             _ => CameraAgentRunManifest.MissingReason
         }, result.Value.ManifestUnavailableReason);
         Assert.IsFalse(JsonSerializer.Serialize(result.Value).Contains("sentinel", StringComparison.Ordinal));

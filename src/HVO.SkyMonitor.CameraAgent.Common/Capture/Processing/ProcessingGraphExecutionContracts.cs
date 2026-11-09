@@ -106,7 +106,9 @@ public sealed record ProcessingGraphExecutionOutputState(
 public enum ProcessingGraphExecutionInputKind
 {
     RawCapture,
-    ProcessingOutput
+    ProcessingOutput,
+    AuxiliaryRawCapture,
+    AuxiliaryProcessingOutput
 }
 
 public sealed record ProcessingGraphExecutionInputState(
@@ -170,6 +172,9 @@ public sealed record ProcessingGraphExecutionNodeState(
 
     /// <summary>Whether the bounded manifest read retained every recorded artifact input binding.</summary>
     public bool ArtifactBindingsRetained { get; init; } = true;
+
+    /// <summary>Actual output cardinality recorded atomically at node completion, independent of retention.</summary>
+    public int? CommittedOutputCount { get; init; }
 
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];

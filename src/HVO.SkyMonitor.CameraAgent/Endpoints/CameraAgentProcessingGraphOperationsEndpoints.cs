@@ -249,9 +249,13 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
                 ? Results.File(payload, "application/json", $"pipeline-run-{executionId:D}-manifest-v1.json")
                 : Problem(StatusCodes.Status409Conflict, manifest.Reason!);
         }
-        catch (InvalidDataException)
+        catch (ProcessingRunManifestBoundsException)
         {
             return Problem(StatusCodes.Status409Conflict, ProcessingRunManifestBounds.UnavailableReason);
+        }
+        catch (InvalidDataException)
+        {
+            return Problem(StatusCodes.Status409Conflict, CameraAgentRunManifest.CorruptReason);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

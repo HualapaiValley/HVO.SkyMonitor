@@ -282,9 +282,13 @@ internal sealed class CameraAgentProcessingGraphUiService(
             var manifest = await operations.ReadRunManifestAsync(executionId, cancellationToken).ConfigureAwait(false);
             return manifest is null ? CameraAgentRunManifest.MissingReason : CameraAgentRunManifest.Create(manifest).Reason;
         }
-        catch (InvalidDataException)
+        catch (ProcessingRunManifestBoundsException)
         {
             return ProcessingRunManifestBounds.UnavailableReason;
+        }
+        catch (InvalidDataException)
+        {
+            return CameraAgentRunManifest.CorruptReason;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

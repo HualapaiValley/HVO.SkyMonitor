@@ -54,6 +54,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
     [DataRow("expired", 409)]
     [DataRow("incomplete", 409)]
     [DataRow("oversized", 409)]
+    [DataRow("corrupt", 409)]
     [DataRow("failure", 500)]
     [DataRow("retention", 409)]
     [DataRow("retention-input", 409)]
@@ -63,7 +64,8 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         var setup = operations.Setup(value => value.ReadRunManifestAsync(detail.Execution.ExecutionId, It.IsAny<CancellationToken>()));
         if (scenario == "failure") setup.ThrowsAsync(new IOException("/private-sentinel?password=private-sentinel"));
-        else if (scenario == "oversized") setup.ThrowsAsync(new InvalidDataException("private-sentinel"));
+        else if (scenario == "oversized") setup.ThrowsAsync(new ProcessingRunManifestBoundsException());
+        else if (scenario == "corrupt") setup.ThrowsAsync(new InvalidDataException("private-sentinel"));
         else setup.ReturnsAsync(scenario switch
         {
             "missing" => null,
@@ -87,6 +89,12 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         Assert.AreEqual(expected, status);
         Assert.IsFalse(body.Contains("private-sentinel", StringComparison.Ordinal));
         Assert.IsFalse(body.Contains("schemaVersion", StringComparison.Ordinal));
+        if (scenario is "oversized" or "corrupt")
+        {
+            using var problem = JsonDocument.Parse(body);
+            Assert.AreEqual(scenario == "oversized" ? ProcessingRunManifestBounds.UnavailableReason : CameraAgentRunManifest.CorruptReason,
+                problem.RootElement.GetProperty("title").GetString());
+        }
     }
 
     [TestMethod]
@@ -100,7 +108,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var outputs = Enumerable.Range(0, 120).Select(index => detail.Nodes[0].Outputs[0] with
         { Ordinal = index, SourceArtifactIds = sources }).ToArray();
         Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason,
-            CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { Inputs = inputs, Outputs = outputs }] }).Reason);
+            CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { Inputs = inputs, Outputs = outputs, CommittedOutputCount = outputs.Length }] }).Reason);
     }
 
     [TestMethod]
@@ -130,11 +138,22 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var node = detail.Nodes[0] with
         {
             Status = status,
+            CommittedOutputCount = 0,
             Outputs = [],
             OutputContracts = status == "Skipped" ? [new(FrameArtifactRole.Preview, "display", ProcessingProductKind.PixelData)] : [],
             Attempts = [detail.Nodes[0].Attempts[0] with { Status = status, Outcome = status == "Skipped" ? ProcessingOutcomeStatus.Skipped : null }]
         };
         Assert.IsNotNull(CameraAgentRunManifest.Create(detail with { Nodes = [node] }).Payload);
+    }
+
+    [TestMethod]
+    public void ManifestDistinguishesUnrecordedLegacyOutcomesFromDeletedEvidence()
+    {
+        var detail = ManifestDetail();
+        var result = CameraAgentRunManifest.Create(detail with
+        { Nodes = [detail.Nodes[0] with { CommittedOutputCount = null }] });
+        Assert.IsNull(result.Payload);
+        Assert.AreEqual(CameraAgentRunManifest.UnrecordedOutputReason, result.Reason);
     }
 
     private static ProcessingGraphExecutionDetail ManifestDetail()
@@ -146,6 +165,6 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
             [new(1, "private-sentinel", execution.AcceptedUtc, execution.CompletedUtc, "Completed", ProcessingOutcomeStatus.Produced,
                 "private-sentinel", TimeSpan.FromSeconds(1), ProcessingNodeExecutionRoute.InProcess)],
             [new(0, new string('B', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "private-sentinel", "Available", "private-sentinel", false)
-                { PayloadSha256 = new string('E', 64), SourceArtifactIds = [execution.PrimaryArtifactId] }])]);
+                { PayloadSha256 = new string('E', 64), SourceArtifactIds = [execution.PrimaryArtifactId] }]) { CommittedOutputCount = 1 }]);
     }
 }

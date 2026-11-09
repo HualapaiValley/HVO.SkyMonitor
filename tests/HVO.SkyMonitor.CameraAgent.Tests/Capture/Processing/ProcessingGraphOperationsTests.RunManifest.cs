@@ -116,7 +116,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 _ => "UPDATE processing_outputs SET descriptor_json = zeroblob(2097153);"
             };
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-            var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            var exception = await Assert.ThrowsExactlyAsync<ProcessingRunManifestBoundsException>(async () =>
                 await operations.ReadRunManifestAsync(executionId, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason, exception.Message);
         }

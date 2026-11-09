@@ -764,6 +764,11 @@ internal sealed partial class SqliteCaptureProcessingStore
             update.Parameters.AddWithValue("$route", executionRoute.ToString());
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        if (status is DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped)
+        {
+            await RecordCommittedOutputCountAsync(connection, transaction, execution.ExecutionId,
+                node.Id, outputs.Count, cancellationToken).ConfigureAwait(false);
+        }
         for (var ordinal = 0; ordinal < outputs.Count; ordinal++)
         {
             using var association = connection.CreateCommand();
@@ -1027,9 +1032,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             int? frozenNodeCount = null;
             if (manifestOnly)
             {
-                using var frozenDocument = JsonDocument.Parse(frozenPlanJson);
-                frozenNodeCount = frozenDocument.RootElement.GetProperty("nodes").GetArrayLength();
+                frozenNodeCount = ReadRunManifestNodeCount(frozenPlanJson);
             }
+            var committedOutputCounts = ReadCommittedOutputCounts(frozenPlanJson);
             var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)
                 .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
             foreach (var row in rows)
@@ -1099,6 +1104,16 @@ internal sealed partial class SqliteCaptureProcessingStore
                     masters = completedInputs.Masters;
                     bindingsRetained = completedInputs.Complete;
                 }
+                var contracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(row.OutputsJson, ExecutionSerializerOptions)
+                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.");
+                int? committedCount = committedOutputCounts.TryGetValue(row.NodeId, out var recordedCount) ? recordedCount : null;
+                // Legacy rows have no committed cardinality. Only complete declared sets or
+                // outputless skipped nodes prove the count; smaller sets are ambiguous.
+                if (committedCount is null && row.Status is "Completed" or "Skipped" &&
+                    ((row.Status == "Skipped" && outputs.Length == 0) ||
+                     (outputs.Length == contracts.Length && contracts.All(contract =>
+                         outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant)))))
+                    committedCount = outputs.Length;
                 var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
                     : await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken).ConfigureAwait(false);
                 nodes.Add(new ProcessingGraphExecutionNodeState(
@@ -1107,6 +1122,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 {
                     CalibrationInputs = masters,
                     ArtifactBindingsRetained = bindingsRetained,
+                    CommittedOutputCount = committedCount,
                     NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
                     NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
                         input.WindowPosition, input.CaptureId, input.ArtifactId, input.Gain, input.Disposition,
@@ -1116,9 +1132,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                     Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
                         row.DependenciesJson, ExecutionSerializerOptions)
                         ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),
-                    OutputContracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(
-                        row.OutputsJson, ExecutionSerializerOptions)
-                        ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.")
+                    OutputContracts = contracts
                 });
             }
             return new(execution, nodes) { FrozenNodeCount = frozenNodeCount };

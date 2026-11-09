@@ -352,7 +352,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         operations.VerifyNoOtherCalls();
     }
 
-    private static WebApplication CreateApp(
+    internal static WebApplication CreateApp(
         IProcessingGraphOperations operations,
         ICameraAgentArtifactService artifacts,
         CameraAgentHostOptions? hostOptions = null)
@@ -412,7 +412,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         return context.Response.StatusCode;
     }
 
-    private static async Task<(int Status, string Body)> InvokeForBodyAsync(
+    internal static async Task<(int Status, string Body)> InvokeForBodyAsync(
         WebApplication app,
         string endpointName,
         string method,

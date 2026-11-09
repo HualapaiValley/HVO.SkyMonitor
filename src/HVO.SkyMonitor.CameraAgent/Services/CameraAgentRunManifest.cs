@@ -12,6 +12,8 @@ internal static class CameraAgentRunManifest
     internal const string ArtifactEvidenceUnavailableReason = "The execution's artifact input or output evidence is no longer retained.";
     internal const string IdentifierUnavailableReason = "A retained node identifier cannot be included safely in the manifest.";
     internal const string IncompleteReason = "The retained artifact checksum or lineage evidence is incomplete.";
+    internal const string UnrecordedOutputReason = "The execution's original produced-output evidence was not recorded completely.";
+    internal const string CorruptReason = "The retained run evidence is corrupt and cannot be downloaded.";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -28,6 +30,10 @@ internal static class CameraAgentRunManifest
             return (null, ProcessingRunManifestBounds.UnavailableReason);
         if (detail.Nodes.Any(static node => !HasRetainedArtifactBindings(node)))
             return (null, ArtifactEvidenceUnavailableReason);
+        if (detail.Nodes.Any(static node => node.CommittedOutputCount is null &&
+            (node.Status is "Completed" or "Skipped" || node.Attempts.Any(static attempt =>
+                attempt.Outcome == HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced))))
+            return (null, UnrecordedOutputReason);
         if (detail.Nodes.Any(static node => node.NodeId.Length is 0 or > 128 ||
             node.NodeId != node.NodeId.Trim() || node.NodeId.Any(static value => char.IsControl(value) || value is '/' or '\\')))
             return (null, IdentifierUnavailableReason);
@@ -102,7 +108,10 @@ internal static class CameraAgentRunManifest
     private static IEnumerable<ManifestInput> CreateInputs(ProcessingGraphExecutionNodeState node)
     {
         foreach (var input in node.Inputs)
-            yield return new(input.Ordinal, input.WindowPosition, input.Kind.ToString(), input.CaptureId,
+            yield return new(input.Ordinal,
+                input.Kind is ProcessingGraphExecutionInputKind.AuxiliaryRawCapture or ProcessingGraphExecutionInputKind.AuxiliaryProcessingOutput
+                    ? null : input.WindowPosition,
+                input.Kind.ToString(), input.CaptureId,
                 input.ArtifactId, input.DescriptorSha256, input.PayloadSha256, input.OutputIdentitySha256, null);
         var ordinal = node.Inputs.Count == 0 ? 0 : node.Inputs.Max(static input => input.Ordinal) + 1;
         foreach (var master in node.CalibrationInputs)
@@ -115,13 +124,7 @@ internal static class CameraAgentRunManifest
     private static bool HasRetainedArtifactBindings(ProcessingGraphExecutionNodeState node)
     {
         if (!node.ArtifactBindingsRetained) return false;
-        var produced = node.Attempts.Any(static attempt => attempt.Outcome == HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced);
-        if (produced && node.Outputs.Count == 0) return false;
-        var expectedOutputs = node.OutputContracts.Count;
-        if ((node.Status == "Completed" || produced) && expectedOutputs > 0 &&
-            (node.Outputs.Count != expectedOutputs || node.OutputContracts.Any(contract =>
-                !node.Outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant))))
-            return false;
+        if (node.CommittedOutputCount is { } committed && node.Outputs.Count != committed) return false;
         var inputs = node.Inputs.Select(static input => input.ArtifactId)
             .Concat(node.CalibrationInputs.Select(static input => input.ArtifactId)).ToHashSet();
         return node.Outputs.All(output => output.SourceArtifactIds.All(inputs.Contains));

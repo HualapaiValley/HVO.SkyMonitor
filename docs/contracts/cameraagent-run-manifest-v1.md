@@ -14,7 +14,11 @@ IDs, payload hashes and source artifact IDs. Output source IDs and input binding
 provide lineage, including rolling inputs from other captures. A processing input
 uses its producer's output identity; its descriptor hash is null when not recorded.
 Current dependency inputs are resolved from this run's immutable output source IDs;
-historical window positions come from retained pins. Calibration master entries
+historical window positions come from retained pins. Cross-capture auxiliary sources,
+including a provisioned cloud clear reference, are resolved by immutable artifact ID
+against retained raw/processing metadata. They use `AuxiliaryRawCapture` or
+`AuxiliaryProcessingOutput`, the real capture/artifact/hash identities and a null
+window position; they are not invented rolling-window members. Calibration master entries
 come from the frozen normalization plan, with kind `CalibrationMaster`, payload
 hashes and null capture/window identities rather than an invented single capture.
 Ordinary reference-calibration masters are resolved by the produced output's source
@@ -32,7 +36,20 @@ Artifact payloads are never opened. Retained checksum and lineage evidence remai
 exportable after the corresponding payload becomes unavailable. When retention
 removes artifact metadata or historical input bindings, export is refused with
 a specific reason rather than returning partial evidence. Output association
-ordinals retain their original values after partial deletion.
+ordinals retain their original values after partial deletion. Declared output contracts
+are upper bounds: conditional outputs that were never produced do not count as
+missing evidence. Each terminal node's actual output count is recorded in the existing
+execution evidence JSON, atomically with its output associations. Original plan
+members and frozen normalization-plan values retain their bytes. Counts survive
+output retention, so partial or complete metadata deletion still refuses export.
+There is no SQLite schema, installer or image-boundary change. Older runs without
+recorded counts remain available when a full declared output set or an outputless
+skipped node proves completeness. An older ambiguous run receives the fixed reason
+that its original produced-output evidence was not recorded completely, rather
+than claiming that it was deleted. If the existing frozen-plan byte limit leaves
+no room to record a count, processing continues and export applies the same
+fail-closed completeness rule. New completions record conditional and zero-output
+counts without consulting mutable current-capture state.
 
 The database read holds one SQLite WAL snapshot. It allows at most 64 nodes and
 4096 rows in each attempts/inputs/output-input-pins/outputs/source-reference collection,
@@ -42,7 +59,8 @@ before deserialization. The encoded download is separately capped at 2 MiB.
 Oversized evidence is rejected as a whole, without truncation or partial JSON.
 Unknown executions return 404; missing node evidence, incomplete artifact hashes
 or excessive evidence return 409 with a fixed reason. Other read failures return
-a fixed 500 response. Cancellation propagates. The run page enables the download
+a fixed 500 response. Corrupt frozen plans instead return 409 with a fixed corrupt-evidence
+reason, distinct from the row/byte-limit reason. Cancellation propagates. The run page enables the download
 only after the same bounded projection succeeds, otherwise displaying its reason.
 Valid node identifiers with spaces or Unicode retain their identities; path-like
 identifiers have a separate sanitized refusal reason. The empty prototype More run actions button is removed; existing capture,

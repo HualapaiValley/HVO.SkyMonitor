@@ -11,6 +11,14 @@ public static class ProcessingRunManifestBounds
     public const string UnavailableReason = "The retained run evidence exceeds the manifest download limits.";
 }
 
+/// <summary>The bounded manifest snapshot exceeds its row or serialized-byte limits.</summary>
+public sealed class ProcessingRunManifestBoundsException : IOException
+{
+    public ProcessingRunManifestBoundsException() : base(ProcessingRunManifestBounds.UnavailableReason) { }
+    public ProcessingRunManifestBoundsException(string message) : base(message) { }
+    public ProcessingRunManifestBoundsException(string message, Exception innerException) : base(message, innerException) { }
+}
+
 internal sealed partial class SqliteCaptureProcessingStore
 {
     private static async Task CheckRunManifestBoundsAsync(
@@ -35,7 +43,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         rows.Parameters.AddWithValue("$nodes", ProcessingRunManifestBounds.MaximumNodes + 1);
         rows.Parameters.AddWithValue("$rows", ProcessingRunManifestBounds.MaximumRows + 1);
         if ((long)(await rows.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0)
-            throw new InvalidDataException(ProcessingRunManifestBounds.UnavailableReason);
+            throw new ProcessingRunManifestBoundsException();
         using var bytes = connection.CreateCommand();
         bytes.CommandText = """
             SELECT COALESCE((SELECT length(frozen_plan_json) FROM processing_executions WHERE execution_id = $execution), 0)
@@ -49,13 +57,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                   WHERE p.execution_id = $execution), 0)
               + COALESCE((SELECT SUM(length(input.descriptor_json))
                   FROM processing_execution_outputs association
-                  JOIN processing_executions execution ON execution.execution_id = association.execution_id
                   JOIN processing_output_sources source ON source.output_identity_sha256 = association.output_identity_sha256
-                  JOIN processing_outputs input ON input.artifact_id = source.source_artifact_id AND input.capture_id = execution.capture_id
+                  JOIN processing_outputs input ON input.artifact_id = source.source_artifact_id
                   WHERE association.execution_id = $execution), 0);
             """;
         bytes.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         if ((long)(await bytes.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! > ProcessingRunManifestBounds.MaximumBytes)
-            throw new InvalidDataException(ProcessingRunManifestBounds.UnavailableReason);
+            throw new ProcessingRunManifestBoundsException();
     }
 }
