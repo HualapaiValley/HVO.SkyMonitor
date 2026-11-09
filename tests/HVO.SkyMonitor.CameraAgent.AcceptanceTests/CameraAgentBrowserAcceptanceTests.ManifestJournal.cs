@@ -9,9 +9,11 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed partial class CameraAgentBrowserAcceptanceTests
 {
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(bool deeplyNested)
+    [DataRow("flat")]
+    [DataRow("deep")]
+    [DataRow("unicode-high")]
+    [DataRow("unicode-low")]
+    public async Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(string scenario)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
@@ -34,7 +36,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var downloadLink = page.GetByRole(AriaRole.Link, new() { Name = "Download manifest", Exact = true });
         await VisibleAsync(downloadLink).ConfigureAwait(false);
         var download = await page.RunAndWaitForDownloadAsync(() => downloadLink.ClickAsync()).ConfigureAwait(false);
-        var scenario = deeplyNested ? "deep" : "flat";
         var beforePath = Path.Combine(TestContext.TestResultsDirectory!, $"manifest-{scenario}-before-corruption.json");
         await download.SaveAsAsync(beforePath).ConfigureAwait(false);
         TestContext.AddResultFile(beforePath);
@@ -50,7 +51,13 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             WHERE execution_id = $execution;
             """;
         command.Parameters.AddWithValue("$execution", id.ToString("N"));
-        command.Parameters.AddWithValue("$counts", deeplyNested ? new string('[', 70) + "0" + new string(']', 70) : "{\"preview\":-1}");
+        command.Parameters.AddWithValue("$counts", scenario switch
+        {
+            "deep" => new string('[', 70) + "0" + new string(']', 70),
+            "unicode-high" => "{\"\\uD800\":1}",
+            "unicode-low" => "{\"\\uDC00\":1}",
+            _ => "{\"preview\":-1}"
+        });
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         var ordinary = await context.APIRequest.GetAsync(api).ConfigureAwait(false);
         Assert.AreEqual(200, ordinary.Status);

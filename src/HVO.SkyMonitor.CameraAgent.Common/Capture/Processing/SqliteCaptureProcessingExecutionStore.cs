@@ -1114,9 +1114,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                     ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.");
                 int? committedCount = committedOutputCounts.TryGetValue(row.NodeId, out var recordedCount) ? recordedCount : null;
                 // Legacy rows have no committed cardinality. Only complete declared sets or
-                // outputless skipped nodes prove the count; smaller sets are ambiguous.
+                // histories consisting only of skipped attempts prove the count. A later
+                // skip cannot prove that earlier retry output was never committed/pruned.
                 if (committedCount is null && row.Status is "Completed" or "Skipped" &&
-                    ((row.Status == "Skipped" && outputs.Length == 0) ||
+                    ((row.Status == "Skipped" && outputs.Length == 0 && attempts.Count > 0 &&
+                      attempts.All(static attempt => attempt.Status == "Skipped" &&
+                          attempt.Outcome is null or ProcessingOutcomeStatus.Skipped)) ||
                      (outputs.Length == contracts.Length && contracts.All(contract =>
                          outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant)))))
                     committedCount = outputs.Length;

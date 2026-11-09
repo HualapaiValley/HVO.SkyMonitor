@@ -70,8 +70,10 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             return counts;
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
+            // JsonProperty.Name decodes escaped UTF-16 and can reject a lone surrogate
+            // with InvalidOperationException after JsonDocument.Parse has succeeded.
             throw new InvalidDataException("The frozen execution plan is corrupt.", exception);
         }
     }
@@ -81,8 +83,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         string nodeId, int outputCount, CancellationToken cancellationToken)
     {
         var frozenJson = await ReadExecutionFrozenPlanJsonAsync(connection, transaction, executionId, cancellationToken).ConfigureAwait(false);
-        // Validate primary evidence independently. Corrupt optional counts cannot roll
-        // back a processing completion; preserve them so export reports corruption.
+        // This is optional export bookkeeping for work that has already executed.
+        // Preserve corrupt frozen bytes and finish the journal transaction; primary
+        // readers and manifest downloads retain their existing validation.
         Dictionary<string, int> counts;
         try
         {
@@ -90,7 +93,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         catch (InvalidDataException)
         {
-            using var primary = JsonDocument.Parse(WithoutCommittedOutputCounts(frozenJson));
             return;
         }
         if (counts.TryGetValue(nodeId, out var existing) && existing >= outputCount) return;

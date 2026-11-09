@@ -1,5 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Text;
+using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -88,4 +91,67 @@ public sealed class RunManifestEndpointTests
         foreach (var forbidden in new[] { "relativePath", "leaseOwner", "diagnostics", "password", "triggerReference", "failureReason" })
             Assert.IsFalse(text.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
     }
+    [TestMethod]
+    [DataRow("high")]
+    [DataRow("low")]
+    public async Task InvalidUnicodeCountKeysReturnCorruptEvidenceWithoutBreakingDetailAndRecover(string variant)
+    {
+        using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
+        var operations = scope.ServiceProvider.GetRequiredService<IProcessingGraphOperations>();
+        ProcessingGraphExecutionDetail? detail = null;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (detail is null)
+        {
+            foreach (var run in await operations.ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 10, deadline.Token).ConfigureAwait(false))
+            {
+                if (run.Status != ProcessingGraphExecutionStatus.Completed) continue;
+                var candidate = await operations.ReadRunManifestAsync(run.ExecutionId, deadline.Token).ConfigureAwait(false);
+                if (candidate?.Nodes.SelectMany(static node => node.Outputs).Any() == true) { detail = candidate; break; }
+            }
+            if (detail is null) await Task.Delay(50, deadline.Token).ConfigureAwait(false);
+        }
+        var owner = await scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>()
+            .FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, owner.Id);
+        var path = $"/api/v1/operations/processing-graphs/executions/{detail.Execution.ExecutionId:D}";
+        using var before = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, before.StatusCode);
+        var expected = await before.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        var ordinary = await client.GetStringAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+        using var db = new SqliteConnection($"Data Source={Path.Combine(AssemblyHooks.Fixture.StorageRoot, "journal", "raw-ingress.db")};Pooling=False");
+        await db.OpenAsync().ConfigureAwait(false);
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT frozen_plan_json FROM processing_executions WHERE execution_id=$id;";
+        command.Parameters.AddWithValue("$id", detail.Execution.ExecutionId.ToString("N"));
+        var original = (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+        try
+        {
+            var primary = JsonNode.Parse(original)!.AsObject();
+            primary.Remove("committedOutputCounts");
+            var json = primary.ToJsonString();
+            var counts = variant == "high" ? "{\"\\uD800\":1}" : "{\"\\uDC00\":1}";
+            var damaged = Encoding.UTF8.GetBytes(json[..^1] + ",\"committedOutputCounts\":" + counts + "}");
+            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=$json WHERE execution_id=$id;";
+            command.Parameters.AddWithValue("$json", damaged);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            using var refused = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Conflict, refused.StatusCode);
+            using var problem = JsonDocument.Parse(await refused.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.AreEqual("The retained run evidence is corrupt and cannot be downloaded.", problem.RootElement.GetProperty("title").GetString());
+            Assert.IsFalse(problem.RootElement.TryGetProperty("schemaVersion", out _));
+            Assert.AreEqual(ordinary, await client.GetStringAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false));
+        }
+        finally
+        {
+            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=$json WHERE execution_id=$id;";
+            command.Parameters["$json"].Value = original;
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        using var recovered = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, recovered.StatusCode);
+        CollectionAssert.AreEqual(expected, await recovered.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+    }
+
 }

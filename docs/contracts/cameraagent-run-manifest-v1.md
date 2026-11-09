@@ -46,7 +46,9 @@ members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
 There is no SQLite schema, installer or image-boundary change. Older runs without
 recorded counts remain available when a full declared output set or an outputless
-skipped node proves completeness. An older ambiguous run receives the fixed reason
+node whose retained attempts are all skipped proves completeness. A latest Skipped
+state alone cannot prove zero outputs after earlier retries; unprovable retry/skip
+history is refused rather than exporting a partial manifest. An older ambiguous run receives the fixed reason
 that its original produced-output evidence was not recorded completely, rather
 than claiming that it was deleted. If the existing frozen-plan byte limit leaves
 no room to record a count, processing continues and export applies the same
@@ -56,15 +58,16 @@ the zero-output attempt's count atomically with its committed output association
 The largest committed ordinal set is preserved across attempts: a later outputless
 failure cannot hide earlier retained outputs, and deletion of those outputs is
 still detected.
-Roy explicitly accepted refusal for older runs only when their output-history
-completeness cannot be proven (Nov 9, 7:45 AM PST, card `t305s1760`). This is not
-a waiver for other manifest failures or for an unreadable ordinary journal.
+Refusal for older runs applies only when their output-history completeness cannot
+be proven. It does not permit other manifest failures or an unreadable ordinary journal.
 
 Optional count metadata is excluded before primary plan parsing, including when it
 is deeply nested. Primary normalization-plan depth, shape and identity validation
-remain unchanged. Corrupt optional counts do not roll back node completion: the
-corrupt member remains unchanged, so download still fails closed with its corruption
-reason. The ordinary execution API, run journal, replay detail and central evidence
+remain unchanged. Corrupt optional counts, including malformed Unicode keys, do not roll back node
+completion. If export bookkeeping cannot parse the frozen evidence, completion
+preserves those bytes and records the completed attempt; the manifest still refuses
+corrupt evidence with its specific reason. Primary evidence readers keep their
+existing validation. The ordinary execution API, run journal, replay detail and central evidence
 export remain readable; the run page disables the download with that reason.
 Removing the corrupt member restores the legacy completeness rules above.
 Historical pinned-output descriptors are inspected for checksums only in the bounded
