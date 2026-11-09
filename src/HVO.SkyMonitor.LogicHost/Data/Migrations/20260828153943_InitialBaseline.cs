@@ -941,6 +941,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     SourceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     Version = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     Kind = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    IsLineageInput = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
                     MethodName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     MethodVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     ParametersJson = table.Column<string>(type: "nvarchar(max)", maxLength: 32768, nullable: false),
@@ -1446,6 +1447,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     Uncertainty = table.Column<double>(type: "float", nullable: true),
                     SubmittedNumericValue = table.Column<double>(type: "float", nullable: true),
                     SubmittedUnit = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
+                    SampleMetadataJson = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
                     ObservedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     ObservedFromUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
                     ObservedThroughUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
@@ -1461,6 +1463,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     table.PrimaryKey("PK_EnvironmentalObservations", x => x.Id);
                     table.CheckConstraint("CK_EnvironmentalObservations_ObservedInterval", "([ObservedFromUtc] IS NULL AND [ObservedThroughUtc] IS NULL) OR ([ObservedFromUtc] IS NOT NULL AND [ObservedThroughUtc] IS NOT NULL AND [ObservedFromUtc] <= [ObservedThroughUtc])");
+                    table.CheckConstraint("CK_EnvironmentalObservations_SampleMetadata", "[SampleMetadataJson] IS NULL OR ISJSON([SampleMetadataJson]) = 1");
                     table.CheckConstraint("CK_EnvironmentalObservations_SubmittedValue", "([SubmittedNumericValue] IS NULL AND [SubmittedUnit] IS NULL) OR ([SubmittedNumericValue] IS NOT NULL AND [SubmittedUnit] IS NOT NULL)");
                     table.CheckConstraint("CK_EnvironmentalObservations_Uncertainty", "[Uncertainty] IS NULL OR [Uncertainty] >= 0");
                     table.CheckConstraint("CK_EnvironmentalObservations_Validity", "[ValidFromUtc] < [ValidThroughUtc] AND [StaleAfterUtc] >= [ValidFromUtc] AND [StaleAfterUtc] <= [ValidThroughUtc]");
