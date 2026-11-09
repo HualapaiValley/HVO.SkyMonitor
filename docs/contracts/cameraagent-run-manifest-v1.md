@@ -39,8 +39,8 @@ a specific reason rather than returning partial evidence. Output association
 ordinals retain their original values after partial deletion. Declared output contracts
 are upper bounds: conditional outputs that were never produced do not count as
 missing evidence. Every completed node attempt, including a retryable or terminal
-failure after recording a `Produced` outcome, records its actual committed output count
-(zero when the step throws) in the existing
+failure after recording a `Produced` outcome, records the cardinality of the node's
+committed output set (zero when nothing has committed) in the existing
 execution evidence JSON, atomically with its output associations. Original plan
 members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
@@ -53,6 +53,9 @@ no room to record a count, processing continues and export applies the same
 fail-closed completeness rule. New completions record conditional and zero-output
 counts without consulting mutable current-capture state. A successful retry updates
 the zero-output attempt's count atomically with its committed output associations.
+The largest committed ordinal set is preserved across attempts: a later outputless
+failure cannot hide earlier retained outputs, and deletion of those outputs is
+still detected.
 Roy explicitly accepted refusal for older runs only when their output-history
 completeness cannot be proven (Nov 9, 7:45 AM PST, card `t305s1760`). This is not
 a waiver for other manifest failures or for an unreadable ordinary journal.

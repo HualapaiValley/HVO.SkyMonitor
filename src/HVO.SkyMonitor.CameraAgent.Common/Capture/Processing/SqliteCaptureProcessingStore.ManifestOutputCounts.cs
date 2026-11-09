@@ -93,10 +93,12 @@ internal sealed partial class SqliteCaptureProcessingStore
             using var primary = JsonDocument.Parse(WithoutCommittedOutputCounts(frozenJson));
             return;
         }
-        if (counts.TryGetValue(nodeId, out var existing) && existing == outputCount) return;
+        if (counts.TryGetValue(nodeId, out var existing) && existing >= outputCount) return;
         // A failed attempt commits zero outputs; a successful retry can later commit
-        // its actual outputs. The execution lease protects both updates, and counts
-        // commit in the same transaction as the node/attempt/output associations.
+        // its actual outputs. Ordinal slots persist across attempts, so a later
+        // outputless failure must not erase the earlier committed set. Retention
+        // cannot lower this count either. The lease and transaction protect both
+        // the count and the node/attempt/output associations.
         counts[nodeId] = outputCount;
         using var document = JsonDocument.Parse(frozenJson);
         var buffer = new ArrayBufferWriter<byte>(frozenJson.Length + 256);

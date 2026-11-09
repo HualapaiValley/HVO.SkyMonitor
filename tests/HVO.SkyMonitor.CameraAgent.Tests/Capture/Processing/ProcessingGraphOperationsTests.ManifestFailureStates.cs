@@ -201,6 +201,54 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
+    [TestMethod]
+    public async Task FailedRetryKeepsEarlierCommittedOutputsAndStillDetectsTheirDeletion()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-manifest-retry-evidence");
+        try
+        {
+            using var provider = CreateProvider(root);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var liveId = await CompleteManifestPreviewAsync(provider).ConfigureAwait(false);
+            var live = (await operations.ReadExecutionDetailAsync(liveId, CancellationToken.None).ConfigureAwait(false))!;
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var output = (await store.ReadOutputByArtifactIdAsync(live.Nodes.Single().Outputs.Single().ArtifactId, CancellationToken.None).ConfigureAwait(false))!;
+            var replay = await operations.SubmitReplayAsync(new(live.Execution.CaptureId, live.Execution.GraphRevisionId,
+                live.Execution.PrimaryArtifactId), "failed-retry-evidence", "test", CancellationToken.None).ConfigureAwait(false);
+            var lease = (await store.ClaimReplayAsync("failed-retry-evidence", CancellationToken.None).ConfigureAwait(false))!;
+            var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateRetainedGraph(lease.Configuration);
+            try
+            {
+                var node = graph.Nodes.Single();
+                var context = new ProcessingExecutionContext(replay.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
+                    lease.Execution.GraphRevisionId, lease.Execution.LocalPlanIdentitySha256, false,
+                    lease.WorkId, lease.LeaseToken, lease.LeaseOwner, lease.Execution.DeadlineUtc, lease.ClaimCount);
+                var now = DateTimeOffset.UtcNow;
+                await store.BeginNodeAttemptAsync(context, node, 1, now, CancellationToken.None).ConfigureAwait(false);
+                await store.WriteNodeAsync(live.Execution.CaptureId, node, DurableProcessingNodeStatus.RetryableFailure,
+                    "partial-attempt", 1, null, now, now, TimeSpan.Zero, ProcessingOutcomeStatus.Produced, [],
+                    lease.WorkId, lease.LeaseToken, [output], context, ProcessingNodeExecutionRoute.Unknown, CancellationToken.None).ConfigureAwait(false);
+                await store.BeginNodeAttemptAsync(context, node, 2, now, CancellationToken.None).ConfigureAwait(false);
+                await store.CompleteOutputlessExecutionNodeAsync(context, node, DurableProcessingNodeStatus.TerminalFailure,
+                    "later-attempt-threw", 2, now, TimeSpan.Zero, ProcessingOutcomeStatus.Produced,
+                    ProcessingNodeExecutionRoute.Unknown, CancellationToken.None).ConfigureAwait(false);
+                await store.CompleteReplayAsync(lease, CaptureLaneHandlerResult.Terminal("later-attempt-threw"), CancellationToken.None).ConfigureAwait(false);
+                var retained = (await operations.ReadRunManifestAsync(context.ExecutionId, CancellationToken.None).ConfigureAwait(false))!;
+                Assert.AreEqual(1, retained.Nodes.Single().CommittedOutputCount);
+                Assert.HasCount(1, retained.Nodes.Single().Outputs);
+                Assert.HasCount(2, retained.Nodes.Single().Attempts);
+                await RunManifestTestAssertions.ResponseAsync(operations, context.ExecutionId).ConfigureAwait(false);
+                var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", output.OutputIdentitySha256,
+                    output.PayloadRelativePath, output.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
+                await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                await RunManifestTestAssertions.ResponseAsync(operations, context.ExecutionId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
+            }
+            finally { graph.DisposeSteps(); }
+        }
+        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
+    }
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Constructed by the configuration-driven test step factory.")]
     private sealed class FailureAfterProducedOptions;
 
