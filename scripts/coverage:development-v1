@@ -20,16 +20,20 @@ import xml.etree.ElementTree as ET
 
 root, output = map(pathlib.Path, sys.argv[1:])
 baseline = json.loads((root / "scripts/coverage/baseline.json").read_text())
+retired = set(json.loads((root / "scripts/coverage/policy.json").read_text())["retiredSourcePaths"])
 assemblies = set()
 for path, floor in baseline["files"].items():
+    source = root / path if path.startswith("tools/") else root / "src" / path
+    if not source.is_file():
+        if path not in retired:
+            raise SystemExit(f"Required source path {path} is missing and is not a pinned retired path; review its move and floor mapping")
+        continue
     reason = floor.get("developmentV1LocalOnlyReason")
     if reason is not None:
         if not isinstance(reason, str) or not reason.strip():
             raise SystemExit(f"Invalid developmentV1LocalOnlyReason: {path}")
         continue
-    source = root / path if path.startswith("tools/") else root / "src" / path
-    if source.is_file():
-        assemblies.add(path.split("/")[1 if path.startswith("tools/") else 0])
+    assemblies.add(path.split("/")[1 if path.startswith("tools/") else 0])
 if not assemblies:
     raise SystemExit("Development v1 has no measurable per-file coverage assemblies")
 settings = ET.parse(root / "tests/coverage.runsettings")
@@ -37,6 +41,13 @@ includes = settings.findall(".//DataCollector[@friendlyName='XPlat Code Coverage
 if len(includes) != 1:
     raise SystemExit("Expected one canonical XPlat Include setting")
 includes[0].text = ",".join(f"[{assembly}]*" for assembly in sorted(assemblies))
+configuration = settings.find(".//DataCollector[@friendlyName='XPlat Code Coverage']/Configuration")
+single_hits = configuration.findall("SingleHit")
+if len(single_hits) > 1:
+    raise SystemExit("Expected at most one canonical SingleHit setting")
+single_hit = single_hits[0] if single_hits else ET.SubElement(configuration, "SingleHit")
+# Floors depend on whether a line/branch was hit, never on hit frequency.
+single_hit.text = "true"
 output.parent.mkdir(parents=True, exist_ok=True)
 settings.write(output, encoding="utf-8", xml_declaration=True)
 print(f"Development v1 instruments {len(assemblies)} canonical floor assemblies: {includes[0].text}")
@@ -60,6 +71,10 @@ fi
 mkdir -p "$target_dir"
 printf '%s\n' "${reports[@]}" > "$target_dir/reports.txt"
 printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${#reports[@]}"
+# ReportGenerator can log an XML error, omit that input and still exit zero.
+# Validate every report and declared branch counter before the merge loses it.
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- \
+  --development-v1 --validate-reports "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
 dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \

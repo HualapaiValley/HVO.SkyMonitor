@@ -20,21 +20,31 @@ a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
 The existing complete Docker-disabled Unit selection collects coverage once.
 `scripts/coverage:development-v1 --settings OUTPUT` copies
-`tests/coverage.runsettings` and changes only its assembly Include filter, deriving
-the assemblies from existing canonical floor paths. Canonical test-assembly,
+`tests/coverage.runsettings`, derives its assembly Include filter from existing
+canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
+line/branch was hit; repeated hit counts add no evidence and make hot Unit loops
+more expensive. All other collector settings, including canonical test-assembly,
 TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
 requires one GUID-directory report per Unit-bearing project's category inventory;
 it excludes TRX attachment copies and never searches outside the fresh run root.
-An enforced file missing from those reports, or present without executable line
-data, **fails**. Failure output names the path, observed line/branch percentages,
+Every input is parsed and checked before ReportGenerator runs: that tool can log
+a malformed input, omit it and still exit zero. Legitimate classless reports from
+projects with no included assemblies are accepted. An enforced file missing from
+the reports, present without executable line data, or declaring branches without
+their counts **fails**. Explicitly branchless lines remain valid. These checks
+also run in the shared evaluator. Failure output names the path, observed line/branch percentages,
 floors, and the remedy: restore collection or add tests, then rerun the gate.
 
-The following limits are explicit; none changes the canonical local/full gate:
+The following scope limits leave every numeric floor unchanged:
 
 - Full-suite aggregate floors and additional/higher component file floors remain
-  local/full-qualification checks. V1 runs no Integration suite and claims no
+  local/full-qualification checks, calibrated to their exact coverage slot sets.
+  Shared coverage includes Astronomy Integration tests; the CameraAgent,
+  LogicHost and combined lanes include their owning Integration suites. Delivery
+  uses Unit tests with the production catalog bundle provisioned. V1 supplies
+  neither those complete slot sets nor the catalog prerequisite and claims no
   aggregate qualification from its partial assembly coverage.
 - ReleaseTool `Program.cs` remains local/full-qualification-only because v1 does
   not provision `HVO_PRODUCTION_CATALOG_BUNDLE` for its catalog-gated Unit tests.
@@ -44,10 +54,12 @@ The following limits are explicit; none changes the canonical local/full gate:
   See the reproduced catalog-absent limitation in
   [catalog-f7-1188](../validation/catalog-f7-1188.md) and
   [issue-1644-candidate](../validation/issue-1644-candidate.md).
-- Baseline entries whose source files were retired follow the existing canonical
-  source-absence rule. V1 prints each path and reason instead of silently omitting
-  it. At introduction these are `ArtifactUploadManifest.cs`,
-  `DistributionCatalogAcquirer.cs` and `DistributionVerifier.cs`.
+- Only the three retired paths pinned in `scripts/coverage/policy.json` may have
+  absent sources: `ArtifactUploadManifest.cs`, `DistributionCatalogAcquirer.cs`
+  and `DistributionVerifier.cs`. Their skips name that policy. Any other missing
+  enforced source, including a rename/move, fails settings generation, the shared
+  evaluator and coverage policy on PR, push and merge-group events. Moving a file
+  requires reviewing its floor mapping; absence never implies retirement.
 - Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
   is recorded in that PR's discussion, not a repository exception registry.
   `InstallerControlWorker`, `InstallerControlJournal` and
@@ -58,16 +70,30 @@ Reproduce the short profile with a private, short, owner-only `TMPDIR` (installe
 Unix socket fixtures need the short path), and a fresh results directory:
 
 ```bash
+(
+set -euo pipefail
+evidence_root="$(mktemp -d /tmp/hvo-coverage-evidence.XXXXXXXX)"
+coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
+chmod 700 "$evidence_root" "$coverage_tmp"
+export evidence_root TMPDIR="$coverage_tmp"
+trap 'rm -rf "$coverage_tmp"' EXIT
+flock /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
+dotnet tool restore
+dotnet restore HVO.SkyMonitor.v9.slnx
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
-dotnet tool restore
 ./scripts/test:coverage-development-v1
 ./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
+BASH
+printf 'Retained coverage evidence: %s\n' "$evidence_root"
+)
 ```
 
 `scripts/test:coverage-development-v1` runs behavioral tests against the actual
-evaluator, including line/branch violations, missing/empty data, and the
-catalog-dependent path under both profiles. The workflow contract's mutation
+evaluator and complete merge wrapper, including line/branch violations,
+missing branch counters, malformed reports, moved sources, missing/empty data,
+and the catalog-dependent path under both profiles. The workflow contract's mutation
 controls protect collection, enforcement, evidence, and existing PR/merge-group
 triggers. Coverage shares the existing 1080-second workload deadline and appears
 as a fourth timed stage in the `hvo-development-v1-ci-v5` evidence manifest;

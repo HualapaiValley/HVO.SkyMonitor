@@ -39,12 +39,13 @@ def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=
     lines = ET.SubElement(ET.SubElement(classes, "class", name="Fixture", filename=filename), "lines")
     if not empty:
         for number in range(1, 101):
-            line = ET.SubElement(lines, "line", number=str(number), hits=str(hits))
+            line = ET.SubElement(lines, "line", number=str(number), hits=str(hits), branch="false")
             if number == 1:
+                line.set("branch", "true")
                 line.set("condition-coverage", f"{covered * 50}% ({covered}/2)")
     if release_data:
         lines = ET.SubElement(ET.SubElement(classes, "class", name="Release", filename=release), "lines")
-        ET.SubElement(lines, "line", number="1", hits="0", **{"condition-coverage": "0% (0/2)"})
+        ET.SubElement(lines, "line", number="1", hits="0", branch="true", **{"condition-coverage": "0% (0/2)"})
     output = scratch / f"{name}.xml"
     ET.ElementTree(document).write(output)
     return output
@@ -84,6 +85,29 @@ check("default canonical gate still enforces the catalog-dependent floor", repor
 check("default canonical gate still rejects missing paths", report("full-missing", filename="Other.cs"), 1,
       path, "missing from the supplied reports", profile=False)
 
+missing_branch = ET.parse(good)
+line = missing_branch.find(".//line")
+del line.attrib["condition-coverage"]
+missing_branch.write(scratch / "missing-branch.xml")
+check("declared branches without counts fail", scratch / "missing-branch.xml", 1,
+      path, "measured branch data MISSING", "90.00")
+check("default gate also rejects missing branch counts", scratch / "missing-branch.xml", 1,
+      path, "measured branch data MISSING", profile=False)
+del line.attrib["branch"]
+missing_branch.write(scratch / "missing-branch-marker.xml")
+check("absent branch declarations fail", scratch / "missing-branch-marker.xml", 1,
+      path, "measured branch data MISSING")
+line.set("branch", "false")
+missing_branch.write(scratch / "branchless.xml")
+check("explicitly branchless files remain valid", scratch / "branchless.xml", 0,
+      "Coverage gate passed.", "(0/0)")
+
+source = scratch / "repo/src" / path
+source.rename(source.with_suffix(".moved.cs"))
+check("a moved enforced source fails even with its original coverage", good, 1,
+      path, "not a pinned retired path")
+source.with_suffix(".moved.cs").rename(source)
+
 # A runtime-only floor bump must affect the same evaluator; no threshold is
 # copied into the development profile or its wrapper.
 baseline["files"][path]["line"] = 1.0
@@ -94,19 +118,34 @@ one_uncovered.write(scratch / "bumped.xml")
 check("changed shared definition changes v1 enforcement", scratch / "bumped.xml", 1,
       "line 99.00", "min 100.00")
 
-# Preserve every canonical collector setting except the assembly Include. The
-# six measured assemblies come from the original policy, not a new floor list.
+# Preserve canonical exclusions; only Include and SingleHit differ. Derive
+# assembly expectations from the baseline so new floor owners need no test pin.
 settings_file = scratch / "v1.runsettings"
 subprocess.run([str(root / "scripts/coverage:development-v1"), "--settings", str(settings_file)], check=True)
 original = ET.parse(root / "tests/coverage.runsettings")
 generated = ET.parse(settings_file)
 include = generated.find(".//Configuration/Include")
-expected = {"AgentCore", "Astronomy", "Catalog.Sqlite", "Imaging", "Processing", "Storage.FileSystem"}
-assert set(include.text.split(",")) == {f"[HVO.SkyMonitor.{name}]*" for name in expected}
+expected = set()
+for floor_path, floor in canonical["files"].items():
+    source = root / floor_path if floor_path.startswith("tools/") else root / "src" / floor_path
+    if source.is_file() and not floor.get("developmentV1LocalOnlyReason"):
+        owner = floor_path.split("/")[1 if floor_path.startswith("tools/") else 0]
+        expected.add(f"[{owner}]*")
+actual = set(include.text.split(","))
+if actual != expected:
+    raise SystemExit(f"Generated assembly Include differs from active floor owners: expected={sorted(expected)}, actual={sorted(actual)}")
+single_hit = generated.find(".//Configuration/SingleHit")
+if single_hit is None or single_hit.text != "true":
+    raise SystemExit("Generated coverage must enable SingleHit to bound Unit-stage overhead")
+original_single_hit = original.find(".//Configuration/SingleHit")
+if original_single_hit is None:
+    generated.find(".//Configuration").remove(single_hit)
+else:
+    single_hit.text = original_single_hit.text
 include.text = original.find(".//Configuration/Include").text
 assert ET.tostring(generated.getroot()) == ET.tostring(original.getroot())
 cases += 1
-print("PASS scoped settings retain all canonical exclusions")
+print("PASS settings derive floor owners and retain exclusions with SingleHit enabled")
 
 results = scratch / "results"
 results.mkdir()
@@ -115,6 +154,60 @@ result = subprocess.run([str(root / "scripts/coverage:development-v1"), str(resu
 assert result.returncode == 1 and "Missing or extra Unit coverage data" in result.stderr
 cases += 1
 print("PASS missing Unit reports fail before merging")
+
+# Drive the actual complete wrapper with all expected inputs. One composite
+# report supplies every active floor; the others are legitimate empty reports.
+# A corrupt empty report must still fail even though the remaining data passes.
+policy = json.loads((root / "scripts/coverage/policy.json").read_text())
+active = [key for key, floor in canonical["files"].items()
+          if key not in policy["retiredSourcePaths"] and not floor.get("developmentV1LocalOnlyReason")]
+composite = ET.Element("coverage", {"line-rate": "1", "branch-rate": "1", "version": "1.9",
+                                  "lines-covered": str(len(active)), "lines-valid": str(len(active)),
+                                  "branches-covered": str(2 * len(active)), "branches-valid": str(2 * len(active))})
+ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(root)
+classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name="Fixture"), "classes")
+for index, key in enumerate(active):
+    relative = pathlib.Path(key) if key.startswith("tools/") else pathlib.Path("src") / key
+    entry = ET.SubElement(classes, "class", name=f"Fixture{index}", filename=str(root / relative),
+                          **{"line-rate": "1", "branch-rate": "1", "complexity": "1"})
+    line = ET.SubElement(ET.SubElement(entry, "lines"), "line", number="1", hits="1", branch="True",
+                         **{"condition-coverage": "100% (2/2)"})
+    ET.SubElement(ET.SubElement(line, "conditions"), "condition", number="0", type="jump", coverage="100%")
+expected_reports = sum(json.loads(p.read_text())["Unit"] > 0 for p in (root / "tests").glob("*/test-categories.json"))
+empty_report = b'<coverage lines-valid="0" branches-valid="0"><packages /></coverage>'
+for index in range(expected_reports):
+    directory = results / str(index)
+    directory.mkdir()
+    (directory / "coverage.cobertura.xml").write_bytes(empty_report)
+valid = results / "0/coverage.cobertura.xml"
+ET.ElementTree(composite).write(valid)
+
+
+def wrapper_case(name, expected, *needles):
+    global cases
+    result = subprocess.run([str(root / "scripts/coverage:development-v1"), str(results), str(scratch / "coverage")],
+                            capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or any(needle not in output for needle in needles):
+        raise SystemExit(f"FAIL {name}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {name}")
+
+
+wrapper_case("complete wrapper accepts valid reports including classless projects", 0, "Coverage gate passed.")
+bad = results / "1/coverage.cobertura.xml"
+bad.write_text("<coverage")
+wrapper_case("one malformed report cannot be discarded by the merger", 1, str(bad), "Coverage input validation failed")
+bad.write_text("<not-coverage />")
+wrapper_case("a well-formed non-coverage input fails", 1, str(bad), "Expected a Cobertura")
+bad.write_bytes(empty_report)
+broken = copy.deepcopy(composite)
+entry = next(c for c in broken.findall(".//class") if c.get("filename", "").endswith(path))
+line = entry.find("lines/line")
+del line.attrib["condition-coverage"]
+line.remove(line.find("conditions"))
+ET.ElementTree(broken).write(valid)
+wrapper_case("missing branch counters fail before merge", 1, path, "measured branch data MISSING")
 
 # Exercise the actual policy, including the rule against turning arbitrary
 # low-coverage files into new local-only exceptions. This fixture is not a Git
@@ -125,6 +218,15 @@ for script in ("coverage:policy", "coverage:component"):
     shutil.copy2(root / "scripts" / script, policy_scripts / script)
 for source in (root / "scripts/coverage").glob("baseline*.json"):
     shutil.copy2(source, policy_scripts / "coverage" / source.name)
+shutil.copy2(root / "scripts/coverage/policy.json", policy_scripts / "coverage/policy.json")
+for baseline_path in (policy_scripts / "coverage").glob("baseline*.json"):
+    for key in json.loads(baseline_path.read_text())["files"]:
+        if key in policy["retiredSourcePaths"]:
+            continue
+        relative = pathlib.Path(key) if key.startswith("tools/") else pathlib.Path("src") / key
+        source = policy_scripts.parent / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
 command = [str(policy_scripts / "coverage:policy"), "push", ""]
 result = subprocess.run(command, capture_output=True, text=True)
 assert result.returncode == 0, result.stdout + result.stderr
@@ -135,6 +237,27 @@ result = subprocess.run(command, capture_output=True, text=True)
 assert result.returncode == 1 and "malformed" in result.stderr
 cases += 1
 print("PASS actual policy rejects an arbitrary new v1 exclusion")
+
+(policy_scripts / "coverage/baseline.json").write_text(json.dumps(canonical))
+fixture = policy_scripts.parent
+subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+subprocess.run(["git", "-C", str(fixture), "add", "."], check=True)
+subprocess.run(["git", "-C", str(fixture), "-c", "user.name=Coverage fixture", "-c", "user.email=coverage@example.invalid",
+                "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], check=True)
+subprocess.run(["git", "-C", str(fixture), "update-ref", "refs/remotes/origin/development/v1", "HEAD"], check=True)
+source = fixture / "src/HVO.SkyMonitor.Imaging/SceneRenderers.cs"
+for event, base_ref in (("push", ""), ("merge_group", ""), ("pull_request", "development/v1")):
+    command = [str(policy_scripts / "coverage:policy"), event, base_ref]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"Policy fixture failed before rename ({event}): {result.stdout}{result.stderr}")
+    source.rename(source.with_suffix(".moved.cs"))
+    result = subprocess.run(command, capture_output=True, text=True)
+    source.with_suffix(".moved.cs").rename(source)
+    if result.returncode != 1 or "SceneRenderers.cs" not in result.stderr or "not a pinned retired path" not in result.stderr:
+        raise SystemExit(f"Policy accepted a renamed floor source ({event}): {result.stdout}{result.stderr}")
+    cases += 1
+    print(f"PASS moved SceneRenderers source fails actual policy on {event}")
 
 print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
 PY

@@ -8,12 +8,22 @@ if (developmentV1)
     args = args[1..];
 }
 
+var validateReportsOnly = args.Length > 0 && args[0] == "--validate-reports";
+if (validateReportsOnly)
+{
+    args = args[1..];
+}
+
 if (args.Length < 2)
 {
     throw new ArgumentException("A baseline file and at least one Cobertura report are required.");
 }
 
 using var baselineDocument = JsonDocument.Parse(File.ReadAllText(args[0]));
+using var policyDocument = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "policy.json")));
+var retiredSourcePaths = policyDocument.RootElement.GetProperty("retiredSourcePaths").EnumerateArray()
+    .Select(static path => path.GetString() ?? throw new InvalidDataException("Null retired coverage path."))
+    .ToHashSet(StringComparer.Ordinal);
 var repositoryRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(args[0]) ?? ".", "..", ".."));
 var aggregate = baselineDocument.RootElement.GetProperty("aggregate");
 var baselineLine = aggregate.GetProperty("line").GetDouble();
@@ -27,45 +37,58 @@ var thresholds = baselineDocument.RootElement.GetProperty("files").EnumerateObje
         property.Value.TryGetProperty("developmentV1LocalOnlyReason", out var reason) ? reason.GetString() : null),
     StringComparer.Ordinal);
 
-if (developmentV1)
+foreach (var (path, threshold) in thresholds.ToArray())
 {
-    foreach (var (path, threshold) in thresholds.ToArray())
+    string? reason = null;
+    if (!SourcePathExists(repositoryRoot, path))
     {
-        var reason = threshold.DevelopmentV1LocalOnlyReason;
-        if (reason is not null && string.IsNullOrWhiteSpace(reason))
+        if (!retiredSourcePaths.Contains(path))
+        {
+            Console.Error.WriteLine($"Coverage gate failed: required source path '{path}' is missing and is not a pinned retired path. Restore the source or review its move and floor mapping; do not silently retire it.");
+            return 1;
+        }
+
+        reason = "source file is absent and explicitly pinned in coverage/policy.json as retired";
+    }
+    else if (developmentV1)
+    {
+        reason = threshold.DevelopmentV1LocalOnlyReason;
+    }
+
+    if (reason is not null)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
         {
             throw new InvalidDataException($"Empty developmentV1LocalOnlyReason for '{path}'.");
         }
 
-        if (!SourcePathExists(repositoryRoot, path))
-        {
-            reason = "source file is absent from this checkout (the canonical gate's retired-path rule)";
-        }
-
-        if (reason is not null)
-        {
-            Console.WriteLine(FormattableString.Invariant(
-                $"SKIP {path}: canonical floors line {threshold.Line:P2}, branch {threshold.Branch:P2}; {reason}"));
-            thresholds.Remove(path);
-        }
+        Console.WriteLine(FormattableString.Invariant(
+            $"SKIP {path}: canonical floors line {threshold.Line:P2}, branch {threshold.Branch:P2}; {reason}"));
+        thresholds.Remove(path);
     }
+}
 
-    if (thresholds.Count == 0)
-    {
-        throw new InvalidDataException("Development v1 has no measurable per-file coverage floors.");
-    }
+if (thresholds.Count == 0)
+{
+    throw new InvalidDataException("No measurable per-file coverage floors.");
 }
 
 var files = new Dictionary<string, Coverage>(StringComparer.Ordinal);
 
 foreach (var report in args.Skip(1))
 {
-    var document = XDocument.Load(report, LoadOptions.None);
-    var classElements = document.Descendants("class").ToArray();
-    if (classElements.Length == 0)
+    XDocument document;
+    try
     {
-        throw new InvalidDataException($"Coverage report '{report}' contains no class entries.");
+        document = ReadCoverageReport(report, thresholds, validateReportsOnly);
     }
+    catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or FormatException or OverflowException)
+    {
+        Console.Error.WriteLine($"Coverage input validation failed for '{report}': {exception.Message} Restore valid XPlat coverage collection and rerun the gate.");
+        return 1;
+    }
+
+    var classElements = document.Descendants("class").ToArray();
 
     foreach (var classElement in classElements)
     {
@@ -124,10 +147,16 @@ foreach (var report in args.Skip(1))
     }
 }
 
+if (validateReportsOnly)
+{
+    Console.WriteLine($"Validated all {args.Length - 1} input Cobertura reports before merging.");
+    return 0;
+}
+
 var failures = new List<string>();
 foreach (var requiredPath in thresholds.Keys.Order(StringComparer.Ordinal))
 {
-    if (!files.ContainsKey(requiredPath) && SourcePathExists(repositoryRoot, requiredPath))
+    if (!files.ContainsKey(requiredPath))
     {
         var minimum = thresholds[requiredPath];
         failures.Add(FormattableString.Invariant(
@@ -206,6 +235,59 @@ return 0;
 static string RequiredAttribute(XElement element, string name)
     => element.Attribute(name)?.Value
         ?? throw new InvalidDataException($"Coverage XML element '{element.Name}' is missing attribute '{name}'.");
+
+static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, Threshold> thresholds, bool allowEmpty)
+{
+    var document = XDocument.Load(report, LoadOptions.None);
+    if (document.Root?.Name != "coverage" || document.Root.Element("packages") is null)
+    {
+        throw new InvalidDataException("Expected a Cobertura coverage root with packages.");
+    }
+
+    var classes = document.Descendants("class").ToArray();
+    if (!allowEmpty && classes.Length == 0)
+    {
+        throw new InvalidDataException("Coverage report contains no class entries.");
+    }
+
+    foreach (var entry in classes)
+    {
+        _ = RequiredAttribute(entry, "name");
+        var sourcePath = NormalizeSourcePath(RequiredAttribute(entry, "filename"));
+        foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
+        {
+            var number = int.Parse(RequiredAttribute(line, "number"), CultureInfo.InvariantCulture);
+            var hits = int.Parse(RequiredAttribute(line, "hits"), CultureInfo.InvariantCulture);
+            if (number <= 0 || hits < 0)
+            {
+                throw new InvalidDataException($"Invalid line data for '{sourcePath}:{number}'.");
+            }
+
+            if (!thresholds.TryGetValue(sourcePath, out var minimum))
+            {
+                continue;
+            }
+
+            var marker = line.Attribute("branch")?.Value;
+            var hasMarker = bool.TryParse(marker, out var hasBranches);
+            var conditionCoverage = line.Attribute("condition-coverage")?.Value;
+            var conditions = line.Element("conditions")?.Elements("condition").ToArray() ?? [];
+            if ((!hasMarker && conditionCoverage is null) ||
+                ((hasBranches || conditions.Length > 0) && conditionCoverage is null) ||
+                (conditionCoverage is not null &&
+                 (!TryParseConditionCoverage(conditionCoverage, out var covered, out var total) ||
+                  covered < 0 || covered > total || total < 0 ||
+                  ((hasBranches || conditions.Length > 0) && total == 0) ||
+                  (hasMarker && !hasBranches && total > 0))))
+            {
+                throw new InvalidDataException(FormattableString.Invariant(
+                    $"{sourcePath}:{number}: measured branch data MISSING or invalid; branch floor {minimum.Branch:P2}. A branch-marked line needs condition-coverage counts; branchless lines must explicitly declare branch=false."));
+            }
+        }
+    }
+
+    return document;
+}
 
 static string NormalizeSourcePath(string path)
 {

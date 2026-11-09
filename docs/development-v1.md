@@ -130,7 +130,7 @@ The operator-approved #1142 split keeps these checks off the short path:
 | --- | --- |
 | Whole-repository ShellCheck and its contract tests | Quality |
 | Exhaustive test discovery, category disjointness and inventory counts | Build |
-| Integration, coverage, architecture/publish and migrations | Existing full-matrix jobs |
+| Integration, full-suite aggregate/component coverage, architecture/publish and migrations | Existing full-matrix jobs; measurable canonical per-file floors run in Build and Unit |
 | Deployment qualification | Existing selected Deployment Contracts job |
 
 The short run still builds the entire solution warning-clean and executes the
