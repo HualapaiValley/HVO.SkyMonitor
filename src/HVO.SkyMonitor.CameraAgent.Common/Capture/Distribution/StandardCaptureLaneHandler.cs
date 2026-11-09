@@ -19,7 +19,8 @@ internal sealed class StandardCaptureLaneHandler(
     IRawCaptureIngress rawCaptureIngress,
     IOptions<CameraAgentHostOptions>? hostOptions = null,
     ICaptureProcessingFaultInjector? faultInjector = null,
-    TimeProvider? timeProvider = null) : ICaptureLaneHandler, IDisposable
+    TimeProvider? timeProvider = null,
+    ProcessingGraphOperationsCoordinator? graphOperations = null) : ICaptureLaneHandler, IDisposable
 {
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
@@ -28,6 +29,9 @@ internal sealed class StandardCaptureLaneHandler(
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ILogger<StandardCaptureLaneHandler> _logger = logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl = rawCaptureIngress as IRawIngressRecoveryControl;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The dependency injection container owns the graph coordinator.")]
+    private readonly ProcessingGraphOperationsCoordinator? _graphOperations = graphOperations;
     private readonly int _maximumAttempts = hostOptions?.Value.CaptureDistribution.MaximumAttempts ?? 5;
     private readonly ICaptureProcessingFaultInjector _faultInjector =
         faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
@@ -108,7 +112,10 @@ internal sealed class StandardCaptureLaneHandler(
                     _logger,
                     processingToken,
                     _maximumAttempts,
-                    faultInjector: _faultInjector).ConfigureAwait(false);
+                    faultInjector: _faultInjector,
+                    ensureLiveStoragePolicy: _graphOperations is { } operations
+                        ? token => operations.EnsureLiveStoragePolicyAsync(item.Config, token)
+                        : null).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (
                 deadlineCancellation?.IsCancellationRequested == true &&
