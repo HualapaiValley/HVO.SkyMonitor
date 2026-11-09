@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 root, scratch = map(pathlib.Path, sys.argv[1:])
 canonical = json.loads((root / "scripts/coverage/baseline.json").read_text())
+policy = json.loads((root / "scripts/coverage/policy.json").read_text())
 path = "HVO.SkyMonitor.Astronomy/CameraGeometry.cs"
 release = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
 retired = "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"
