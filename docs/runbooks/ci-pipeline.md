@@ -37,8 +37,10 @@ Release output, and every executable source file in those assemblies' portable
 PDBs. This independent build inventory rejects partial reports even when other
 reports still cover all floor paths. An enforced file missing from
 the reports, present without executable line data, or declaring branches without
-their counts **fails**. Explicitly branchless lines remain valid. These checks
-also run in the shared evaluator. Failure output names the path, observed line/branch percentages,
+their counts **fails**. Explicitly branchless lines remain valid. Both evaluator
+profiles reject missing/empty enforced-file data and missing declared branch
+counts. TRX/build-inventory binding runs during v1's pre-merge validation.
+Failure output names the path, observed line/branch percentages,
 floors, and the remedy: restore collection or add tests, then rerun the gate.
 For the default canonical profile, signed Int32 hit-count wrap from the pinned
 ReportGenerator merger is treated as covered. V1's SingleHit inputs reject
@@ -86,6 +88,7 @@ evidence_root="$(mktemp -d /tmp/hvo-coverage-evidence.XXXXXXXX)"
 coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
 chmod 700 "$evidence_root" "$coverage_tmp"
 export evidence_root TMPDIR="$coverage_tmp"
+export DOTNET_CLI_USE_MSBUILD_SERVER=0 MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false
 trap 'rm -rf "$coverage_tmp"' EXIT
 flock -o /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
 dotnet tool restore
