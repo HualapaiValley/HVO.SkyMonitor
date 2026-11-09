@@ -120,33 +120,18 @@ one_uncovered.write(scratch / "bumped.xml")
 check("changed shared definition changes v1 enforcement", scratch / "bumped.xml", 1,
       "line 99.00", "min 100.00")
 
-# Reproduce ReportGenerator's Int32 sum wrap with the real pinned merger.
+# Regression for the signed merged representation produced when two positive
+# Int32.MaxValue counters wrap to -2. Keep this independent of ReportGenerator's
+# source/method coalescing choices in miniature inputs; the real shared lane is
+# validated separately with full instrumentation.
 overflow_baseline = copy.deepcopy(baseline)
 overflow_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
 baseline_file.write_text(json.dumps(overflow_baseline))
-raw_overflow = ET.parse(good)
-for entry in raw_overflow.findall(".//class"):
-    entry.set("filename", str(scratch / "repo/src" / path))
-for line in raw_overflow.findall(".//line"):
-    line.set("hits", "2147483647")
-for name in ("overflow-a.xml", "overflow-b.xml"):
-    # Distinct classes share the source line, as compiler-generated classes do
-    # in hot managed paths; identical class data can be coalesced by the merger.
-    raw_overflow.find(".//class").set("name", name)
-    raw_overflow.write(scratch / name)
-result = subprocess.run(["dotnet", "reportgenerator", f"-reports:{scratch / 'overflow-a.xml'};{scratch / 'overflow-b.xml'}",
-                         f"-targetdir:{scratch / 'overflow-merge'}", "-reporttypes:Cobertura"], capture_output=True, text=True)
-if result.returncode != 0:
-    raise SystemExit(f"Overflow merger reproduction failed: {result.stdout}{result.stderr}")
-merged_overflow = scratch / "overflow-merge/Cobertura.xml"
-wrapped = ET.parse(merged_overflow)
-if not any(int(line.get("hits")) < 0 for line in wrapped.findall(".//line")):
-    # ReportGenerator versions/shape can retain separate class counters rather
-    # than sum them. Exercise its signed Int32 merged representation directly:
-    # 2 * Int32.MaxValue wraps to -2. The real shared-lane gate is checked too.
-    for line in wrapped.findall(".//line"):
-        line.set("hits", "-2")
-    wrapped.write(merged_overflow)
+wrapped = ET.parse(good)
+for line in wrapped.findall(".//line"):
+    line.set("hits", "-2")
+merged_overflow = scratch / "wrapped-merged.xml"
+wrapped.write(merged_overflow)
 check("canonical gate treats signed wrapped merged hits as covered", merged_overflow, 0,
       "line 100.00", "Coverage gate passed.", profile=False)
 check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
