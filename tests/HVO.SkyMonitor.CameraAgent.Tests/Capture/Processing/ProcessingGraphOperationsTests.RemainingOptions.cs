@@ -59,7 +59,6 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("MeasuredAstrometry", "captureStride", "120")]
     [DataRow("CaptureSatelliteTracks", "allowStaleDiagnostics", "True")]
     [DataRow("CaptureSatelliteLayer", "inputVariant", "tracks-custom")]
-    [DataRow("Storage", "retentionDays", "60")]
     public async Task RemainingNodeOptionsPersistAcrossRestartWithExplicitActivationAndRollback(string alias, string key, string value)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-remaining-options");
@@ -91,11 +90,13 @@ public sealed partial class ProcessingGraphOperationsTests
                     await operations.ActivateRevisionAsync(editedRevision, initial.StateVersion, "early", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
                 await operations.ValidateRevisionAsync(editedRevision, "validate", "test", null, CancellationToken.None).ConfigureAwait(false);
                 var activated = await operations.ActivateRevisionAsync(editedRevision, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false);
-                await operations.RollbackRevisionAsync(sourceRevision, activated.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
+                var rolledBack = await operations.RollbackRevisionAsync(sourceRevision, activated.StateVersion, "rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(sourceRevision, rolledBack.ActiveRevisionId);
             }
             using var restarted = CreateRemainingOptionsProvider(root);
             await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            Assert.AreEqual(sourceRevision, (await reopened.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
             var retained = await reopened.ReadRevisionPipelineAsync(sourceRevision, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(storedSource, JsonSerializer.Serialize(retained));
             var saved = await reopened.ReadRevisionPipelineAsync(editedRevision, CancellationToken.None).ConfigureAwait(false);

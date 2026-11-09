@@ -74,6 +74,17 @@ public sealed partial class VirtualSkyCloudScenarioTests
             await cut.WaitForElement(selector).ChangeAsync(new() { Value = value }).ConfigureAwait(false);
             if (alias == "CaptureSatelliteTracks") await cut.Find("#node-options-4-inputVariant").ChangeAsync(new() { Value = value }).ConfigureAwait(false);
             if (alias == "CaptureSatelliteLayer") await cut.Find("#node-options-3-outputVariant").ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+            if (alias == "Storage")
+            {
+                await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+                Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+                StringAssert.Contains(cut.Markup, "capture profile", StringComparison.Ordinal);
+                Assert.HasCount(1, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).Revisions);
+                value = "30";
+                await cut.Find(selector).ChangeAsync(new() { Value = value }).ConfigureAwait(false);
+                // Storage now matches its profile. A permitted analysis edit makes this a new draft.
+                await cut.Find("#node-options-2-captureStride").ChangeAsync(new() { Value = "120" }).ConfigureAwait(false);
+            }
             await cut.Find("form").SubmitAsync().ConfigureAwait(false);
             cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled")));
             await cut.Find(selector).ChangeAsync(new() { Value = invalid }).ConfigureAwait(false);

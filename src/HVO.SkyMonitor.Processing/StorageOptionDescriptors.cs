@@ -5,15 +5,15 @@ public static class StorageOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "capture-storage-options-v1", "Storage", "cameraagent-step-v2:Storage", "Artifact storage",
-        "Configure this node's existing local publication policy. Artifact-specific policies remain preserved. Saving a draft does not move files or change retention; changes take effect only after validation and activation.",
+        "Storage is owned by the active capture profile. Enabled Storage nodes must match that profile's directory, retention, latest-frame/upload flags and artifact policies. Preview, save, validation, activation and rollback reject differences. Change the local capture profile first; this panel can reconcile a retained graph with its policy.",
         [
             ProcessingOptionDescriptor.Text("storageRoot", "storageRoot", "Storage directory",
-                "Local artifact directory used by this node. This does not change the host's raw-ingress directory or move existing artifacts.", "/tmp/camera", null, isRequired: true),
+                "Must match the active capture profile. This directory cannot be changed independently in a graph draft; editing does not move existing artifacts.", "/tmp/camera", null, isRequired: true),
             ProcessingOptionDescriptor.WholeNumber("retentionDays", "retentionDays", "Artifact retention",
-                "Existing root retention period. Artifact-specific policies may extend this period but cannot shorten it.", 30, 1, 3650, "days"),
+                "Must match the active capture profile, whose policy also controls retention sweeps. Artifact-specific policies may extend this period but cannot shorten it.", 30, 1, 3650, "days"),
             ProcessingOptionDescriptor.Toggle("updateLatestFrame", "updateLatestFrame", "Update latest frame",
-                "Publish the selected preview through the existing latest-frame service.", true),
+                "Must match the active capture profile. Publish the selected preview through the existing latest-frame service.", true),
             ProcessingOptionDescriptor.Toggle("queueForUpload", "queueForUpload", "Queue artifacts for upload",
-                "Use the existing upload outbox when central integration is enabled. Existing per-artifact overrides still apply.", false)
+                "Must match the active capture profile, which also controls upload draining. Existing per-artifact overrides still apply.", false)
         ]);
 }

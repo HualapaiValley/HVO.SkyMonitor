@@ -40,8 +40,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Configure existing measured-analysis, capture-satellite and artifact-storage scalar settings in CameraAgent graph panels, with validated drafts and explicit activation. #1386
-
+- Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386
 - CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
 - Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation and curated deep-sky overlays, and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. Capture-time location history, full footprint edges and reviewed editor state are preserved; rig changes and invalid drafts show per-revision revalidation status without hiding the catalog, central validation requires review for horizon evidence, and identical transient windows reuse bounded detector masks. #1394
 
