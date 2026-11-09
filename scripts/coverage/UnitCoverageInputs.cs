@@ -1,5 +1,6 @@
 using System.Reflection.Metadata;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Xml.Linq;
 
 /// <summary>Checks input completeness against build metadata rather than other coverage inputs.</summary>
@@ -52,12 +53,18 @@ internal static class UnitCoverageInputs
 
             var assemblyDirectory = Path.GetDirectoryName(expectedTestAssembly)!;
             var expected = new Dictionary<string, Dictionary<string, HashSet<int>>>(StringComparer.Ordinal);
-            foreach (var owner in owners)
+            using var dependencies = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(expectedTestAssembly, ".deps.json")));
+            var runtimeTarget = dependencies.RootElement.GetProperty("runtimeTarget").GetProperty("name").GetString()!;
+            var runtimeAssemblies = dependencies.RootElement.GetProperty("targets").GetProperty(runtimeTarget).EnumerateObject()
+                .Where(static library => library.Value.TryGetProperty("runtime", out _))
+                .SelectMany(static library => library.Value.GetProperty("runtime").EnumerateObject())
+                .Select(static asset => Path.GetFileNameWithoutExtension(asset.Name)).ToHashSet(StringComparer.Ordinal);
+            foreach (var owner in owners.Intersect(runtimeAssemblies, StringComparer.Ordinal))
             {
                 var assembly = Path.Combine(assemblyDirectory, owner + ".dll");
                 if (!File.Exists(assembly))
                 {
-                    continue;
+                    throw new InvalidDataException($"Unit project '{project}' is missing dependency assembly '{assembly}'.");
                 }
 
                 if (!inventories.TryGetValue(assembly, out var sources))
@@ -79,7 +86,7 @@ internal static class UnitCoverageInputs
             .Where(static path => File.Exists(Path.Combine(path, "test-categories.json")))
             .Where(static path =>
             {
-                using var inventory = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(path, "test-categories.json")));
+                using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(path, "test-categories.json")));
                 return inventory.RootElement.GetProperty("Unit").GetInt32() > 0;
             })
             .Select(static path => Path.GetFileName(path)).ToHashSet(StringComparer.Ordinal);

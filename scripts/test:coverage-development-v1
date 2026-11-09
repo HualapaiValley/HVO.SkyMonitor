@@ -200,6 +200,7 @@ result = subprocess.run(["dotnet", "build", str(fixture_project), "--configurati
 if result.returncode != 0:
     raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
+shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
 (inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
