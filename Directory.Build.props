@@ -6,6 +6,18 @@
     <LangVersion>latest</LangVersion>
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
+    <!-- Linux is the supported platform. Ordinary dev/test builds select host-native assets without changing their
+         output paths. An implicit publish follows the SDK host (including native ARM64 container builds); explicit
+         runtimes win. Restore both supported targets so publishing without restoring works after an ordinary restore. -->
+    <!-- The bundled SDK props are imported later. Honor a supplied Linux SDK host RID; otherwise query the OS
+         architecture here, so an ordinary build on native ARM64 does not silently select x64 assets. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' != 'true' and $(NETCoreSdkPortableRuntimeIdentifier.StartsWith('linux-'))">$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' != 'true'">linux-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</RuntimeIdentifier>
+    <RuntimeIdentifiers Condition="'$(RuntimeIdentifiers)' == ''">linux-x64;linux-arm64</RuntimeIdentifiers>
+    <UseCurrentRuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' == 'true' and '$(UseCurrentRuntimeIdentifier)' == ''">true</UseCurrentRuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath Condition="'$(_IsPublishing)' != 'true' and '$(AppendRuntimeIdentifierToOutputPath)' == ''">false</AppendRuntimeIdentifierToOutputPath>
+    <!-- Keep runtime bundling a publish concern. -->
+    <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
   </PropertyGroup>
   <!--
     The product version (install contract section 1, #1310): one version for every program and image, the next
