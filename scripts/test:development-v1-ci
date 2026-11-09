@@ -18,7 +18,14 @@ short = (root / ".github/workflows/development-v1.yml").read_text()
 full = (root / ".github/workflows/ci.yml").read_text()
 promotion = (root / ".github/workflows/promote-main.yml").read_text()
 queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_text()
-workflows = {path.name: path.read_text() for path in (root / ".github/workflows").glob("*.yml")}
+
+
+def read_workflows(directory):
+    return {path.name: path.read_text() for pattern in ("*.yml", "*.yaml")
+            for path in directory.glob(pattern)}
+
+
+workflows = read_workflows(root / ".github/workflows")
 
 
 def job(workflow, name):
@@ -130,7 +137,14 @@ def violations(short, full, queue=None, extra=None):
                     f"canonical job properties: {path}/{header}")
             require(len(values) <= 1 and len(values) == len(re.findall(r"^    name:", body, re.M)),
                     f"one single-line name per job: {path}/{header}")
-            value = values[0].strip() if values else header
+            raw_name = values[0] if values else header
+            # Required check names cannot be computed. Reject expressions before
+            # parsing comments/quotes, and again after decoding escaped strings.
+            # With no expressions, matrix/input values cannot feed a job name.
+            # Printable ASCII also excludes tabs, controls and Unicode lookalikes.
+            require("${{" not in raw_name and all(" " <= char <= "~" for char in raw_name),
+                    f"static printable job name: {path}/{header}")
+            value = raw_name.strip()
             # Decode ordinary quoted names too; reject folded/anchored names.
             if value.startswith('"'):
                 try:
@@ -143,6 +157,13 @@ def violations(short, full, queue=None, extra=None):
                 value = value.split(" #", 1)[0].strip()
             require(isinstance(value, str) and not value.startswith(("|", ">", "&", "*", "{", "!")),
                     f"canonical job name: {path}/{header}")
+            require(isinstance(value, str) and "${{" not in value and
+                    all(" " <= char <= "~" for char in value),
+                    f"decoded static printable job name: {path}/{header}")
+            if isinstance(value, str) and value.strip().casefold() == "hvo/reviewed-head":
+                require(path == "merge-queue-reviewed-head.yml" and header == "reviewed-head" and
+                        raw_name == "hvo/reviewed-head",
+                        f"reviewed-head name belongs only to the approved queue gate: {path}/{header}")
             names.append(value)
     for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
         require(names.count(required) == 1, f"globally unique required job name: {required}")
@@ -167,6 +188,15 @@ def violations(short, full, queue=None, extra=None):
         "test:pr-review-tools", "test:development-v1-ci",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    for profile, section, title, executable in (
+        ("Preflight", preflight, "Lint workflows", '"$RUNNER_TEMP/actionlint"'),
+        ("Quality", quality, "Lint GitHub Actions workflows", "/tmp/actionlint"),
+    ):
+        lint = step(section, title)
+        commands = [line.strip() for line in lint.splitlines() if line.startswith("          ")]
+        require(commands[-2:] == ["shopt -s nullglob",
+                                 f"{executable} .github/workflows/*.yml .github/workflows/*.yaml"],
+                f"{profile} actionlint includes both workflow extensions without unmatched globs")
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
@@ -378,6 +408,50 @@ for spoof in (
     'name: Spoof\non: push\njobs:\n  spoof:\n    name:\n      hvo/reviewed-head\n',
 ):
     mutations += (("alternate YAML spoof", short, full, queue_gate, {"spoof.yml": spoof}),)
+# Negative regressions for the R2 producer-name bypass. Exercise discovery using
+# real files: injecting an extra dict alone cannot catch a *.yml-only reader.
+def spoof_workflow(name, matrix=""):
+    return ("name: Spoof\non: push\njobs:\n  spoof:\n    name: " + name + "\n" + matrix +
+            "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+
+
+name_spoofs = (
+    ("literal expression", "${{ 'hvo/reviewed-head' }}", ""),
+    ("format expression", "${{ format('{0}/reviewed-head','hvo') }}", ""),
+    ("matrix-derived name", "${{ matrix.check }}",
+     "    strategy:\n      matrix:\n        check: [hvo/reviewed-head]\n"),
+    ("expression in name matrix value", "${{ matrix.check }}",
+     "    strategy:\n      matrix:\n        check: [\"${{ 'hvo/reviewed-head' }}\"]\n"),
+    ("tab before comment", "hvo/reviewed-head\t# note", ""),
+    ("escaped expression", json.dumps("${{ 'hvo/reviewed-head' }}").replace("$", r"\u0024"), ""),
+    ("escaped tab", r'"hvo/reviewed-head\t"', ""),
+    ("escaped control", r'"hvo/reviewed-head\u0001"', ""),
+    ("raw control", "hvo/reviewed-head\x01", ""),
+    ("normalized Unicode", "ｈｖｏ／ｒｅｖｉｅｗｅｄ－ｈｅａｄ", ""),
+    ("case normalization", "HVO/REVIEWED-HEAD", ""),
+    ("space and comment normalization", "hvo/reviewed-head # note", ""),
+)
+for name, value, matrix in name_spoofs:
+    mutations += ((name, short, full, queue_gate, {"spoof.yml": spoof_workflow(value, matrix)}),)
+mutations += (
+    ("Preflight YAML lint omitted", short.replace(" .github/workflows/*.yaml", ""), full),
+    ("Preflight YML lint omitted", short.replace(" .github/workflows/*.yml", ""), full),
+    ("Preflight unmatched glob", short.replace("          shopt -s nullglob\n", ""), full),
+    ("Quality YAML lint omitted", short, full.replace(" .github/workflows/*.yaml", "")),
+    ("Quality YML lint omitted", short, full.replace(" .github/workflows/*.yml", "")),
+)
+with tempfile.TemporaryDirectory(prefix="hvo-v1-workflows-") as directory:
+    fixture = pathlib.Path(directory)
+    (fixture / "benign.yml").write_text(spoof_workflow("Benign"))
+    (fixture / "ignored.txt").write_text(spoof_workflow("hvo/reviewed-head"))
+    (fixture / "spoof.yaml").write_text(spoof_workflow("Benign YAML"))
+    discovered = read_workflows(fixture)
+    if set(discovered) != {"benign.yml", "spoof.yaml"} or violations(short, full, queue_gate, discovered):
+        raise SystemExit("Both workflow extensions must be discovered and safe names must pass")
+    (fixture / "spoof.yaml").write_text(spoof_workflow("hvo/reviewed-head"))
+    if not violations(short, full, queue_gate, read_workflows(fixture)):
+        raise SystemExit("Discovered .yaml spoof workflow was not rejected")
+    print("R2 file discovery: benign .yml/.yaml pass; .yaml spoof rejected.")
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
