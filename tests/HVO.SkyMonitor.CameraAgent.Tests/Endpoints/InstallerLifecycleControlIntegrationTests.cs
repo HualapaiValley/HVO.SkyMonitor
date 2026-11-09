@@ -49,7 +49,10 @@ public sealed class InstallerLifecycleControlIntegrationTests
     [DataRow(true)]
     public async Task InstallerOwnsTerminalReceiptAcrossSimulatedProcessLoss(bool neverReturns)
     {
-        var fixture = new Fixture(neverReturns);
+        using var stopClock = new HeldRestartClock();
+        using var verifierClock = new ProcessLossClock();
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var fixture = new Fixture(neverReturns) { RestartClock = stopClock };
         await using var fixtureLifetime = fixture.ConfigureAwait(false);
         await fixture.InitializeAsync().ConfigureAwait(false);
         var worker = Guid.NewGuid();
@@ -60,17 +63,45 @@ public sealed class InstallerLifecycleControlIntegrationTests
             "virtual scheduled restart", fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow);
         var queued = await fixture.Controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
         var localJournal = Path.Combine(fixture.Root.FullName, "installer-receipt.json");
-        async Task Persist(CameraAgentControlReceipt receipt) => await File.WriteAllTextAsync(localJournal,
-            JsonSerializer.Serialize(receipt, Json)).ConfigureAwait(false);
-        var verifier = new InstallerControlVerifier(client, Persist, TimeProvider.System, new(
-            TimeSpan.FromSeconds(2), neverReturns ? TimeSpan.FromMilliseconds(200) : TimeSpan.FromSeconds(3),
-            TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(5)));
-        var terminal = await verifier.ExecuteAsync(queued, CancellationToken.None).ConfigureAwait(false);
+        var verifying = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowVerification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task Persist(CameraAgentControlReceipt receipt)
+        {
+            await File.WriteAllTextAsync(localJournal, JsonSerializer.Serialize(receipt, Json)).ConfigureAwait(false);
+            if (receipt.Phase == CameraAgentControlPhase.Verifying)
+            {
+                verifying.TrySetResult();
+                await allowVerification.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+            }
+        }
+        var verificationWindow = neverReturns ? TimeSpan.FromMilliseconds(200) : TimeSpan.FromSeconds(3);
+        var verifier = new InstallerControlVerifier(client, Persist, verifierClock, new(
+            TimeSpan.FromSeconds(2), verificationWindow, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(5)));
+        var execution = verifier.ExecuteAsync(queued, watchdog.Token);
+        try
+        {
+            await verifying.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+            // Deliver the accepted stop explicitly; the verifier cannot race its asynchronous continuation.
+            stopClock.Fire();
+            await fixture.Stopped.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+            allowVerification.TrySetResult();
+            if (neverReturns)
+            {
+                // First observe the absent process, then expire exactly the original verification window.
+                await verifierClock.PollScheduled.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+                Assert.IsFalse(execution.IsCompleted, "A missing process must not finish before its verification deadline.");
+                verifierClock.Advance(verificationWindow);
+            }
+        }
+        finally { allowVerification.TrySetResult(); }
+        var terminal = await execution.WaitAsync(watchdog.Token).ConfigureAwait(false);
         var durable = JsonSerializer.Deserialize<CameraAgentControlReceipt>(await File.ReadAllTextAsync(localJournal).ConfigureAwait(false),
             Json)!;
+        var diagnostic = JsonSerializer.Serialize(durable, Json);
+        Assert.AreEqual(neverReturns ? "restart.verification-timeout" : "restart.verified-resumed", durable.Events[^1].Code, diagnostic);
+        Assert.AreEqual(neverReturns ? CameraAgentControlPhase.Failed : CameraAgentControlPhase.Succeeded, durable.Phase, diagnostic);
         Assert.AreEqual(terminal.Phase, durable.Phase);
-        Assert.AreEqual(1, fixture.RestartCalls, JsonSerializer.Serialize(durable, Json));
-        Assert.AreEqual(neverReturns ? CameraAgentControlPhase.Failed : CameraAgentControlPhase.Succeeded, durable.Phase);
+        Assert.AreEqual(1, fixture.RestartCalls, diagnostic);
         if (neverReturns)
         {
             Assert.AreEqual("restart.verification-timeout", durable.Events[^1].Code);
@@ -539,6 +570,73 @@ public sealed class InstallerLifecycleControlIntegrationTests
             return Task.FromResult(fixture.WindowOpening is not { } opening || CameraAgentControlLifecycleEndpoints.IsRestartWindowSafe(
                 new(false, CaptureScheduleAdmissionReason.DefaultClosed, CaptureScheduleSafetyState.Available, now,
                     null, null, null, false, opening), now, beforeRestart));
+        }
+    }
+    /// <summary>Only the test advances verifier time; all verifier timers are one-shot and explicitly fired.</summary>
+    private sealed class ProcessLossClock : TimeProvider, IDisposable
+    {
+        private readonly object _sync = new();
+        private readonly DateTimeOffset _start = DateTimeOffset.UtcNow;
+        private readonly HashSet<ManualTimer> _timers = [];
+        private long _ticks;
+        internal TaskCompletionSource PollScheduled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() { lock (_sync) return _ticks; }
+        public override DateTimeOffset GetUtcNow() { lock (_sync) return _start.AddTicks(_ticks); }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            // Read/drain timers have longer budgets; this is the first offline verification poll.
+            if (dueTime == TimeSpan.FromMilliseconds(5)) PollScheduled.TrySetResult();
+            return timer;
+        }
+        internal void Advance(TimeSpan duration)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(duration, TimeSpan.Zero);
+            ManualTimer[] due;
+            lock (_sync)
+            {
+                _ticks += duration.Ticks;
+                due = _timers.Where(timer => timer.DueTicks is { } deadline && deadline <= _ticks).ToArray();
+                foreach (var timer in due) timer.DueTicks = null;
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+        public void Dispose()
+        {
+            lock (_sync)
+            {
+                foreach (var timer in _timers) timer.DueTicks = null;
+                _timers.Clear();
+            }
+        }
+        private sealed class ManualTimer(ProcessLossClock owner, TimerCallback callback, object? state) : ITimer
+        {
+            internal long? DueTicks { get; set; }
+            private bool _disposed;
+            internal void Fire() => callback(state);
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (period != Timeout.InfiniteTimeSpan) throw new NotSupportedException("Verifier timers must be one-shot.");
+                lock (owner._sync)
+                {
+                    if (_disposed) return false;
+                    DueTicks = dueTime == Timeout.InfiniteTimeSpan ? null : owner._ticks + dueTime.Ticks;
+                    owner._timers.Add(this);
+                    return true;
+                }
+            }
+            public void Dispose()
+            {
+                lock (owner._sync)
+                {
+                    _disposed = true;
+                    DueTicks = null;
+                    owner._timers.Remove(this);
+                }
+            }
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
         }
     }
     private sealed class HeldRestartClock : TimeProvider, IDisposable
