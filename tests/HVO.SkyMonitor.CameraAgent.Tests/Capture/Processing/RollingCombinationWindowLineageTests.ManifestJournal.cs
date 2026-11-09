@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
+// The restart regression clears process-wide pools to force fresh SQLite handles.
+[DoNotParallelize]
 public sealed partial class RollingCombinationWindowLineageTests
 {
     [TestMethod]
@@ -63,6 +65,6 @@ public sealed partial class RollingCombinationWindowLineageTests
             Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
             await RunManifestTestAssertions.ResponseAsync(recovered, id).ConfigureAwait(false);
         }
-        finally { SqliteConnection.ClearAllPools(); Cleanup(root); }
+        finally { Cleanup(root); }
     }
 }
