@@ -563,23 +563,27 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             SetCommandMessage(RemovedEditMessage, error: true);
             return;
         }
-        if (!TryValidateForm())
+        if (ScriptTask && !_scriptStep)
         {
-            return;
-        }
-        if (ScriptTask)
-        {
-            if (Descriptor(LocalAutomationTaskKind.CustomScript)?.Available != true || SelectedScript is null)
+            if (Descriptor(LocalAutomationTaskKind.CustomScript) is not { Available: true, ScriptInvocations.Count: > 0 })
             {
                 SetCommandMessage("This script registration is unavailable. Refresh and select an owner-registered invocation.", error: true);
                 return;
             }
-            if (!_scriptStep)
+            // A retired digest can be repaired only in the registration step. Never silently
+            // replace it, and validate the explicit selection before review or durable save.
+            if (SelectedScript is null)
             {
-                _scriptStep = true;
-                _focusTargetId = "automation-script-target";
-                return;
+                _targetInput = string.Empty;
+                SetCommandMessage("The recorded invocation is no longer registered. Select its approved replacement before review.", error: true);
             }
+            _scriptStep = true;
+            _focusTargetId = "automation-script-target";
+            return;
+        }
+        if (!TryValidateForm())
+        {
+            return;
         }
         if (WindowTask)
         {

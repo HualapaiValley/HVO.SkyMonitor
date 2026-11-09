@@ -46,6 +46,38 @@ public sealed class AutomationScriptControlsTests
     }
 
     [TestMethod]
+    public async Task RetiredScriptRegistrationRequiresExplicitReplacementAndPreservesTheOldRevision()
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        var saved = await fixture.Service.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var original = saved.Value!.State.Definitions.Single();
+        fixture.Stub.Target = "registered.replacement";
+        using var context = Context(fixture.Service);
+        var cut = context.Render<AutomationsPage>();
+        await cut.WaitForElement("#automation-edit-script").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsNotNull(cut.Find("#automation-script-step"));
+        Assert.Contains("no longer registered", cut.Find("[role=alert]").TextContent, StringComparison.Ordinal);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll("#automation-confirm"));
+        var unchanged = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Definitions.Single();
+        Assert.AreEqual(original.Version, unchanged.Version);
+        Assert.AreEqual(original.RevisionSha256, unchanged.RevisionSha256);
+        Assert.AreEqual(original.Definition, unchanged.Definition);
+        await cut.Find("#automation-script-target").ChangeAsync(new ChangeEventArgs { Value = fixture.Stub.Target }).ConfigureAwait(false);
+        await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains(fixture.Stub.Target, cut.Markup, StringComparison.Ordinal);
+        await cut.Find("#automation-confirm").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForElement("#automation-edit-script");
+        var revised = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Definitions.Single();
+        Assert.AreEqual(2L, revised.Version);
+        Assert.AreEqual(fixture.Stub.Target, revised.Definition.TaskTarget);
+        Assert.AreEqual(original.Definition, revised.History.Single(item => item.Version == 1).Definition);
+        Assert.AreNotEqual(original.RevisionSha256, revised.RevisionSha256);
+    }
+
+    [TestMethod]
     public async Task UnavailableAdapterHasNoCustomWizardOptionAndExistingDefinitionShowsSafeErrors()
     {
         using var fixture = new ScriptControlsFixture();

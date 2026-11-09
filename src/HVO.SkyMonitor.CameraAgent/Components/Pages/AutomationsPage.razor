@@ -427,6 +427,7 @@ else
                                 <p>Choose an owner-registered POSIX invocation. Content and typed argument values stay pinned to its version; this wizard cannot upload commands, credentials or host paths.</p>
                                 <label class="ops-field">Registered invocation
                                     <select id="automation-script-target" @bind="_targetInput" @bind:after="FormChanged">
+                                        <option value="">Select a registered invocation</option>
                                         @foreach (var script in Descriptor(LocalAutomationTaskKind.CustomScript)?.ScriptInvocations ?? [])
                                         {
                                             <option value="@script.Target">@script.RegistrationId</option>

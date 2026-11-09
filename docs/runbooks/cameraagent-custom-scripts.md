@@ -70,6 +70,8 @@ the adapter has no qualified invocation. Its second step selects an immutable
 registration and shows only its ID, version digest, argument count and byte/time
 limits. Content, argument values and host paths are not projected. Validation
 and review precede the existing optimistic-version/idempotent save contract.
+An edited definition with a retired invocation must explicitly select its current
+approved replacement in that step; the old revision stays unchanged until save.
 
 An enabled script definition has an explicit, confirmed **Run now** control. It
 queues one durable invocation without moving the periodic schedule; duplicate
