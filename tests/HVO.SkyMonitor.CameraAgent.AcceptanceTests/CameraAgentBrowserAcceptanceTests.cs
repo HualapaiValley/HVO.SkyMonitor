@@ -1486,7 +1486,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         // Candidates: the list accepts the calendar range and never claims event authority.
         await page.GotoAsync("/transients?from=2000-01-01T00:00:00&to=2000-01-02T00:00:00").ConfigureAwait(false);
         await VisibleAsync(page.Locator(".range-state")).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Transient candidates", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Detected events", Level = 1 })).ConfigureAwait(false);
         var candidateText = await page.Locator("main").InnerTextAsync().ConfigureAwait(false);
         foreach (var forbidden in new[] { "ground track", "impact location", "validated event" })
         {
@@ -2945,7 +2945,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                   (element.tagName === 'IMG' ? element.getAttribute('alt') : '') ||
                   element.textContent || descendantAlt || '').trim();
               };
-              return [...document.querySelectorAll('a[href], button, img')]
+              // Explicit empty alt makes an image decorative; its enclosing named link carries the action.
+              return [...document.querySelectorAll('a[href], button, img:not([alt=""])')]
                 .filter(element => element.getClientRects().length > 0)
                 .every(element => Boolean(name(element)));
             }
