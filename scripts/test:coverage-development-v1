@@ -24,7 +24,7 @@ path = "HVO.SkyMonitor.Astronomy/CameraGeometry.cs"
 release = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
 retired = "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"
 baseline = copy.deepcopy(canonical)
-baseline["files"] = {key: canonical["files"][key] for key in (path, release, retired)}
+baseline["files"] = {key: copy.deepcopy(canonical["files"][key]) for key in (path, release, retired)}
 baseline_file = scratch / "repo/scripts/coverage/baseline.json"
 baseline_file.parent.mkdir(parents=True)
 baseline_file.write_text(json.dumps(baseline))
