@@ -59,7 +59,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(25, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        Assert.HasCount(30, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
         Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 

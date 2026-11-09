@@ -322,6 +322,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
             }
             var configuration = scheduleRuntime?.Snapshot?.Configuration
                 ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            CaptureStoragePolicy.EnsureMatchesProfile(pipeline, configuration.Pipeline);
             return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -331,7 +332,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (Exception exception)
         {
             logger.LogInformation(exception, "CameraAgent processing graph preview rejected.");
-            return (null, EnvironmentalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
+            return (null, LocalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
                 ? CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(invalid)
                 : "The graph definition is invalid for this CameraAgent."));
         }
@@ -371,6 +372,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         => exception is ValidationException && exception.Message.Contains("outside the configured association policy", StringComparison.Ordinal)
             ? "Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider."
             : null;
+
+    private static string? LocalPolicyFailure(Exception exception)
+        => exception is ValidationException && exception.Message == CaptureStoragePolicy.RejectionMessage
+            ? CaptureStoragePolicy.RejectionMessage : EnvironmentalPolicyFailure(exception);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
@@ -437,10 +442,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The graph revision was not found.");
         }
-        catch (ValidationException exception) when (EnvironmentalPolicyFailure(exception) is not null)
+        catch (ValidationException exception) when (LocalPolicyFailure(exception) is not null)
         {
             logger.LogInformation(exception, "CameraAgent processing graph UI mutation rejected.");
-            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, EnvironmentalPolicyFailure(exception)!);
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, LocalPolicyFailure(exception)!);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or InvalidDataException)
         {
