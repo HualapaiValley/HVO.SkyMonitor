@@ -14,7 +14,7 @@ internal sealed class CaptureSatelliteFixture
     internal CaptureOrbitalPredictionInput Input { get; }
     internal CaptureSatelliteInputV1 Evidence { get; }
 
-    internal CaptureSatelliteFixture()
+    internal CaptureSatelliteFixture(string? horizon = null)
     {
         var root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Nominal");
         var track = OrbitalPredictionJson.ParseTrack(File.ReadAllBytes(Path.Combine(root, "iss", "track-03.json")));
@@ -28,11 +28,24 @@ internal sealed class CaptureSatelliteFixture
                 CalibrationVersion: "satellite-fixture-v1"), new(90, 0, 0),
             new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), 1, 1));
         var observer = track.Observer;
+        var location = DeploymentLocationSnapshot.Create("satellite-site", 1, "fixture", null,
+            DateTimeOffset.UnixEpoch, null, observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC");
+        if (horizon is not null)
+        {
+            var elevation = horizon == "clear" ? -90d : 90d;
+            rig = rig with
+            {
+                HorizonObstruction = new(HorizonObstructionProfile.CurrentSchemaVersion, "satellite-horizon", 1,
+                "satellite-installation", HorizonObstructionProfile.ComputeSiteIdentitySha256(observer.LatitudeDegrees,
+                    observer.LongitudeDegrees, observer.ElevationMeters, location.ToProvenance()), HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig),
+                HorizonObstructionSource.Synthetic, 90, horizon == "unknown" ? [] :
+                    [new(0, elevation), new(90, elevation), new(180, elevation), new(270, elevation)])
+            };
+        }
         Configuration = new(new(observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC"),
             new("StandaloneFixture"), rig, CapturePipelineConfig.Empty, "satellite-fixture")
         {
-            DeploymentLocation = DeploymentLocationSnapshot.Create("satellite-site", 1, "fixture", null,
-                DateTimeOffset.UnixEpoch, null, observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC")
+            DeploymentLocation = location
         };
         var payload = new byte[640 * 640 * 2];
         var layout = new FrameLayoutDescriptor(640, 640, 1280, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,
@@ -59,7 +72,7 @@ internal sealed class CaptureSatelliteFixture
             new(32, 120, 100_000, 32, 32, 8192, 10_000, 1, .1),
             new(CaptureOrbitalAssessmentMode.OriginalAvailability, Descriptor.Timing.DurableIngressUtc,
                 Descriptor.Timing.DurableIngressUtc, track.RequestedInterval.StartUtc.AddDays(-1)),
-            OrbitalSnapshotReadResult.Available(Snapshot), new([new("celestrak:gp:active", 0)]), [track.Lineage.ObjectIdentity]);
+            OrbitalSnapshotReadResult.Available(Snapshot), new([new("celestrak:gp:active", 0)]), [track.Lineage.ObjectIdentity], rig.HorizonObstruction is null ? null : rig);
         Raw = new(Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, "raw", ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
             Descriptor.Artifact.MediaType, layout, payload, Descriptor.Artifact.CreatedUtc, TimeSpan.FromSeconds(5),
             new(Descriptor.Profiles.Rig.Sha256, Descriptor.Profiles.Rig.Sha256, Descriptor.Profiles.Calibration.Sha256,
