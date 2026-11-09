@@ -48,5 +48,5 @@ else
   merged_report="$temporary_dir/Cobertura.xml"
 fi
 
-dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- \
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
   "${profile_args[@]}" "$baseline" "$merged_report"

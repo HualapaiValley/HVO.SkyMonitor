@@ -73,8 +73,8 @@ printf '%s\n' "${reports[@]}" > "$target_dir/reports.txt"
 printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${#reports[@]}"
 # ReportGenerator can log an XML error, omit that input and still exit zero.
 # Validate every report and declared branch counter before the merge loses it.
-dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- \
-  --development-v1 --validate-reports "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
+  --development-v1 --validate-reports --unit-results "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
 dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \

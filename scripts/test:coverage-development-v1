@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
-  --configuration Release --output "$scratch/gate" -warnaserror > "$scratch/build.log" 2>&1 || {
+  --configuration Release --output "$scratch/gate" --disable-build-servers -p:UseSharedCompilation=false -warnaserror > "$scratch/build.log" 2>&1 || {
   cat "$scratch/build.log" >&2
   exit 1
 }
@@ -78,6 +78,8 @@ check("missing enforced file fails", report("missing", filename="Other.cs"), 1,
       path, "measured coverage MISSING", "floors line 95.00")
 check("empty file data does not become 100%", report("empty", empty=True), 1,
       path, "no executable line data")
+check("default gate also rejects an empty enforced file", report("empty-full", empty=True), 1,
+      path, "no executable line data", profile=False)
 check("catalog-dependent failure is explicitly local-only in v1", report("catalog-absent", release_data=True), 0,
       f"SKIP {release}", "Coverage gate passed.")
 check("default canonical gate still enforces the catalog-dependent floor", report("full-catalog-absent", release_data=True), 1,
@@ -118,6 +120,29 @@ one_uncovered.write(scratch / "bumped.xml")
 check("changed shared definition changes v1 enforcement", scratch / "bumped.xml", 1,
       "line 99.00", "min 100.00")
 
+# Reproduce ReportGenerator's Int32 sum wrap with the real pinned merger.
+overflow_baseline = copy.deepcopy(baseline)
+overflow_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
+baseline_file.write_text(json.dumps(overflow_baseline))
+raw_overflow = ET.parse(good)
+for entry in raw_overflow.findall(".//class"):
+    entry.set("filename", str(scratch / "repo/src" / path))
+for line in raw_overflow.findall(".//line"):
+    line.set("hits", "2147483647")
+for name in ("overflow-a.xml", "overflow-b.xml"):
+    raw_overflow.write(scratch / name)
+result = subprocess.run(["dotnet", "reportgenerator", f"-reports:{scratch / 'overflow-a.xml'};{scratch / 'overflow-b.xml'}",
+                         f"-targetdir:{scratch / 'overflow-merge'}", "-reporttypes:Cobertura"], capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(f"Overflow merger reproduction failed: {result.stdout}{result.stderr}")
+merged_overflow = scratch / "overflow-merge/Cobertura.xml"
+if not any(int(line.get("hits")) < 0 for line in ET.parse(merged_overflow).findall(".//line")):
+    raise SystemExit("Pinned merger did not reproduce signed hit-count wrap")
+check("canonical gate treats actual wrapped merged hits as covered", merged_overflow, 0,
+      "line 100.00", "Coverage gate passed.", profile=False)
+check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
+baseline_file.write_text(json.dumps(baseline))
+
 # Preserve canonical exclusions; only Include and SingleHit differ. Derive
 # assembly expectations from the baseline so new floor owners need no test pin.
 settings_file = scratch / "v1.runsettings"
@@ -155,37 +180,65 @@ assert result.returncode == 1 and "Missing or extra Unit coverage data" in resul
 cases += 1
 print("PASS missing Unit reports fail before merging")
 
-# Drive the actual complete wrapper with all expected inputs. One composite
-# report supplies every active floor; the others are legitimate empty reports.
-# A corrupt empty report must still fail even though the remaining data passes.
-policy = json.loads((root / "scripts/coverage/policy.json").read_text())
-active = [key for key, floor in canonical["files"].items()
-          if key not in policy["retiredSourcePaths"] and not floor.get("developmentV1LocalOnlyReason")]
-composite = ET.Element("coverage", {"line-rate": "1", "branch-rate": "1", "version": "1.9",
-                                  "lines-covered": str(len(active)), "lines-valid": str(len(active)),
-                                  "branches-covered": str(2 * len(active)), "branches-valid": str(2 * len(active))})
-ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(root)
-classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name="Fixture"), "classes")
-for index, key in enumerate(active):
-    relative = pathlib.Path(key) if key.startswith("tools/") else pathlib.Path("src") / key
-    entry = ET.SubElement(classes, "class", name=f"Fixture{index}", filename=str(root / relative),
-                          **{"line-rate": "1", "branch-rate": "1", "complexity": "1"})
-    line = ET.SubElement(ET.SubElement(entry, "lines"), "line", number="1", hits="1", branch="True",
-                         **{"condition-coverage": "100% (2/2)"})
-    ET.SubElement(ET.SubElement(line, "conditions"), "condition", number="0", type="jump", coverage="100%")
-expected_reports = sum(json.loads(p.read_text())["Unit"] > 0 for p in (root / "tests").glob("*/test-categories.json"))
-empty_report = b'<coverage lines-valid="0" branches-valid="0"><packages /></coverage>'
-for index in range(expected_reports):
-    directory = results / str(index)
-    directory.mkdir()
-    (directory / "coverage.cobertura.xml").write_bytes(empty_report)
-valid = results / "0/coverage.cobertura.xml"
-ET.ElementTree(composite).write(valid)
+# Build an independent two-source assembly for report-inventory fixtures. Its
+# portable PDB, not a coverage-derived file list, determines expected input.
+inventory_repo = scratch / "inventory-repo"
+assembly_name = "HVO.SkyMonitor.Astronomy"
+source_dir = inventory_repo / "src" / assembly_name
+source_dir.mkdir(parents=True)
+for filename, type_name in (("CameraGeometry.cs", "InventoryA"), ("InventorySentinel.cs", "InventoryB")):
+    (source_dir / filename).write_text(f"namespace CoverageFixture; public static class {type_name} {{ public static int Value() => 1; }}\n")
+(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n}\n")
+fixture_project = inventory_repo / "Inventory.csproj"
+fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
+<TargetFramework>net10.0</TargetFramework><AssemblyName>{assembly_name}</AssemblyName>
+<EnableDefaultCompileItems>false</EnableDefaultCompileItems><DebugType>portable</DebugType>
+</PropertyGroup><ItemGroup><Compile Include="src/**/*.cs" /></ItemGroup></Project>""")
+assembly_output = inventory_repo / "tests/Fixture.Tests/bin/Release/net10.0"
+result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(assembly_output),
+                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
+shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
+(inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
+fixture_scripts = inventory_repo / "scripts"
+fixture_scripts.mkdir()
+shutil.copytree(root / "scripts/coverage", fixture_scripts / "coverage", ignore=shutil.ignore_patterns("bin", "obj"))
+for name in ("coverage:development-v1", "coverage:enforce"):
+    shutil.copy2(root / "scripts" / name, fixture_scripts / name)
+fixture_baseline = copy.deepcopy(canonical)
+fixture_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
+(fixture_scripts / "coverage/baseline.json").write_text(json.dumps(fixture_baseline))
+results = inventory_repo / "results"
+(results / "original").mkdir(parents=True)
+(results / "attachment/In/computer").mkdir(parents=True)
+valid = results / "original/coverage.cobertura.xml"
+attachment = results / "attachment/In/computer/coverage.cobertura.xml"
+(results / "fixture.trx").write_text(f"""<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+<TestSettings><Deployment runDeploymentRoot="attachment" /></TestSettings>
+<TestDefinitions><UnitTest><TestMethod codeBase="{assembly_output / 'Fixture.Tests.dll'}" /></UnitTest></TestDefinitions>
+<ResultSummary><CollectorDataEntries><Collector collectorDisplayName="XPlat code coverage">
+<UriAttachments><UriAttachment><A href="computer/coverage.cobertura.xml" /></UriAttachment></UriAttachments>
+</Collector></CollectorDataEntries></ResultSummary></TestRun>""")
+composite = ET.Element("coverage")
+ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventory_repo)
+classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name=assembly_name), "classes")
+for index, filename in enumerate(("CameraGeometry.cs", "InventorySentinel.cs")):
+    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.Inventory{index}", filename=str(source_dir / filename),
+                          **{"line-rate":"1", "branch-rate":"1"})
+    lines = ET.SubElement(entry, "lines")
+    for number in ((3, 4) if filename == "CameraGeometry.cs" else (1,)):
+        ET.SubElement(lines, "line", number=str(number), hits="1", branch="true", **{"condition-coverage":"100% (2/2)"})
+
+
+def write_fixture(document):
+    ET.ElementTree(document).write(valid)
+    shutil.copy2(valid, attachment)
 
 
 def wrapper_case(name, expected, *needles):
     global cases
-    result = subprocess.run([str(root / "scripts/coverage:development-v1"), str(results), str(scratch / "coverage")],
+    result = subprocess.run([str(fixture_scripts / "coverage:development-v1"), str(results), str(inventory_repo / "coverage-output")],
                             capture_output=True, text=True)
     output = result.stdout + result.stderr
     if result.returncode != expected or any(needle not in output for needle in needles):
@@ -194,19 +247,48 @@ def wrapper_case(name, expected, *needles):
     print(f"PASS {name}")
 
 
-wrapper_case("complete wrapper accepts valid reports including classless projects", 0, "Coverage gate passed.")
-# Coverlet can emit a multiway switch with different arities per condition.
-# Pre-merge validation must not apply the canonical merger's equal-arity math.
-switch_report = ET.Element("coverage")
-switch_classes = ET.SubElement(ET.SubElement(ET.SubElement(switch_report, "packages"), "package", name="Raw"), "classes")
-switch_entry = ET.SubElement(switch_classes, "class", name="RawSwitch", filename=str(root / "src" / path))
-switch_line = ET.SubElement(ET.SubElement(switch_entry, "lines"), "line", number="1", hits="1", branch="True",
-                            **{"condition-coverage": "100% (5/5)"})
+write_fixture(composite)
+wrapper_case("complete wrapper accepts a report matching independent DLL/PDB inventory", 0, "Coverage gate passed.")
+valid.write_text("<coverage")
+shutil.copy2(valid, attachment)
+wrapper_case("one malformed report cannot be discarded by the merger", 1, str(valid), "Coverage input validation failed")
+valid.write_text("<not-coverage />")
+shutil.copy2(valid, attachment)
+wrapper_case("a well-formed non-coverage input fails", 1, str(valid), "Expected a Cobertura")
+broken = copy.deepcopy(composite)
+line = broken.find(".//line")
+del line.attrib["condition-coverage"]
+write_fixture(broken)
+wrapper_case("missing branch counters fail before merge", 1, path, "measured branch data MISSING")
+partial = copy.deepcopy(composite)
+partial.find(".//classes").remove(partial.findall(".//class")[1])
+write_fixture(partial)
+wrapper_case("partial report still covering every floor fails independent source inventory", 1,
+             "materially incomplete", "InventorySentinel.cs")
+partial_lines = copy.deepcopy(composite)
+lines = partial_lines.find(".//class/lines")
+lines.remove(lines.findall("line")[-1])
+write_fixture(partial_lines)
+wrapper_case("partial class data with every source still present fails PDB sequence points", 1,
+             "materially incomplete", "sequence-point lines")
+empty_report = ET.Element("coverage")
+ET.SubElement(empty_report, "packages")
+write_fixture(empty_report)
+wrapper_case("a classless report is rejected for a project with included assemblies", 1, "incomplete assembly inventory")
+write_fixture(composite)
+# The declared TRX attachment is independent evidence of the original input.
+valid.write_text(valid.read_text().replace('hits="1"', 'hits="0"'))
+wrapper_case("replaced report fails TRX identity binding", 1, "no matching original coverage report")
+
+# Raw Coverlet switch conditions need structural validation, not canonical math.
+switch_report = ET.parse(good)
+switch_line = switch_report.find(".//line")
+switch_line.set("condition-coverage", "100% (5/5)")
 switch_conditions = ET.SubElement(switch_line, "conditions")
 for number in ("0", "1"):
     ET.SubElement(switch_conditions, "condition", number=number, type="jump", coverage="100%")
 switch_file = scratch / "raw-switch.xml"
-ET.ElementTree(switch_report).write(switch_file)
+switch_report.write(switch_file)
 result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
                          "--development-v1", "--validate-reports", str(baseline_file), str(switch_file)],
                         capture_output=True, text=True)
@@ -214,19 +296,6 @@ if result.returncode != 0:
     raise SystemExit(f"Raw switch validation incorrectly evaluated canonical branch arities: {result.stdout}{result.stderr}")
 cases += 1
 print("PASS raw switch validation accepts unequal condition arities")
-bad = results / "1/coverage.cobertura.xml"
-bad.write_text("<coverage")
-wrapper_case("one malformed report cannot be discarded by the merger", 1, str(bad), "Coverage input validation failed")
-bad.write_text("<not-coverage />")
-wrapper_case("a well-formed non-coverage input fails", 1, str(bad), "Expected a Cobertura")
-bad.write_bytes(empty_report)
-broken = copy.deepcopy(composite)
-entry = next(c for c in broken.findall(".//class") if c.get("filename", "").endswith(path))
-line = entry.find("lines/line")
-del line.attrib["condition-coverage"]
-line.remove(line.find("conditions"))
-ET.ElementTree(broken).write(valid)
-wrapper_case("missing branch counters fail before merge", 1, path, "measured branch data MISSING")
 
 # Exercise the actual policy, including the rule against turning arbitrary
 # low-coverage files into new local-only exceptions. This fixture is not a Git
@@ -277,6 +346,17 @@ for event, base_ref in (("push", ""), ("merge_group", ""), ("pull_request", "dev
         raise SystemExit(f"Policy accepted a renamed floor source ({event}): {result.stdout}{result.stderr}")
     cases += 1
     print(f"PASS moved SceneRenderers source fails actual policy on {event}")
+    changed_policy = copy.deepcopy(policy)
+    changed_policy["retiredSourcePaths"].append("HVO.SkyMonitor.Imaging/SceneRenderers.cs")
+    (policy_scripts / "coverage/policy.json").write_text(json.dumps(changed_policy))
+    source.rename(source.with_suffix(".moved.cs"))
+    result = subprocess.run(command, capture_output=True, text=True)
+    source.with_suffix(".moved.cs").rename(source)
+    (policy_scripts / "coverage/policy.json").write_text(json.dumps(policy))
+    if result.returncode != 1 or "retired-source coverage policy" not in result.stderr:
+        raise SystemExit(f"Policy accepted a new retirement through a JSON edit ({event}): {result.stdout}{result.stderr}")
+    cases += 1
+    print(f"PASS rename plus retirement JSON edit fails policy on {event}")
 
 print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
 PY

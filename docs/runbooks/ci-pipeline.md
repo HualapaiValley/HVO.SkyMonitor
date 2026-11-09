@@ -31,11 +31,18 @@ requires one GUID-directory report per Unit-bearing project's category inventory
 it excludes TRX attachment copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Legitimate classless reports from
-projects with no included assemblies are accepted. An enforced file missing from
+projects with no included assemblies are accepted. Each report must match its
+TRX attachment and project, the included assemblies present in that project's
+Release output, and every executable source file in those assemblies' portable
+PDBs. This independent build inventory rejects partial reports even when other
+reports still cover all floor paths. An enforced file missing from
 the reports, present without executable line data, or declaring branches without
 their counts **fails**. Explicitly branchless lines remain valid. These checks
 also run in the shared evaluator. Failure output names the path, observed line/branch percentages,
 floors, and the remedy: restore collection or add tests, then rerun the gate.
+For the default canonical profile, signed Int32 hit-count wrap from the pinned
+ReportGenerator merger is treated as covered. V1's SingleHit inputs reject
+negative counts. Malformed XML and missing/invalid fields fail in both profiles.
 
 The following scope limits leave every numeric floor unchanged:
 
@@ -60,6 +67,9 @@ The following scope limits leave every numeric floor unchanged:
   enforced source, including a rename/move, fails settings generation, the shared
   evaluator and coverage policy on PR, push and merge-group events. Moving a file
   requires reviewing its floor mapping; absence never implies retirement.
+  Coverage policy rejects changes to the three-entry retired list unless its
+  executable allowlist is also changed and reviewed; JSON edits alone cannot
+  exempt a renamed file.
 - Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
   is recorded in that PR's discussion, not a repository exception registry.
   `InstallerControlWorker`, `InstallerControlJournal` and
@@ -77,10 +87,10 @@ coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
 chmod 700 "$evidence_root" "$coverage_tmp"
 export evidence_root TMPDIR="$coverage_tmp"
 trap 'rm -rf "$coverage_tmp"' EXIT
-flock /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
+flock -o /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
 dotnet tool restore
-dotnet restore HVO.SkyMonitor.v9.slnx
-dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
+dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disable-build-servers -p:UseSharedCompilation=false -warnaserror
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
 ./scripts/test:coverage-development-v1
@@ -102,6 +112,13 @@ The existing Build and Unit check reports failure on non-draft PRs, v1 pushes an
 `merge_group/checks_requested`; drafts retain Preflight only. Required check names
 and ruleset 26838822 need no change. No new check, permission, catalog provision,
 Integration selection, workflow dispatch or repository setting is introduced.
+
+Independent review measured approximately 65 seconds of added CI work with
+SingleHit: 44.5 seconds in Unit collection and 20.3 seconds in the coverage
+stage, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts growing
+about 18 MB. Earlier variable local controls did not establish that coverage was
+faster; they are not evidence of a speedup. Observe hosted timing and memory
+alongside the existing workload budget when evaluating further changes.
 
 ## Development v1 Preflight Budget
 

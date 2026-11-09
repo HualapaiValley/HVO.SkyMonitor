@@ -13,10 +13,13 @@ base_ref="${2:-}"
 
 policy="scripts/coverage/policy.json"
 jq --exit-status '
-  (.retiredSourcePaths | type == "array") and
-  (.retiredSourcePaths | length > 0) and
-  all(.retiredSourcePaths[]; type == "string" and test("\\S")) and
-  (.retiredSourcePaths | length == (unique | length))
+  # Expanding the retired list requires an executable policy change and review;
+  # editing policy data alone cannot turn a moved source into a new exemption.
+  (.retiredSourcePaths | sort) == ([
+    "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
+    "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+  ] | sort)
 ' "$policy" > /dev/null || {
   printf 'Malformed retired-source coverage policy: %s\n' "$policy" >&2
   exit 1

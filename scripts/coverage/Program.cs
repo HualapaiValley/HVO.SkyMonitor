@@ -14,6 +14,13 @@ if (validateReportsOnly)
     args = args[1..];
 }
 
+string? unitResultsDirectory = null;
+if (args.Length > 1 && args[0] == "--unit-results")
+{
+    unitResultsDirectory = args[1];
+    args = args[2..];
+}
+
 if (args.Length < 2)
 {
     throw new ArgumentException("A baseline file and at least one Cobertura report are required.");
@@ -80,7 +87,7 @@ foreach (var report in args.Skip(1))
     XDocument document;
     try
     {
-        document = ReadCoverageReport(report, thresholds, validateReportsOnly);
+        document = ReadCoverageReport(report, thresholds, validateReportsOnly, developmentV1);
     }
     catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or FormatException or OverflowException)
     {
@@ -112,7 +119,9 @@ foreach (var report in args.Skip(1))
         {
             var number = int.Parse(RequiredAttribute(line, "number"), CultureInfo.InvariantCulture);
             coverage.Lines.Add(number);
-            if (int.Parse(line.Attribute("hits")?.Value ?? "0", CultureInfo.InvariantCulture) > 0)
+            // ReportGenerator sums Int32 hit counts unchecked. A negative
+            // merged count is a wrapped positive total, not an uncovered line.
+            if (ReadHits(line, developmentV1) != 0)
             {
                 coverage.HitLines.Add(number);
             }
@@ -157,6 +166,19 @@ foreach (var report in args.Skip(1))
 
 if (validateReportsOnly)
 {
+    if (unitResultsDirectory is not null)
+    {
+        try
+        {
+            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException)
+        {
+            Console.Error.WriteLine($"Coverage input inventory failed: {exception.Message} Restore complete coverage collection from the current Release build and rerun in a fresh directory.");
+            return 1;
+        }
+    }
+
     Console.WriteLine($"Validated all {args.Length - 1} input Cobertura reports before merging.");
     return 0;
 }
@@ -188,7 +210,7 @@ foreach (var (sourcePath, coverage) in files)
         continue;
     }
 
-    if (developmentV1 && coverage.Lines.Count == 0)
+    if (coverage.Lines.Count == 0)
     {
         failures.Add(FormattableString.Invariant(
             $"{sourcePath}: measured coverage MISSING (no executable line data); floors line {minimum.Line:P2}, branch {minimum.Branch:P2}"));
@@ -244,7 +266,7 @@ static string RequiredAttribute(XElement element, string name)
     => element.Attribute(name)?.Value
         ?? throw new InvalidDataException($"Coverage XML element '{element.Name}' is missing attribute '{name}'.");
 
-static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, Threshold> thresholds, bool allowEmpty)
+static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, Threshold> thresholds, bool allowEmpty, bool developmentV1)
 {
     var document = XDocument.Load(report, LoadOptions.None);
     if (document.Root?.Name != "coverage" || document.Root.Element("packages") is null)
@@ -265,8 +287,8 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
         foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
         {
             var number = int.Parse(RequiredAttribute(line, "number"), CultureInfo.InvariantCulture);
-            var hits = int.Parse(RequiredAttribute(line, "hits"), CultureInfo.InvariantCulture);
-            if (number <= 0 || hits < 0)
+            _ = ReadHits(line, developmentV1);
+            if (number <= 0)
             {
                 throw new InvalidDataException($"Invalid line data for '{sourcePath}:{number}'.");
             }
@@ -310,6 +332,22 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
     }
 
     return document;
+}
+
+static long ReadHits(XElement line, bool developmentV1)
+{
+    var hits = long.Parse(RequiredAttribute(line, "hits"), CultureInfo.InvariantCulture);
+    if (hits < 0)
+    {
+        if (developmentV1 || hits < int.MinValue)
+        {
+            throw new InvalidDataException($"Invalid negative line hits '{hits}' at line {RequiredAttribute(line, "number")}.");
+        }
+
+        return long.MaxValue;
+    }
+
+    return hits;
 }
 
 static string NormalizeSourcePath(string path)
