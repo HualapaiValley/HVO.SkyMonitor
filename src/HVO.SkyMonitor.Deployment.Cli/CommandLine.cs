@@ -88,6 +88,9 @@ internal static class CommandLine
             "A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, " +
             "--image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with " +
             "the other value options. " + PlanScratchNote),
+        new(["cameraagent", "lifecycle-worker"], null,
+            "Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.",
+            InstanceValueOptions, ["--once", "--json"]),
         new(["cameraagent", "recover-owner"], null,
             "Give an instance's owner a new temporary password.",
             OwnerRecoveryValueOptions, OwnerRecoveryFlags),
@@ -142,6 +145,7 @@ internal static class CommandLine
     /// </summary>
     private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
     {
+        ["--once"] = (null, "Perform one authenticated lifecycle poll, including any admitted operation, then exit."),
         ["--inventory"] = ("<file>", "The immutable split-host inventory (schema 8; partial-prepare also accepts retained schema 7)."),
         ["--preserve-state"] = (null, "Stop applications while preserving existing services and runtime data."),
         ["--delete-state"] = (null, "Request deletion; existing-services runs refuse this policy before mutation."),
@@ -410,6 +414,8 @@ internal static class CommandLine
         if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
         if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
+        if (args is ["cameraagent", "lifecycle-worker", ..])
+            return LifecycleWorkerRequest.Parse(args, production, allowTestProductRoot);
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
             return new InstallDeploymentCommand(Parse(args, allowTestProductRoot, production))

@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Evaluate Linux dev/test RIDs with the pinned SDK and exercise ARM64 lane arguments.
+
+Run after installing global.json's SDK; no build, restore, Docker or ARM hardware is needed.
+An early SDK host RID models ARM64 evaluation on x64. The native case also exercises
+RuntimeInformation.OSArchitecture before the bundled SDK properties are imported.
+"""
+import argparse
+from collections import Counter
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+PROJECTS = [
+    "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj",
+    "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+    "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj",
+    "src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj",
+]
+
+
+def evaluate(project, arguments):
+    command = ["dotnet", "msbuild", str(project),
+               "-getProperty:RuntimeIdentifier,PlatformTarget,SelfContained,OutputPath"] + arguments
+    result = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
+    return command, json.loads(result.stdout)["Properties"]
+
+
+def lane_calls(phase, directory):
+    (directory / "results").mkdir(exist_ok=True)
+    calls = directory / "calls.jsonl"
+    calls.write_text("")
+    fake = directory / "dotnet"
+    fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+                    "with open(os.environ['RID_CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n")
+    fake.chmod(0o755)
+    setup = """
+set -euo pipefail
+CAMERA_PROJECT=camera.csproj REPLAY_RUNNER_PROJECT=replay.csproj
+CAMERA_TESTS=camera-tests.csproj ACCEPTANCE_TESTS=acceptance.csproj
+CATALOG_TESTS=catalog-tests.csproj CLI_TESTS=cli-tests.csproj
+BUNDLE=fixture UNIT_FILTER=TestCategory=Unit DOCKER_SERVER_ID=fixture
+phase_started=$SECONDS
+docker() { printf '%s\\n' fixture; }
+trx_assert_executed_and_passed() { :; }
+"""
+    subprocess.run(["bash", "-c", setup + phase], check=True, cwd=ROOT,
+                   env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}",
+                        "RID_CALLS": str(calls), "RESULTS": str(directory / "results"),
+                        "TEMP_ROOT": str(directory)}, capture_output=True, text=True)
+    return [json.loads(line) for line in calls.read_text().splitlines()]
+
+
+def assert_lane(calls):
+    assert Counter(call[0] for call in calls) == {"restore": 6, "build": 6, "test": 4}, calls
+    for call in calls:
+        assert call.count("--runtime") == 1 and call[call.index("--runtime") + 1] == "linux-arm64", call
+        if call[0] == "build":
+            assert "--no-restore" in call and "-warnaserror" in call, call
+        if call[0] == "test":
+            assert "--no-build" in call, call
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="Retain the evaluated properties and forwarded commands as JSON.")
+    args = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="hvo-linux-rids-") as temp:
+        directory = Path(temp)
+        probe = directory / "architecture.proj"
+        probe.write_text("<Project><PropertyGroup><RuntimeIdentifier>linux-"
+                         "$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())"
+                         "</RuntimeIdentifier></PropertyGroup></Project>")
+        _, properties = evaluate(probe, [])
+        native_rid = properties["RuntimeIdentifier"]
+        assert native_rid in ("linux-x64", "linux-arm64"), native_rid
+        scenarios = [
+            ("native-host", native_rid, []),
+            ("x64-host", "linux-x64", ["-p:NETCoreSdkPortableRuntimeIdentifier=linux-x64"]),
+            ("arm64-host", "linux-arm64", ["-p:NETCoreSdkPortableRuntimeIdentifier=linux-arm64"]),
+            ("x64-host-explicit-arm64", "linux-arm64", ["-p:NETCoreSdkPortableRuntimeIdentifier=linux-x64", "-p:RuntimeIdentifier=linux-arm64"]),
+            ("arm64-host-explicit-x64", "linux-x64", ["-p:NETCoreSdkPortableRuntimeIdentifier=linux-arm64", "-p:RuntimeIdentifier=linux-x64"]),
+        ]
+        evaluations = []
+        for project in PROJECTS:
+            for scenario, expected, arguments in scenarios:
+                command, properties = evaluate(ROOT / project, arguments)
+                assert properties["RuntimeIdentifier"] == expected, (project, scenario, properties)
+                expected_platform = "AnyCPU" if "/HVO.SkyMonitor.CameraAgent.Tests/" in project else expected.removeprefix("linux-")
+                assert properties["PlatformTarget"] == expected_platform, (project, scenario, properties)
+                assert properties["SelfContained"] == "false", (project, scenario, properties)
+                evaluations.append({"project": project, "scenario": scenario, "command": command, "properties": properties})
+
+        harness = (ROOT / "scripts/test:cameraagent-arm64-ci").read_text()
+        phase = harness[harness.index('for project in "$CAMERA_PROJECT"'):]
+        phase = phase[:phase.index("printf 'unit-tests,")]
+        calls = lane_calls(phase, directory)
+        assert_lane(calls)
+        for verb in ("restore", "build", "test"):
+            mutated, count = re.subn(r"(?m)(^\s*dotnet " + verb + r" [^\n]*) --runtime linux-arm64", r"\1", phase, count=1)
+            assert count == 1, verb
+            try:
+                assert_lane(lane_calls(mutated, directory))
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"ARM64 lane accepted missing explicit RID for {verb}")
+
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps({"nativeRid": native_rid, "evaluations": evaluations,
+                                               "arm64LaneCalls": calls, "rejectedLaneMutations": 3,
+                                               "result": "PASS"}, indent=2) + "\n")
+        print(f"Linux build RIDs: {len(evaluations)} property evaluations, 16 ARM64 lane calls and 3 negative mutations passed (native {native_rid}).")
+
+
+if __name__ == "__main__":
+    main()

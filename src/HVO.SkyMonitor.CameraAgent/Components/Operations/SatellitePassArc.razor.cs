@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -21,6 +22,7 @@ public sealed partial class SatellitePassArc : ComponentBase
     private IReadOnlyList<PredictionPoint> _fullPoints = [];
     private IReadOnlyList<PredictionPoint> _rigPoints = [];
     private IReadOnlyList<Anchor> _anchors = [];
+    private HorizonObstructionPredictionProduct? _projectedObstruction;
     private OrbitalPassArcV1? _projectedArc;
     private CameraAgentSatellitePlanningContext? _projectedContext;
     private string? _solarModelVersion;
@@ -39,8 +41,10 @@ public sealed partial class SatellitePassArc : ComponentBase
 
     protected override void OnParametersSet()
     {
-        if (ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context)) return;
+        if (ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context) &&
+            ReferenceEquals(_projectedObstruction, Obstruction)) return;
         _projectedArc = Arc;
+        _projectedObstruction = Obstruction;
         _projectedContext = Context;
         var ephemeris = Services.GetService<IPlanetEphemeris>();
         _solarModelVersion = ephemeris?.ModelVersion;
@@ -97,6 +101,8 @@ public sealed partial class SatellitePassArc : ComponentBase
         ? $"Sun geometric altitude {Number(solar.AltitudeDegrees)}°; sky context {solar.Regime}."
         : "Sun geometric altitude Unknown; sky context Unknown.";
 
+    [Parameter] public HorizonObstructionPredictionProduct? Obstruction { get; set; }
+
     private (List<string> Paths, List<PredictionPoint> Points) ProjectSegments(IImageProjector projector)
     {
         var paths = new List<string>();
@@ -111,13 +117,18 @@ public sealed partial class SatellitePassArc : ComponentBase
             for (var i = segment.StartSampleIndex; i < segment.StartSampleIndex + segment.SampleCount; i++)
             {
                 var sample = Arc.Samples[i];
-                var point = ProjectValid(projector, sample);
+                var point = Obstruction is { } obstruction &&
+                    (obstruction.Binding.SourceIdentitySha256 != Arc.ProductSha256 || i >= obstruction.Eligibility.Count ||
+                        obstruction.Eligibility[i] != HorizonObstructionEligibility.Clear)
+                    ? null : ProjectValid(projector, sample);
                 if (point is null || previous is { } utc && sample.Utc <= utc)
                 {
                     Flush();
                     previous = null;
                     continue;
                 }
+                if (Obstruction is { } segmentFacts && run.Count > 0 &&
+                    (i - 1 >= segmentFacts.ClearSegments.Count || !segmentFacts.ClearSegments[i - 1])) Flush();
                 run.Add(new(sample.Utc, point.Value));
                 previous = sample.Utc;
             }

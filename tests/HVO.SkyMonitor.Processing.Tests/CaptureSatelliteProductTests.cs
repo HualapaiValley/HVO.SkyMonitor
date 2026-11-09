@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class CaptureSatelliteProductTests
+public sealed partial class CaptureSatelliteProductTests
 {
     [TestMethod]
     public async Task CompactCarrierRequiresTheExactRetainedSnapshotAndReconstructsTheSameResult()

@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class AutomationsPageTests
+public sealed partial class AutomationsPageTests
 {
     [TestMethod]
     public void GuidedOrbitalSetup_PrefillsTheExistingEditorAndSavesThroughItsNormalCommand()

@@ -65,7 +65,8 @@
     <PackageVersion Include="Scalar.AspNetCore" Version="2.18.7" />
     <PackageVersion Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageVersion Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
-    <!-- Keep managed SkiaSharp and every native asset on the same release; native ABI ranges are enforced on the first native call. -->
+    <!-- Keep managed SkiaSharp and every native asset on the same release; native ABI ranges are enforced on the first
+         native call. macOS/Win32 remain transitive SkiaSharp dependencies; the Linux RID keeps them out of outputs. -->
     <PackageVersion Include="SkiaSharp" Version="4.154.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.154.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />

@@ -1,0 +1,40 @@
+@namespace HVO.SkyMonitor.CameraAgent.Components.Operations
+<section class="ops-panel horizon-editor" aria-labelledby="horizon-heading">
+    <header class="ops-panel-heading"><div><h2 id="horizon-heading">Site horizon obstructions</h2><p>Review trees, buildings and terrain for this installed rig.</p></div></header>
+    <p>Active: @(ActiveRevision?.Rig.HorizonObstruction is { } active ? $"revision {active.Revision}, installation {active.InstallationId}" : "No obstruction profile; terrain coverage unknown.")</p>
+    @if (Compatibility is not null)
+    {
+        <p role="status" id="horizon-compatibility">@Compatibility</p>
+    }
+    <p>Use true north = 0°, east = 90°, geometric elevation above the horizontal plane. One azimuth,elevation pair per line, sorted by azimuth. Use ? for unknown terrain. Empty profiles and gaps remain unknown, never clear sky. Clouds and defective pixels are separate.</p>
+    <label class="ops-field">Installation ID<input id="horizon-installation" maxlength="128" @bind="_installation" @bind:event="oninput" @bind:after="Invalidate" /></label>
+    <p>Change this ID or explicitly revalidate after moving the rig. Preview binds the current site, pointing, readout and calibration.</p>
+    <label class="ops-field">Maximum interpolation gap (degrees)<input id="horizon-gap" type="number" min="0.01" max="90" step="0.5" @bind="_gap" @bind:after="Invalidate" /></label>
+    <label class="ops-field">Horizon samples<textarea id="horizon-samples" rows="6" maxlength="32768" @bind="_samples" @bind:event="oninput" @bind:after="Invalidate"></textarea></label>
+    <button type="button" class="button secondary" id="horizon-preview" disabled="@(_busy || ActiveRevision is null)" @onclick="PreviewAsync">Preview / revalidate horizon</button>
+    @if (_preview is { } preview)
+    {
+        <p>Candidate revision @preview.Profile.Revision: @preview.Profile.Samples.Count samples. Gray areas are unknown. The line shows the obstruction boundary; sky at or below it is excluded.</p>
+        <svg viewBox="0 0 360 180" role="img" aria-label="Horizon preview, azimuth 0 to 360 degrees and elevation minus 90 to 90 degrees">
+            <rect width="360" height="180" class="unknown" />
+            @foreach (var segment in preview.Intervals)
+            {
+                <polygon points="@($"{Number(segment.FromAzimuthDegrees)},0 {Number(segment.ToAzimuthDegrees)},0 {Number(segment.ToAzimuthDegrees)},{Number(90 - Math.Max(0, segment.ToElevationDegrees))} {Number(segment.FromAzimuthDegrees)},{Number(90 - Math.Max(0, segment.FromElevationDegrees))}")" class="clear-sky" />
+                <polygon points="@($"{Number(segment.FromAzimuthDegrees)},{Number(90 - Math.Max(0, segment.FromElevationDegrees))} {Number(segment.ToAzimuthDegrees)},{Number(90 - Math.Max(0, segment.ToElevationDegrees))} {Number(segment.ToAzimuthDegrees)},180 {Number(segment.FromAzimuthDegrees)},180")" class="blocked-sky" />
+                <line x1="@Number(segment.FromAzimuthDegrees)" y1="@Number(90 - segment.FromElevationDegrees)" x2="@Number(segment.ToAzimuthDegrees)" y2="@Number(90 - segment.ToElevationDegrees)" class="horizon" />
+            }
+            @foreach (var knot in preview.Profile.Samples.Where(static sample => sample.ElevationDegrees is not null))
+            {
+                <circle cx="@Number(knot.AzimuthDegrees)" cy="@Number(90 - knot.ElevationDegrees!.Value)" r="0.8" class="horizon" />
+            }
+            <line x1="0" y1="90" x2="360" y2="90" class="zero" />
+        </svg>
+        <p>Profile identity: <code>@preview.Profile.ComputeIdentitySha256()</code></p>
+        <button type="button" class="button primary" id="horizon-save" disabled="@_busy" @onclick="SaveAsync">Save new candidate revision</button>
+        <p>Saving preserves the active profile. Activate the candidate through Rig preview and the explicit restart-only stage confirmation. Prior revisions remain available for rollback.</p>
+    }
+    @if (_message is not null)
+    {
+        <p role="status">@_message</p>
+    }
+</section>

@@ -315,6 +315,10 @@ public sealed partial class LocalAutomationRunnerService(
         {
             execution = await registry.ExecuteAsync(occurrence, cancellationToken)
                 .ConfigureAwait(false);
+            if (occurrence.Definition.TaskKind == LocalAutomationTaskKind.ScheduledCameraAgentRestart &&
+                execution is { Outcome: LocalAutomationRunOutcome.Running, Detail: not null } &&
+                await store.HasInstallerLifecycleIntentAsync(journalRunKey, cancellationToken).ConfigureAwait(false))
+                return; // The matched durable installer request owns the terminal outcome.
             if (execution is null || !Enum.IsDefined(execution.Outcome) ||
                 execution.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running ||
                 execution.Detail is null)

@@ -89,6 +89,20 @@ internal static class Program
             // A --config or --answers install can select JSON output without a --json token, so the error stream mode
             // follows the parsed command once parsing succeeds; the argv guess only covers a parse failure.
             jsonErrors = command.Json;
+            if (command is LifecycleWorkerRequest controlWorker)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await services.ControlWorker(controlWorker, cancellationToken).ConfigureAwait(false);
+                var poll = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["instanceId"] = controlWorker.InstanceId.ToString("D"),
+                    ["status"] = "poll-completed"
+                };
+                await Console.Out.WriteLineAsync(controlWorker.Json ? poll.ToJsonString(SplitHostJson.Options)
+                    : "stage=lifecycle-worker poll=completed").ConfigureAwait(false);
+                return (int)InstallerExitCode.Done;
+            }
             if (command is HelpCommand help)
             {
                 await Console.Out.WriteAsync(help.Usage).ConfigureAwait(false);
@@ -451,6 +465,7 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    public Func<LifecycleWorkerRequest, CancellationToken, Task> ControlWorker { get; init; } = CameraAgentLifecycleManager.RunControlWorkerAsync;
     public Func<PreflightRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> SplitHostPreflight { get; init; } = global::HVO.SkyMonitor.Deployment.SplitHostPreflight.ExecuteAsync;
     public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
     public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;

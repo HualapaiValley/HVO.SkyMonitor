@@ -2,6 +2,7 @@ using System.Globalization;
 using AngleSharp.Dom;
 using Bunit;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -17,6 +18,29 @@ public sealed class SatellitePassArcTests
     private static readonly ProjectionContext Hemisphere = new(ProjectionModel.EquidistantFisheye,
         256, 256, 480 / Math.PI, 480 / Math.PI, 512, 512, ProjectionAperture.Circular, 240);
     private static readonly OrbitalPassArcV1 RetainedArc = LoadArc();
+
+    [TestMethod]
+    [DataRow(HorizonObstructionEligibility.Unknown)]
+    [DataRow(HorizonObstructionEligibility.Obstructed)]
+    [DataRow(HorizonObstructionEligibility.Incompatible)]
+    public void HorizonEligibilityChangesInvalidateCachedPathsAndKeepRawArc(HorizonObstructionEligibility eligibility)
+    {
+        var arc = RetainedArc;
+        var before = OrbitalPassArcJson.Serialize(arc);
+        using var context = new BunitContext();
+        var cut = Render(context, arc, Hemisphere);
+        var paths = cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray();
+        Assert.IsNotEmpty(paths);
+        var facts = new HorizonObstructionPredictionProduct(new(HorizonObstructionProducts.SchemaVersion,
+            arc.ProductSha256, new string('A', 64), new string('B', 64), "test", RigProjectionContextFactory.AlgorithmVersion,
+            ProjectedSceneImageTransformV1.Identity(512, 512)), new string('C', 64),
+            Enumerable.Repeat(eligibility, arc.Samples.Count).ToArray(), new bool[arc.Samples.Count - 1]);
+        cut.Render(p => p.Add(c => c.Obstruction, facts));
+        Assert.IsEmpty(cut.FindAll("polyline"));
+        cut.Render(p => p.Add(c => c.Obstruction, (HorizonObstructionPredictionProduct?)null));
+        CollectionAssert.AreEqual(paths, cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray());
+        CollectionAssert.AreEqual(before, OrbitalPassArcJson.Serialize(arc));
+    }
 
     [TestMethod]
     [DataRow("iss-25544")]

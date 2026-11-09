@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Merge-queue half of hvo/reviewed-head; rollout is not yet live.
+#
+# Run this script from a fresh trusted development/v1 checkout, never from the
+# queued tree. BASE_SHA is that checkout's HEAD. Walk the merge-commit first-parent
+# chain to it and require each second parent to be an open PR's exact current head
+# with newest hvo/reviewed-head=success from an allowed account. Fork PR heads are
+# valid; the base repository and branch must still match. Only merge commits are
+# supported, with at most 100 entries. Unknown topology/API responses fail closed.
+#
+# Trust boundary: the workflow itself still comes from the queued commit. Trusted
+# script checkout and local workflow contracts mitigate self-approval but cannot
+# stop a PR changing that workflow or adding a spoof producer. The durable fix is
+# an external GitHub App producer with a required pinned integration id; that is
+# a separate owner decision, not implemented here. Never run this job on PRs.
+#
+# Before queue rollout Roy must require ALLGREEN and MERGE (every grouped PR must
+# pass required checks; merge-commit method). A success is a point-in-time read:
+# revoking review after it passes requires dequeueing the PR, not just a status
+# update. Re-entry must produce a new group and fresh checks.
+#
+# Inputs: REPOSITORY, HEAD_REF, GROUP_SHA, BASE_REF, BASE_SHA (trusted checkout),
+# ALLOWED_SETTERS (space-separated exact logins). Uses gh api with GH_TOKEN and jq.
+set -euo pipefail
+
+fail() { printf 'hvo/reviewed-head (merge queue): %s\n' "$*" >&2; exit 1; }
+
+: "${REPOSITORY:?REPOSITORY is required}"
+: "${HEAD_REF:?HEAD_REF is required}"
+: "${GROUP_SHA:?GROUP_SHA is required}"
+: "${BASE_REF:?BASE_REF is required}"
+: "${BASE_SHA:?BASE_SHA is required}"
+: "${ALLOWED_SETTERS:?ALLOWED_SETTERS is required}"
+context="hvo/reviewed-head"
+
+[[ "$GROUP_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "merge group SHA is not a full commit SHA: $GROUP_SHA"
+[[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "trusted base SHA is not a full commit SHA: $BASE_SHA"
+[[ "$BASE_REF" == refs/heads/development/v1 ]] || fail "unexpected base ref: $BASE_REF"
+base_branch="${BASE_REF#refs/heads/}"
+queue_prefix="refs/heads/gh-readonly-queue/${base_branch}/pr-"
+[[ "$HEAD_REF" == "$queue_prefix"* ]] || fail "unexpected merge group ref: $HEAD_REF"
+suffix="${HEAD_REF#"$queue_prefix"}"
+[[ "$suffix" =~ ^([0-9]+)-[0-9a-f]{40}$ ]] || fail "cannot read the pull request number from $HEAD_REF"
+pr="${BASH_REMATCH[1]}"
+current="$GROUP_SHA"
+count=0
+declare -A seen=()
+while [[ "$current" != "$BASE_SHA" ]]; do
+  ((count < 100)) || fail "merge group exceeds 100 entries or does not reach the trusted base"
+  [[ -z "${seen[$current]+x}" ]] || fail "cycle in merge group chain"
+  seen[$current]=1
+  parents="$(gh api "repos/${REPOSITORY}/git/commits/${current}" --jq '.parents | map(.sha) | join(" ")')" \
+    || fail "cannot read merge group commit $current"
+  read -r -a parent_list <<< "$parents"
+  ((${#parent_list[@]} == 2)) || fail "merge group commit $current has ${#parent_list[@]} parents; only the merge-commit method is supported"
+  for parent in "${parent_list[@]}"; do
+    [[ "$parent" =~ ^[0-9a-f]{40}$ ]] || fail "malformed parent SHA on $current"
+  done
+  queued_head="${parent_list[1]}"
+
+  if ((count > 0)); then
+    # Earlier entries are absent from head_ref. Resolve by exact head, not commit
+    # membership: a commit can be associated with several unrelated or closed PRs.
+    pr="$(gh api --paginate "repos/${REPOSITORY}/commits/${queued_head}/pulls?per_page=100" \
+      --jq ".[] | select(.state == \"open\" and .base.ref == \"${base_branch}\" and .base.repo.full_name == \"${REPOSITORY}\" and .head.sha == \"${queued_head}\") | .number")" \
+      || fail "cannot resolve queued head $queued_head"
+    [[ "$pr" =~ ^[0-9]+$ ]] || fail "queued head $queued_head must resolve to exactly one open PR"
+  fi
+  pull="$(gh api "repos/${REPOSITORY}/pulls/${pr}" --jq '[.state, .base.ref, .base.repo.full_name, .head.sha] | @tsv')" \
+    || fail "cannot read pull request #$pr"
+  IFS=$'\t' read -r pr_state pr_base pr_repo pr_head <<< "$pull"
+  [[ "$pr_state" == "open" ]] || fail "pull request #$pr is $pr_state"
+  [[ "$pr_base" == "$base_branch" && "$pr_repo" == "$REPOSITORY" ]] || fail "pull request #$pr targets $pr_repo/$pr_base, not $REPOSITORY/$base_branch"
+  [[ "$pr_head" == "$queued_head" ]] || fail "pull request #$pr head $pr_head is not the queued head $queued_head"
+
+  # Consume all pages before choosing the numeric newest id. sed consumes the
+  # whole sorted stream (head could SIGPIPE on a long history under pipefail).
+  latest="$(gh api --paginate "repos/${REPOSITORY}/commits/${pr_head}/statuses?per_page=100" \
+    --jq "if type != \"array\" then error(\"expected status array\") else . end |
+      if all(.[]; (.id | type == \"number\") and (.id > 0) and (.id == (.id | floor)) and
+        (.context | type == \"string\") and (.state | type == \"string\"))
+      then .[] | select(.context == \"${context}\") | [.id, .state, .creator.login] | @tsv
+      else error(\"malformed status\") end" \
+    | sort -t $'\t' -k1,1nr | sed -n '1p')" || fail "cannot read commit statuses on $pr_head"
+  [[ -n "$latest" ]] || fail "pull request #$pr head $pr_head has no $context status"
+  IFS=$'\t' read -r _ state creator <<< "$latest"
+  [[ "$state" == "success" ]] || fail "newest $context on $pr_head is $state"
+  allowed="false"
+  for login in $ALLOWED_SETTERS; do
+    [[ "$creator" == "$login" ]] && allowed="true"
+  done
+  [[ "$allowed" == "true" ]] || fail "newest $context on $pr_head was published by $creator, who is not allowed"
+
+  printf 'hvo/reviewed-head (merge queue): #%s head %s carries %s=success from %s\n' \
+    "$pr" "$pr_head" "$context" "$creator"
+  count=$((count + 1))
+  current="${parent_list[0]}"
+done
+((count > 0)) || fail "merge group contains no queued PRs"
+printf 'hvo/reviewed-head (merge queue): verified %s entries to trusted base %s for group %s\n' "$count" "$BASE_SHA" "$GROUP_SHA"

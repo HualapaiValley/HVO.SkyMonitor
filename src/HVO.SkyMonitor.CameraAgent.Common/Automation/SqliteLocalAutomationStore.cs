@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -23,6 +24,9 @@ public sealed record LocalAutomationRunnerEntry(
 /// <summary>The durable owner of local automation definitions and their run-history journal.</summary>
 public interface ILocalAutomationStore
 {
+    /// <summary>Only a matched durable installer request may retain completion ownership across process lifetimes.</summary>
+    ValueTask<bool> HasInstallerLifecycleIntentAsync(string runKey, CancellationToken cancellationToken) => ValueTask.FromResult(false);
+
     /// <summary>Creates or validates the store and settles runs interrupted by a stop.</summary>
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 
@@ -190,6 +194,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SqliteLocalAutomationStore> _logger;
     private readonly LocalAutomationTelemetry? _telemetry;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The DI container owns the lifecycle intent store.")]
+    private readonly CameraAgentControlStore? _lifecycleControls;
     private readonly CameraAgentHostOptions _options;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
         Justification = "The lifetime authority invokes _gate.Dispose only after every admitted execution lease drains.")]
@@ -209,7 +215,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         TimeProvider timeProvider,
         ILogger<SqliteLocalAutomationStore> logger,
         LocalAutomationTelemetry? telemetry = null,
-        LocalAutomationWindowPlanner? windowPlanner = null)
+        LocalAutomationWindowPlanner? windowPlanner = null,
+        CameraAgentControlStore? lifecycleControls = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _registry = registry;
@@ -220,6 +227,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         _telemetry = telemetry;
         _authority = new LocalAutomationExecutionAuthority(_gate.Dispose);
         _windowPlanner = windowPlanner;
+        _lifecycleControls = lifecycleControls;
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -231,6 +239,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: true, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -252,6 +261,12 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         {
             return;
         }
+        // A claimed run may have crashed before its adapter durably submitted installer intent.
+        // Only a matched durable intent delegates recovery; task kind alone would strand that claim.
+        var delegatedRuns = settleInterruptedRuns && _lifecycleControls is not null
+            ? (await _lifecycleControls.ReadAsync(cancellationToken).ConfigureAwait(false)).Receipts
+                .Select(item => item.Request.AutomationRunKey).OfType<string>().Distinct(StringComparer.Ordinal).ToArray()
+            : [];
         using var transaction = BeginImmediate(connection);
         var version = await ReadUserVersionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (version > LocalAutomationContract.CurrentSchemaVersion)
@@ -314,10 +329,13 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 SET outcome = 'Interrupted',
                     completed_unix_ms = $now,
                     detail = 'The CameraAgent stopped while this run was claimed.'
-                WHERE outcome = 'Running' AND claimant <> $claimant;
+                WHERE outcome = 'Running' AND claimant <> $claimant
+                  AND NOT (COALESCE(json_extract(occurrence_json, '$.definition.taskKind'), '') = 'ScheduledCameraAgentRestart'
+                    AND run_key IN (SELECT value FROM json_each($delegated)));
                 """,
                 cancellationToken,
-                ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant)).ConfigureAwait(false);
+                ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant),
+                ("$delegated", JsonSerializer.Serialize(delegatedRuns, SerializerOptions))).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
@@ -337,6 +355,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginRead(connection);
@@ -417,6 +436,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             using var transaction = BeginRead(connection);
             var progress = await ReadProgressAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             var definitions = await ReadDefinitionsAsync(connection, transaction, cancellationToken)

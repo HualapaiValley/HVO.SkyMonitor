@@ -252,3 +252,11 @@ run journal. Capture, calibration, and deployment-location evidence are unaffect
 the store is recreated empty on the next start. A database whose `user_version` or
 schema object count does not match the contract makes startup fail closed; archive it
 and complete an explicit state-disposition procedure rather than editing it in place.
+
+## Scheduled CameraAgent restart
+
+The registered `ScheduledCameraAgentRestart` task delegates drain, restart and
+verification to the independent installer lifecycle worker. It runs only outside
+capture windows and stays Running across CameraAgent restart until the installer
+publishes its terminal receipt. See [lifecycle control](cameraagent-lifecycle-control.md)
+for registration, interval bounds, receipts and failure recovery (#1711).

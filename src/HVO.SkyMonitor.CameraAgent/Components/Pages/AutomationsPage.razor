@@ -251,6 +251,9 @@ else
                                 <span class="automation-icon @IconClass(item.TaskKind)" aria-hidden="true">
                                     @switch (IconClass(item.TaskKind))
                                     {
+                                        case "reboot":
+                                            <svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg>
+                                            break;
                                         case "orbital":
                                             <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.2"></circle><ellipse cx="10" cy="10" rx="8" ry="3.4" transform="rotate(-30 10 10)"></ellipse><circle cx="16.2" cy="6.4" r="1.1"></circle></svg>
                                             break;
@@ -308,17 +311,24 @@ else
                         <header>
                             <span class="automation-icon reboot" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
                             <div><h3 id="automation-card-restart">Scheduled CameraAgent Restart</h3><p>Requires authenticated lifecycle support, graceful drain, restart verification, and a terminal receipt.</p></div>
-                            <span class="state-chip pending">Design target</span>
+                            <span class="state-chip pending">@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true ? "Available" : "Installer worker required")</span>
                         </header>
                         <dl>
-                            <div><dt>Task type</dt><dd>Not registered</dd></div>
+                            <div><dt>Task type</dt><dd>@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart) is null ? "Not registered" : "Scheduled CameraAgent Restart")</dd></div>
                             <div><dt>Interface</dt><dd>Installer CLI only</dd></div>
-                            <div><dt>Scheduling</dt><dd>Unavailable</dd></div>
+                            <div><dt>Scheduling</dt><dd>@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true ? "Outside capture windows" : "Unavailable")</dd></div>
                             <div><dt>Safety</dt><dd>Lifecycle service required</dd></div>
                         </dl>
                         <footer>
                             <span>Arbitrary command execution is never allowed.</span>
-                            <button type="button" class="button secondary small" disabled>Unavailable</button>
+                            @if (Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true)
+                            {
+                                <a id="automation-restart-setup" class="button secondary small" href="/operations/automations?setup=restart">Set up restart</a>
+                            }
+                            else
+                            {
+                                <button type="button" class="button secondary small" disabled>Unavailable</button>
+                            }
                         </footer>
                     </article>
                 </div>

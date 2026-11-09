@@ -54,7 +54,27 @@ public sealed partial class EnvironmentalAcquisitionService(
             .Select(source => RunPeriodicAsync(source, stoppingToken));
         return Task.WhenAll(periodic
             .Append(DrainRequestsAsync(stoppingToken))
+            .Append(DrainDeferredAsync(stoppingToken))
             .Append(RunRetentionAsync(stoppingToken)));
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Deferred coalesced source failures are owned by the hosted worker and cannot stop independent acquisition.")]
+    private async Task DrainDeferredAsync(CancellationToken cancellationToken)
+    {
+        await foreach (var request in coordinator.ReadDeferredAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                await coordinator.AcquireSourceAsync(request.SourceId, request.Trigger, request.ObservedAtUtc,
+                    request.CaptureSequence, request.CaptureId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -92,16 +112,12 @@ public sealed partial class EnvironmentalAcquisitionService(
     {
         var now = timeProvider.GetUtcNow();
         var due = CurrentDue(source, now);
-        if (due <= now)
-        {
-            await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
-            due = NextDue(source, timeProvider.GetUtcNow());
-        }
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                due = await ResolveDueAsync(source, due, cancellationToken).ConfigureAwait(false);
                 await stateStore.UpdateSourceScheduleAsync(
                     options.Value.RawIngressRoot, source, due, cancellationToken).ConfigureAwait(false);
                 if (journalUnavailable)
@@ -205,6 +221,23 @@ public sealed partial class EnvironmentalAcquisitionService(
                 "unexpected",
                 exception);
         }
+    }
+
+    private async ValueTask<DateTimeOffset> ResolveDueAsync(EnvironmentalSourceDescriptor source, DateTimeOffset due,
+        CancellationToken cancellationToken)
+    {
+        if (source.Type != "OnlineWeather") return due;
+        var states = await stateStore.ReadSourceStatesAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+        var state = states.SingleOrDefault(item => item.SourceId == source.Id);
+        if (state?.NextPollUtc is { } minimum && minimum > due) due = minimum;
+        // Wire spacing is anchored to actual calls. Schedule this kind after its completed poll as well,
+        // so shrinking scheduling latency cannot turn a native-period refresh into a cache-only whole period.
+        if (state?.LastCompletedUtc is { } completed)
+        {
+            var next = completed.AddSeconds(source.PeriodSeconds);
+            if (next > due) due = next;
+        }
+        return due;
     }
 
     private static DateTimeOffset CurrentDue(EnvironmentalSourceDescriptor source, DateTimeOffset now)

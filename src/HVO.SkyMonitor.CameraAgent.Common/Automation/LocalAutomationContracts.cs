@@ -182,6 +182,9 @@ public enum LocalAutomationTaskKind
     /// </summary>
     TimeDataRefresh,
 
+    /// <summary>Delegates drain/restart/verification to the independent installer lifecycle worker.</summary>
+    ScheduledCameraAgentRestart,
+
     /// <summary>An owner-registered, digest-pinned invocation in the restricted script sandbox.</summary>
     CustomScript
 }

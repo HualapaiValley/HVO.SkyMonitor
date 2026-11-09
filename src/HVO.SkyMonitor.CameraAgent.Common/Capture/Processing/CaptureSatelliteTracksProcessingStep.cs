@@ -171,7 +171,8 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                 new(CaptureOrbitalAssessmentMode.OriginalAvailability, descriptor.Timing.DurableIngressUtc,
                     descriptor.Timing.DurableIngressUtc, available!.Value), snapshot,
                 new([new("celestrak:gp:active", 0)], Options.AllowStaleDiagnostics),
-                Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)));
+                Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)),
+                context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig);
         }
         return new(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig, observer, OptionalBytes(plan?.SerializePlan()),
             OptionalBytes(manifest), null, OptionalBytes(eop), OptionalBytes(leaps), time.Source.ToString(), available, reason)

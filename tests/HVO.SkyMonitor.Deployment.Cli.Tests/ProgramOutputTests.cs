@@ -25,6 +25,7 @@ public sealed class ProgramOutputTests
           existing-down
           status
           cameraagent install
+          cameraagent lifecycle-worker
           cameraagent recover-owner
           cameraagent preflight
           cameraagent reset-state
@@ -104,6 +105,7 @@ public sealed class ProgramOutputTests
 
         Commands:
           cameraagent install            Install a CameraAgent instance, or change an installed one's container limits.
+          cameraagent lifecycle-worker   Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.
           cameraagent recover-owner      Give an instance's owner a new temporary password.
           cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.

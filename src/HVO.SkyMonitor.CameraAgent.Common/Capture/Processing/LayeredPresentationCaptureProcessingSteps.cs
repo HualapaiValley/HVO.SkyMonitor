@@ -78,7 +78,7 @@ internal static class PresentationLayerKinds
 
 internal class ScenePresentationLayerCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
-    ScenePresentationLayerProcessingStepOptions options)
+    ScenePresentationLayerProcessingStepOptions options, IServiceProvider? serviceProvider = null)
     : ConfigurableCaptureProcessingStep<ScenePresentationLayerProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
@@ -144,24 +144,32 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             new(Options.ConstellationLineRed, Options.ConstellationLineGreen, Options.ConstellationLineBlue),
             Options.ImageCircleValue is { } circle ? new(circle, circle, circle) : null,
             Options.CardinalValue is { } cardinal ? new(cardinal, cardinal, cardinal) : null, Options.CardinalScale);
+        HorizonObstructionSceneEligibility? horizon = null;
+        if (context.Config.Rig.HorizonObstruction is { } profile)
+        {
+            horizon = new(new HorizonObstructionEvaluator(profile, context.Config.Rig,
+                HorizonCaptureObserver.Resolve(context, serviceProvider),
+                context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance()), context.Config.Rig, scene);
+            context.RecordCanonicalInput("horizon-scene-eligibility", "1", horizon.IdentitySha256);
+        }
         var payloads = Produce(
             scene, style, Options.DrawMarkers, Options.DrawLabels, Options.DrawConstellationLines,
-            Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics);
+            Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics, horizon);
         var annotation = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, ProducerVersion);
+            payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, ProducerVersion, horizon?.IdentitySha256);
         var cardinals = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.CardinalDirections, Options.CardinalOutputVariant, [source], ProducerVersion);
+            payloads.CardinalDirections, Options.CardinalOutputVariant, [source], ProducerVersion, horizon?.IdentitySha256);
         var imageCircle = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], ProducerVersion);
+            payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], ProducerVersion, horizon?.IdentitySha256);
         var constellations = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.Constellations, Options.ConstellationOutputVariant, [source], ProducerVersion);
+            payloads.Constellations, Options.ConstellationOutputVariant, [source], ProducerVersion, horizon?.IdentitySha256);
         LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
         return ValueTask.CompletedTask;
     }
     protected virtual PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
-        MeasuredStellarAssociationsV1? measured, bool expected) =>
-        PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected);
+        MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) =>
+        PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected, horizon);
 }
 
 internal sealed class CloudPresentationLayerCaptureProcessingStep(
