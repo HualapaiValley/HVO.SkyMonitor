@@ -119,10 +119,13 @@ internal static class UnitCoverageInputs
                 var type = constructor.Kind == HandleKind.MemberReference
                     ? metadata.GetMemberReference((MemberReferenceHandle)constructor).Parent
                     : metadata.GetMethodDefinition((MethodDefinitionHandle)constructor).GetDeclaringType();
-                var name = type.Kind == HandleKind.TypeReference
-                    ? metadata.GetTypeReference((TypeReferenceHandle)type).Name
-                    : metadata.GetTypeDefinition((TypeDefinitionHandle)type).Name;
-                if (metadata.GetString(name) == "ExcludeFromCodeCoverageAttribute")
+                var name = type.Kind switch
+                {
+                    HandleKind.TypeReference => metadata.GetString(metadata.GetTypeReference((TypeReferenceHandle)type).Name),
+                    HandleKind.TypeDefinition => metadata.GetString(metadata.GetTypeDefinition((TypeDefinitionHandle)type).Name),
+                    _ => string.Empty,
+                };
+                if (name == "ExcludeFromCodeCoverageAttribute")
                 {
                     return true;
                 }
