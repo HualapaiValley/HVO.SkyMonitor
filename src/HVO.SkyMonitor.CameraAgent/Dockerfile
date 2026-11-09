@@ -36,6 +36,7 @@ COPY .editorconfig /src/
 COPY global.json /src/
 COPY HVO.SkyMonitor.v9.slnx /src/
 COPY THIRD-PARTY-NOTICES.md /src/
+COPY src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts.csproj /src/src/HVO.SkyMonitor.Deployment.Contracts/
 COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj /src/src/HVO.SkyMonitor.AgentCore/
 COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj /src/src/HVO.SkyMonitor.Astronomy/
 COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj /src/src/HVO.SkyMonitor.Catalog.Sqlite/

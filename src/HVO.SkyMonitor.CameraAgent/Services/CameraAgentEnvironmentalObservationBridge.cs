@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
@@ -96,6 +97,21 @@ internal sealed class CameraAgentEnvironmentalObservationBridge(
         }
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
+            var bytes = await ReadBoundedAsync(response.Content,
+                EnvironmentalObservationDeliveryJson.MaximumAcknowledgementBytes, timeout.Token).ConfigureAwait(false);
+            if (bytes is not null)
+            {
+                try
+                {
+                    using var problem = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
+                    if (problem.RootElement.ValueKind == JsonValueKind.Object &&
+                        problem.RootElement.EnumerateObject().Count(property => property.NameEquals("reasonCode")) == 1 &&
+                        problem.RootElement.TryGetProperty("reasonCode", out var reason) && reason.ValueKind == JsonValueKind.String &&
+                        reason.GetString() == EnvironmentalObservationReasonCodes.MissingLineage)
+                        return new(EnvironmentalObservationTransportDisposition.Retry, EnvironmentalObservationReasonCodes.MissingLineage);
+                }
+                catch (JsonException) { /* Unrecognized conflicts retain terminal identity-conflict semantics. */ }
+            }
             return new(EnvironmentalObservationTransportDisposition.Terminal, "http-409");
         }
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)

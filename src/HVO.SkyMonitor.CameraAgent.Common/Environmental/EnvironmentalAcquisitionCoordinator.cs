@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading.Channels;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
@@ -44,6 +45,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     private readonly Dictionary<string, PendingAcquisition?> _pending;
     private readonly object _pendingGate = new();
     private readonly SemaphoreSlim _globalGate;
+    private readonly Channel<DeferredEnvironmentalSourceRequest> _deferred;
 
     public EnvironmentalAcquisitionCoordinator(
         EnvironmentalSourceFactory factory,
@@ -79,20 +81,27 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             static _ => (PendingAcquisition?)null,
             StringComparer.Ordinal);
         _globalGate = new SemaphoreSlim(_options.MaximumConcurrency, _options.MaximumConcurrency);
+        _deferred = Channel.CreateBounded<DeferredEnvironmentalSourceRequest>(new BoundedChannelOptions(_options.QueueCapacity)
+        { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait, AllowSynchronousContinuations = false });
         _telemetry?.SetSourceCount(sources.Count);
     }
 
     public IReadOnlyList<EnvironmentalSourceDescriptor> Sources
         => _sources.Values.Select(static source => source.Descriptor).OrderBy(static source => source.Id, StringComparer.Ordinal).ToArray();
 
-    public async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceAsync(
-        string sourceId,
-        EnvironmentalAcquisitionTrigger trigger,
-        DateTimeOffset observedAtUtc,
-        long? captureSequence = null,
-        Guid? captureId = null,
-        CancellationToken cancellationToken = default)
+    public ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceAsync(
+        string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
+        long? captureSequence = null, Guid? captureId = null, CancellationToken cancellationToken = default)
+        => AcquireSourceWithBudgetAsync(sourceId, trigger, observedAtUtc, null, captureSequence, captureId, cancellationToken);
+
+    private async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceWithBudgetAsync(
+        string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
+        int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var acquisitionBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (acquisitionBudgetMilliseconds is { } budget) acquisitionBudget.CancelAfter(TimeSpan.FromMilliseconds(budget));
+        var attemptToken = acquisitionBudgetMilliseconds.HasValue ? acquisitionBudget.Token : cancellationToken;
         if (!_options.Enabled)
         {
             throw new InvalidOperationException("Environmental acquisition is disabled.");
@@ -117,7 +126,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         {
             if (!sourceGate.Wait(0, CancellationToken.None))
             {
-                if (trigger != EnvironmentalAcquisitionTrigger.OnDemand)
+                if (trigger != EnvironmentalAcquisitionTrigger.OnDemand && !acquisitionBudgetMilliseconds.HasValue)
                 {
                     _pending[sourceId] ??= new PendingAcquisition(
                         trigger, observedAtUtc, captureSequence, captureId);
@@ -128,7 +137,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         if (coalesced)
         {
             var receipt = Receipt(
-                sourceId, trigger, EnvironmentalAcquisitionDisposition.Coalesced, "trigger-coalesced", null, started);
+                sourceId, trigger, acquisitionBudgetMilliseconds.HasValue ? EnvironmentalAcquisitionDisposition.TimedOut : EnvironmentalAcquisitionDisposition.Coalesced,
+                acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started);
             LogReceipt(source.Descriptor, receipt);
             await RecordAttemptAsync(source.Descriptor, receipt, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
@@ -138,11 +148,38 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         var ownsSourceGate = true;
         try
         {
-            var first = await AcquireExclusiveAsync(
-                source, trigger, observedAtUtc, captureSequence, captureId, started, cancellationToken).ConfigureAwait(false);
+            EnvironmentalAcquisitionReceipt first;
+            try
+            {
+                first = await AcquireExclusiveAsync(source, trigger, observedAtUtc, captureSequence, captureId, started, attemptToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (acquisitionBudgetMilliseconds.HasValue && !cancellationToken.IsCancellationRequested)
+            {
+                first = Receipt(sourceId, trigger, EnvironmentalAcquisitionDisposition.TimedOut, "before-capture-timeout", null, started);
+            }
             LogReceipt(source.Descriptor, first);
             await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
+            if (acquisitionBudgetMilliseconds.HasValue)
+            {
+                PendingAcquisition? deferred;
+                lock (_pendingGate)
+                {
+                    deferred = _pending[sourceId];
+                    _pending[sourceId] = null;
+                    sourceGate.Release();
+                    ownsSourceGate = false;
+                }
+                if (deferred is not null && !_deferred.Writer.TryWrite(new(sourceId, deferred.Trigger,
+                    deferred.ObservedAtUtc, deferred.CaptureSequence, deferred.CaptureId)))
+                {
+                    var rejected = Receipt(sourceId, deferred.Trigger, EnvironmentalAcquisitionDisposition.Failed,
+                        "pending-queue-capacity", null, _timeProvider.GetUtcNow());
+                    await RecordAttemptAsync(source.Descriptor, rejected, deferred.CaptureSequence, deferred.CaptureId, cancellationToken).ConfigureAwait(false);
+                    LogReceipt(source.Descriptor, rejected);
+                }
+                return first;
+            }
             while (true)
             {
                 PendingAcquisition? pending;
@@ -264,6 +301,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         {
             return Receipt(source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.TimedOut, "source-timeout", null, started);
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception)
         {
             return Receipt(source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.Failed, "source-failure", null, started);
@@ -292,18 +330,20 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 result.Fact.StaleAfterUtc);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException or
-            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException)
+            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException or EnvironmentalObservationOutboxCapacityException)
         {
             return Receipt(source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.Failed, "journal-unavailable", null, started);
         }
     }
 
-    public async Task<IReadOnlyList<EnvironmentalAcquisitionReceipt>> AcquireTriggerAsync(
-        EnvironmentalAcquisitionTrigger trigger,
-        DateTimeOffset observedAtUtc,
-        long? captureSequence = null,
-        Guid? captureId = null,
-        CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<EnvironmentalAcquisitionReceipt>> AcquireTriggerAsync(
+        EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc, long? captureSequence = null,
+        Guid? captureId = null, CancellationToken cancellationToken = default)
+        => AcquireTriggerWithBudgetAsync(trigger, observedAtUtc, null, captureSequence, captureId, cancellationToken);
+
+    internal async Task<IReadOnlyList<EnvironmentalAcquisitionReceipt>> AcquireTriggerWithBudgetAsync(
+        EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc, int? acquisitionBudgetMilliseconds,
+        long? captureSequence = null, Guid? captureId = null, CancellationToken cancellationToken = default)
     {
         var selected = _sources.Values
             .Where(source => source.Descriptor.Triggers.Contains(trigger) &&
@@ -311,14 +351,16 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                     captureSequence is { } sequence && sequence % source.Descriptor.EveryNthCapture == 0))
             .OrderBy(static source => source.Descriptor.Id, StringComparer.Ordinal)
             .ToArray();
-        return await Task.WhenAll(selected.Select(source => AcquireSourceAsync(
-            source.Descriptor.Id,
-            trigger,
-            observedAtUtc,
-            captureSequence,
-            captureId,
-            cancellationToken).AsTask())).ConfigureAwait(false);
+        return await Task.WhenAll(selected.Select(source => AcquireSourceWithBudgetAsync(
+            source.Descriptor.Id, trigger, observedAtUtc, acquisitionBudgetMilliseconds,
+            captureSequence, captureId, cancellationToken).AsTask())).ConfigureAwait(false);
     }
+
+    internal IAsyncEnumerable<DeferredEnvironmentalSourceRequest> ReadDeferredAsync(CancellationToken cancellationToken)
+        => _deferred.Reader.ReadAllAsync(cancellationToken);
+
+    internal sealed record DeferredEnvironmentalSourceRequest(string SourceId, EnvironmentalAcquisitionTrigger Trigger,
+        DateTimeOffset ObservedAtUtc, long? CaptureSequence, Guid? CaptureId);
 
     private EnvironmentalAcquisitionReceipt Receipt(
         string sourceId,

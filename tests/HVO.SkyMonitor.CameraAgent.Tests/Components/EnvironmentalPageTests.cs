@@ -16,6 +16,75 @@ public sealed class EnvironmentalPageTests
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void VirtualPerKindSourcesDoNotShowAMixedEnvironmentBadge()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Simulated) with { SourceGroup = "virtual-environment/standalone-temperature" },
+                Observation(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 45, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Simulated) with { SourceGroup = "virtual-environment/standalone-humidity" }])
+        });
+        var page = context.Render<EnvironmentalPage>();
+        page.WaitForAssertion(() => Assert.IsFalse(page.Markup.Contains("Mixed-source Environment", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void FailedSourceWithRetainedHistoryShowsUnavailableInsteadOfNoObservationYet()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([
+                Source("station", EnvironmentalObservationKind.AirTemperature, freshness: "Unavailable",
+                    disposition: EnvironmentalAcquisitionDisposition.Missing, failures: 1)])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([]),
+            History = _ => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null, sourceId: "station")], null))
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find("[data-slot='air-temperature']").TextContent, "Unavailable", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find("[data-slot='air-temperature']").TextContent.Contains("No observation yet", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".environment-history-table").TextContent, "station", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void ImportedStationMetadataAndMixedSourceLabelsAreVisible()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var air = Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+            sourceKind: EnvironmentalObservationSourceKind.Imported) with
+        { SourceGroup = "Nws/KIGM", StationDistanceKilometers = 12.5, StationElevationMeters = 1000 };
+        var humidity = Observation(EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 40, null,
+            sourceKind: EnvironmentalObservationSourceKind.Measured) with
+        { SourceGroup = "LocalWeatherStation/station" };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([air, humidity])
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Mixed-source Environment", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Nws/KIGM", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "12.5 km", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "elevation 1000 m", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Imported", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Distance unknown", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void SuccessRendersFreshSourceHistoryAttemptsAndLoadsOlderPage()
     {
         using var context = new BunitContext();

@@ -22,10 +22,24 @@ internal static class CuratedDeepSkyAnnotation
         return scene;
     }
 
-    public static IEnumerable<ProcessingAlgorithmIdentity> Algorithms(ProjectedSceneV1? scene) => scene is null
+    public static HorizonObstructionSceneSelection? ResolveHorizon(ProcessingExecutionRequest request, ProjectedSceneV1? scene)
+    {
+        var input = request.AuxiliaryInputs?.SingleOrDefault(static value =>
+            string.Equals(value.Name, HorizonObstructionSceneSelection.InputName, StringComparison.OrdinalIgnoreCase));
+        if (input is null) return null;
+        if (scene is null) throw new InvalidDataException("A horizon selection requires its retained curated scene.");
+        var selection = HorizonObstructionSceneSelection.Parse(input);
+        selection.ValidateScene(scene);
+        return selection;
+    }
+
+    public static IEnumerable<ProcessingAlgorithmIdentity> Algorithms(ProjectedSceneV1? scene, HorizonObstructionSceneSelection? horizon = null) => scene is null
         ? []
-        : [new("curated-dso-overlay", PresentationDeepSkyLayerProducer.ProducerVersion),
-           new("curated-dso-compositor", PresentationLayerCompositor.AlgorithmVersion)];
+        : new ProcessingAlgorithmIdentity[]
+        {
+            new("curated-dso-overlay", PresentationDeepSkyLayerProducer.ProducerVersion),
+            new("curated-dso-compositor", PresentationLayerCompositor.AlgorithmVersion)
+        }.Concat(horizon is null ? [] : [new ProcessingAlgorithmIdentity("horizon-curated-selection", HorizonObstructionSceneSelection.CurrentSchemaVersion)]);
 
     public static int LegendBaseline(MetadataCornerOverlay? metadata) => metadata is { TopLeft.Count: > 0 }
         ? metadata.Inset + metadata.TopLeft.Count * 7 * metadata.Scale +

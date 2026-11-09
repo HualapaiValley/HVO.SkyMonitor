@@ -52,12 +52,13 @@ public static class SceneStylePresentation
     public static PresentationSceneLayerPayloadsV2 Create(ProjectedSceneV1 scene, ScenePresentationStyleV1 style,
         bool includeMarkers = true, bool includeLabels = true, bool includeConstellations = true,
         bool includeImageCircle = true, bool includeCardinalDirections = true,
-        MeasuredStellarAssociationsV1? associations = null, bool expectedPositionDiagnostics = true)
+        MeasuredStellarAssociationsV1? associations = null, bool expectedPositionDiagnostics = true,
+        HorizonObstructionSceneEligibility? horizon = null)
     {
         ArgumentNullException.ThrowIfNull(style);
         style.Validate();
         return PresentationLayerProducers.FromProjectedSceneGroupsCore(scene, style.Annotation, includeMarkers, includeLabels,
-            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style);
+            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style, horizon);
     }
 
     private static ImmutableArray<ProcessingOptionDescriptor> Options()

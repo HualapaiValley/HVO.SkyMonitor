@@ -46,6 +46,10 @@ internal interface ICameraAgentNightlyProductUiService
     ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success([]));
 
+    ValueTask<OperatorUiResult<CameraAgentTimeLapseLibraryPage>> ListTimeLapseLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentTimeLapseLibraryPage>.Success(new([], null, null)));
+
     ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<bool>.Failure(OperatorUiResultKind.Unavailable, "Video retry is unavailable."));
 
@@ -60,7 +64,8 @@ internal sealed class CameraAgentNightlyProductUiService(
     IOptions<CameraAgentHostOptions> options,
     ILogger<CameraAgentNightlyProductUiService> logger,
     ICameraAgentTimeLapseCatalog? timeLapses = null,
-    ICameraAgentTimeLapseCommands? videoCommands = null) : ICameraAgentNightlyProductUiService
+    ICameraAgentTimeLapseCommands? videoCommands = null,
+    ILocalAutomationStore? automation = null) : ICameraAgentNightlyProductUiService
 {
     private const string UnavailableMessage = "Nightly products are temporarily unavailable.";
     private const string SummaryBoundMessage = "The requested date range is outside the nightly product summary bound.";
@@ -68,6 +73,11 @@ internal sealed class CameraAgentNightlyProductUiService(
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>> SummarizeTimeLapsesAsync(DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
         => ReadAsync(async () => OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>.Success(timeLapses is null ? [] :
             await timeLapses.SummarizeAsync(firstDate, lastDate, cancellationToken).ConfigureAwait(false)), cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentTimeLapseLibraryPage>> ListTimeLapseLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ReadAsync(async () => OperatorUiResult<CameraAgentTimeLapseLibraryPage>.Success(timeLapses is null ? new([], null, null) :
+            await timeLapses.ListLibraryAsync(query, cancellationToken).ConfigureAwait(false)), cancellationToken);
 
     public ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
         => ReadAsync(async () =>
@@ -127,7 +137,8 @@ internal sealed class CameraAgentNightlyProductUiService(
     public ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
         NightlyProductLibraryQuery query, CancellationToken cancellationToken)
         => ReadAsync(async () => OperatorUiResult<NightlyProductLibraryPage>.Success(
-            await catalog.ListLibraryAsync(query, cancellationToken).ConfigureAwait(false)), cancellationToken,
+            await catalog.ListLibraryAsync(query, cancellationToken, automation is null ? [] :
+                await automation.ListNightlyProductRunsAsync(query, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false)), cancellationToken,
             "The requested products page is outside the generated products library bound.");
 
     // A sample is offered only while its file is present, so an enabled but missing sample reads as absent rather than

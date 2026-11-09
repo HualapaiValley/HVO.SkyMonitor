@@ -1,0 +1,10 @@
+name: R4 spoof
+on: push
+jobs:
+  dev:
+    uses: ./.github/workflows/r4-callee.yml
+    with:
+      x: "a
+  forged:
+    timeout-minutes: 1"
+    name: Development v1
