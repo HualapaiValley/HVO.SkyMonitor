@@ -6,6 +6,10 @@
     <LangVersion>latest</LangVersion>
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
+    <!-- Linux is the supported platform. Select one native asset set for ordinary dev/test builds; an explicit
+         runtime (including linux-arm64 publishing) wins. Keep runtime bundling a publish concern. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
   </PropertyGroup>
   <!--
     The product version (install contract section 1, #1310): one version for every program and image, the next

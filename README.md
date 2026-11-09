@@ -40,6 +40,13 @@ tooling used on the host.
 On Windows, use WSL2 and keep the checkout on its Linux filesystem. Repository
 scripts assume Linux filesystem semantics and GNU tools.
 
+Ordinary builds and tests default to `linux-x64`, framework-dependent output under
+`bin/<Configuration>/net10.0/linux-x64/`. Linux ARM64 developers can pass
+`--runtime linux-arm64`. Publish commands still select `linux-x64` or `linux-arm64`
+explicitly; the runners, installer, and terminal client remain self-contained when
+published. Clean existing `bin` and `obj` directories once when adopting this
+layout, since incremental builds do not remove old output directories.
+
 ### Getting Started
 
 #### Native host or SSH

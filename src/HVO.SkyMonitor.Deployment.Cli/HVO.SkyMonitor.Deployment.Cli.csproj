@@ -11,7 +11,7 @@
       instead of the publish leaving it beside the executable.
     -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <SelfContained>true</SelfContained>
+    <PublishSelfContained>true</PublishSelfContained>
     <PublishTrimmed>false</PublishTrimmed>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>

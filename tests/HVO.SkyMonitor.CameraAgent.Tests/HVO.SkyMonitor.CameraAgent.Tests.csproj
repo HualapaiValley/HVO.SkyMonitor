@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The SDK Roslyn references below have Linux ReadyToRun PE headers. Keep this test assembly AnyCPU rather
+         than inferring a compiler platform from the native-asset RID, which causes CS8012 with those references. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <DefineConstants>$(DefineConstants);CAMERAAGENT_FLEET_PERFORMANCE_TESTS</DefineConstants>
     <!-- hvo-sky ui runs here as hvo-sky ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
     <HvoTerminalProgram>true</HvoTerminalProgram>
