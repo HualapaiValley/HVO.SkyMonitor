@@ -58,7 +58,8 @@ public sealed class DailySummaryCalendarBrowserTests
 
         await using var context = await browser.NewContextAsync(new()
         {
-            BaseURL = host.BaseAddress.ToString(), ViewportSize = new() { Width = width, Height = height }
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new() { Width = width, Height = height }
         });
         var page = await context.NewPageAsync();
         await page.GotoAsync("/Account/Login");
