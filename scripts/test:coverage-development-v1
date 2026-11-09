@@ -195,6 +195,25 @@ def wrapper_case(name, expected, *needles):
 
 
 wrapper_case("complete wrapper accepts valid reports including classless projects", 0, "Coverage gate passed.")
+# Coverlet can emit a multiway switch with different arities per condition.
+# Pre-merge validation must not apply the canonical merger's equal-arity math.
+switch_report = ET.Element("coverage")
+switch_classes = ET.SubElement(ET.SubElement(ET.SubElement(switch_report, "packages"), "package", name="Raw"), "classes")
+switch_entry = ET.SubElement(switch_classes, "class", name="RawSwitch", filename=str(root / "src" / path))
+switch_line = ET.SubElement(ET.SubElement(switch_entry, "lines"), "line", number="1", hits="1", branch="True",
+                            **{"condition-coverage": "100% (5/5)"})
+switch_conditions = ET.SubElement(switch_line, "conditions")
+for number in ("0", "1"):
+    ET.SubElement(switch_conditions, "condition", number=number, type="jump", coverage="100%")
+switch_file = scratch / "raw-switch.xml"
+ET.ElementTree(switch_report).write(switch_file)
+result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--development-v1", "--validate-reports", str(baseline_file), str(switch_file)],
+                        capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(f"Raw switch validation incorrectly evaluated canonical branch arities: {result.stdout}{result.stderr}")
+cases += 1
+print("PASS raw switch validation accepts unequal condition arities")
 bad = results / "1/coverage.cobertura.xml"
 bad.write_text("<coverage")
 wrapper_case("one malformed report cannot be discarded by the merger", 1, str(bad), "Coverage input validation failed")

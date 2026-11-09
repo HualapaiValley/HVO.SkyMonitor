@@ -88,6 +88,14 @@ foreach (var report in args.Skip(1))
         return 1;
     }
 
+    // Raw Coverlet conditions can have unequal branch arities. Their declared
+    // counts are validated above; only the canonical ReportGenerator merge is
+    // evaluated by the aggregation logic below.
+    if (validateReportsOnly)
+    {
+        continue;
+    }
+
     var classElements = document.Descendants("class").ToArray();
 
     foreach (var classElement in classElements)
