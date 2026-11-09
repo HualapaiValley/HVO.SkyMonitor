@@ -67,10 +67,12 @@ internal static class UnitCoverageInputs
                     throw new InvalidDataException($"Unit project '{project}' is missing dependency assembly '{assembly}'.");
                 }
 
-                if (!inventories.TryGetValue(assembly, out var sources))
+                var pdb = Path.ChangeExtension(assembly, ".pdb");
+                var inventoryIdentity = Hash(pdb);
+                if (!inventories.TryGetValue(inventoryIdentity, out var sources))
                 {
-                    sources = ReadExecutableSources(Path.ChangeExtension(assembly, ".pdb"), repositoryRoot);
-                    inventories.Add(assembly, sources);
+                    sources = ReadExecutableSources(pdb, repositoryRoot);
+                    inventories.Add(inventoryIdentity, sources);
                 }
 
                 if (sources.Count > 0)
