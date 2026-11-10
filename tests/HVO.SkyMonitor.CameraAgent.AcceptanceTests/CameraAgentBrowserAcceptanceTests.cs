@@ -2508,12 +2508,17 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
 
+        // Navigation completes before the bounded page's return links have finished rendering.
+        await page.WaitForFunctionAsync(
+            "() => decodeURIComponent(document.querySelector('.capture-image')?.getAttribute('href') || '').includes('cursor=')")
+            .ConfigureAwait(false);
         var detailLink = page.Locator(".capture-card a[aria-label^='Open capture']").First;
         var detailUrl = await detailLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
         StringAssert.Contains(detailUrl, "returnUrl=", StringComparison.Ordinal);
         var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
-        await detailLink.ClickAsync().ConfigureAwait(false);
+        // Keep the capture whose facts were read: a list rerender can retarget the first-card locator.
+        await page.GotoAsync(detailUrl).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
@@ -2548,6 +2553,9 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             Assert.IsFalse(bodyText.Contains(prohibited, StringComparison.OrdinalIgnoreCase), prohibited);
         }
 
+        await page.Locator("#evidence-panel-Artifacts .download-menu__toggle").First.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await page.Locator(".download-menu-backdrop").WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Link, new() { Name = "Back to gallery results", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
@@ -2765,7 +2773,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
 
-        // Draft: name and revision, one node of a registered type, preview, and the diagram's keyboard path.
+        // VirtualSky captures require their canonical scene node; keep that guard in the keyboard draft.
+        // Draft: name and revision, registered nodes, preview, and the diagram's keyboard path.
         await page.GotoAsync("/operations/pipeline/graphs/new").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Draft graph", Level = 1 })).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -2773,12 +2782,17 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.Keyboard.TypeAsync("keyboard-graph").ConfigureAwait(false);
         await TabToAsync(page, "input", "Revision label").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("1").ConfigureAwait(false);
+        await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("ProjectedScene").ConfigureAwait(false);
+        await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
         // Pick the preview step by typeahead on the focused select, then add it.
         await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("Preview").ConfigureAwait(false);
         await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelectorAll('.node-row').length === 2").ConfigureAwait(false);
         await TabToAsync(page, "button", "Preview plan").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         var diagram = page.Locator("svg[role='group']");
