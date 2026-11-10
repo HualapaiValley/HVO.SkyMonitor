@@ -68,12 +68,46 @@ if (mode == "crash")
     _ = await store.InitializeAsync(seed, CancellationToken.None);
     throw new InvalidOperationException("The writer did not terminate at the crash boundary.");
 }
+if (mode == "gate-cancel")
+{
+    var before = await File.ReadAllBytesAsync(summaryPath);
+    var gate = (SemaphoreSlim)typeof(ProtectedDeploymentLocationStore).GetField("_gate",
+        BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(store)!;
+    await gate.WaitAsync();
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(40));
+    var canceled = false;
+    try { _ = await store.InitializeAsync(seed, cancellation.Token); }
+    catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { canceled = true; }
+    finally { gate.Release(); }
+    var afterCancel = await File.ReadAllBytesAsync(summaryPath);
+    if (!canceled || !before.SequenceEqual(afterCancel))
+        throw new InvalidOperationException("Canceled gate wait changed durable proofs or did not cancel.");
+    _ = await store.InitializeAsync(seed, CancellationToken.None);
+    if (parses != 0 || hits != 1) throw new InvalidOperationException("Canceled wait leaked the gate or invalidated good proofs.");
+    Console.WriteLine(JsonSerializer.Serialize(new { mode, canceled, unchanged = true, parses, hits }));
+    return;
+}
+byte[]? originalBytes = null;
+DateTime originalTimestamp = default;
+if (mode == "same-length")
+{
+    originalBytes = await File.ReadAllBytesAsync(manifestPath);
+    originalTimestamp = File.GetLastWriteTimeUtc(manifestPath);
+    var json = System.Text.Encoding.UTF8.GetString(originalBytes);
+    var edited = System.Text.Encoding.UTF8.GetBytes(json.Replace("\"locationId\":\"probe\"", "\"locationId\":\"wrong\"", StringComparison.Ordinal));
+    if (edited.SequenceEqual(originalBytes) || edited.Length != originalBytes.Length)
+        throw new InvalidOperationException("Same-length probe did not alter the synthetic provenance.");
+    await File.WriteAllBytesAsync(manifestPath, edited);
+    File.SetLastWriteTimeUtc(manifestPath, originalTimestamp);
+    if (File.GetLastWriteTimeUtc(manifestPath) != originalTimestamp)
+        throw new InvalidOperationException("Filesystem did not preserve the original timestamp.");
+}
 if (mode == "corrupt") await File.WriteAllTextAsync(manifestPath, "{");
 var orphans = Directory.EnumerateFiles(Path.Combine(ingress, ".location"), ".retained-validation.v1.protected.*.tmp").Count();
 try
 {
     var active = await store.InitializeAsync(seed, CancellationToken.None);
-    if (mode == "corrupt" || active.Version != 1 || !File.Exists(summaryPath))
+    if (mode is "corrupt" or "same-length" || active.Version != 1 || !File.Exists(summaryPath))
         throw new InvalidOperationException("Unexpected probe acceptance.");
     if (mode == "recover" && (parses != 1 || hits != 0 || orphans != 1))
         throw new InvalidOperationException("Incomplete summary was not rebuilt.");
@@ -81,9 +115,20 @@ try
         throw new InvalidOperationException("Completed durable summary was not reused across process restart.");
     Console.WriteLine(JsonSerializer.Serialize(new { mode, parses, hits, orphans, activeVersion = active.Version }));
 }
-catch (InvalidDataException) when (mode == "corrupt")
+catch (InvalidDataException) when (mode is "corrupt" or "same-length")
 {
-    Console.WriteLine(JsonSerializer.Serialize(new { mode, rejected = true, parses, hits, orphans }));
+    if (mode == "same-length" && (parses != 1 || hits != 0))
+        throw new InvalidOperationException("Changed same-length bytes reused an old proof.");
+    Console.WriteLine(JsonSerializer.Serialize(new { mode, rejected = true, parses, hits, orphans,
+        sameLengthAndTimestamp = mode == "same-length" }));
+}
+finally
+{
+    if (originalBytes is not null)
+    {
+        await File.WriteAllBytesAsync(manifestPath, originalBytes);
+        File.SetLastWriteTimeUtc(manifestPath, originalTimestamp);
+    }
 }
 
 sealed class ProbeProtector(IDataProtector protector) : IDeploymentLocationProtector

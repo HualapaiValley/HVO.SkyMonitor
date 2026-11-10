@@ -24,7 +24,7 @@ assert result.returncode==0,'Probe compilation failed; inspect the retained proc
 program=scratch/'bin/Release/net10.0/probe.dll'
 state=scratch/'synthetic-state'
 results=[]
-for mode in ['crash','recover','read','corrupt']:
+for mode in ['crash','recover','read','same-length','gate-cancel','corrupt']:
  result=subprocess.run(['dotnet',str(program),mode,str(state)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=60,env=env)
  expected=-9 if mode=='crash' else 0
  results.append(dict(mode=mode,exitCode=result.returncode,expectedExit=expected,stdout=result.stdout,stderr=result.stderr))
