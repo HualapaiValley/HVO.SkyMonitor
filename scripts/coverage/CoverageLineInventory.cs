@@ -147,6 +147,25 @@ internal sealed class CoverageLineInventory
         }
     }
 
+    internal void ValidateMeasured(string source, HashSet<int> measuredLines, Dictionary<int, int> measuredBranches)
+    {
+        if (!branches.TryGetValue(source, out var pinnedBranches))
+        {
+            throw new InvalidDataException($"No pinned denominator for enforced v1 file '{source}'; this profile requires the canonical file inventory. {Remedy}");
+        }
+
+        Validate("final merged measurement", source, measuredLines, measuredLines);
+        foreach (var number in measuredLines.Union(pinnedBranches.Keys))
+        {
+            var expected = pinnedBranches.GetValueOrDefault(number)?.Total ?? 0;
+            var measured = measuredBranches.GetValueOrDefault(number);
+            if (measured != expected)
+            {
+                throw new InvalidDataException($"'{source}:{number}' has final measured branch denominator {measured}, pinned denominator {expected}. {Remedy}");
+            }
+        }
+    }
+
     // The structural parser has already checked markers, covered counts and
     // percentages. Preserve the denominator and emitted condition identities,
     // independently of hit coverage or report-level summary counters.

@@ -77,8 +77,31 @@ printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${
 # Validate every report and declared branch counter before the merge loses it.
 dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
   --development-v1 --validate-reports --unit-results "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
-dotnet reportgenerator \
+if ! dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \
-  '-reporttypes:TextSummary;Cobertura'
+  '-reporttypes:TextSummary;Cobertura' '-verbosity:Verbose' 2>&1 | tee "$target_dir/merge.log"; then
+  echo 'ReportGenerator failed; restore complete valid Unit reports and rerun the gate.' >&2
+  exit 1
+fi
+# A redundant malformed contributor can disappear without changing the final
+# denominator. Require a successful parse receipt for every expected input and
+# reject logged read errors even when the pinned tool returns zero.
+python3 - "$target_dir/merge.log" "${reports[@]}" <<'PYMERGE'
+from collections import Counter
+import pathlib
+import re
+import sys
+
+log = pathlib.Path(sys.argv[1]).read_text()
+errors = [line for line in log.splitlines() if re.search(r"^(?:\S+:\s+)?(?:error|fatal)\b", line, re.IGNORECASE)]
+parsed = re.findall(r"Finished parsing '(.*)' \d+/\d+\s*$", log, re.MULTILINE)
+expected = Counter(str(pathlib.Path(path).resolve()) for path in sys.argv[2:])
+actual = Counter(str(pathlib.Path(path).resolve()) for path in parsed)
+if errors or actual != expected:
+    raise SystemExit("ReportGenerator input integrity failed: " +
+                     f"errors={errors}; missing={list((expected-actual).elements())}; " +
+                     f"unexpected={list((actual-expected).elements())}. Restore intact reports; every Unit input must be read.")
+print(f"Verified ReportGenerator parsed all {sum(expected.values())} expected Unit reports without read errors.")
+PYMERGE
 "$repo_root/scripts/coverage:enforce" --development-v1 --merged "$target_dir/Cobertura.xml"

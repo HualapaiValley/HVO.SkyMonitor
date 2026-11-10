@@ -103,23 +103,42 @@ for report in reports:
     document = ET.parse(report)
     if document.getroot().tag != "coverage" or document.find("packages") is None:
         raise SystemExit(f"Not a Cobertura report: {report}")
+    # Only these canonical tree coordinates reach the pinned merger. Reject
+    # extras rather than letting ignored records supply the expected inventory.
     sources = {}
-    package_owners = {id(entry): package.get("name", "") for package in document.findall(".//package")
-                      for entry in package.findall(".//class")}
-    for entry in document.findall(".//class"):
-        filename = entry.get("filename", "").replace("\\", "/")
-        matches = [path for path in active if filename.endswith(path)]
-        if not matches:
-            # Coverlet can use a basename for a project-root source.
-            candidate = package_owners[id(entry)] + "/" + filename
-            matches = [candidate] if candidate in active else []
-        if not matches:
+    parents = {id(child): parent for parent in document.iter() for child in parent}
+    packages = document.findall("packages/package")
+    classes = document.findall("packages/package/classes/class")
+    methods = document.findall("packages/package/classes/class/methods/method")
+    lines = document.findall("packages/package/classes/class/lines/line") + document.findall("packages/package/classes/class/methods/method/lines/line")
+    for tag, consumed in (("package", packages), ("class", classes), ("method", methods), ("line", lines)):
+        if set(document.iter(tag)) != set(consumed):
+            raise SystemExit(f"Report {report} has {tag} records outside merger-consumed coordinates")
+    if any(not method.get("name", "").strip() for method in methods):
+        raise SystemExit(f"Report {report} has missing method name metadata required by the merger")
+    if len(document.findall("packages")) != 1 or any(len(package.findall("classes")) != 1 for package in packages):
+        raise SystemExit(f"Report {report} has non-canonical package/classes containers")
+    if any(len(entry.findall("lines")) != 1 or len(entry.findall("methods")) != 1 for entry in classes) or any(len(method.findall("lines")) != 1 for method in methods):
+        raise SystemExit(f"Report {report} has non-canonical class/method line containers")
+    for entry in classes:
+        if not entry.get("name", "").strip() or "$" in entry.get("name", ""):
+            raise SystemExit(f"Report {report} has merger-excluded/invalid class name {entry.get('name')}")
+        owner = parents[id(parents[id(entry)])].get("name", "")
+        filename = entry.get("filename", "")
+        if not filename or "\\" in filename or "//" in filename or any(part in (".", "..") for part in filename.split("/")):
+            raise SystemExit(f"Non-canonical coverage filename: {filename}")
+        if pathlib.Path(filename).is_absolute():
+            source_root = str(root / "src") + "/"
+            if not filename.startswith(source_root):
+                raise SystemExit(f"Out-of-tree coverage filename: {filename}")
+            candidate = filename[len(source_root):]
+        else:
+            candidate = filename if filename.startswith(owner + "/") else owner + "/" + filename
+        if candidate not in active:
             continue
-        if len(matches) != 1:
-            raise SystemExit(f"Ambiguous floor source {filename} in {report}")
-        classes, methods = sources.setdefault(matches[0], ({}, {}))
-        collect_lines(classes, entry.findall("lines/line"), matches[0], report)
-        collect_lines(methods, entry.findall("methods/method/lines/line"), matches[0], report)
+        classes, methods = sources.setdefault(candidate, ({}, {}))
+        collect_lines(classes, entry.findall("lines/line"), candidate, report)
+        collect_lines(methods, entry.findall("methods/method/lines/line"), candidate, report)
     if set(sources) != contributors[report]:
         raise SystemExit(f"Missing/unexpected contributing floor sources in {report}: expected {sorted(contributors[report])}, found {sorted(sources)}")
     for path, (classes, methods) in sources.items():

@@ -93,7 +93,7 @@ foreach (var report in args.Skip(1))
     XDocument document;
     try
     {
-        document = ReadCoverageReport(report, thresholds, validateReportsOnly, developmentV1);
+        document = ReadCoverageReport(report, thresholds, validateReportsOnly, developmentV1, repositoryRoot);
     }
     catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or FormatException or OverflowException)
     {
@@ -114,7 +114,10 @@ foreach (var report in args.Skip(1))
     foreach (var classElement in classElements)
     {
         var className = RequiredAttribute(classElement, "name");
-        var sourcePath = NormalizeSourcePath(RequiredAttribute(classElement, "filename"));
+        var filename = RequiredAttribute(classElement, "filename");
+        var sourcePath = developmentV1
+            ? CoverageInputFormat.SourcePath(repositoryRoot, RequiredAttribute(classElement.Ancestors("package").First(), "name"), filename)
+            : NormalizeSourcePath(filename);
         if (!files.TryGetValue(sourcePath, out var coverage))
         {
             coverage = new Coverage();
@@ -190,6 +193,28 @@ if (validateReportsOnly)
 }
 
 var failures = new List<string>();
+if (developmentV1)
+{
+    try
+    {
+        var inventory = CoverageLineInventory.Load(repositoryRoot);
+        foreach (var path in thresholds.Keys)
+        {
+            if (files.TryGetValue(path, out var measured) && measured.Lines.Count > 0)
+            {
+                inventory.ValidateMeasured(path, measured.Lines, measured.Branches
+                    .GroupBy(static branch => branch.Key.Line)
+                    .ToDictionary(static group => group.Key, static group => group.Sum(branch => branch.Value.Total)));
+            }
+        }
+    }
+    catch (Exception exception) when (exception is InvalidDataException or IOException or JsonException)
+    {
+        Console.Error.WriteLine($"Coverage gate failed: final measured denominator does not match the trusted inventory: {exception.Message}");
+        return 1;
+    }
+}
+
 foreach (var requiredPath in thresholds.Keys.Order(StringComparer.Ordinal))
 {
     if (!files.ContainsKey(requiredPath))
@@ -272,12 +297,17 @@ static string RequiredAttribute(XElement element, string name)
     => element.Attribute(name)?.Value
         ?? throw new InvalidDataException($"Coverage XML element '{element.Name}' is missing attribute '{name}'.");
 
-static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, Threshold> thresholds, bool allowEmpty, bool developmentV1)
+static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, Threshold> thresholds, bool allowEmpty, bool developmentV1, string repositoryRoot)
 {
     var document = XDocument.Load(report, LoadOptions.None);
     if (document.Root?.Name != "coverage" || document.Root.Element("packages") is null)
     {
         throw new InvalidDataException("Expected a Cobertura coverage root with packages.");
+    }
+
+    if (allowEmpty)
+    {
+        CoverageInputFormat.Validate(document, report);
     }
 
     var classes = document.Descendants("class").ToArray();
@@ -289,7 +319,16 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
     foreach (var entry in classes)
     {
         _ = RequiredAttribute(entry, "name");
-        var sourcePath = NormalizeSourcePath(RequiredAttribute(entry, "filename"));
+        var filename = RequiredAttribute(entry, "filename");
+        var package = entry.Ancestors("package").FirstOrDefault();
+        if (developmentV1 && (package is null || string.IsNullOrWhiteSpace((string?)package.Attribute("name"))))
+        {
+            throw new InvalidDataException($"Report '{report}' class has no containing package name.");
+        }
+
+        var sourcePath = developmentV1
+            ? CoverageInputFormat.SourcePath(repositoryRoot, RequiredAttribute(package!, "name"), filename)
+            : NormalizeSourcePath(filename);
         // The pinned merger can recover class lines from method records, so
         // raw-input validation must inspect both representations.
         var lines = entry.Element("lines")?.Elements("line") ?? [];

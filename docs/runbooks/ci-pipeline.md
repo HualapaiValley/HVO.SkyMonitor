@@ -32,8 +32,17 @@ profile. The generated settings are retained with the raw reports. The merge
 requires one GUID-directory report per Unit-bearing project's category inventory;
 it excludes TRX attachment copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
-a malformed input, omit it and still exit zero. Legitimate classless reports from
-projects with no included assemblies are accepted. Each report must match its
+a malformed input, omit it and still exit zero. Raw records must occupy the
+canonical `coverage/packages/package/classes/class` tree, with one class/method
+line container and required method names. Merger-excluded `$` class names,
+misplaced records and duplicate containers fail rather than supply completeness.
+Class filenames must be plain paths beneath this checkout's `src/`, or genuine
+assembly-relative/project-root names; out-of-tree paths and `./`, `//`, `../` or
+backslash aliases fail. Unexpected executable sources outside the Release PDB
+inventory also fail. After merging, the wrapper requires a successful verbose
+parse receipt for every expected input and rejects logged read errors even if
+the tool exits zero. This catches loss of a redundant contributor too. Legitimate
+classless reports from projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
 PDBs, plus every ordinary compiled class in each executable source. Portable
@@ -51,11 +60,16 @@ fail before merging. Both class-level **and method-level** line sets
 and per-line branch structure must match in every contributing report. Removing
 a line, rewriting a measured branch line as `branch=false`, shrinking its branch
 total, deleting a condition or omitting its branch marker fails even when both
-representations, TRX copies and declared counts are changed consistently. Genuinely branchless lines and
-collector-omitted points remain valid according to the reviewed inventory. This
+representations, TRX copies and declared counts are changed consistently.
+Genuinely branchless lines and collector-omitted points remain valid according to the reviewed inventory. This
 covers generated/overlapping lines that PDB checks cannot require universally:
-genuine `ProcessingRecipeExecutor.cs:44` is absent from the pinned emitted set, while measured line52 is required. No runtime report decides
-its own expected denominator, and no file floor or percentage changes.
+genuine `ProcessingRecipeExecutor.cs:44` is absent from the pinned emitted set,
+while measured line52 is required. The final evaluator independently compares
+its actual per-file line set and summed branch total at each line against the same pin, after ReportGenerator
+normalization/grouping. Missing lines, added padding and branch loss/additions
+fail even if raw records passed validation. The pin defines the evaluated
+denominator; runtime input cannot enlarge or shrink it. Hit/covered values remain
+collector assertions, and no file floor or percentage changes.
 
 Method records contribute to the pinned ReportGenerator merge: it can restore a
 class-level line from a surviving method record. They are structurally validated

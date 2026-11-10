@@ -379,7 +379,7 @@ internal static class UnitCoverageInputs
             throw new InvalidDataException($"Report '{report}' has inconsistent emitted line inventory: declared lines-valid='{(string?)document.Root?.Attribute("lines-valid")}', observed {emittedLines} unique source lines. Restore the complete original Coverlet report; generated lines must not silently disappear.");
         }
 
-        var packages = document.Descendants("package").ToArray();
+        var packages = document.Root!.Element("packages")!.Elements("package").ToArray();
         var names = packages.Select(static package => (string?)package.Attribute("name") ?? string.Empty).ToArray();
         if (names.Distinct(StringComparer.Ordinal).Count() != names.Length || !expected.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(names))
         {
@@ -391,16 +391,10 @@ internal static class UnitCoverageInputs
             var name = (string)package.Attribute("name")!;
             var observed = new Dictionary<string, SourceInventory>(StringComparer.Ordinal);
             var observedMethods = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
-            foreach (var entry in package.Descendants("class"))
+            foreach (var entry in package.Element("classes")!.Elements("class"))
             {
                 var filename = (string?)entry.Attribute("filename") ?? string.Empty;
-                var absolute = Path.IsPathRooted(filename) ? filename : Path.Combine(repositoryRoot, "src", filename);
-                var relative = Path.GetRelativePath(Path.Combine(repositoryRoot, "src"), absolute).Replace('\\', '/');
-                if (!relative.StartsWith(name + "/", StringComparison.Ordinal))
-                {
-                    // A project-root source in Coverlet is sometimes just a basename.
-                    relative = name + "/" + filename.Replace('\\', '/');
-                }
+                var relative = CoverageInputFormat.SourcePath(repositoryRoot, name, filename);
 
                 if (!observedMethods.TryGetValue(relative, out var methodLines))
                 {
@@ -429,6 +423,11 @@ internal static class UnitCoverageInputs
             }
 
             var missing = expected[name].Keys.Except(observed.Keys).Order(StringComparer.Ordinal).ToArray();
+            var unexpected = observed.Keys.Except(expected[name].Keys).Order(StringComparer.Ordinal).ToArray();
+            if (unexpected.Length > 0)
+            {
+                throw new InvalidDataException($"Report '{report}' has unexpected executable source files outside '{name}' Release PDB inventory: {string.Join(", ", unexpected.Take(8))}.");
+            }
             if (missing.Length > 0)
             {
                 throw new InvalidDataException($"Report '{report}' is materially incomplete for '{name}': missing {missing.Length} executable source files from its Release PDB, including {string.Join(", ", missing.Take(8))}.");

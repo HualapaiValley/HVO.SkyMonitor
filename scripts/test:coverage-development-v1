@@ -11,6 +11,7 @@ dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
 }
 python3 - "$repo_root" "$scratch" <<'PY'
 import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -37,7 +38,7 @@ for source in (scratch / "repo/src" / path, scratch / "repo" / release):
 
 def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=False):
     document = ET.Element("coverage")
-    classes = ET.SubElement(ET.SubElement(ET.SubElement(document, "packages"), "package", name="fixture"), "classes")
+    classes = ET.SubElement(ET.SubElement(ET.SubElement(document, "packages"), "package", name=path.split("/")[0]), "classes")
     lines = ET.SubElement(ET.SubElement(classes, "class", name="Fixture", filename=filename), "lines")
     if not empty:
         for number in range(1, 101):
@@ -48,6 +49,9 @@ def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=
     if release_data:
         lines = ET.SubElement(ET.SubElement(classes, "class", name="Release", filename=release), "lines")
         ET.SubElement(lines, "line", number="1", hits="0", branch="true", **{"condition-coverage": "0% (0/2)"})
+    for entry in classes:
+        method = ET.SubElement(ET.SubElement(entry, "methods"), "method", name="Fixture", signature="()")
+        method.append(copy.deepcopy(entry.find("lines")))
     output = scratch / f"{name}.xml"
     ET.ElementTree(document).write(output)
     return output
@@ -68,6 +72,20 @@ def check(name, report_file, expected, *needles, profile=True):
     cases += 1
     print(f"PASS {name}")
 
+
+# Final v1 evaluation uses the same reviewed denominator policy as raw input
+# validation. This private miniature pin contains no percentage thresholds.
+mini_repo = baseline_file.parents[2]
+for name in ("global.json", "Directory.Packages.props"):
+    shutil.copy2(root / name, mini_repo / name)
+(mini_repo / "tests").mkdir()
+shutil.copy2(root / "tests/coverage.runsettings", mini_repo / "tests/coverage.runsettings")
+mini_pin = json.loads((root / "scripts/coverage/development-v1-lines.json").read_text())
+mini_pin["files"] = {path: {"sourceSha256": hashlib.sha256(b"").hexdigest(), "lines": list(range(1, 101)),
+                            "branches": {"1": {"total": 2, "conditions": []}}}}
+mini_pin_path = baseline_file.with_name("development-v1-lines.json")
+mini_pin_path.write_text(json.dumps(mini_pin))
+shutil.copy2(root / "scripts/coverage/policy.json", baseline_file.with_name("policy.json"))
 
 good = report("good")
 check("measured floors pass; absent catalog and retired source are explicit", good, 0,
@@ -103,8 +121,12 @@ check("absent branch declarations fail", scratch / "missing-branch-marker.xml", 
       path, "measured branch data MISSING")
 line.set("branch", "false")
 missing_branch.write(scratch / "branchless.xml")
+mini_pin["files"][path]["branches"] = {}
+mini_pin_path.write_text(json.dumps(mini_pin))
 check("explicitly branchless files remain valid", scratch / "branchless.xml", 0,
       "Coverage gate passed.", "(0/0)")
+mini_pin["files"][path]["branches"] = {"1": {"total": 2, "conditions": []}}
+mini_pin_path.write_text(json.dumps(mini_pin))
 
 source = scratch / "repo/src" / path
 source.rename(source.with_suffix(".moved.cs"))
@@ -138,6 +160,35 @@ check("canonical gate treats signed wrapped merged hits as covered", merged_over
       "line 100.00", "Coverage gate passed.", profile=False)
 check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
 baseline_file.write_text(json.dumps(baseline))
+
+# Independently validate final measurement, even if a raw check is bypassed.
+padded = ET.parse(good)
+ET.SubElement(padded.find(".//class/lines"), "line", number="101", hits="1", branch="false")
+padded.write(scratch / "merged-padding.xml")
+check("final evaluator rejects padded line denominators", scratch / "merged-padding.xml", 1,
+      path, "final measured denominator", "unexpected [101]")
+branch_padding = ET.parse(good)
+extra = ET.SubElement(branch_padding.find(".//classes"), "class", name="Padding", filename=path)
+ET.SubElement(ET.SubElement(extra, "lines"), "line", number="1", hits="1", branch="true",
+              **{"condition-coverage": "100% (2/2)"})
+branch_padding.write(scratch / "merged-branch-padding.xml")
+check("final evaluated branch totals include every class contributing to a file", scratch / "merged-branch-padding.xml", 1,
+      path + ":1", "measured branch denominator 4", "pinned denominator 2")
+branch_loss = ET.parse(good)
+line = branch_loss.find(".//class/lines/line")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+branch_loss.write(scratch / "merged-branch-loss.xml")
+check("final evaluator rejects branch loss with intact source lines", scratch / "merged-branch-loss.xml", 1,
+      path + ":1", "measured branch denominator 0", "pinned denominator 2")
+for label, filename in (("phantom", "/phantom/src/" + path),
+                        ("tests-src", str(mini_repo / "tests/src" / path)),
+                        ("dot", str(mini_repo / "src" / path).replace("CameraGeometry.cs", "./CameraGeometry.cs"))):
+    invalid = ET.parse(good)
+    invalid.find(".//class").set("filename", filename)
+    target = scratch / ("merged-path-" + label + ".xml")
+    invalid.write(target)
+    check("final evaluator rejects non-canonical filename " + label, target, 1, "coverage filename")
 
 # Preserve canonical exclusions; only Include and SingleHit differ. Derive
 # assembly expectations from the baseline so new floor owners need no test pin.
@@ -325,10 +376,67 @@ fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.Cove
 (launcher / "dotnet").write_text("#!/usr/bin/env python3\nimport os, pathlib, sys\na=sys.argv[1:]\n" +
     f"real={str(real_dotnet)!r}\nproject={str(fixture_scripts / 'coverage/HVO.SkyMonitor.CoverageGate.csproj')!r}\n" +
     f"gate={str(fixture_gate)!r}\n" +
+    "fault=os.environ.get('CF1_TEST_MERGER_FAULT')\n" +
+    "if a and a[0]=='reportgenerator' and fault:\n" +
+    " reports=next(v.split(':',1)[1] for v in a if v.startswith('-reports:')).split(';')\n" +
+    " for i,p in enumerate(reports if fault=='error' else reports[:-1],1): print(f\"Finished parsing '{p}' {i}/{len(reports)}\")\n" +
+    " if fault=='error': print('2099-01-01T00:00:00: Error during reading report: deliberately zero-exit control')\n" +
+    " sys.exit(0)\n" +
     "if a and a[0]=='run' and '--project' in a and a[a.index('--project')+1]==project:\n" +
     " os.execv(real,[real,gate,*a[a.index('--')+1:]])\nos.execv(real,[real,*a])\n")
 (launcher / "dotnet").chmod(0o700)
 wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
+
+# Raw coordinates and metadata must describe records the pinned merger reads.
+for label in ("excluded-class", "outside-classes"):
+    relocated = copy.deepcopy(composite)
+    entry = next(entry for entry in relocated.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+    moved = copy.deepcopy(entry)
+    for container in [moved.find("lines"), *moved.findall("methods/method/lines")]:
+        for line in list(container):
+            if line.get("number") != "75": container.remove(line)
+    for container in [entry.find("lines"), *entry.findall("methods/method/lines")]:
+        for line in list(container):
+            if line.get("number") == "75": container.remove(line)
+    package = relocated.find("packages/package")
+    if label == "excluded-class":
+        moved.set("name", "CF1$Unconsumed")
+        package.find("classes").append(moved)
+        needle = "merger-excluded"
+    else:
+        ET.SubElement(package, "ignored").append(moved)
+        needle = "outside package/classes/class"
+    write_fixture(relocated, sync_methods=False)
+    wrapper_case("validated points cannot move into " + label, 1, needle)
+    result = subprocess.run([str(fixture_scripts / "coverage:line-inventory"), str(results), str(scratch / "invalid-pin.json")],
+                            capture_output=True, text=True)
+    if result.returncode == 0: raise SystemExit("Inventory producer accepted merger-ignored coordinates: " + label)
+    cases += 1
+    print("PASS maintenance producer rejects " + label)
+for value in (None, " "):
+    missing_name = copy.deepcopy(composite)
+    method = missing_name.find(".//method")
+    if value is None: method.attrib.pop("name")
+    else: method.set("name", value)
+    write_fixture(missing_name, sync_methods=False)
+    wrapper_case("missing/empty method name cannot omit a redundant input", 1, "method name", "merger requires")
+for label, filename in (("phantom", "/phantom/src/" + path),
+                        ("tests-src", str(inventory_repo / "tests/src" / path)),
+                        ("dot", str(source_dir / "./CameraGeometry.cs").replace("/CameraGeometry.cs", "/./CameraGeometry.cs")),
+                        ("double-slash", str(source_dir) + "//CameraGeometry.cs"),
+                        ("parent", str(source_dir) + "/alias/../CameraGeometry.cs")):
+    injected = copy.deepcopy(composite)
+    extra = copy.deepcopy(injected.find(".//class"))
+    extra.set("filename", filename)
+    extra.set("name", "CF1.Padding")
+    injected.find(".//classes").append(extra)
+    write_fixture(injected)
+    wrapper_case("raw filename cannot escape the pin via " + label, 1, "coverage filename")
+for fault in ("error", "missing"):
+    write_fixture(composite)
+    wrapper_env["CF1_TEST_MERGER_FAULT"] = fault
+    wrapper_case("zero-exit merger cannot hide " + fault, 1, "ReportGenerator input integrity failed")
+    wrapper_env.pop("CF1_TEST_MERGER_FAULT")
 
 # A declared collector inventory cannot survive deleted emitted records,
 # including records from otherwise exempt generated methods.
