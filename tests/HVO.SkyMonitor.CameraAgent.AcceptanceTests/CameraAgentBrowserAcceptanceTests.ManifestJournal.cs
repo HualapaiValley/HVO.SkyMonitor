@@ -1,8 +1,11 @@
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Testing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Playwright;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
@@ -20,6 +23,74 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
     [TestMethod]
     public Task AuxiliaryManifestDescriptorCorruptionKeepsBrowserJournalReadableAndRecoversAsync()
         => AssertOptionalManifestEvidenceRecoveryAsync("auxiliary-descriptor");
+
+    [TestMethod]
+    public async Task CancelledBeforeWorkerReplayKeepsBrowserJournalAndManifestDownloadAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(configureServices: SuppressFixtureReplayWorker).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        { BaseURL = host.BaseAddress.ToString() }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
+        var runUrl = await page.Locator(".capture-card .run-link").Nth(3).GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(runUrl);
+        await page.GotoAsync(runUrl).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var liveId = Guid.Parse(new Uri(page.Url).Segments[^1]);
+        var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
+        var live = (await operations.ReadExecutionDetailAsync(liveId, CancellationToken.None).ConfigureAwait(false))!;
+        var submitted = await operations.SubmitReplayAsync(new(live.Execution.CaptureId,
+            live.Execution.GraphRevisionId, live.Execution.PrimaryArtifactId), "manifest-browser-cancel", "test", CancellationToken.None).ConfigureAwait(false);
+        var id = submitted.Execution.ExecutionId;
+        await operations.CancelReplayAsync(id, "manifest-browser-cancel-command", "test", null, CancellationToken.None).ConfigureAwait(false);
+        var detail = (await operations.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!;
+        Assert.AreEqual(ProcessingGraphExecutionStatus.Cancelled, detail.Execution.Status);
+        Assert.IsTrue(detail.Nodes.All(static node => node.Attempts.Count == 0 && node.Outputs.Count == 0));
+        var replayUrl = new Uri(page.Url).AbsolutePath.Replace(liveId.ToString(), id.ToString(), StringComparison.OrdinalIgnoreCase);
+        await page.GotoAsync(replayUrl).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".run-diagram__node").First).ConfigureAwait(false);
+        var link = page.GetByRole(AriaRole.Link, new() { Name = "Download manifest", Exact = true });
+        await VisibleAsync(link).ConfigureAwait(false);
+        var download = await page.RunAndWaitForDownloadAsync(() => link.ClickAsync()).ConfigureAwait(false);
+        var path = Path.Combine(TestContext.TestResultsDirectory!, "cancelled-before-worker-manifest.json");
+        await download.SaveAsAsync(path).ConfigureAwait(false);
+        TestContext.AddResultFile(path);
+        using var json = JsonDocument.Parse(await File.ReadAllBytesAsync(path).ConfigureAwait(false));
+        Assert.AreEqual(id, json.RootElement.GetProperty("executionId").GetGuid());
+        Assert.AreEqual("Cancelled", json.RootElement.GetProperty("status").GetString());
+        Assert.IsTrue(json.RootElement.GetProperty("nodes").EnumerateArray().All(static node => node.GetProperty("outputs").GetArrayLength() == 0));
+        Assert.AreEqual(0, await page.Locator("#manifest-unavailable").CountAsync().ConfigureAwait(false));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    // Keep only this fixture's Replay worker unstarted; live capture and every other
+    // hosted service use their original registrations and normal host lifetime.
+    private static void SuppressFixtureReplayWorker(IServiceCollection services)
+    {
+        for (var index = 0; index < services.Count; index++)
+        {
+            var registration = services[index];
+            if (registration.ServiceType != typeof(IHostedService) || registration.ImplementationFactory is not { } create)
+                continue;
+            services[index] = ServiceDescriptor.Singleton<IHostedService>(provider =>
+            {
+                var service = (IHostedService)create(provider);
+                return service.GetType().Name == "ProcessingReplayWorker" ? new UnstartedFixtureReplayWorker() : service;
+            });
+        }
+    }
+
+    private sealed class UnstartedFixtureReplayWorker : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 
     private sealed class NoAuxiliaryEvidence : IAsyncDisposable
     {

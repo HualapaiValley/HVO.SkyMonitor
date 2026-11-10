@@ -1005,14 +1005,14 @@ internal sealed partial class SqliteCaptureProcessingStore
             using var nodeCommand = connection.CreateCommand();
             nodeCommand.CommandText = """
             SELECT node_id, required, plan_sha256, status, reason, attempt_count,
-                   started_unix_ms, completed_unix_ms, dependencies_json, outputs_json
+                   started_unix_ms, completed_unix_ms, dependencies_json, outputs_json, window_json IS NOT NULL
             FROM processing_execution_nodes
             WHERE execution_id = $execution
             ORDER BY rowid;
             """;
             nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             var rows = new List<(string NodeId, bool Required, string Plan, string Status, string? Reason,
-                int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed, string DependenciesJson, string OutputsJson)>();
+                int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed, string DependenciesJson, string OutputsJson, bool HasWindow)>();
             using (var reader = await nodeCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1028,7 +1028,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                             ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
                         await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
                             ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
-                        reader.GetString(8), reader.GetString(9)));
+                        reader.GetString(8), reader.GetString(9),
+                        reader.GetBoolean(10)));
                 }
             }
             var frozenPlanJson = await ReadExecutionFrozenPlanJsonAsync(
@@ -1041,6 +1042,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             // Optional export bookkeeping must not make the ordinary journal unreadable.
             // Manifest reads still validate it and fail closed with the corrupt-evidence reason.
             var committedOutputCounts = manifestOnly ? ReadCommittedOutputCounts(frozenPlanJson) : [];
+            var frozenInputCounts = manifestOnly ? ReadFrozenOutputInputCounts(frozenPlanJson) : [];
             var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)
                 .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
             foreach (var row in rows)
@@ -1101,27 +1103,40 @@ internal sealed partial class SqliteCaptureProcessingStore
                     .SelectMany(static input => input.Masters!).DistinctBy(static master => master.ArtifactId)
                     .Select(static master => new ProcessingGraphExecutionCalibrationInputState(master.ArtifactId, master.PayloadSha256, master.Kind))
                     .ToArray() ?? [];
+                var dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(row.DependenciesJson, ExecutionSerializerOptions)
+                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing.");
                 var bindingsRetained = true;
+                var inputEvidenceIncomplete = false;
                 if (manifestOnly)
                 {
+                    var pinnedCount = inputs.Count(static input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput);
+                    if (frozenInputCounts.TryGetValue(row.NodeId, out var originalInputs))
+                        bindingsRetained = pinnedCount == originalInputs;
+                    else
+                        // Older outputless windows have no surviving output lineage to prove
+                        // whether a cascading retention delete erased an original pin.
+                        inputEvidenceIncomplete = outputs.Length == 0 &&
+                            (pinnedCount > 0 || (row.HasWindow &&
+                                dependencies.Any(static dependency => dependency.Kind == ProcessingGraphDependencyKind.Artifact &&
+                                    !string.Equals(dependency.ProducerId, "$raw", StringComparison.OrdinalIgnoreCase)) && attempts.Count > 0));
                     var completedInputs = await CompleteRunManifestInputsAsync(
                         connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
                     inputs = completedInputs.Inputs;
                     masters = completedInputs.Masters;
-                    bindingsRetained = completedInputs.Complete;
+                    bindingsRetained &= completedInputs.Complete;
                 }
                 var contracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(row.OutputsJson, ExecutionSerializerOptions)
                     ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.");
                 int? committedCount = committedOutputCounts.TryGetValue(row.NodeId, out var recordedCount) ? recordedCount : null;
-                // A full declared set proves cardinality regardless of the final outcome.
-                // Otherwise only an entirely skipped history proves legacy zero: a later
-                // skip or failure cannot erase earlier committed/pruned retry evidence.
+                // Outputs commit atomically with a completed attempt. No attempts, or only
+                // running/interrupted/skipped attempts without a producing/failing outcome,
+                // prove zero even when a terminal sweep changed the node's status.
                 if (committedCount is null &&
                     ((outputs.Length == contracts.Length && contracts.All(contract =>
                          outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant))) ||
-                     (row.Status == "Skipped" && outputs.Length == 0 && attempts.Count > 0 &&
-                      attempts.All(static attempt => attempt.Status == "Skipped" &&
-                          attempt.Outcome is null or ProcessingOutcomeStatus.Skipped))))
+                     (outputs.Length == 0 && attempts.All(static attempt =>
+                         (attempt.Status is "Running" or "Interrupted" && attempt.Outcome is null) ||
+                         (attempt.Status == "Skipped" && attempt.Outcome is null or ProcessingOutcomeStatus.Skipped)))))
                     committedCount = outputs.Length;
                 var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
                     : await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken).ConfigureAwait(false);
@@ -1131,6 +1146,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 {
                     CalibrationInputs = masters,
                     ArtifactBindingsRetained = bindingsRetained,
+                    InputEvidenceIncomplete = inputEvidenceIncomplete,
                     CommittedOutputCount = committedCount,
                     NormalizationPlanIdentitySha256 = normalization?.IdentitySha256,
                     NormalizationInputs = normalization?.Plan.Inputs.Select(static input => new ProcessingNormalizationInputDiagnostic(
@@ -1138,9 +1154,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                         input.ExclusionReason)).ToArray() ?? [],
                     MixedGainDiagnostics = diagnostics.Value,
                     MixedGainDiagnosticsUnavailableReason = diagnostics.Reason,
-                    Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
-                        row.DependenciesJson, ExecutionSerializerOptions)
-                        ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),
+                    Dependencies = dependencies,
                     OutputContracts = contracts
                 });
             }

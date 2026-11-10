@@ -1115,7 +1115,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             insert.Parameters.AddWithValue("$definition", execution.Revision.State.DefinitionIdentitySha256);
             insert.Parameters.AddWithValue("$shared_plan", execution.Revision.State.SharedPlanIdentitySha256);
             insert.Parameters.AddWithValue("$local_plan", execution.Revision.State.LocalPlanIdentitySha256);
-            insert.Parameters.AddWithValue("$frozen_plan", execution.Revision.FrozenPlanJson);
+            insert.Parameters.AddWithValue("$frozen_plan", SqliteCaptureProcessingStore.InitializeFrozenOutputInputCounts(
+                execution.Revision.FrozenPlanJson, execution.Revision.Nodes.Select(static node => node.NodeId)));
             insert.Parameters.AddWithValue("$configuration", execution.ConfigurationJson);
             insert.Parameters.AddWithValue("$trigger", entry.CaptureSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
             insert.Parameters.AddWithValue("$bytes", entry.PayloadLength);

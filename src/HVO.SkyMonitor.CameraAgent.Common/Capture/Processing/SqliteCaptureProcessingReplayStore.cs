@@ -238,7 +238,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 insert.Parameters.AddWithValue("$definition", revision.State.DefinitionIdentitySha256);
                 insert.Parameters.AddWithValue("$shared_plan", revision.State.SharedPlanIdentitySha256);
                 insert.Parameters.AddWithValue("$local_plan", revision.State.LocalPlanIdentitySha256);
-                insert.Parameters.AddWithValue("$frozen_plan", preparedInputs.FrozenPlanJson);
+                insert.Parameters.AddWithValue("$frozen_plan", InitializeFrozenOutputInputCounts(
+                    preparedInputs.FrozenPlanJson, revision.Nodes.Select(static node => node.NodeId)));
                 insert.Parameters.AddWithValue("$configuration", configurationJson);
                 insert.Parameters.AddWithValue("$trigger", submission.TriggerKind);
                 insert.Parameters.AddWithValue("$trigger_reference", submission.TriggerReference ?? executionId.ToString("N"));
@@ -710,6 +711,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
         }
+        await RecordFrozenOutputInputCountAsync(connection, transaction, executionId, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask EnsureFrozenRawFilesExistAsync(

@@ -27,7 +27,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             if (reader.TokenType != JsonTokenType.PropertyName)
                 throw new JsonException("The frozen execution plan has an invalid member.");
             var start = checked((int)reader.TokenStartIndex);
-            var optional = reader.ValueTextEquals(CommittedOutputCountsMember);
+            var optional = reader.ValueTextEquals(CommittedOutputCountsMember) || reader.ValueTextEquals(FrozenOutputInputCountsMember);
             if (!reader.Read()) throw new JsonException("The frozen execution plan member has no value.");
             reader.Skip();
             if (optional)

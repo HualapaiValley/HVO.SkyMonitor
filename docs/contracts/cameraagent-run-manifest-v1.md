@@ -46,7 +46,9 @@ members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
 There is no SQLite schema, installer or image-boundary change. Older runs without
 recorded counts remain available when a full declared output set (including a run ending in failure) or an outputless
-node with a recorded history consisting only of skipped attempts proves completeness. A latest Skipped
+node with no attempts or only uncommitted running/interrupted/skipped attempts proves completeness.
+Terminal sweeps can mark an unstarted or interrupted node failed without committing any outputs;
+such Live failure/expiry and Replay failure/expiry/cancel paths remain downloadable. A latest Skipped
 or failed state alone cannot prove zero outputs after earlier retries; unprovable retry/skip/failure
 history is refused rather than exporting a partial manifest. An older ambiguous run
 receives the fixed reason that its original produced-output evidence was not recorded completely, rather
@@ -61,10 +63,18 @@ still detected.
 Refusal for older runs applies only when their output-history completeness cannot
 be proven. It does not permit other manifest failures or an unreadable ordinary journal.
 
+Historical processing-input cardinalities are initialized to zero on new Live/Replay admission
+and updated atomically when window pins are frozen. This evidence lives in the existing
+frozen execution JSON independently of cascading input-pin deletion. Even a node that produces
+no outputs must retain every frozen input; a missing historical row refuses the download with
+the missing-artifact reason before and after restart. An older outputless window without this
+proof refuses with the original frozen-input evidence incomplete reason. Current dependency
+inputs still use immutable output lineage; no schema or revision identity changes.
+
 Optional count metadata is excluded before primary plan parsing, including when it
 is deeply nested. Primary normalization-plan depth, shape and identity validation
 remain unchanged. Corrupt optional counts, including malformed Unicode keys, do not
-roll back node completion. If export bookkeeping cannot parse the frozen evidence, completion
+roll back input resolution or node completion. If export bookkeeping cannot parse the frozen evidence, completion
 preserves those bytes and records the completed attempt; the manifest still refuses
 corrupt evidence with its specific reason. Primary evidence readers keep their
 existing validation. With intact primary evidence, the ordinary execution API,

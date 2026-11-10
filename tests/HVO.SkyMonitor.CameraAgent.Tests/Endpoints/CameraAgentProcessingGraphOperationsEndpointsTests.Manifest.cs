@@ -21,6 +21,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         var node = json.RootElement.GetProperty("nodes")[0];
         Assert.IsFalse(node.TryGetProperty("artifactBindingsRetained", out _));
         Assert.IsFalse(node.TryGetProperty("committedOutputCount", out _));
+        Assert.IsFalse(node.TryGetProperty("inputEvidenceIncomplete", out _));
         Assert.IsFalse(node.TryGetProperty("calibrationInputs", out _));
     }
 

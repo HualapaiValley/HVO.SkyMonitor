@@ -13,6 +13,7 @@ internal static class CameraAgentRunManifest
     internal const string IdentifierUnavailableReason = "A retained node identifier cannot be included safely in the manifest.";
     internal const string IncompleteReason = "The retained artifact checksum or lineage evidence is incomplete.";
     internal const string UnrecordedOutputReason = "The execution's original produced-output evidence was not recorded completely.";
+    internal const string UnrecordedInputReason = "The execution's original frozen-input evidence was not recorded completely.";
     internal const string CorruptReason = "The retained run evidence is corrupt and cannot be downloaded.";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -30,10 +31,9 @@ internal static class CameraAgentRunManifest
             return (null, ProcessingRunManifestBounds.UnavailableReason);
         if (detail.Nodes.Any(static node => !HasRetainedArtifactBindings(node)))
             return (null, ArtifactEvidenceUnavailableReason);
-        if (detail.Nodes.Any(static node => node.CommittedOutputCount is null &&
-            (node.Status is "Completed" or "Skipped" or "RetryableFailure" or "TerminalFailure" || node.Attempts.Any(static attempt =>
-                attempt.Status is "Completed" or "Skipped" or "RetryableFailure" or "TerminalFailure" ||
-                attempt.Outcome == HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced))))
+        if (detail.Nodes.Any(static node => node.InputEvidenceIncomplete))
+            return (null, UnrecordedInputReason);
+        if (detail.Nodes.Any(static node => node.CommittedOutputCount is null))
             return (null, UnrecordedOutputReason);
         if (detail.Nodes.Any(static node => node.NodeId.Length is 0 or > 128 ||
             node.NodeId != node.NodeId.Trim() || node.NodeId.Any(static value => char.IsControl(value) || value is '/' or '\\')))

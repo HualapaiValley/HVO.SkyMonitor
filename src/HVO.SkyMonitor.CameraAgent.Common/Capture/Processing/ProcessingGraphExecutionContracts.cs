@@ -179,6 +179,10 @@ public sealed record ProcessingGraphExecutionNodeState(
     [System.Text.Json.Serialization.JsonIgnore]
     public int? CommittedOutputCount { get; init; }
 
+    /// <summary>Whether original frozen derived-input history lacks a cardinality/lineage proof.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool InputEvidenceIncomplete { get; init; }
+
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
