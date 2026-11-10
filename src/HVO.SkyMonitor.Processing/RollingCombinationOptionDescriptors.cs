@@ -4,7 +4,7 @@ using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
-/// <summary>Existing same-gain rolling controls; mixed-gain recipes and plans stay opaque (#1624).</summary>
+/// <summary>Existing rolling-window controls; recipe selection and normalization plans are preserved.</summary>
 public static class RollingCombinationOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
@@ -27,20 +27,39 @@ public static class RollingCombinationOptionDescriptors
                 null, double.Epsilon, double.MaxValue, "ms", "Unlimited", "Remove limit")
         ]);
 
+    public static ProcessingNodeOptionsDescriptor MixedGain { get; } = new(
+        "mixed-gain-rolling-combination-options-v1", "RollingCombination",
+        new MixedGainNormalizedMeanRecipe().Definition.ImplementationVersion,
+        "Mixed-gain rolling combination",
+        "Configure the existing mixed-gain window. Each execution still requires its frozen normalization plan and compatible calibration masters. Recipe, output routes and normalization bindings are preserved; saving does not acquire masters, change algorithms or activate the graph.",
+        Descriptor.Options);
+
     public static bool IsSameGain(JsonElement options) => options.ValueKind == JsonValueKind.Object &&
         options.EnumerateObject().Where(static property => property.Name.Equals("recipe", StringComparison.OrdinalIgnoreCase))
             .All(static property => property.Value.ValueKind == JsonValueKind.Null);
 
+    public static bool IsMixedGain(JsonElement options)
+    {
+        if (options.ValueKind != JsonValueKind.Object) return false;
+        var recipes = options.EnumerateObject().Where(static property => property.Name.Equals("recipe", StringComparison.OrdinalIgnoreCase)).ToArray();
+        return recipes.Length == 1 && recipes[0].Value.ValueKind == JsonValueKind.String &&
+            recipes[0].Value.GetString() == BuiltInProcessingRecipes.MixedGainNormalizedMean;
+    }
+
+    internal static bool MatchesRecipe(ProcessingNodeOptionsDescriptor descriptor, JsonElement options) =>
+        descriptor.StepVersion == MixedGain.StepVersion ? IsMixedGain(options) : IsSameGain(options);
+
     internal static bool IsDescriptor(ProcessingNodeOptionsDescriptor descriptor) =>
         descriptor.StepAlias.Equals(Descriptor.StepAlias, StringComparison.OrdinalIgnoreCase) &&
-        descriptor.StepVersion == Descriptor.StepVersion;
+        (descriptor.StepVersion == Descriptor.StepVersion || descriptor.StepVersion == MixedGain.StepVersion);
 
     internal static ImmutableArray<ProcessingGraphDiagnostic> ValidateWindow(ProcessingGraphNodeDefinition node, string path)
     {
-        if (!node.StepAlias.Equals(Descriptor.StepAlias, StringComparison.OrdinalIgnoreCase) ||
-            node.StepVersion != Descriptor.StepVersion)
+        var descriptor = node.StepVersion == MixedGain.StepVersion ? MixedGain : Descriptor;
+        if (!node.StepAlias.Equals(descriptor.StepAlias, StringComparison.OrdinalIgnoreCase) ||
+            node.StepVersion != descriptor.StepVersion)
             return [];
-        var decoded = ProcessingNodeOptionsCodec.Decode(Descriptor, node.EffectiveOptions, path + ".effectiveOptions");
+        var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, node.EffectiveOptions, path + ".effectiveOptions");
         if (!decoded.IsValid) return decoded.Diagnostics;
         var size = (int)decoded.Get("windowSize").Value.AsWholeNumber();
         var kind = Enum.Parse<ProcessingGraphWindowKind>(decoded.Get("windowKind").Value.AsText());

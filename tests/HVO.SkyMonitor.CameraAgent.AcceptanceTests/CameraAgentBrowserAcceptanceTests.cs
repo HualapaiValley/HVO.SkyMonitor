@@ -2770,7 +2770,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
 
-        // Draft: name and revision, one node of a registered type, preview, and the diagram's keyboard path.
+        // VirtualSky captures require their canonical scene node; keep that guard in the keyboard draft.
+        // Draft: name and revision, registered nodes, preview, and the diagram's keyboard path.
         await page.GotoAsync("/operations/pipeline/graphs/new").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Draft graph", Level = 1 })).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -2778,12 +2779,17 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.Keyboard.TypeAsync("keyboard-graph").ConfigureAwait(false);
         await TabToAsync(page, "input", "Revision label").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("1").ConfigureAwait(false);
+        await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("ProjectedScene").ConfigureAwait(false);
+        await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
         // Pick the preview step by typeahead on the focused select, then add it.
         await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("Preview").ConfigureAwait(false);
         await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelectorAll('.node-row').length === 2").ConfigureAwait(false);
         await TabToAsync(page, "button", "Preview plan").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         var diagram = page.Locator("svg[role='group']");
