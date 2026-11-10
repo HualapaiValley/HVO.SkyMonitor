@@ -101,7 +101,7 @@ jobs:
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
           printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Run native ARM64 build, test, publish, and smoke
