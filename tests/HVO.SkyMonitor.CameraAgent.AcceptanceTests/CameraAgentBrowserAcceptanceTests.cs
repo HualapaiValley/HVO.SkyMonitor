@@ -2203,7 +2203,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.Locator("#automation-id")).ConfigureAwait(false);
         var task = page.Locator("#automation-task");
         var environmentalOption = task.Locator("option[value='EnvironmentalOnDemandAcquisition']");
-        Assert.IsTrue(await environmentalOption.IsDisabledAsync().ConfigureAwait(false));
+        // Check the native option property; Playwright's enabled matcher misclassifies this option.
+        await Assertions.Expect(environmentalOption).ToHaveJSPropertyAsync("disabled", true).ConfigureAwait(false);
         // A client can tamper with a disabled option; server validation must still reject it.
         await environmentalOption.EvaluateAsync("option => option.disabled = false").ConfigureAwait(false);
         await task.SelectOptionAsync(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition)).ConfigureAwait(false);
