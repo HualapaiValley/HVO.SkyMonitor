@@ -73,6 +73,30 @@ for trx in results.glob("*.trx"):
     contributors[report] = {path for path in active if path.split("/")[0] in owners}
 if seen != expected_projects or any(by_hash.values()):
     raise SystemExit("Incomplete Unit/TRX/original-report identities; recollect the complete Unit selection")
+def branch_shape(line):
+    coverage = line.get("condition-coverage")
+    counts = re.search(r"\((\d+)/(\d+)\)", coverage) if coverage is not None else None
+    if coverage is not None and counts is None:
+        raise SystemExit(f"Invalid condition-coverage: {coverage}")
+    total = int(counts.group(2)) if counts else 0
+    conditions = [entry.get("number") for entry in line.findall("conditions/condition")]
+    if (line.get("branch", "").lower() == "true" and total == 0 or
+            line.get("branch", "").lower() == "false" and total > 0 or
+            any(not value for value in conditions) or len(conditions) != len(set(conditions)) or
+            (conditions and total == 0)):
+        raise SystemExit(f"Invalid branch structure on line{line.get('number')}")
+    return total, tuple(sorted(conditions))
+
+
+def collect_lines(target, lines, path, report):
+    for line in lines:
+        number = int(line.get("number"))
+        shape = branch_shape(line)
+        if number in target and target[number] != shape:
+            raise SystemExit(f"Conflicting branch shapes for {path}:{number} in {report}")
+        target[number] = shape
+
+
 observations = {path: [] for path in active}
 for report in reports:
     document = ET.parse(report)
@@ -92,9 +116,9 @@ for report in reports:
             continue
         if len(matches) != 1:
             raise SystemExit(f"Ambiguous floor source {filename} in {report}")
-        classes, methods = sources.setdefault(matches[0], (set(), set()))
-        classes.update(int(line.get("number")) for line in entry.findall("lines/line"))
-        methods.update(int(line.get("number")) for line in entry.findall("methods/method/lines/line"))
+        classes, methods = sources.setdefault(matches[0], ({}, {}))
+        collect_lines(classes, entry.findall("lines/line"), matches[0], report)
+        collect_lines(methods, entry.findall("methods/method/lines/line"), matches[0], report)
     if set(sources) != contributors[report]:
         raise SystemExit(f"Missing/unexpected contributing floor sources in {report}: expected {sorted(contributors[report])}, found {sorted(sources)}")
     for path, (classes, methods) in sources.items():
@@ -106,9 +130,11 @@ for path, source in sorted(active.items()):
     rows = observations[path]
     if not rows or any(lines != rows[0] for lines in rows):
         raise SystemExit(f"Missing or inconsistent contributing reports for {path}")
-    files[path] = {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(), "lines": sorted(rows[0])}
+    files[path] = {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(), "lines": sorted(rows[0]),
+                   "branches": {str(number): {"total": shape[0], "conditions": list(shape[1])}
+                                for number, shape in sorted(rows[0].items()) if shape[0] > 0}}
 collector = ET.parse(root / "Directory.Packages.props").find(".//PackageVersion[@Include='coverlet.collector']").get("Version")
-manifest = {"schemaVersion": 1, "sdkVersion": json.loads((root / "global.json").read_text())["sdk"]["version"],
+manifest = {"schemaVersion": 2, "sdkVersion": json.loads((root / "global.json").read_text())["sdk"]["version"],
             "collectorVersion": collector, "settingsSha256": hashlib.sha256((root / "tests/coverage.runsettings").read_bytes()).hexdigest(), "files": files}
 text = json.dumps(manifest, indent=2)
 # Keep the reviewed machine inventory compact, with up to16 sorted lines/row.
@@ -117,6 +143,8 @@ def compact(match):
     rows = ["      " + ", ".join(numbers[i:i+16]) for i in range(0, len(numbers), 16)]
     return match.group(1) + "\n" + ",\n".join(rows) + "\n    ]"
 text = re.sub(r'("lines": \[)\n((?:\s+\d+,?\n)+)\s*\]', compact, text)
+text = re.sub(r'("conditions": \[)\n((?:\s+"[^"\n]+",?\n)+)\s*\]',
+              lambda match: match.group(1) + ", ".join(json.dumps(value) for value in json.loads("[" + match.group(2) + "]")) + "]", text)
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_text(text + "\n")
 print(f"Wrote {len(files)} source-bound line inventories from {len(reports)} reports. Review the artifact diff before committing; CI never regenerates it.")

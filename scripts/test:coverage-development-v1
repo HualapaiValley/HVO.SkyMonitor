@@ -12,6 +12,7 @@ dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
 python3 - "$repo_root" "$scratch" <<'PY'
 import copy
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -261,7 +262,13 @@ for name, filename, numbers in (("InventoryAsync/<ExecuteAsync>d__0", "Inventory
                           **{"line-rate": "1", "branch-rate": "1"})
     lines = ET.SubElement(entry, "lines")
     for number in numbers:
-        ET.SubElement(lines, "line", number=str(number), hits="1", branch="false")
+        line = ET.SubElement(lines, "line", number=str(number), hits="1", branch="false")
+        if filename == "InventoryAsync.cs" and number == 75:
+            line.set("branch", "true")
+            line.set("condition-coverage", "100% (32/32)")
+            conditions = ET.SubElement(line, "conditions")
+            for condition in range(16):
+                ET.SubElement(conditions, "condition", number=str(condition), type="jump", coverage="100%")
 
 
 def write_fixture(document, sync_methods=True):
@@ -279,10 +286,13 @@ def write_fixture(document, sync_methods=True):
     shutil.copy2(valid, attachment)
 
 
+wrapper_env = None
+
+
 def wrapper_case(name, expected, *needles):
     global cases
     result = subprocess.run([str(fixture_scripts / "coverage:development-v1"), str(results), str(inventory_repo / "coverage-output")],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, env=wrapper_env)
     output = result.stdout + result.stderr
     if result.returncode != expected or any(needle not in output for needle in needles):
         raise SystemExit(f"FAIL {name}: exit={result.returncode}\n{output}")
@@ -295,12 +305,31 @@ subprocess.run([str(fixture_scripts / "coverage:line-inventory"), str(results),
                 str(fixture_scripts / "coverage/development-v1-lines.json")], check=True)
 # The producer is a maintenance command, never part of the gate's CI child.
 assert "coverage:line-inventory" not in (root / ".github/workflows/development-v1.yml").read_text()
-real_lines = json.loads((root / "scripts/coverage/development-v1-lines.json").read_text())["files"]
-real_executor = real_lines["HVO.SkyMonitor.Processing/ProcessingRecipeExecutor.cs"]["lines"]
-assert 44 not in real_executor and 52 in real_executor
+fixture_pin = json.loads((fixture_scripts / "coverage/development-v1-lines.json").read_text())["files"][path]
+fixture_lines = {int(line.get("number")) for entry in composite.findall(".//class")
+                 if entry.get("filename").endswith("CameraGeometry.cs") for line in entry.findall("lines/line")}
+omitted_fixture_line = next(number for number, text in enumerate((source_dir / "CameraGeometry.cs").read_text().splitlines(), 1)
+                            if "int Generated()" in text)
+if set(fixture_pin["lines"]) != fixture_lines or omitted_fixture_line in fixture_pin["lines"]:
+    raise SystemExit("FAIL fixture emitted-line inventory: restore the complete fixture report and regenerate/review its inventory with coverage:line-inventory")
 cases += 1
-print("PASS reviewed inventory preserves genuine line44 omission and measured line52; CI cannot regenerate it")
+print("PASS emitted fixture inventory retains measured data and permits omitted generated points; no production line numbers")
 wrapper_case("complete wrapper accepts excluded-only lambda source and omitted generated points", 0, "Coverage gate passed.")
+# The real wrapper/build path above and the final 21-project CI run remain
+# uncached. Fault cases reuse that exact compiled fixture helper through the
+# unchanged wrapper; repeated dotnet-run restore/build adds no behavioral proof.
+launcher = scratch / "fixture-dotnet"
+launcher.mkdir()
+real_dotnet = shutil.which("dotnet")
+fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.CoverageGate.dll"
+(launcher / "dotnet").write_text("#!/usr/bin/env python3\nimport os, pathlib, sys\na=sys.argv[1:]\n" +
+    f"real={str(real_dotnet)!r}\nproject={str(fixture_scripts / 'coverage/HVO.SkyMonitor.CoverageGate.csproj')!r}\n" +
+    f"gate={str(fixture_gate)!r}\n" +
+    "if a and a[0]=='run' and '--project' in a and a[a.index('--project')+1]==project:\n" +
+    " os.execv(real,[real,gate,*a[a.index('--')+1:]])\nos.execv(real,[real,*a])\n")
+(launcher / "dotnet").chmod(0o700)
+wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
+
 # A declared collector inventory cannot survive deleted emitted records,
 # including records from otherwise exempt generated methods.
 write_fixture(composite)
@@ -415,6 +444,58 @@ malformed_method.find(".//methods/method/lines/line").set("hits", "invalid")
 write_fixture(malformed_method, sync_methods=False)
 wrapper_case("malformed method record fails structural validation before merge", 1,
              "Coverage input validation failed")
+# M1: real branch coverage can fail while its source line is still present.
+branch_low = copy.deepcopy(composite)
+entry = next(entry for entry in branch_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("condition-coverage", "0% (0/32)")
+for condition in line.findall("conditions/condition"):
+    condition.set("coverage", "0%")
+write_fixture(branch_low)
+wrapper_case("complete 32-branch failure is measured without changing its denominator", 1,
+             "InventoryAsync.cs", "branch 0.00", "min 90.00")
+branchless = copy.deepcopy(branch_low)
+entry = next(entry for entry in branchless.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(branchless)
+wrapper_case("branch=false rewrite cannot hide the measured 32-branch failure", 1,
+             "InventoryAsync.cs:75", "measured branch denominator 0", "pinned denominator 32")
+partial_branch = copy.deepcopy(branch_low)
+entry = next(entry for entry in partial_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("condition-coverage", "0% (0/30)")
+line.find("conditions").remove(line.find("conditions/condition"))
+write_fixture(partial_branch)
+wrapper_case("partial branch removal with consistent counts cannot shrink the denominator", 1,
+             "InventoryAsync.cs:75", "measured branch denominator 30", "pinned denominator 32")
+condition_only = copy.deepcopy(composite)
+entry = next(entry for entry in condition_only.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.find("conditions").remove(line.find("conditions/condition"))
+write_fixture(condition_only)
+wrapper_case("condition deletion cannot hide behind an unchanged declared 32 total", 1,
+             "InventoryAsync.cs:75", "condition IDs")
+class_branch = copy.deepcopy(composite)
+entry = next(entry for entry in class_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(class_branch, sync_methods=False)
+wrapper_case("branch structure is pinned at class level independently of methods", 1,
+             "class-level", "pinned denominator 32")
+method_branch = copy.deepcopy(composite)
+entry = next(entry for entry in method_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("methods/method/lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(method_branch, sync_methods=False)
+wrapper_case("branch structure is pinned at method level independently of classes", 1,
+             "method-level", "pinned denominator 32")
 pinned_path = fixture_scripts / "coverage/development-v1-lines.json"
 pinned_bytes = pinned_path.read_bytes()
 pinned_missing = json.loads(pinned_bytes)

@@ -411,6 +411,7 @@ internal static class UnitCoverageInputs
                 foreach (var line in entry.Elements("methods").Elements("method").Elements("lines").Elements("line"))
                 {
                     methodLines.Add((int)line.Attribute("number")!);
+                    lineInventory.ValidateBranchRecord(report, relative, "method-level", line);
                 }
 
                 foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
@@ -423,6 +424,7 @@ internal static class UnitCoverageInputs
 
                     source.Classes.Add((string)entry.Attribute("name")!);
                     source.StatementLines.Add((int)line.Attribute("number")!);
+                    lineInventory.ValidateBranchRecord(report, relative, "class-level", line);
                 }
             }
 

@@ -41,14 +41,17 @@ PDBs must match their DLL debug identifiers, and excluded method source sections
 also exclude nested generated code. PDB checks independently require ordinary
 and unambiguous async/iterator statement spans, including continuation lines.
 
-All 27 floored files additionally have a reviewed emitted-line inventory in
+All 27 floored files additionally have a reviewed line and branch inventory in
 `scripts/coverage/development-v1-lines.json`. It binds each source SHA-256, the
 pinned SDK/collector versions and canonical settings hash to the exact line set
-emitted by genuine complete Unit collection. Both class-level **and method-level**
-line sets must match that inventory in every contributing report. Deletion fails
-even when both representations, TRX copies and declared counts are changed
-consistently. This covers generated/overlapping lines that PDB checks cannot
-require universally: genuine `ProcessingRecipeExecutor.cs:44` is absent from the
+emitted by genuine complete Unit collection, plus each emitted line's branch
+denominator and condition IDs. Both class-level **and method-level** line sets
+and per-line branch structure must match in every contributing report. Removing
+a line, rewriting a measured branch line as `branch=false`, shrinking its branch
+total or deleting a condition fails even when both representations, TRX copies
+and declared counts are changed consistently. Genuinely branchless lines and
+collector-omitted points remain valid according to the reviewed inventory. This
+covers generated/overlapping lines that PDB checks cannot require universally: genuine `ProcessingRecipeExecutor.cs:44` is absent from the
 pinned emitted set, while measured line52 is required. No runtime report decides
 its own expected denominator, and no file floor or percentage changes.
 
@@ -58,8 +61,11 @@ before merging, and both representations must be complete independently. The
 shared evaluator measures the resulting merged class-level lines. Report-level
 `lines-valid` is also checked for consistency; it is not the independent source
 of completeness. Non-floored sources retain PDB source/ordinary-class checks.
-Declared hit and branch values are trusted collector assertions, not authenticated
-or reconstructed from IL; copied TRX attachment hashes bind identity only.
+Root `branches-valid` can include branches not mapped to emitted lines in genuine
+Coverlet output, so it is not equated with their sum. Per-line branch denominators
+and condition identities come from the independent pin. Hit counts and covered
+branch values remain trusted collector assertions, not authenticated or
+reconstructed from IL; copied TRX attachment hashes bind identity only.
 
 A source, active floor, SDK, collector or settings change that invalidates the
 pinned inventory fails with a regeneration remedy. After reviewing a fresh,
@@ -72,8 +78,9 @@ git diff -- scripts/coverage/development-v1-lines.json
 
 This is a maintenance command, never a CI step. CI must not regenerate its
 expected inventory from inputs it is about to validate. The generator rejects
-missing contributors and differing class/method or per-contributor line sets;
-review must establish genuine collection provenance and preserve all thresholds.
+missing contributors and differing class/method or per-contributor line sets
+or branch structure; review must establish genuine collection provenance and
+preserve all thresholds.
 Keep generated settings and original reports with that evidence. Unsupported
 collector exclusions/options and active `tools/` floors fail explicitly until the
 inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
@@ -162,12 +169,17 @@ Integration selection, workflow dispatch or repository setting is introduced.
 
 Earlier independent review measured about 44.5 seconds added to Unit collection
 with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
-growing about 18 MB. That review's 20.3-second coverage stage predates the stronger
-input inventory. Subsequent coverage-stage measurements were 29–35 seconds in
-independent reviews and 45.35 seconds in the owner's 57d17c94 replay; these are
-separate samples, not a controlled incremental comparison. Earlier variable local
-controls did not establish that coverage was faster. Observe hosted timing and
-memory alongside the existing workload budget when evaluating further changes.
+growing about 18 MB. More recent local build/Unit/coverage totals were about
+628 seconds on 6ac31137 and 662 seconds on its local target merge: above the
+600-second target, within the 1080-second workload deadline. The coverage stage
+took about 48–51 seconds, including about 38 seconds of regression self-tests
+on every applicable event. These supersede the older 20.3-second stage sample.
+The self-tests now reuse their already compiled private fixture helper for fault
+cases, while still executing the wrapper, validation and pinned merger; the
+positive build path and real 21-project coverage run remain uncached. Candidate
+handoff evidence records current timings. Separate host samples are not a
+controlled incremental comparison and establish no coverage speedup. Observe
+hosted timing and memory alongside the existing workload budget.
 
 ## Development v1 Preflight Budget
 
