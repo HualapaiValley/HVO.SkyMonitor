@@ -2513,17 +2513,12 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
 
-        // Navigation completes before the bounded page's return links have finished rendering.
-        await page.WaitForFunctionAsync(
-            "() => decodeURIComponent(document.querySelector('.capture-image')?.getAttribute('href') || '').includes('cursor=')")
-            .ConfigureAwait(false);
         var detailLink = page.Locator(".capture-card a[aria-label^='Open capture']").First;
         var detailUrl = await detailLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
         StringAssert.Contains(detailUrl, "returnUrl=", StringComparison.Ordinal);
         var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
-        // Keep the capture whose facts were read: a list rerender can retarget the first-card locator.
-        await page.GotoAsync(detailUrl).ConfigureAwait(false);
+        await detailLink.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
@@ -2558,9 +2553,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             Assert.IsFalse(bodyText.Contains(prohibited, StringComparison.OrdinalIgnoreCase), prohibited);
         }
 
-        await page.Locator("#evidence-panel-Artifacts .download-menu__toggle").First.FocusAsync().ConfigureAwait(false);
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await page.Locator(".download-menu-backdrop").WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Link, new() { Name = "Back to gallery results", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
