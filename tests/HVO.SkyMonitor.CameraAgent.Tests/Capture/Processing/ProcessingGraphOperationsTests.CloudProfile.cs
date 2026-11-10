@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -185,6 +186,36 @@ public sealed partial class ProcessingGraphOperationsTests
                         .GetPreviewAsync(presentation.Presentation.BaseArtifactId, CancellationToken.None).ConfigureAwait(false);
                     Assert.AreEqual(CameraAgentArtifactReadStatus.Found, preview.Status);
                     await File.WriteAllBytesAsync(Path.Combine(directory, "base.jpg"), preview.Content.ToArray()).ConfigureAwait(false);
+                }
+            }
+            if (scenario != "corrupt")
+            {
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var executionId = (await operations.ReadLiveExecutionIdAsync(captureId, CancellationToken.None).ConfigureAwait(false))!.Value;
+                var body = await RunManifestTestAssertions.ResponseAsync(operations, executionId).ConfigureAwait(false);
+                if (scenario is "clear" or "partial" or "overcast")
+                {
+                    using var manifest = JsonDocument.Parse(body);
+                    var cloudNode = manifest.RootElement.GetProperty("nodes").EnumerateArray()
+                        .Single(node => node.GetProperty("nodeId").GetString() == "CloudAssessment");
+                    var auxiliary = cloudNode.GetProperty("inputs").EnumerateArray()
+                        .Single(input => input.GetProperty("artifactId").GetGuid() == reference.Manifest.Descriptor.Artifact.ArtifactId);
+                    Assert.AreEqual("AuxiliaryRawCapture", auxiliary.GetProperty("kind").GetString());
+                    Assert.AreEqual(JsonValueKind.Null, auxiliary.GetProperty("windowPosition").ValueKind);
+                    Assert.AreEqual(reference.Manifest.Descriptor.Capture.CaptureId, auxiliary.GetProperty("captureId").GetGuid());
+                    Assert.AreEqual(reference.Manifest.Descriptor.Artifact.ChecksumSha256, auxiliary.GetProperty("payloadSha256").GetString());
+                    // The provisioned file and payload still exist: only truly missing immutable
+                    // reference metadata may change the response to the retention-specific 409.
+                    using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+                    await connection.OpenAsync().ConfigureAwait(false);
+                    using var deletion = connection.CreateCommand();
+                    deletion.CommandText = """
+                        DELETE FROM processing_execution_input_pins WHERE artifact_id = $artifact AND released_flag = 1;
+                        DELETE FROM raw_captures WHERE raw_artifact_id = $artifact;
+                        """;
+                    deletion.Parameters.AddWithValue("$artifact", reference.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
+                    await deletion.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    await RunManifestTestAssertions.ResponseAsync(operations, executionId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
                 }
             }
             CollectionAssert.AreEqual(currentHash, SHA256.HashData(await File.ReadAllBytesAsync(current.StoredFrame.AbsolutePath).ConfigureAwait(false)));

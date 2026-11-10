@@ -308,6 +308,9 @@ public sealed class CameraAgentReplayUiServiceTests
         /// </summary>
         internal ProcessingNodeExecutionRoute AttemptRoute { get; init; } = ProcessingNodeExecutionRoute.Unknown;
 
+        public ValueTask<ProcessingGraphExecutionDetail?> ReadRunManifestAsync(Guid executionId, CancellationToken cancellationToken)
+            => ReadExecutionDetailAsync(executionId, cancellationToken);
+
         public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
         {
             RegistryReads++;

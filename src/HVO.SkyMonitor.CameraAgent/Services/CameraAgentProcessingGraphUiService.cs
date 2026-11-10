@@ -151,7 +151,10 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
     CameraAgentProcessingExecutionSummary Execution,
     string SharedPlanIdentitySha256,
     string LocalPlanIdentitySha256,
-    IReadOnlyList<CameraAgentProcessingNodeView> Nodes);
+    IReadOnlyList<CameraAgentProcessingNodeView> Nodes)
+{
+    public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
+}
 
 /// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
 internal sealed record CameraAgentProcessingGraphRevisionDetail(
@@ -263,8 +266,39 @@ internal sealed class CameraAgentProcessingGraphUiService(
         => ReadAsync(async token =>
         {
             var detail = await operations.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
-            return detail is null ? null : CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow());
+            if (detail is null) return null;
+            var reason = await ReadManifestUnavailableReasonAsync(executionId, token).ConfigureAwait(false);
+            return CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow()) with
+            {
+                ManifestUnavailableReason = reason
+            };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An optional manifest read cannot conceal the primary execution journal; failures have a fixed public reason.")]
+    private async Task<string?> ReadManifestUnavailableReasonAsync(Guid executionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var manifest = await operations.ReadRunManifestAsync(executionId, cancellationToken).ConfigureAwait(false);
+            return manifest is null ? CameraAgentRunManifest.MissingReason : CameraAgentRunManifest.Create(manifest).Reason;
+        }
+        catch (ProcessingRunManifestBoundsException)
+        {
+            return ProcessingRunManifestBounds.UnavailableReason;
+        }
+        catch (InvalidDataException)
+        {
+            return CameraAgentRunManifest.CorruptReason;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return "The run manifest is temporarily unavailable. Refresh the run to try again.";
+        }
+    }
 
     public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
         => ReadAsync(async token => await operations.ReadLiveExecutionIdAsync(captureId, token).ConfigureAwait(false) is { } id
