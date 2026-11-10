@@ -1,5 +1,12 @@
 # Protected installation verification (#1041)
 
+> Superseded completeness verdict: independent Sol/Opus HIGH reviews at
+> `c4069b8c` found unresolved linear I/O and startup/optional-cache regressions.
+> Owner status is IMPLEMENTATION REQUIRED. See the
+> [correction design and pending integrity-policy decision](issue-1041-run2-design.md).
+> The measurements below remain historical observations, not proof the incident
+> loop or capture-count-independent verification is solved.
+
 ## Sources and authority
 
 Original issue body and all 13 discussion comments read 2026-11-10 UTC:
