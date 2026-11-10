@@ -485,6 +485,7 @@ public class Program
                 catch (HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.InstallationVerificationPendingException)
                 {
                     context.Response.Headers.RetryAfter = "1";
+                    context.Response.Headers["X-HVO-Installation-Verification"] = "scrub-pending";
                     return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
                         title: "Installation integrity verification is awaiting a complete scrub.");
                 }

@@ -299,7 +299,15 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             var location = DeploymentLocationSnapshot.Create(seed.LocationId, 1, seed.Source, null, Now, null,
                 35, -113, 0, "America/Phoenix");
             var original = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
-            bytes = CaptureContractJson.Serialize(original with { Descriptor = original.Descriptor with { Location = location.ToProvenance() } });
+            bytes = CaptureContractJson.Serialize(original with
+            {
+                Descriptor = original.Descriptor with
+                {
+                    Location = location.ToProvenance(),
+                    Timing = new CaptureTimingDescriptor(Now, Now.AddSeconds(1), Now.AddSeconds(2), Now.AddSeconds(3), Now.AddSeconds(4)),
+                    Artifact = original.Descriptor.Artifact with { CreatedUtc = Now.AddSeconds(4) }
+                }
+            });
             Assert.IsTrue(CaptureContractJson.ParseManifest(bytes).IsValid);
         }
         var mutation = RetainedIntegrityLedger.BeginWrite(path, bytes);

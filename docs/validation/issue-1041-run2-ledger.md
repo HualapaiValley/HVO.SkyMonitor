@@ -35,7 +35,11 @@ checkpoint. It does not enumerate, read, hash or parse retained history, or open
 the retained ledger database. A one-second limit applies to each local gate wait.
 Unqualified/missing/expired/busy state returns sanitized HTTP 503 with
 `Retry-After: 1`; there is no successful identity response or installer bypass.
-The existing CLI treats unsuccessful verification as a pre-mutation failure.
+New clients retry only HTTP 503 carrying the explicit `scrub-pending` header.
+The same original finite 120-second CTS covers every attempt, retry delay and
+final response body; it is never restarted. Other unsuccessful responses fail
+immediately. Exhaustion/caller cancellation retain the #1042 distinction and
+sanitized diagnostics; all field comparisons still precede mutation.
 
 The checkpoint is bound to a new process epoch, validator/Common/AgentCore/runtime
 identity and current protected-history identity. It includes an authenticated
@@ -171,7 +175,7 @@ its manifest. The endpoint takes the same fixed path regardless of either kind.
 | R1: current costs and 100k+ bounded endpoint | Fixed checkpoint plus fresh current identity, no retained scan; exact product/capture counts | Real endpoint scale, warm and fixture-only evicted at 100,001/300,000 sidecars | Pending |
 | R2: tamper/schema/corruption and retained provenance | Approved scrub boundary; managed validation; authenticated expected set; strict qualification | OutOfBandBoundary, LedgerTamper, WarmIndexRejectsInvalid, startup/quarantine tests | Pending final head |
 | R3: authoritative identity/readiness and concurrent edits | Exact config snapshot/freshness callback; history/manual/owner state fresh; no fast-path authority changes | QualifiedProtectedRead, StaleBackgroundConfiguration, actual delayed/config/manual/authenticated endpoint edits | Pending final head |
-| R4: installer budget/auth/comparisons/pre-mutation | Existing #1042 shared 120s finite policy and transport protections unchanged; 503 is failure | Existing owner client/resume tests; upgrade/rollback/backup mismatch/timeout/cancel/plan cases; installer campaign | Pending |
+| R4: installer budget/auth/comparisons/pre-mutation | Existing #1042 shared 120s finite policy and transport protections; only explicit pending-scrub responses retry within that budget | Existing owner client/resume tests; upgrade/rollback/backup mismatch/timeout/cancel/plan cases; installer campaign | Pending |
 | R5: cancellation/failure/progress | Independent coalesced scrub; canceled full scan saves individually valid proofs only | DirtyEndpoint, MidScanCancellation, optional-index fault tests | Pending final head |
 | R6: invalidation/concurrency/writers | Exact expected-entry updates, dirty refusal, changed-generation merge and finite waits | ManagedPublishCopyMoveRetention, concurrent scrub/writer, daily deadline, raw journal integration | Pending final head |
 | R7: crash/restore/rollback | New epoch always unqualified; pending declared results verified; no reset | Actual SIGKILL before/after/torn write; paired restore/rollback and incomplete-restore tests | Pending |
@@ -184,12 +188,12 @@ its manifest. The endpoint takes the same fixed path regardless of either kind.
 | --- | --- | --- |
 | Old | New | Same success wire contract and comparisons; qualified reads benefit; 503 requires later retry after scrub |
 | New | Old | Same finite client deadline/comparisons; old full-scan endpoint can still exceed 120 seconds |
-| New | New | Bounded qualified reads; dirty/expired/restarted state refuses until full requalification |
+| New | New | Bounded qualified reads; explicit pending responses retry within the original aggregate 120s budget; no identity or mutation until requalified |
 
 Pre-mutation verification always executes on the currently running agent. A
 server-only fix cannot unblock pre-upgrade verification of an already-slow old
 runtime. The fresh empty instance is an adoption window, not a correctness
-assumption. There is no timeout increase, retry loop, identity bypass or reset.
+assumption. There is no timeout increase, unbounded retry, identity bypass or reset.
 `--plan` still returns before the protected pre-mutation read and remains dry-run.
 An old agent writing a corpus after rollback cannot maintain a ledger it does not
 understand: a subsequent new agent detects that drift and refuses qualification.
@@ -209,8 +213,11 @@ Three preliminary baseline attempts failed this precondition: one repeated an
 older harness after a concurrent formatter writeback; the diagnostic attempt
 identified 240 pinned `.db-shm` coordination pages. These attempts contribute no
 baseline performance result. The corrected fixture boundary is applied to both
-baseline and candidate. Full qualification and five prepared/durable auxiliary
-publications are recorded separately from endpoint timing.
+baseline and candidate. Full qualification, durable-ledger restart qualification and five prepared/durable
+auxiliary publications are recorded separately from endpoint timing. Restart
+must requalify in a fresh store epoch and reuse all existing artifact proofs;
+only the newly published auxiliary state is parsed. The extra restart phase
+is candidate-only and follows every timed endpoint/publication sample.
 
 Pending final measurements and immutable candidate. Historical run-1/reviewer
 numbers are not represented as results for this implementation. Raw local logs

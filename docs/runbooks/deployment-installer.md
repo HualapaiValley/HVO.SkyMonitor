@@ -2756,9 +2756,11 @@ lifecycle journal or reduce an approved memory override to work around a limit.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second
-request deadline**, including response-body receipt. Each call makes one request;
-this is not an unlimited retry or a change to the separate health/startup, login,
-or drain limits. An elapsed request deadline reports
+verification deadline**, including attempts, retry delays and response-body receipt.
+Only HTTP 503 with `X-HVO-Installation-Verification: scrub-pending` is retried,
+at one-second intervals within that same original budget. Other responses keep
+their existing refusal policy. There is no unlimited retry or change to the
+separate health/startup, login or drain limits. An elapsed request deadline reports
 `CameraAgent installation verification request timed out.` without transport
 details or credentials. Caller cancellation remains cancellation, not a timeout.
 Before mutation, a timeout follows the existing refusal policy without pause,
@@ -2790,8 +2792,9 @@ this boundary, writer inventory and local scale/recovery evidence.
 Unqualified, expired or busy verification returns sanitized HTTP 503 and
 `Retry-After: 1`, with no successful installation identity. It coalesces a
 host-owned full revalidation; a canceled caller does not cancel that work. The
-installer's protected read still makes one finite request and refuses mutation
-on failure. Retry the lifecycle command after revalidation completes; do not
+installer's protected read retries only the explicit pending marker within one
+finite 120-second budget and refuses mutation on failure. Older installers fail
+on pending state; retry their lifecycle command after revalidation completes. Do not
 increase the timeout or bypass identity comparisons. Full scrubs remain linear
 background/startup work and may temporarily refuse verification.
 

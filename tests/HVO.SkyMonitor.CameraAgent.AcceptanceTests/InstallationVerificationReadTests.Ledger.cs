@@ -34,6 +34,7 @@ public sealed partial class InstallationVerificationReadTests
             {
                 Assert.AreEqual(HttpStatusCode.ServiceUnavailable, response.StatusCode);
                 Assert.AreEqual(TimeSpan.FromSeconds(1), response.Headers.RetryAfter!.Delta);
+                Assert.AreEqual("scrub-pending", response.Headers.GetValues("X-HVO-Installation-Verification").Single());
                 var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 Assert.IsFalse(text.Contains(CameraAgentKestrelFixture.InstallationVerificationToken, StringComparison.Ordinal));
                 Assert.IsFalse(text.Contains(fixture.Host.Root, StringComparison.Ordinal));

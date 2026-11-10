@@ -116,6 +116,23 @@ public sealed partial class InstallationVerificationReadTests
                 var afterWrite = await fixture.ReadAsync(client).ConfigureAwait(false);
                 Assert.AreEqual(first.Identity.GetRawText(), afterWrite.GetRawText(), "Managed publication must keep current identity qualified.");
             }
+            object? restartQualification = null;
+#if !HVO_BASELINE
+            using (var restartTrace = StartTrace("durable-ledger-restart")!)
+            {
+                var started = Stopwatch.GetTimestamp();
+                await fixture.Host.RestartAsync().ConfigureAwait(false);
+                _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+                var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                var observed = stages.ForTrace(restartTrace.TraceId);
+                var reparsed = observed.Sum(stage => stage.NumericTags.TryGetValue("attribution.parse.count", out var count)
+                    ? Convert.ToInt64(count, System.Globalization.CultureInfo.InvariantCulture) : 0L);
+                Assert.AreEqual(1L, reparsed, "Only the newly published auxiliary state may miss persisted proofs, including beyond the former cap.");
+                using var restartedClient = fixture.CreateClient();
+                Assert.AreEqual(first.Identity.GetRawText(), (await fixture.ReadAsync(restartedClient).ConfigureAwait(false)).GetRawText());
+                restartQualification = new { ElapsedMs = elapsed, Parses = reparsed, Requalified = true };
+            }
+#endif
             cases.Add(new
             {
                 Captures = corpus.JournalCount,
@@ -128,6 +145,7 @@ public sealed partial class InstallationVerificationReadTests
                 Warm = warm.Select(SafeMeasurement).ToArray(),
                 Evicted = evicted,
                 ManagedPublication = publication,
+                RestartQualification = restartQualification,
                 PersistedProofs = ProofCount(fixture)
             });
             var path = Path.Combine(output, "installation-read-ledger-scale.json");
