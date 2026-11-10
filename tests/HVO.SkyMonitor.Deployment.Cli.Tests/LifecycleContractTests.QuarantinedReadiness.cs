@@ -301,6 +301,34 @@ public sealed partial class LifecycleContractTests
         Assert.IsGreaterThan(0, owner.QuarantinedReadinessCalls);
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RollbackAsync_QuarantinedReadiness_VerifiesAndRestoresThePreviousImage()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.CandidateRawIngressSchema = "13";
+        var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder, MigrationBackwardCompatible = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual(candidateImageId, upgraded.Image!.ImageId);
+        var owner = QuarantinedOwner(fixture);
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback) with { AllowQuarantinedReadiness = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, result.Image!.ImageId);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.IsTrue(fixture.Runner.Running);
+        Assert.IsTrue(owner.QuarantinedReadinessSeen);
+        Assert.IsGreaterThan(0, owner.QuarantinedReadinessCalls);
+    }
+
     private static FakeOwnerClient QuarantinedOwner(LifecycleFixture fixture)
         => new(fixture.ApplicationIdentity) { RequireQuarantinedReadiness = true };
 

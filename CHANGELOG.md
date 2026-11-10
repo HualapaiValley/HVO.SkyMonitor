@@ -12,6 +12,14 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
+
+- CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
+
+- Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
+- Upgrade notes identify custom cloud/environment-only graphs and early 0.9.1 pre-release scene graphs whose producer plans are superseded, preserve revision/replay recovery steps, and distinguish current host and ProcessingRunner runtime versions. #1697
+- Observing Day reports whether time-lapse generation is disabled, no video was requested, or the time-lapse state could not be read, while keeping configured samples clearly separate from the night's products. #1709
+
 - CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
 
 - VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
@@ -35,8 +43,23 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Added
 
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
+- Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386
+- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
+- Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation and curated deep-sky overlays, and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. Capture-time location history, full footprint edges and reviewed editor state are preserved; rig changes and invalid drafts show per-revision revalidation status without hiding the catalog, central validation requires review for horizon evidence, and identical transient windows reuse bounded detector masks. #1394
+
+
+- Configure a local weather-station adapter with deterministic simulated devices, explicit sensor/freshness failures and primary station readings retained alongside IR inputs; failed acquisitions cannot reuse an old value. Physical station qualification remains held. #1089
+- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, recoverable dead letters for undeliverable inputs and drying-state handling; simulated clouds retain Simulated provenance. Journal failures identify storage, and explicit delivery discard survives restart. Physical sensor qualification remains held. #1090
+- Configure an SQM adapter with capture association, integration intervals, explicit frequency-mode unavailability and sensor-temperature metadata preserved through LogicHost. Physical meter qualification remains held. #1091
+- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed-origin headers preserve room for seven readings. #1092
+- Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
+
+- New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
+
+- CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
+- Edit legacy Annotation constellation selections, corner fact lines and environmental kinds in graph drafts, with bounded validation and explicit activation. #1386
 
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
@@ -58,6 +81,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
 
 ### Changed
+
+- Skip Storage-incompatible standard processing while retaining raw and committed capture-time scene evidence for explicit replay; optional scene failures leave capture admission open, configured-basic refreshes without a false health alarm, and divergent Named graph commands return HTTP 409 policy guidance. #1386
 
 - The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
 

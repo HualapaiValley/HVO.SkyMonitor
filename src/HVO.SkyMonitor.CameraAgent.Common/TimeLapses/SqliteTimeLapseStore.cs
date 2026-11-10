@@ -166,10 +166,17 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
                 job = await reader.ReadAsync(token).ConfigureAwait(false) ? ReadJob(reader) : null;
             if (job is null) return null;
+            var started = clock.GetUtcNow();
             await ExecuteAsync(connection, transaction, "UPDATE jobs SET state='Working', reason=NULL, updated_ticks=$now, revision=revision+1 WHERE job_id=$id;",
-                token, ("$now", clock.GetUtcNow().UtcTicks), ("$id", job.JobId.ToString("N"))).ConfigureAwait(false);
+                token, ("$now", started.UtcTicks), ("$id", job.JobId.ToString("N"))).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            return job with { State = CameraAgentTimeLapseState.Working, ReasonCode = null, Revision = job.Revision + 1 };
+            return job with
+            {
+                State = CameraAgentTimeLapseState.Working,
+                ReasonCode = null,
+                UpdatedUtc = started,
+                Revision = job.Revision + 1
+            };
         }
         finally { _writes.Release(); }
     }

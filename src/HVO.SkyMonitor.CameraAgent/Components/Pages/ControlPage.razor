@@ -1,6 +1,7 @@
 @inherits SiteTimeComponent
 @page "/operations/control"
 @layout OperationsLayout
+@using HVO.SkyMonitor.Deployment.Contracts
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -81,7 +82,8 @@ else
             <article class="ops-action-row">
                 <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 10h14M13 6l4 4-4 4"></path></svg></span>
                 <span><strong>Request graceful drain</strong><small>Stop acquisition and finish accepted processing before host shutdown.</small></span>
-                <button type="button" class="button secondary" disabled title="@DrainUnavailableReason" aria-describedby="control-drain-unavailable">Not available</button>
+                <button type="button" id="control-drain" class="button secondary" disabled="@(_submitting || !CanDrain)"
+                        title="@(CanDrain ? null : DrainUnavailableReason)" aria-describedby="control-drain-unavailable" @onclick="BeginDrain">@(CanDrain ? "Drain" : "Not available")</button>
                 <span id="control-drain-unavailable" class="visually-hidden">@DrainUnavailableReason</span>
             </article>
             <article class="ops-action-row danger">
@@ -114,6 +116,13 @@ else
 <TimeSyncPanel Generation="@_timeGeneration" />
 
 <section class="ops-panel ops-grid" aria-labelledby="control-receipts-heading">
+    @if (_lifecycle?.Receipts.LastOrDefault(item => !item.IsTerminal) is { } activeLifecycle)
+    {
+        <div class="ops-note-banner" role="status"><span>@CameraAgentSystemUiService.LifecycleDetail(activeLifecycle)</span>
+            <label for="control-cancel-reason">Cancellation reason (required)</label>
+            <input id="control-cancel-reason" maxlength="@ReasonMaxLength" @bind="_cancelReasonInput" />
+            <button type="button" id="control-lifecycle-cancel" class="button secondary" @onclick="() => CancelLifecycleAsync(activeLifecycle.Request.OperationId)">Cancel lifecycle</button></div>
+    }
     <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>@SiteTime.Label</span></header>
     @if (_receiptsError is not null)
     {
@@ -144,7 +153,7 @@ else
                                 }</td>
                             <td>@ActorText(receipt.Actor)</td>
                             <td>@ReasonText(receipt.Reason)</td>
-                            <td><span class="state-chip @outcome.Css">@outcome.Text</span></td>
+                            <td><span class="state-chip @outcome.Css">@outcome.Text</span>@if (receipt.Detail is not null) { <small>@receipt.Detail</small> }</td>
                         </tr>
                     }
                 </tbody>
@@ -171,7 +180,7 @@ else
             <div class="operations-dialog-note"><strong>Local authority only</strong><span>Changes capture admission on this CameraAgent only. Expected state version @_pending.ExpectedVersion.</span></div>
             <fieldset disabled="@_submitting">
                 <legend class="visually-hidden">Command reason</legend>
-                <label class="ops-field">Reason (optional, recorded with the receipt)
+                <label class="ops-field">@(_pending.Kind == ControlKind.Drain ? "Reason (required, recorded with the receipt)" : "Reason (optional, recorded with the receipt)")
                     <input id="control-reason" autocomplete="off" maxlength="@ReasonMaxLength" @bind="_reasonInput" />
                 </label>
             </fieldset>

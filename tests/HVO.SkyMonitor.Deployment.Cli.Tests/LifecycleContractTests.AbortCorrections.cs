@@ -48,7 +48,9 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task BackupAsync_AbortAtPublishedArchiveCrashBoundary_RefusesAndResumeCompletes()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task BackupAsync_AbortAtPublishedArchiveCrashBoundary_RefusesAndResumeCompletes(bool recordBeforeRename)
     {
         using var fixture = await BackupFixtureAsync();
         var images = new List<CrashImage>();
@@ -68,6 +70,11 @@ public sealed partial class LifecycleContractTests
         var archive = Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName), "*.tar.gz").Single();
         var bytes = await File.ReadAllBytesAsync(archive);
         Assert.IsTrue(File.Exists(archive + BackupVaultFiles.RecordSuffix));
+        if (recordBeforeRename)
+        {
+            // Commit durably writes the sidecar first; simulate a crash before the archive rename.
+            File.Move(archive, archive + BackupVaultFiles.PartialSuffix);
+        }
         var before = FileSystemActivity.Snapshot(fixture.Root);
 
         var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => BackupAsync(fixture, new FakeLifecycleClient(), abort: true));

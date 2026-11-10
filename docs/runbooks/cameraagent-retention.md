@@ -7,6 +7,20 @@ acknowledgements, quarantine, and operator disposition. Retention treats
 pending, leased, retry, and quarantined work as a durable hold on its payload,
 companion metadata, and daily index entry.
 
+## Planned Storage Policy Changes
+
+Before changing Storage in the local capture profile, pause acquisition and finish
+in-flight standard processing. Drain pending standard work too if those captures
+must complete under the old policy, even for a retention-only change in the same
+directory. A profile activation does not migrate already bound or running graphs.
+Before removing an old storage root from the profile, finish its pending uploads;
+the new profile's outbox draining and retention plans follow its configured roots.
+
+Configured-basic refreshes from the new profile automatically. If a Named graph
+is active, reconcile and activate a matching graph before resuming capture. See
+[the graph Storage workflow](capture-node-options.md) for refreshed sources,
+processing skips and the limits of explicit replay recovery.
+
 ## Safety Invariant
 
 After every successful retention sweep, every held outbox record still

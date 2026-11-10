@@ -154,6 +154,8 @@ public static class ProcessingNodeOptionsCodec
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
                 $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
         }
+        if (diagnostics.Count == 0)
+            diagnostics.AddRange(AnnotationOptionDescriptors.ValidateSelections(descriptor, decoded, path));
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
         {

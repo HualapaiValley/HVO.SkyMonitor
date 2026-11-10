@@ -10,7 +10,8 @@ public sealed class EnvironmentalAssociationService(
     ILocalEnvironmentalAssociationStore associations,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
-    EnvironmentalAcquisitionTelemetry? telemetry = null)
+    EnvironmentalAcquisitionTelemetry? telemetry = null,
+    IEnvironmentalAcquisitionStateStore? acquisitionStates = null)
 {
     private const string AlgorithmVersion = "local-environment-association-v1";
     private static readonly string[] SourcePriority = ["Measured", "Imported", "Manual", "Derived", "Simulated"];
@@ -35,11 +36,14 @@ public sealed class EnvironmentalAssociationService(
         }
         var root = options.Value.RawIngressRoot;
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        var policyIdentity = CreatePolicyIdentity(expectedKinds);
-        var persisted = (await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false))
-            .Where(association => string.Equals(
-                association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal))
-            .ToArray();
+        var policyIdentity = PolicyIdentity(expectedKinds);
+        var retained = await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false);
+        var compatible = retained.GroupBy(association => association.PolicyIdentitySha256, StringComparer.Ordinal)
+            .Where(group => group.Select(association => association.Kind).Order().SequenceEqual(expectedKinds)).ToArray();
+        if (compatible.Length > 1) throw new EnvironmentalObservationIdentityConflictException("Multiple retained environmental policies satisfy this capture.");
+        var persisted = compatible.Length == 1 ? compatible[0].ToArray() : retained
+            .Where(association => string.Equals(association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal)).ToArray();
+        if (compatible.Length == 1) policyIdentity = compatible[0].Key;
         ValidatePersisted(
             persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
         if (persisted.Length == expectedKinds.Length)
@@ -52,6 +56,11 @@ public sealed class EnvironmentalAssociationService(
         {
             var candidates = await observations.ReadLocalCandidatesAsync(
                 root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
+            if (options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
+            {
+                var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
+                candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind, exposureFromUtc, exposureThroughUtc);
+            }
             var association = CreateAssociation(
                 captureId,
                 captureSequence,
@@ -105,9 +114,7 @@ public sealed class EnvironmentalAssociationService(
             if (expectedKinds.Except(configuredKinds).Any())
                 throw new EnvironmentalObservationIdentityConflictException(
                     "The requested environmental kinds are not part of the configured association policy.");
-            var configuredPolicyIdentity = CreatePolicyIdentity(configuredKinds);
             candidateSets = candidateSets.Where(group =>
-                string.Equals(group[0].PolicyIdentitySha256, configuredPolicyIdentity, StringComparison.Ordinal) &&
                 group.Select(static association => association.Kind).Order().SequenceEqual(configuredKinds)).ToArray();
         }
         if (candidateSets.Length > 1)
@@ -124,6 +131,16 @@ public sealed class EnvironmentalAssociationService(
             ? persisted.OrderBy(static association => association.Kind).ToArray()
             : null;
     }
+
+    private string PolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> kinds)
+        => options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count == 0 ? CreatePolicyIdentity(kinds)
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "real-weather-selection-v1",
+                Kinds = kinds,
+                options.Value.EnvironmentalAcquisition.WeatherSourcePriority,
+                OnlineKinds = options.Value.EnvironmentalAcquisition.Sources.Where(source => source.Type == "OnlineWeather").Select(source => source.Kind).Distinct().Order().ToArray()
+            });
 
     private static void ValidateRequest(
         Guid captureId,

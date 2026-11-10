@@ -7,6 +7,40 @@ next-run calendar, and their durable run history.
 
 This runbook covers the versioned durable local contract behind that section.
 
+## Configure A Product Automation
+
+Choose **Create automation**, then an available registered task and its pinned
+target. Product tasks continue through **Next: source window**: select a completed
+site-local hour or sunrise-to-next-sunrise period, the producer's accepted actual
+source selection, and a settle allowance from 0 to 86400 seconds. Up to seven
+decimal places preserve existing subsecond allowances. Keograms require all actual
+sources; star trails require dark-night sources. The pinned target supplies recipe
+parameters; changing producer configuration is a separate operation.
+
+**Preview and review** shows exact inclusive start, exclusive end, site zone and
+offsets, starting-sunrise product date, and next-run/earliest-final time in both
+site time and UTC. The preview is read-only, calculated for the next future
+occurrence if enabled; saving later may change it. It is not a coverage or
+publication guarantee. Missing sunrise events produce explicit unavailability,
+without a fallback time. Partial sunrise hours and DST folds/gaps use the shared
+planner. Confirm **Record revision** to save; stepping back retains your fields.
+
+**Edit** supports source-window definitions, including their retained selection
+and allowance. **Disable** pauses the definition without rewriting its policy or
+old occurrences. Revision history retains actor and reason. Hourly and daily tasks
+use separate identifiers and revisions. The first-slice scope and decision to
+retain the current runner are recorded in the
+[wizard decision](../planning/automation-wizard-1133.md). Run/cancel/backfill UI and
+broader task parameter editors remain follow-up work under #1133.
+
+Changing a pinned producer preset can retire its old target hash. A retained
+definition then shows **Unavailable**, with repair guidance, and contributes no
+enabled count or upcoming run. Unsupported retained triggers and source presets
+are treated the same way. Choose **Edit** and select a currently registered
+target/trigger/period to record a new revision; old definitions in revision history
+and retained occurrences keep their original identities. Enable/disable is
+unavailable until the retained settings are compatible again.
+
 ## What A Definition Can Express
 
 A definition names a registered task, its source policy and trigger, plus its identity:
@@ -216,3 +250,11 @@ run journal. Capture, calibration, and deployment-location evidence are unaffect
 the store is recreated empty on the next start. A database whose `user_version` or
 schema object count does not match the contract makes startup fail closed; archive it
 and complete an explicit state-disposition procedure rather than editing it in place.
+
+## Scheduled CameraAgent restart
+
+The registered `ScheduledCameraAgentRestart` task delegates drain, restart and
+verification to the independent installer lifecycle worker. It runs only outside
+capture windows and stays Running across CameraAgent restart until the installer
+publishes its terminal receipt. See [lifecycle control](cameraagent-lifecycle-control.md)
+for registration, interval bounds, receipts and failure recovery (#1711).
