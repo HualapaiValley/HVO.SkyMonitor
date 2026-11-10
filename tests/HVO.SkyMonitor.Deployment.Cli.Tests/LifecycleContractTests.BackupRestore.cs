@@ -484,10 +484,19 @@ public sealed partial class LifecycleContractTests
         bool plan = false,
         bool resume = false,
         TextWriter? error = null,
+        bool allowQuarantinedReadiness = false,
+        bool abort = false,
+        FakeOwnerClient? owner = null,
         CancellationToken cancellation = default)
         => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Backup) with { DryRun = plan, Resume = resume },
-            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
+            fixture.Request(LifecycleOperationKind.Backup) with
+            {
+                DryRun = plan,
+                Resume = resume,
+                AllowQuarantinedReadiness = allowQuarantinedReadiness,
+                Abort = abort
+            },
+            fixture.Runner, _ => lifecycle, _ => owner ?? new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
             cancellation, error: error ?? TextWriter.Null);
 
     private static Task<LifecycleResult> RestoreAsync(

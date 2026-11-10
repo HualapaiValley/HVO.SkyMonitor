@@ -1305,6 +1305,23 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         foreach (var width in new[] { 1440, 390, 320 })
         {
             await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            // Chromium can resolve SetViewportSize before the responsive navigation
+            // finishes laying out. Keep the no-overflow assertion after a bounded wait.
+            await page.WaitForFunctionAsync(
+                """
+                () => {
+                    const root = document.documentElement;
+                    const signature = `${innerWidth}:${root.clientWidth}:${root.scrollWidth}`;
+                    const now = performance.now();
+                    const previous = window.__hvoRunViewport;
+                    if (!previous || previous.signature !== signature) {
+                        window.__hvoRunViewport = { signature, since: now };
+                        return false;
+                    }
+                    return root.scrollWidth <= root.clientWidth + 1 && now - previous.since >= 200;
+                }
+                """,
+                options: new() { Timeout = DefaultTimeoutMilliseconds }).ConfigureAwait(false);
             Assert.IsFalse(await page.EvaluateAsync<bool>(
                 "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
                 $"Pipeline run overflowed at {width}px.");
@@ -1436,17 +1453,22 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 1).ConfigureAwait(false);
 
-        // Calendar: the current night carries the seeded captures and links into the filtered archive.
+        // Calendar opens the selected observing day; that day's capture action preserves the exact archive bounds.
         await page.GotoAsync("/archive/calendar").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Observing calendar", Level = 1 })).ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".night").First).ConfigureAwait(false);
-        var populated = page.Locator(".night:not(.night--empty)").First;
+        await VisibleAsync(page.Locator(".calendar-day").First).ConfigureAwait(false);
+        var populated = page.Locator(".calendar-day:not(.calendar-day--empty)").First;
         await VisibleAsync(populated).ConfigureAwait(false);
-        var capturesLink = populated.GetByRole(AriaRole.Link, new() { Name = "Open captures" });
-        var dayUrl = await capturesLink.GetAttributeAsync("href").ConfigureAwait(false);
+        var dayLink = populated.Locator(".calendar-day__link");
+        var dayUrl = await dayLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(dayUrl);
-        StringAssert.StartsWith(dayUrl, "/gallery?from=", StringComparison.Ordinal);
+        StringAssert.StartsWith(dayUrl, "/archive/day/", StringComparison.Ordinal);
         await AssertPageStructureAsync(page, "/archive/calendar").ConfigureAwait(false);
+        await dayLink.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/day/", StringComparison.Ordinal)).ConfigureAwait(false);
+        var capturesLink = page.Locator(".day-actions a[href^='/gallery?from=']");
+        await VisibleAsync(capturesLink).ConfigureAwait(false);
+        StringAssert.StartsWith((await capturesLink.GetAttributeAsync("href").ConfigureAwait(false))!, "/gallery?from=", StringComparison.Ordinal);
         await capturesLink.ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/gallery" && new Uri(url).Query.Contains("from=", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
@@ -1481,7 +1503,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         // Candidates: the list accepts the calendar range and never claims event authority.
         await page.GotoAsync("/transients?from=2000-01-01T00:00:00&to=2000-01-02T00:00:00").ConfigureAwait(false);
         await VisibleAsync(page.Locator(".range-state")).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Transient candidates", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Detected events", Level = 1 })).ConfigureAwait(false);
         var candidateText = await page.Locator("main").InnerTextAsync().ConfigureAwait(false);
         foreach (var forbidden in new[] { "ground track", "impact location", "validated event" })
         {
@@ -2765,7 +2787,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
 
-        // Draft: name and revision, one node of a registered type, preview, and the diagram's keyboard path.
+        // VirtualSky captures require their canonical scene node; keep that guard in the keyboard draft.
+        // Draft: name and revision, registered nodes, preview, and the diagram's keyboard path.
         await page.GotoAsync("/operations/pipeline/graphs/new").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Draft graph", Level = 1 })).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -2773,12 +2796,17 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.Keyboard.TypeAsync("keyboard-graph").ConfigureAwait(false);
         await TabToAsync(page, "input", "Revision label").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("1").ConfigureAwait(false);
+        await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("ProjectedScene").ConfigureAwait(false);
+        await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
         // Pick the preview step by typeahead on the focused select, then add it.
         await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("Preview").ConfigureAwait(false);
         await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelectorAll('.node-row').length === 2").ConfigureAwait(false);
         await TabToAsync(page, "button", "Preview plan").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         var diagram = page.Locator("svg[role='group']");
@@ -2940,7 +2968,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                   (element.tagName === 'IMG' ? element.getAttribute('alt') : '') ||
                   element.textContent || descendantAlt || '').trim();
               };
-              return [...document.querySelectorAll('a[href], button, img')]
+              // Explicit empty alt makes an image decorative; its enclosing named link carries the action.
+              return [...document.querySelectorAll('a[href], button, img:not([alt=""])')]
                 .filter(element => element.getClientRects().length > 0)
                 .every(element => Boolean(name(element)));
             }

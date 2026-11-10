@@ -1,6 +1,12 @@
 name: CameraAgent ARM64 Advisory
 
 on:
+  workflow_dispatch:
+    inputs:
+      reviewed_head:
+        description: Full commit SHA covered by the converged review
+        required: true
+        type: string
   repository_dispatch:
     types: [cameraagent-arm64]
   schedule:
@@ -25,6 +31,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Verify manually dispatched reviewed head
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+        run: |
+          if [[ ! "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ || "$REVIEWED_HEAD" != "$GITHUB_SHA" ]]; then
+            echo '::error::Dispatch head does not match the full reviewed commit SHA.'
+            exit 1
+          fi
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,7 +101,7 @@ jobs:
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
           printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Run native ARM64 build, test, publish, and smoke

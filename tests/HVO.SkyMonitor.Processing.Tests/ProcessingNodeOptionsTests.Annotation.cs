@@ -66,10 +66,9 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.IsNull(resolution.Descriptor);
             Assert.IsNull(resolution.Upgrade);
         }
-        Assert.HasCount(21, descriptor.Options);
+        Assert.HasCount(27, descriptor.Options);
         foreach (var key in new[] { "constellationLineRed", "constellationLineGreen", "constellationLineBlue",
-            "recipeVersion", "outputVariant", "requireProjectedSceneDependency", "expectedPositionDiagnostics", "constellationIds",
-            "topLeftTokens", "topRightTokens", "bottomLeftTokens", "bottomRightTokens", "environmentalKinds", "future" })
+            "recipeVersion", "outputVariant", "requireProjectedSceneDependency", "expectedPositionDiagnostics", "future" })
         {
             Assert.IsNull(descriptor.Find(key), key);
             Assert.AreEqual(ProcessingOptionReasonCodes.UnknownOption, ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"),
@@ -83,7 +82,8 @@ public sealed partial class ProcessingNodeOptionsTests
         var descriptor = AnnotationOptionDescriptors.Descriptor;
         void Check(string member, string token, bool valid)
             => Assert.AreEqual(valid, ProcessingNodeOptionsCodec.Decode(descriptor, Json("{\"" + member + "\":" + token + "}")).IsValid, member + "=" + token);
-        foreach (var option in descriptor.Options)
+        foreach (var option in descriptor.Options.Where(static option => option.Kind is ProcessingOptionKind.Color or
+            ProcessingOptionKind.Toggle or ProcessingOptionKind.WholeNumber or ProcessingOptionKind.RealNumber))
         {
             if (option.Kind == ProcessingOptionKind.Color)
             {
@@ -133,7 +133,7 @@ public sealed partial class ProcessingNodeOptionsTests
     public void AnnotationCodecPreservesProtectedJsonFormattingAndUnchangedIdentities()
     {
         var descriptor = AnnotationOptionDescriptors.Descriptor;
-        const string json = """{ "MaRkRadius": 6, "MarkerValue":144, "LabelScale":1, "ConstellationLineOpacity":8e-1, "RecipeVersion":"retained", "OutputVariant":"retained-output", "RequireProjectedSceneDependency":true, "ExpectedPositionDiagnostics":true, "ConstellationIds":[ "ORI" ], "ConstellationLineRed":1, "ConstellationLineGreen":2, "ConstellationLineBlue":3, "TopLeftTokens":["utc"], "TopRightTokens":[], "BottomLeftTokens":null, "BottomRightTokens":[], "EnvironmentalKinds":[], "future": { "escaped":"\u0041", "number":1e+02 }, "Future":null }""";
+        const string json = """{ "MaRkRadius": 6, "MarkerValue":144, "LabelScale":1, "ConstellationLineOpacity":8e-1, "RecipeVersion":"retained", "OutputVariant":"retained-output", "RequireProjectedSceneDependency":true, "ExpectedPositionDiagnostics":true, "ConstellationIds":[ "ORI" ], "ConstellationLineRed":1, "ConstellationLineGreen":2, "ConstellationLineBlue":3, "TopLeftTokens":["utc"], "TopRightTokens":[], "BottomLeftTokens":[], "BottomRightTokens":[], "EnvironmentalKinds":[], "future": { "escaped":"\u0041", "number":1e+02 }, "Future":null }""";
         var source = Json(json);
         var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(defaults.IsValid);

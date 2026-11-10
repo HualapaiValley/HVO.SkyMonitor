@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -121,6 +122,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureLanePolicy>();
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawEvidenceOperations>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<IProcessingLaneQuarantineOperations>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IProjectedSceneStageOwnerProvider>(provider => provider.GetRequiredService<RawCaptureIngress>());
@@ -235,10 +237,19 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton(new EnvironmentalSourceRegistration(
             "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("LocalWeatherStation", typeof(LocalWeatherStationSource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("InfraredSky", typeof(InfraredSkySource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("SkyQualityMeter", typeof(SkyQualityMeterSource), typeof(EnvironmentalDeviceOptions)));
+        services.AddSingleton(new EnvironmentalSourceRegistration("OnlineWeather", typeof(OnlineWeatherSource), typeof(OnlineWeatherSourceOptions)));
+        services.AddSingleton(provider => new WeatherProviderClient(
+            new HttpClient(SwpcSource.CreatePrimaryHandler()), provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<IEnvironmentalAcquisitionStateStore>(), provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot));
         services.AddSingleton<EnvironmentalSourceFactory>();
         services.AddSingleton<EnvironmentalAcquisitionCoordinator>();
         services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
         services.AddSingleton<EnvironmentalAssociationService>();
+        services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore>();
+        services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentRestartAutomationAdapter>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
         services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
@@ -269,7 +280,18 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
         services.AddSingleton<ProcessingReplayWakeup>();
-        services.AddSingleton<ProcessingGraphOperationsCoordinator>();
+        services.AddSingleton(provider => new ProcessingGraphOperationsCoordinator(
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+            provider.GetRequiredService<SqliteCaptureProcessingStore>(),
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ProcessingReplayWakeup>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            // Defer lookup: schedule storage/admission depend on raw ingress, which depends on this coordinator.
+            // Hostless graph tools have no initialized accessor; do not construct capture admission for them.
+            () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
+                ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
+                : null));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>

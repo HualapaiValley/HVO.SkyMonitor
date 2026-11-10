@@ -59,8 +59,6 @@
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
     <PackageReference Include="Scalar.AspNetCore" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
-    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
   <PropertyGroup>

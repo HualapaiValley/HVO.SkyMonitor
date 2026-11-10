@@ -84,7 +84,7 @@ public sealed class Issue518ResolvedDiskEvidenceTests
         options["solarSystemBodies"] = scenario.Disks ? new JsonArray(SunAndMoon.Select(static body => (JsonNode)body).ToArray()) : new JsonArray();
         options["illuminationMode"] = "ControlledNight";
         config = config with { Module = new("VirtualSky", JsonSerializer.SerializeToElement(options)) };
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore(),
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]), new ProjectedSceneStore(),
             planetEphemeris: new AstronomyEnginePlanetEphemeris());
         await using var moduleLifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);

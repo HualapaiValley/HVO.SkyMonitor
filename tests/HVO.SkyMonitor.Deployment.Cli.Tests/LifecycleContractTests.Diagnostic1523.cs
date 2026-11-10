@@ -102,10 +102,12 @@ public sealed partial class LifecycleContractTests
         StringAssert.StartsWith(uncut, expected, StringComparison.Ordinal);
     }
 
-    // The merge base's passes and the #1523 passes each read the whole text, and a value a quoted key leaves is found once, so a
-    // megabyte of each new shape still takes milliseconds. The merge base's text is read again as an error embeds it, as it is,
-    // with its controls escaped and JSON-encoded, and each reading is linear too; the text then ends at the first unit's value.
+    // Compare growth on the same machine instead of imposing an x64 wall-clock budget on the Pi.
+    // Five times the input may take at most ten times the time plus 100 ms scheduling noise;
+    // quadratic growth would take 25 times. Warm both paths and use medians to limit JIT/GC noise.
     [TestMethod]
+    [DoNotParallelize]
+    [Timeout(120_000)]
     [DataRow("token=\"password=\" x ", "token=<redacted>…")]
     [DataRow("api_key=db_password\t\"a b\" ", "api_key=<redacted>…")]
     [DataRow("ObjectStorage__SecretKey x ", "ObjectStorage__SecretKey <redacted>…")]
@@ -114,18 +116,36 @@ public sealed partial class LifecycleContractTests
     [DataRow("api_key=SecretKey\t\"a b\" ", "api_key=<redacted>…")]
     public void Diagnostic1523_NewPassesAreLinear(string unit, string expected)
     {
-        var text = string.Concat(Enumerable.Repeat(unit, 50_000));
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        var redacted = Redaction.Redact(text);
-        watch.Stop();
-        Console.WriteLine($"{JsonSerializer.Serialize(unit)} x 50,000: {watch.ElapsedMilliseconds} ms");
-        Assert.AreEqual(expected, redacted);
-        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
-        watch.Restart();
-        var diagnostic = Redaction.SafeDiagnostic(text);
-        watch.Stop();
-        Assert.AreEqual(expected, diagnostic);
-        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
+        var small = string.Concat(Enumerable.Repeat(unit, 10_000));
+        var large = string.Concat(Enumerable.Repeat(unit, 50_000));
+        VerifyGrowth(Redaction.Redact, nameof(Redaction.Redact));
+        VerifyGrowth(Redaction.SafeDiagnostic, nameof(Redaction.SafeDiagnostic));
+
+        void VerifyGrowth(Func<string, string> redact, string name)
+        {
+            Assert.AreEqual(expected, redact(small));
+            Assert.AreEqual(expected, redact(large));
+            var smallTimes = new double[3];
+            var largeTimes = new double[3];
+            for (var sample = 0; sample < smallTimes.Length; sample++)
+            {
+                smallTimes[sample] = Measure(small);
+                largeTimes[sample] = Measure(large);
+            }
+            Array.Sort(smallTimes);
+            Array.Sort(largeTimes);
+            Console.WriteLine($"{name} {JsonSerializer.Serialize(unit)}: 10,000={smallTimes[1]:F1} ms; 50,000={largeTimes[1]:F1} ms (median of 3)");
+            Assert.IsLessThanOrEqualTo(smallTimes[1] * 10 + 100, largeTimes[1], $"{name} grew faster than the linear allowance.");
+
+            double Measure(string text)
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var redacted = redact(text);
+                watch.Stop();
+                Assert.AreEqual(expected, redacted);
+                return watch.Elapsed.TotalMilliseconds;
+            }
+        }
     }
 
     // PR-1528-R0 F1: the merge base cut each diagnostic at 256 characters. Text the #1523 passes hide is shorter once redacted,

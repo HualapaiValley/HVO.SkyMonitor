@@ -158,9 +158,11 @@ reason.
 
 ### Independent Issue Ownership
 
-The assigned person or agent owns implementation, validation, independent review,
-corrections, green CI, authorized merge, and cleanup. Delegation does not transfer
-ownership.
+The assigned coding owner owns implementation, original-requirement evidence,
+validation, independent local review, corrections, and the candidate handoff.
+Kepler owns the formal PR lifecycle and merge queue. Coding threads push only
+when instructed and never create PRs, mark ready, publish `hvo/reviewed-head`,
+or enqueue. Delegation does not transfer implementation ownership.
 
 Before editing, inspect assignees, `workflow:in-progress`, claim comments, and
 linked PRs. Claim an approved unowned issue using an assignee where possible,
@@ -192,8 +194,9 @@ explicit assignment or opt-in queue authorization.
 ### Task Dispatch
 
 Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
-`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
-git worktree off `development/v1`, so the main checkout is never modified.
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
 - A required compatibility check may block a merge, but an unrelated failure
   from another component does not make that component's backlog a dependency.
@@ -218,27 +221,25 @@ and `JOINED ACK <ack-id>` and the command field `targetParticipantId`.
 
 ### Progress reporting
 
-Owners report milestones, blockers, long-running gates, and completion
-to their user and issue/PR ledger. Human reviewers use their agreed availability
-window.
+Coding owners report milestones, blockers, long-running gates, and completion
+to their user and retain local evidence. Kepler maintains the PR ledger.
 
 Silence reads as a stall. Every agent reports progress while it works, not only
 when it finishes:
 
-- Implementing agents post a short progress comment at every milestone
+- Implementing agents report a short progress update at every milestone
   (inventory complete, first slice committed, a gate started or finished, reviews
-  launched, corrections pushed, PR marked ready) and at least every thirty
-  minutes of active work. Post on the owning issue until the draft PR exists,
-  then append to the PR's append-only review ledger. Each comment has a UTC
-  timestamp and states what finished, what is running now, the next step, and
-  any blocker. Long gates and reviews get an interim note rather than silence.
+  launched, corrections completed, candidate handed off) and at least every
+  thirty minutes of active work. Retain UTC local evidence and report to Kepler,
+  who appends formal PR progress to its ledger. Each entry states what finished,
+  what is running now, the next step, and any blocker. Long gates and reviews
+  get an interim note rather than silence.
 - Every delegated implementation, review, research, and evidence agent sends
   the issue/PR owner a structured `STARTED` message before substantive work,
   then milestone, blocker, at-least-thirty-minute, and completion messages.
   Review messages identify the exact range and actual provider/model/effort.
-  Each agent also posts the same milestones on the owning issue or PR ledger;
-  if its harness cannot, the owner posts a clearly attributed proxy entry and
-  relays the event to the user.
+  The owner retains these milestones with attribution in the local evidence
+  pack and relays the event to the user; Kepler maintains the PR ledger.
 - A progress comment never replaces the handoff in section 11; blocked work
   still leaves the full handoff, and every agent provides its final report.
 
@@ -479,43 +480,41 @@ operating procedure; the independently loaded skill retains the non-negotiable
 review request, selection, timeout, correction-cap, finalization-lock, CI,
 merge, and cleanup contracts plus links back here.
 
-The PR owner requests and monitors independent review using the lifecycle skill.
-Human and one-shot agent routes record the immutable range, acceptance, evidence,
-findings, and dispositions directly on the PR. Human
-model/effort fields are N/A; agent values must reflect actual execution.
+Coding threads map every in-scope original-issue requirement to implemented
+behavior and local evidence at the candidate SHA before independent local
+review. Missing scope or evidence returns to implementation. Apply `AGENTS.md`
+and the skill's issue-completeness contract: LOW requires Sol CLEAN; HIGH
+requires Sol and Opus CLEAN on the same candidate, including explicit
+completeness verdicts and verified finding dispositions. Supplemental human
+or bot reviews never replace those reports.
 
-Tier A/B gets one full initial exact-range review and only finding-driven
-correction rereviews. `standard` is the default for Tier A and ordinary Tier B;
-concurrency, durability, security, CI-control, or cross-boundary Tier B risk
-uses `deep`. Tier C/M remains deep. Before a correction launch, produce the
-bounded evidence pack defined by the PR lifecycle skill. Always retain the
-prior full report, complete carried-finding checklist, exact delta,
-changed-symbol call sites, relevant tests, and applicable instructions; limit
-unrelated preloaded context, not code reachable from the change. A token budget
-is a checkpoint: exhaustion reports `INCOMPLETE` and escalates, never `CLEAN`.
-Record tokens/time/diff/mode/profile/findings and compare three post-change
-rounds before proposing a model default change.
+Before a correction review, retain the prior full report, complete
+carried-finding checklist, exact delta, affected interactions, relevant tests,
+and applicable instructions in the bounded evidence pack. Record actual
+provider/model/effort and immutable ranges. A budget or unavailable reviewer
+cannot supply CLEAN or waive required review; use the lifecycle skill's
+blocker and handoff procedure.
 
-After review convergence and lock acquisition, freshly fetch the target. If its
-SHA equals the target-base SHA already covered by review, record `base unchanged
-at <sha>; no merge and no base-sync review required`. If it advanced at all,
-merge it without rebasing and obtain a base-sync review: standard only when
-there was no conflict, shared file/contract, or material changed interaction;
-deep otherwise. The lock, final-CI bar, and merge guard are unchanged.
-
-The invariant sequence is:
+Coding threads hand the candidate, original-source mapping, gate results, and
+required local CLEAN reports to Kepler and stop. Push only when instructed.
+Kepler alone creates PRs, obtains formal review, marks ready, publishes
+`hvo/reviewed-head`, and enqueues. The sequence is:
 
 ```text
-local candidate evidence -> draft PR -> review convergence or waiver
-  -> final target-branch synchronization and base-sync review when it advanced
-  -> ready -> target-branch protected CI -> merge and cleanup
+implementation -> original-issue evidence -> required local CLEAN reviews
+  -> candidate handoff to Kepler
+Kepler draft -> required formal CLEAN reviews -> ready -> required head CI
+  -> current-head revalidation -> reviewed-head -> merge queue
+  -> queue integration CI/merge -> completion and cleanup
 ```
 
-Draft pushes intentionally do not run protected CI. Do not mark a PR ready while
-review work or target-branch synchronization remains outstanding. A successful
-protected run is valid only for the current reviewed head and current target
-base; head-changing corrections and later target-branch changes follow the
-skill's invalidation and recovery rules.
+Queue eligibility belongs to the CURRENT PR HEAD SHA. Being behind the target
+tip or its age alone does not require synchronization, re-testing, new review,
+or block submission/resubmission. Roy's stricter latest-base submission policy
+remains deferred. Real merge/product conflicts still require resolution,
+affected local evidence, and the required reviews on the changed candidate.
+Draft pushes do not advance protected CI. Kepler operates the queue and any
+explicit fallback using the lifecycle skill; coding threads never finalize.
 
 ## 10. Non-Green Recovery
 
@@ -530,14 +529,14 @@ If any build, test, runtime, review, or deployment check is not green:
 5. Add regression coverage when the failure represents a product defect.
 6. Rerun the focused failure and the full affected gate; do not rerun unrelated
    long suites locally when protected CI will cover them.
-7. For a code correction, return the PR to draft and release the finalization
-   lock before pushing. Review the CI-correction delta, then reacquire the lock
-   and repeat final target synchronization, obtaining the required base-sync review
-   if the target advanced or recording unchanged-base proof otherwise, before
-   marking the PR ready for new protected CI. If no repository content changed, rerun
-   the same SHA instead of creating a no-op commit under the bounded
-   infrastructure-only exception in the lifecycle skill.
-8. Keep the PR open and the issue active until green.
+7. For a code correction, Kepler keeps/returns the PR to draft and withdraws
+   queue advancement before authorizing a push. The coding owner implements,
+   tests, and obtains required local review on the new candidate, then hands
+   it back for Kepler's formal review and CI. Resolve actual integration
+   conflicts under the lifecycle skill; target-tip movement alone does not
+   require a base merge. With no repository content change, use the skill's
+   bounded same-SHA infrastructure rerun exception.
+8. Kepler keeps the PR open and the issue active until the required gates pass.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide
 warnings, or treat a canceled/timed-out check as success.
@@ -579,9 +578,10 @@ handoff in the issue or epic:
 The overall epic tracks current phase, completed PRs, active branch/PR, blockers,
 validation state, performance observations, and next exact action.
 
-After a successful merge, the issue owner confirms closure, updates the owning
-epic's progress, synchronizes `main`, safely cleans up their branch/worktree,
-records completion, and releases the issue claim. Taking another issue requires
+After a successful merge, Kepler confirms closure only for fully resolved
+issues, updates the owning epic, and coordinates synchronization and safe cleanup.
+The coding owner records completion and releases the issue claim; incomplete
+parent issues remain open. Taking another issue requires
 explicit assignment or opt-in queue authorization. A context or resource limit
 requires a resumable handoff, not silent abandonment of the assigned lifecycle.
 

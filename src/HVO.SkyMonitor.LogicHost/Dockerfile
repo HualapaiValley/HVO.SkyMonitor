@@ -3,7 +3,7 @@
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS build
 WORKDIR /src
 
 # Copy solution and project files
@@ -34,7 +34,7 @@ WORKDIR /src/src/HVO.SkyMonitor.LogicHost
 RUN dotnet publish HVO.SkyMonitor.LogicHost.csproj -c Release -o /app/publish
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.14@sha256:1a48394b6f29d3a32c79d9edecd4abda0ecbe8776d567dbfc4590ed6979c740c
 WORKDIR /app
 
 # Install curl for health checks

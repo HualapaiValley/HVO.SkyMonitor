@@ -72,7 +72,7 @@ public sealed class Issue518UpgradeRetryEvidenceTests
         object result;
         if (mode == "capture")
         {
-            var module = new VirtualSkyCameraModule(TimeProvider.System,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
                 provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<IProjectedSceneStore>(),
                 planetEphemeris: new AstronomyEnginePlanetEphemeris(),
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());

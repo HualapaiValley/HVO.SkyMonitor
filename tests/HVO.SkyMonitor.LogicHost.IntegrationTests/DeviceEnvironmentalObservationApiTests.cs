@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -25,6 +26,127 @@ public sealed class DeviceEnvironmentalObservationApiTests
 
     [TestCleanup]
     public void Cleanup() => _client?.Dispose();
+
+    [TestMethod]
+    [DataRow(EnvironmentalObservationKind.SkyTemperature, false)]
+    [DataRow(EnvironmentalObservationKind.SeaLevelPressure, false)]
+    [DataRow(EnvironmentalObservationKind.SkyQuality, false)]
+    [DataRow(EnvironmentalObservationKind.SkyQuality, true)]
+    public async Task VersionThreeAdapterKindsAreAcceptedAlongsideLegacyFacts(EnvironmentalObservationKind kind, bool emptyMetadata)
+    {
+        var device = await SeedDeviceAsync().ConfigureAwait(false);
+        var legacy = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid());
+        var observation = legacy with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            ObservationId = Guid.NewGuid(),
+            Value = new(kind, kind switch
+            {
+                EnvironmentalObservationKind.SkyTemperature => EnvironmentalObservationUnit.DegreesCelsius,
+                EnvironmentalObservationKind.SkyQuality => EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond,
+                _ => EnvironmentalObservationUnit.Pascals
+            },
+                kind == EnvironmentalObservationKind.SkyTemperature ? -30 : kind == EnvironmentalObservationKind.SkyQuality ? 21 : 101325, null,
+                EnvironmentalObservationQuality.Good, Metadata: emptyMetadata ? new() : new(Epoch, 15))
+        };
+        using var accepted = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var duplicate = await PostAsync(device.DeviceId, device.DeviceKey, observation).ConfigureAwait(false);
+        using var old = await PostAsync(device.DeviceId, device.DeviceKey, legacy).ConfigureAwait(false);
+        using var invalidLegacy = await PostAsync(device.DeviceId, device.DeviceKey,
+            observation with { SchemaVersion = EnvironmentalObservationSchemaVersions.V1, ObservationId = Guid.NewGuid() }).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.OK);
+        old.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        invalidLegacy.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var query = scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationQueryService>();
+        var history = await query.QueryAsync(new(device.ObservatoryId, kind,
+            Epoch.AddMinutes(-1), Epoch.AddMinutes(1), AgentId: device.DevicePublicId)).ConfigureAwait(false);
+        var received = history.Single(item => item.Observation.ObservationId == observation.ObservationId);
+        received.Observation.Value.Metadata.Should().Be(observation.Value.Metadata);
+        received.ContentSha256.Should().Be(EnvironmentalObservationJson.ComputeContentSha256(received.Observation));
+        EnvironmentalObservationJson.Validate(received).IsValid.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task MissingLineageReturnsARetryableReasonAndSucceedsAfterInputsArrive()
+    {
+        var device = await SeedDeviceAsync().ConfigureAwait(false);
+        var first = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid());
+        var second = first with { ObservationId = Guid.NewGuid() };
+        var derived = first with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            ObservationId = Guid.NewGuid(),
+            Source = first.Source with { SourceId = "cloud", Kind = EnvironmentalObservationSourceKind.Derived },
+            Value = new(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 0.5, null,
+                EnvironmentalObservationQuality.Good, Metadata: new(Epoch, 15)),
+            Lineage = [new(EnvironmentalObservationJson.ComputeSourceIdentitySha256(first), first.ObservationId),
+                new(EnvironmentalObservationJson.ComputeSourceIdentitySha256(second), second.ObservationId)]
+        };
+        using var missing = await PostAsync(device.DeviceId, device.DeviceKey, derived).ConfigureAwait(false);
+        missing.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        using var problem = JsonDocument.Parse(await missing.Content.ReadAsStringAsync().ConfigureAwait(false));
+        problem.RootElement.GetProperty("reasonCode").GetString().Should().Be("environment.lineage-missing");
+        using var inputA = await PostAsync(device.DeviceId, device.DeviceKey, first).ConfigureAwait(false);
+        using var inputB = await PostAsync(device.DeviceId, device.DeviceKey, second).ConfigureAwait(false);
+        inputA.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        inputB.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using var accepted = await PostAsync(device.DeviceId, device.DeviceKey, derived).ConfigureAwait(false);
+        accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var history = await scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationQueryService>()
+            .QueryAsync(new(device.ObservatoryId, derived.Value.Kind, Epoch.AddMinutes(-1), Epoch.AddMinutes(1), AgentId: device.DevicePublicId))
+            .ConfigureAwait(false);
+        var received = history.Single(item => item.Observation.ObservationId == derived.ObservationId);
+        received.Observation.Lineage.Should().Equal(derived.Lineage);
+        EnvironmentalObservationJson.Validate(received).IsValid.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task LineageInputRemainsInCentralHistoryWithoutCompetingWithTheStation()
+    {
+        var device = await SeedDeviceAsync().ConfigureAwait(false);
+        var station = CreateObservation(device.ObservatoryId, device.DevicePublicId, Guid.NewGuid()) with
+        { Value = new(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null, EnvironmentalObservationQuality.Good) };
+        var parameters = JsonSerializer.SerializeToElement(new { readingRole = "lineage-input", acquisitionSourceId = "ir-cloud" });
+        var ambient = station with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            ObservationId = Guid.NewGuid(),
+            ObservedAtUtc = Epoch.AddSeconds(10),
+            Source = station.Source with
+            {
+                Provider = "InfraredSky",
+                SourceId = "ir-cloud-ambient",
+                Provenance = new(new("ir-cloud-input", "1"), parameters, CaptureContractJson.ComputeCanonicalJsonSha256(parameters))
+            },
+            Value = station.Value with { NumericValue = 18.5 }
+        };
+        using var stationResponse = await PostAsync(device.DeviceId, device.DeviceKey, station).ConfigureAwait(false);
+        using var ambientResponse = await PostAsync(device.DeviceId, device.DeviceKey, ambient).ConfigureAwait(false);
+        stationResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        ambientResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var query = scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationQueryService>();
+        var history = await query.QueryAsync(new(device.ObservatoryId, station.Value.Kind,
+            Epoch.AddMinutes(-1), Epoch.AddMinutes(1), AgentId: device.DevicePublicId)).ConfigureAwait(false);
+        history.Should().HaveCount(2);
+        var match = await query.CorrelateAsync(new(station.Target, Epoch, Epoch,
+            new(station.Value.Kind, [EnvironmentalObservationSourceKind.Measured], [EnvironmentalObservationQuality.Good], TimeSpan.FromHours(1))))
+            .ConfigureAwait(false);
+        match.Status.Should().Be(EnvironmentalObservationMatchStatus.Fresh);
+        match.Observation!.ObservationId.Should().Be(station.ObservationId);
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var reader = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
+        db.ObservatoryMemberships.Add(new ObservatoryMembership
+        { ObservatoryId = device.ObservatoryId, UserId = reader.Id, Role = ObservatoryMembershipRole.Viewer, AddedAtUtc = Epoch });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var detail = await scope.ServiceProvider.GetRequiredService<INetworkOperationsReadService>()
+            .GetObservatoryDetailAsync(reader.Id, device.ObservatoryId).ConfigureAwait(false);
+        detail.Should().NotBeNull();
+        detail!.Environment.Single(item => item.Kind == station.Value.Kind).NumericValue.Should().Be(20);
+    }
 
     [TestMethod]
     public async Task AcceptedThenDuplicateReturnsOriginalReceiptAndOneDurableObservation()

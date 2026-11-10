@@ -47,7 +47,7 @@ public sealed class CompactSceneUploadLaneTests
             var config = CreateConfiguration(root, withStorage);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var module = new VirtualSkyCameraModule(TimeProvider.System,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
                 provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<IProjectedSceneStore>(),
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var moduleLifetime = module.ConfigureAwait(false);
@@ -166,7 +166,7 @@ public sealed class CompactSceneUploadLaneTests
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(provider.GetRequiredService<CaptureLanePolicy>().Definitions
                 .Single(static lane => lane.Name == "upload").Enabled);
-            var module = new VirtualSkyCameraModule(TimeProvider.System,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
                 provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<IProjectedSceneStore>(),
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var moduleLifetime = module.ConfigureAwait(false);

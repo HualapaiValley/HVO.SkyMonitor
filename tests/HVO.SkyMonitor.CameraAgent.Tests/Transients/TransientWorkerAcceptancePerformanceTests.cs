@@ -1151,7 +1151,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             provider.GetRequiredService<ICelestialCatalog>(),
             new ProjectedSceneStore());
         await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);

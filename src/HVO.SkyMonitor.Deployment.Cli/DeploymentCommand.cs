@@ -176,6 +176,19 @@ internal sealed record LifecycleRequest : DeploymentCommand
     /// excluded from the request hash.
     /// </summary>
     public Guid? ConfirmRemovedOperationId { get; init; }
+
+    /// <summary>
+    /// Accept a processing-lane quarantine as the only unhealthy readiness check during backup, upgrade, and rollback.
+    /// It is an attestation for this run, not an input of the operation, so it is excluded from the request hash and a
+    /// backup journaled before the flag existed still resumes when the flag is supplied.
+    /// </summary>
+    public bool AllowQuarantinedReadiness { get; init; }
+
+    /// <summary>
+    /// Abandon an incomplete <c>cameraagent backup</c> without committing its archive. It is excluded from the request
+    /// hash for the same reason as <see cref="AllowQuarantinedReadiness"/>.
+    /// </summary>
+    public bool Abort { get; init; }
     public string? CatalogBundle { get; init; }
     public string? CatalogVersion { get; init; }
 
@@ -248,6 +261,15 @@ internal sealed record LifecycleRequest : DeploymentCommand
             (Operation != LifecycleOperationKind.Purge || !Resume || ConfirmRemovedOperationId == Guid.Empty))
         {
             throw new InstallUsageException("--confirm-removed-operation-id requires cameraagent purge --resume and a nonempty operation ID.");
+        }
+        if (Abort && (Operation != LifecycleOperationKind.Backup || Resume || DryRun))
+        {
+            throw new InstallUsageException("--abort applies only to cameraagent backup, and not together with --resume or --plan.");
+        }
+        if (AllowQuarantinedReadiness && Operation is not (
+                LifecycleOperationKind.Backup or LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback))
+        {
+            throw new InstallUsageException("--allow-quarantined-readiness applies only to cameraagent backup, upgrade, and rollback.");
         }
         ValidateOperationOptions();
     }

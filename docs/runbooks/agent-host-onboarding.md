@@ -8,16 +8,20 @@ protocol. This runbook is the operational checklist that sits under both: the
 concrete steps, in order, with the failures that actually happen when a step is
 skipped.
 
-The default **issue owner** is an authorized human or operator-directed agent
-responsible for the full assigned issue lifecycle.
+The **coding owner** implements, validates, obtains independent local review,
+and hands the candidate and evidence to Kepler. Coding threads push only when
+instructed and never create PRs, mark ready, publish `hvo/reviewed-head`, or
+enqueue. Kepler owns the formal PR lifecycle and merge queue.
 
 Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
-`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
-git worktree off `development/v1`, so the main checkout is never modified.
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
 Capacity is assessed per shared resource (host, Docker, storage, external service), not a
-global two-issue slot limit. The repository-wide finalization lock still
-serializes final synchronization, protected CI, and merge.
+global two-issue slot limit. The repository-wide finalization lock is a
+Kepler-operated fallback; the current merge queue is described in the PR
+lifecycle skill.
 
 ## 1. Pre-stage the machine
 
@@ -149,33 +153,25 @@ to decide without seeing the original prompt, and act on his answer yourself.
   and CI. Release explicitly with a resumable handoff on completion or transfer;
   remove `workflow:in-progress` when releasing, without overwriting a competing
   owner's state. A paused owner records whether the claim is retained or released.
-- **Own review and completion.** The PR owner requests independent human or
-  one-shot agent review bound to immutable base/head SHAs, with reviewer identity,
-  findings, and dispositions recorded in the PR ledger. Agent reviews record
-  requested capability and actual provider/model/effort; human reviews use N/A
-  for model/effort. Follow the PR lifecycle skill's validation, draft convergence,
-  bounded corrections, finalization lock, base-sync review or unchanged-base
-  proof, and green current-head required CI rules. Complete authorized merge,
-  verify issue closure, synchronize local `main`, and clean up merged branches/
-  worktrees without deleting unrelated work. If merge is reserved or unauthorized,
-  report that boundary and leave a handoff. Do not take another issue unless the
-  user authorized that scope.
+- **Local review and handoff.** Map the original issue requirements to behavior
+  and local evidence at the candidate SHA before independent review. Missing
+  scope or evidence returns to implementation. Follow the PR lifecycle skill
+  for LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN, explicit completeness
+  verdicts, and exact-range finding verification. Hand the candidate, mapping,
+  evidence, and local reports to Kepler; push only when instructed. Kepler
+  obtains formal review and operates readiness, the reviewed-head gate, and
+  queue admission. Do not take another issue without user authorization.
 - **Report directly.** Send milestones and blockers to the operator and retain
-  UTC evidence on the issue/PR, with interim notes during long gates and reviews.
+  UTC local evidence, with interim notes during long gates and reviews. Kepler
+  maintains the PR ledger.
 
-## 5. Validation and finalization for every owner
+## 4. Validation and Kepler finalization
 
-- **Never trust a filtered read for the lock.** The finalization lock is the
-  `workflow:finalizing` label on an open pull request. The label search endpoint
-  lags and returns empty seconds after a write, which is indistinguishable from
-  no holder. Read the pull request objects directly. A filtered enumeration is
-  trustworthy only when the returned count is strictly less than the requested
-  limit, and even then not immediately after a write. Hold the repository-wide
-  lock from final synchronization through any required base-sync review,
-  protected CI, and merge. If the target advances, return to draft and release
-  the lock before synchronizing and reviewing again under the lifecycle rules.
-- **Clear the label from a merged pull request.** A merged holder does not hold
-  the lock, but leaving the label on makes every later read ambiguous.
+The lifecycle skill owns Kepler's queue and fallback lock procedures. A branch
+being behind the target tip is not a synchronization trigger or a review
+finding. Actual conflicts still need resolution, local evidence, and review
+on the changed candidate. The stricter latest-base submission policy remains
+deferred. Coding threads stop at handoff.
 
 - **Confirm host quiet before any timed or gated run.** Read the load average and
   name any foreign process. A failure produced under contention is unattributable
@@ -197,7 +193,7 @@ to decide without seeing the original prompt, and act on his answer yourself.
   publish the blob hash of the file measured. A run against transcribed text is
   evidence about the transcription.
 
-## 6. A recurring validation failure class
+## 5. A recurring validation failure class
 
 Nearly every defect found in a recent batch was one shape: **a channel
 structurally incapable of saying it does not know, so absence renders as a
@@ -210,7 +206,7 @@ token.
 Every one was caught by a second measurement disagreeing with the first. None
 was caught by looking harder at the first. Build the second measurement in.
 
-## 7. Bringing the session down
+## 6. Bringing the session down
 
 Leave the resumable handoff the execution protocol requires: what is done, what
 is running, the exact next action, and what would invalidate it. Release any

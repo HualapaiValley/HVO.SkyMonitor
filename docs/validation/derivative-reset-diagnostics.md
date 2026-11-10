@@ -191,3 +191,28 @@ unchanged Unit suite or either SQL replay. The read-only operations-doc audit
 passed before inventory reconciliation, because both the inventory and runbook
 still agreed on the old total; actual discovery exposed the six missing cases.
 The owning inventory is updated726→732 and the aggregate Unit total6756→6762.
+
+## Current active-only fixture reset (#1448)
+
+The #1448 qualification repair separately changes the entitlement and runner
+fixture resets to target only Waiting, Pending, RetryableFailure, Leased and
+CancelRequested jobs, with the existing exclusion of unsealed graph children.
+Completed, TerminalFailure, Canceled, Skipped, Quarantined and Superseded history
+is left byte-for-byte unchanged, including row versions. The production trigger,
+its seal/identity guards, and the 30-second SQL command timeout are unchanged.
+Other callers of `ExcludingUnsealedGraphs` keep their own cleanup contracts.
+
+The optional observer's dirty-read target count now applies that same active-state
+and seal predicate. Cached reset-plan selection matches the actual generated UPDATE's five-state
+status predicate and lease-clearing assignment, independent of the generated
+WHERE clause's position and table alias. Docker-free Unit tests capture commands
+from both real reset methods and verify those exact matcher fragments; SELECT
+query tags are not used because EF drops them from ExecuteUpdate SQL. Plans remain cached estimated projections and are
+not proof of the cause of an earlier timeout. This correction does not activate
+the observer or renew the exhausted #1274 diagnostic allowance above.
+
+Regression coverage exercises all eleven job states on legacy and sealed graph
+jobs, preserves a valid unfinished expansion, clears active leases, preserves
+terminal snapshots and verifies a second reset performs no further writes.
+Fresh-database regression success does not replace the complete LogicHost
+Integration assembly gate under accumulated state.

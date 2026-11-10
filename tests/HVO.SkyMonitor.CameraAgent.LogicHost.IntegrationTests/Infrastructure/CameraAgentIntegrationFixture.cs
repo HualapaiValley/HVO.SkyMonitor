@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -554,6 +555,16 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 FormattableString.Invariant($" terminal={processing.TerminalCount} quarantine={processing.ProcessingQuarantineCount} missingProducts={processing.MissingProductCount}") +
                 FormattableString.Invariant($" durableStateUnavailable={processing.DurableStateUnavailable} reconciliationFailed={processing.ReconciliationFailed}") +
                 FormattableString.Invariant($" oldestPendingUtc={processing.OldestPendingUtc:O}");
+        });
+        AppendSafely(builder, "artifact outbox", () =>
+        {
+            var outbox = services.GetRequiredService<ArtifactOutboxState>().Snapshot;
+            return FormattableString.Invariant($"availability={outbox.Availability} pending={outbox.PendingCount} leased={outbox.LeasedCount} retry={outbox.RetryCount} quarantine={outbox.QuarantineCount} oldestPendingUtc={outbox.OldestPendingUtc:O}");
+        });
+        AppendSafely(builder, "transient delivery", () =>
+        {
+            var delivery = services.GetRequiredService<TransientCandidateDeliveryState>().Snapshot;
+            return FormattableString.Invariant($"availability={delivery.Availability} reason={delivery.Reason} pending={delivery.PendingCount} retry={delivery.RetryingCount} quarantine={delivery.QuarantinedCount} lastAttemptUtc={delivery.LastAttemptUtc:O} lastAcknowledgedUtc={delivery.LastAcknowledgedUtc:O}");
         });
         AppendSafely(builder, "durable lane", DescribeDurableLane);
 

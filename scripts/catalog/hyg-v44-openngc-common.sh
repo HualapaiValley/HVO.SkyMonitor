@@ -182,6 +182,8 @@ hygngc_composition_sql() {
 
     cat <<'SQL'
 .bail on
+-- Match the approved serializer independently of SQLITE_SECURE_DELETE defaults.
+PRAGMA secure_delete = ON;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = OFF;
 CREATE TABLE source_openngc_ngc (
@@ -557,6 +559,8 @@ hygngc_compose_database() {
 hygngc_finish_database() {
     sqlite3 -batch "$1" > /dev/null <<'SQL'
 .bail on
+-- secure_delete is connection-local: the composition connection has closed.
+PRAGMA secure_delete = ON;
 DROP TABLE build_transformations;
 DROP TABLE build_outline_kept;
 DROP TABLE build_outline_rows;

@@ -92,7 +92,11 @@ internal sealed record CaptureLaneBacklog(
     long RetryCount,
     long QuarantineCount,
     int PressureLevel = 0,
-    IReadOnlyList<CaptureLanePendingCapture>? PendingCaptures = null);
+    IReadOnlyList<CaptureLanePendingCapture>? PendingCaptures = null,
+    CaptureLaneActiveBacklog? ActiveWork = null);
+
+/// <summary>Pending, leased and retry-wait work only; quarantine remains a separate admission blocker.</summary>
+internal sealed record CaptureLaneActiveBacklog(long Count, long Bytes, DateTimeOffset? OldestUtc);
 
 public interface IOperationsQueueSnapshotRefresher
 {

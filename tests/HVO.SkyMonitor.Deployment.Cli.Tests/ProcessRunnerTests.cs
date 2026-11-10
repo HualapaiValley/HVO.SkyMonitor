@@ -8,6 +8,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class ProcessRunnerTests
 {
+    // Linux pipes normally hold 16 pages. A 256 KiB input fits with 16 KiB pages;
+    // exceed normal capacity on 16 and 64 KiB-page kernels, below the 32 MiB input limit.
+    private static string BlockedPipeInput => new('x', Math.Max(256 * 1024, 32 * Environment.SystemPageSize));
+
     [TestMethod]
     public async Task RunWithInputAsync_LargeInput_IsDeliveredAndClosedWithoutArgumentExpansion()
     {
@@ -22,7 +26,7 @@ public sealed class ProcessRunnerTests
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
         await Assert.ThrowsAsync<OperationCanceledException>(() => new ProcessRunner().RunWithInputAsync(
-            "bash", ["-c", "sleep 30"], new string('x', 256 * 1024), cancellation.Token));
+            "bash", ["-c", "sleep 30"], BlockedPipeInput, cancellation.Token));
         Assert.IsTrue(cancellation.IsCancellationRequested);
     }
 
@@ -34,8 +38,10 @@ public sealed class ProcessRunnerTests
         try
         {
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var input = BlockedPipeInput;
+            Console.WriteLine($"Page size: {Environment.SystemPageSize}; input bytes: {input.Length}");
             await Assert.ThrowsExactlyAsync<IOException>(() => new ProcessRunner().RunWithInputAsync("bash",
-                ["-c", "printf '%s' $$ > \"$1\"; exec 1>&- 2>&-; sleep 0.1; exec 0<&-; sleep 30", "bash", pidFile], new string('x', 256 * 1024), cancellation.Token));
+                ["-c", "printf '%s' $$ > \"$1\"; exec 1>&- 2>&-; sleep 0.1; exec 0<&-; sleep 30", "bash", pidFile], input, cancellation.Token));
             Assert.IsTrue(File.Exists(pidFile));
             var pid = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
             try { child = Process.GetProcessById(pid); }

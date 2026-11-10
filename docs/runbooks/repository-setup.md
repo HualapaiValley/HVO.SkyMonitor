@@ -7,6 +7,12 @@ promotion, org-level self-hosted runners, and an independent review identity.
 Every step below was performed on `HVO.SkyMonitor` in September 2026; where a
 step has a known trap, the trap is recorded next to it.
 
+Coding threads stop at the tested candidate/evidence/independent-local-review
+handoff and push only when instructed. They never create PRs, even drafts,
+mark ready, set `hvo/reviewed-head`, or enqueue. Kepler alone performs those
+actions and controls formal review and any direct/auto-merge fallback. The
+setup/PR commands here are for Kepler/operator operation, not coding authority.
+
 The model in one picture:
 
 ```text
@@ -161,7 +167,12 @@ stay `false` on `main` so promotion can use a merge commit.
 `required_approving_review_count` is 0 on purpose: GitHub refuses self-approval
 when the reviewer and implementer share an account, and the review record lives
 in the bot-posted comment and the resolved threads, which `required_conversation_resolution`
-enforces.
+enforces. GitHub may also reject native `request_changes` from the PR author.
+Record an independent reviewer's actual verdict honestly; do not manufacture a
+native approval or rejection. Issue completeness and the associated
+`CHANGES REQUESTED` state are enforced by agent/Kepler policy, not by a claimed
+GitHub-native completeness check. The protection example above does not
+establish completeness or configure a new gate.
 
 ## 6. Workflows to copy
 
@@ -169,7 +180,7 @@ Copy these from `HVO.SkyMonitor` and adjust the marked lines.
 
 | File | Purpose | Adjust |
 | --- | --- | --- |
-| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint, cheap CI-control checks) + self-hosted Build and Unit under a 720s workload budget (600s target, 900s hard timeout) with a timing manifest | build/test commands and `runs-on` labels; keep exhaustive lint/category checks in full qualification |
+| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint, cheap CI-control checks) + self-hosted Build and Unit under a 1080s workload budget (600s target, 1320s hard timeout) with a timing manifest | build/test commands and `runs-on` labels; keep exhaustive lint/category checks in full qualification |
 | `.github/workflows/agentcontrol.yml` | `verify-identity`, `post-review` as the App | nothing; it reads owner/repo from context |
 | `.github/workflows/promote-main.yml` | nightly draft promotion PR, 02:00 America/Phoenix; reviewed promotion becomes ready for planned full qualification | the aggregate check name if the green-run check is extended to `main`'s pipeline |
 | `.github/ISSUE_TEMPLATE/development-v1.yml`, `.github/PULL_REQUEST_TEMPLATE/development-v1.md` | issue form and PR template | project-specific fields |
@@ -187,19 +198,116 @@ Labels the process uses (create with `gh label create`): `review:mechanical`,
 `review:converged`, `risk:security`, `risk:durability`, `risk:concurrency`,
 `risk:ci-control`, `risk:deployment`, `workflow:in-progress`, `workflow:blocked`.
 
+### Owner and reviewer completeness contract
+
+Install the [AGENTS.md Issue Completeness contract](../../AGENTS.md#issue-completeness)
+and the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md#issue-completeness-and-independent-local-review)
+with the process documentation. They govern pre-PR readiness even where an
+older walkthrough starts at draft creation. Use the skill's compact owner and
+reviewer evidence tables; copying workflows alone does not establish this
+process requirement.
+
+| Review tier | Scope | Required CLEAN reports on the same candidate SHA |
+| --- | --- | --- |
+| LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix with no HIGH concern | One Sol |
+| HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component; when unsure, HIGH | Sol and Opus |
+
+HIGH concerns override LOW categories. Apply this at each required local/formal
+stage; profiles and the A/B/C/M validation ladder do not replace reviewers.
+Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
+cannot substitute for the required named CLEAN reports. Only High/Medium
+review findings block; Critical is High. Lows become follow-up issues through
+Kepler. Incompleteness or missing required evidence is always at least Medium,
+never Low or deferrable. Required tests and CI remain separate gates.
+
+1. The owner reads the original GitHub issue, all discussion and acceptance
+   criteria, governing specifications, and approved scope decisions. Roy's
+   latest instructions win conflicts. Map every in-scope requirement to
+   implemented behavior and local behavioral evidence at the candidate SHA,
+   including normal, negative, failure, cancellation, recovery, durable-state,
+   and interaction cases, with explicit N/A reasons where inapplicable.
+   Tests/criteria derived only from the implemented behavior are
+   insufficient. Preserve assigned HIGH/LOW tiers and their validation depth.
+2. Prove resolution before requesting independent local review. The reviewer
+   independently reads the original sources as well as the implementation and
+   evidence, and reports completeness, supporting evidence, and every uncovered
+   requirement. For each requirement the reviewer independently checks normal,
+   negative, failure, cancellation, recovery, durable-state, and interaction
+   evidence or the explicit N/A reasons. A focused interaction review alone
+   cannot establish full issue resolution. A PR or draft means the declared
+   scope is completed, tested locally, and independently vetted by complexity.
+3. Missing in-scope behavior or required evidence means `CHANGES REQUESTED` and
+   return to implementation, never a silent Low deferral. Keep or return any
+   existing PR to draft through Kepler; do not advance CI/queue.
+   The loop is reject -> implementation -> local tests/evidence -> independent
+   local review -> Kepler PR lifecycle. Formal review, green CI, coverage, and
+   code-only CLEAN verdicts cannot carry implementation completeness.
+4. Distinguish existing bugs, test gaps, fix-introduced regressions, and
+   mechanical-only invariants in the evidence. Report missing hardware/state
+   and remaining validation to Kepler/Roy; never assert unobserved passes.
+   Required acceptance remains blocked until evidenced or explicitly re-scoped
+   by Roy. Preserve accepted coverage exceptions.
+5. Accurately describe an authorized partial slice and track its remaining
+   requirements. Keep the parent issue **OPEN** until its full scope is done;
+   avoid automatic parent-closing references. Hand off candidate SHA, changed
+   files, evidence, limitations, and the required tier's local CLEAN reports.
+   Stop at that handoff; Kepler alone owns PR/readiness/reviewed-head/queue writes.
+
+For the operated merge queue, eligibility attaches to the **CURRENT PR
+HEAD SHA**, not the target-branch tip or temporary group commit. Tip-behind
+or age alone does not invalidate head reviews, block submission/resubmission,
+or require automatic base-only synchronization or re-testing against latest
+`development/v1`. Roy deferred a stricter latest-base pre-submit policy:
+monitor merge queue and CI first; adopt stricter policy only if evidence shows
+a need and Roy authorizes it. Actual CONFLICTING merges and real product
+conflicts still require resolution; resulting head changes need applicable
+local tests and independent review. Group CI handles combined integration.
+Completeness and required local/formal reviews remain mandatory. This
+documentation does not enable the queue or add executable CI, coverage, or
+test-harness enforcement.
+
+### Operated queue and separate fallback
+
+Kepler creates/maintains the draft after the complete local handoff, obtains
+required formal reviews, and marks ready only after convergence. After fresh
+required CI, Kepler revalidates the **CURRENT PR HEAD SHA**, completeness,
+required local/formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus on that SHA),
+passing required checks, and resolved conversations. Kepler alone publishes
+`hvo/reviewed-head` on that exact head, then calls GraphQL `enqueuePullRequest`
+with `expectedHeadOid` bound to it and verifies queue admission. Queue CI tests
+combined integration. Actual conflicts or changed heads require the applicable
+implementation/tests/reviews before Kepler advances them.
+
+Under the operated queue, `gh pr merge --merge` warns and **does not enqueue**.
+The [Kepler queue procedure](../../.agents/skills/pr-lifecycle/SKILL.md#keplers-operated-merge-queue-route)
+uses GraphQL. Direct merge or auto-merge is a separate Kepler-only fallback
+when the queue is unavailable or an operator explicitly selects it; it retains
+the same completeness, named-reviewer, check, and conversation requirements.
+Neither fallback nor queue admission imposes the deferred latest-base
+submission/resubmission policy. No coding thread performs either route.
+
 ## 7. Prove it before calling it done
 
 In this order, because each step depends on the last:
 
-1. Open a trivial PR to `development/v1`. Preflight runs hosted; Build and Unit
+1. For the setup-verification change, first satisfy the completeness contract
+   above with candidate evidence and a passing independent local review. Only
+   then have Kepler open a trivial draft PR to `development/v1`.
+   Preflight runs hosted; Build and Unit
    starts on a `hvo-skymonitor` runner after review and the ready transition.
    Confirm the job's `runner_group_name`.
 2. `gh workflow run agentcontrol.yml -f operation=verify-identity`. The summary
    must show the App slug and that the token sees exactly this repository.
 3. Commit a review body under `.agentcontrol/reviews/PR-<n>-R0-<head8>.md`,
    dispatch `post-review`, confirm the comment author is `hvo-agentcontrol[bot]`.
-   Delete the file before marking ready.
-4. Merge. Wait for the push run on `development/v1` to go green.
+   Delete the file before marking ready. These are Kepler's setup-verification
+   operations. If staging/deletion changes the candidate SHA, obtain applicable
+   local evidence and the required tier's reviews on that new candidate before
+   advancement; never carry old CLEAN reports or the gate to a new head.
+4. Kepler revalidates, publishes the reviewed-head gate, and enqueues through
+   GraphQL using the operated route above. Kepler monitors queue CI/merge and
+   the push run on `development/v1`; use direct/auto-merge only as the explicitly
+   selected fallback.
 5. `gh workflow run promote-main.yml`. Confirm a draft promotion PR opens,
    authored by the bot. After review and operator authorization for the promotion
    window, mark it ready and verify `main`'s full pipeline. Merge only when green,

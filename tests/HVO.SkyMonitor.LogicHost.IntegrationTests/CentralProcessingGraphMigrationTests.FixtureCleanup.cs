@@ -88,7 +88,7 @@ public sealed partial class CentralProcessingGraphMigrationTests
                 {
                     "window-active" or "window-all-active" => before.Status is CentralDerivativeJobStatus.Waiting
                         or CentralDerivativeJobStatus.Pending or CentralDerivativeJobStatus.RetryableFailure,
-                    "window-foreign" => before.Status is CentralDerivativeJobStatus.Waiting
+                    "window-foreign" or "runner" or "entitlement" => before.Status is CentralDerivativeJobStatus.Waiting
                         or CentralDerivativeJobStatus.Pending or CentralDerivativeJobStatus.RetryableFailure
                         or CentralDerivativeJobStatus.Leased or CentralDerivativeJobStatus.CancelRequested,
                     "window-delay" or "hybrid-downstream" => before.Status == CentralDerivativeJobStatus.Pending,
@@ -115,6 +115,104 @@ public sealed partial class CentralProcessingGraphMigrationTests
             await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
     }
+
+    [TestMethod]
+    [DataRow("runner")]
+    [DataRow("entitlement")]
+    public async Task ActiveFixtureReset_PreservesTerminalHistoryAndIsIdempotent(string route)
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorActiveFixtureReset_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var db = new ApplicationDbContext(options);
+        try
+        {
+            await db.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, sealedJob, unsealedJob, _) = await SeedUnsealedFixtureGraphAsync(db, now).ConfigureAwait(false);
+            var statuses = Enum.GetValues<CentralDerivativeJobStatus>();
+            statuses.Should().HaveCount(11, "every current job status must be classified by this reset contract");
+            var legacy = statuses.Select(status => CreateCleanupLegacyJob(raw, now, status)).ToArray();
+            db.AddRange(legacy);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+            var terminalBefore = new Dictionary<Guid, string>();
+            foreach (var job in legacy.Where(job => !IsActiveFixtureResetStatus(job.Status)))
+            {
+                terminalBefore.Add(job.Id, await CleanupJobSnapshotAsync(db, job.Id).ConfigureAwait(false));
+            }
+            var unsealedBefore = await CleanupJobSnapshotAsync(db, unsealedJob.Id).ConfigureAwait(false);
+
+            await RunFixtureCleanupAsync(db, route, Guid.Empty, Guid.Empty, now).ConfigureAwait(false);
+            foreach (var original in legacy)
+            {
+                var after = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(job => job.Id == original.Id).ConfigureAwait(false);
+                if (IsActiveFixtureResetStatus(original.Status))
+                {
+                    after.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure);
+                    after.AvailableAtUtc.Should().BeNull();
+                    after.LeaseToken.Should().BeNull();
+                    after.LeaseExpiresAtUtc.Should().BeNull();
+                }
+                else
+                {
+                    // Full snapshots include RowVersion: an UPDATE with unchanged values is still forbidden.
+                    (await CleanupJobSnapshotAsync(db, original.Id).ConfigureAwait(false)).Should().Be(terminalBefore[original.Id]);
+                }
+            }
+            var afterFirst = JsonSerializer.Serialize(await db.CentralDerivativeJobs.AsNoTracking().OrderBy(job => job.Id).ToArrayAsync().ConfigureAwait(false));
+            await RunFixtureCleanupAsync(db, route, Guid.Empty, Guid.Empty, now).ConfigureAwait(false);
+            JsonSerializer.Serialize(await db.CentralDerivativeJobs.AsNoTracking().OrderBy(job => job.Id).ToArrayAsync().ConfigureAwait(false))
+                .Should().Be(afterFirst, "a second reset must not rewrite retired history or its row versions");
+
+            // Exercise all statuses on a genuinely sealed graph too. The execution remains open;
+            // only its child outcome varies, so all eleven states are valid fixture inputs.
+            foreach (var status in statuses)
+            {
+                var graphJob = await db.CentralDerivativeJobs.SingleAsync(job => job.Id == sealedJob.Id).ConfigureAwait(false);
+                graphJob.Status = status;
+                graphJob.CompletedAtUtc = status == CentralDerivativeJobStatus.Completed ? now : null;
+                graphJob.AvailableAtUtc = status == CentralDerivativeJobStatus.Completed ? null : now;
+                graphJob.LeaseToken = status is CentralDerivativeJobStatus.Leased or CentralDerivativeJobStatus.CancelRequested ? Guid.NewGuid() : null;
+                graphJob.LeaseExpiresAtUtc = graphJob.LeaseToken is null ? null : now.AddMinutes(1);
+                await db.SaveChangesAsync().ConfigureAwait(false);
+                db.ChangeTracker.Clear();
+                var before = await CleanupJobSnapshotAsync(db, sealedJob.Id).ConfigureAwait(false);
+                await RunFixtureCleanupAsync(db, route, Guid.Empty, Guid.Empty, now).ConfigureAwait(false);
+                var after = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(job => job.Id == sealedJob.Id).ConfigureAwait(false);
+                if (IsActiveFixtureResetStatus(status))
+                {
+                    after.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure);
+                    after.AvailableAtUtc.Should().BeNull();
+                    after.LeaseToken.Should().BeNull();
+                    after.LeaseExpiresAtUtc.Should().BeNull();
+                }
+                else
+                {
+                    (await CleanupJobSnapshotAsync(db, sealedJob.Id).ConfigureAwait(false)).Should().Be(before);
+                }
+            }
+            foreach (var (id, before) in terminalBefore)
+            {
+                (await CleanupJobSnapshotAsync(db, id).ConfigureAwait(false)).Should().Be(before);
+            }
+            (await CleanupJobSnapshotAsync(db, unsealedJob.Id).ConfigureAwait(false)).Should().Be(unsealedBefore);
+        }
+        finally
+        {
+            await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsActiveFixtureResetStatus(CentralDerivativeJobStatus status)
+        => status is CentralDerivativeJobStatus.Waiting or CentralDerivativeJobStatus.Pending
+            or CentralDerivativeJobStatus.RetryableFailure or CentralDerivativeJobStatus.Leased
+            or CentralDerivativeJobStatus.CancelRequested;
 
     internal static async Task<(CentralArtifact Raw, CentralDerivativeJob SealedJob, CentralDerivativeJob UnsealedJob,
         CentralProcessingGraphExecution UnsealedExecution)> SeedUnsealedFixtureGraphAsync(ApplicationDbContext db, DateTimeOffset now)

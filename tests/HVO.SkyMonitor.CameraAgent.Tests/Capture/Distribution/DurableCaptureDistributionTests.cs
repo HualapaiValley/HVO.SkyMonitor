@@ -1313,7 +1313,7 @@ public sealed partial class DurableCaptureDistributionTests
         }
     }
 
-    private static Fixture CreateFixture(
+    internal static Fixture CreateFixture(
         CaptureDistributionOptions distribution,
         ICaptureLaneFaultInjector? laneFaultInjector = null,
         IRawIngressFaultInjector? rawFaultInjector = null,
@@ -1545,7 +1545,7 @@ public sealed partial class DurableCaptureDistributionTests
         Assert.Fail($"Timed out waiting for durable lane count {expected}.");
     }
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         private bool _ingressDisposed;
 
@@ -1720,7 +1720,7 @@ public sealed partial class DurableCaptureDistributionTests
         TimeSpan[] MonotonicJitter,
         int TimerCreationCount);
 
-    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
+    internal sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {
         private DateTimeOffset _now = now;
 

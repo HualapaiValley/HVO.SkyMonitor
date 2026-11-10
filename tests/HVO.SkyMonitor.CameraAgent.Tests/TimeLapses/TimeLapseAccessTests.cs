@@ -44,6 +44,8 @@ public sealed class TimeLapseAccessTests
         var service = Service(auth.Object, catalog.Object, commands.Object);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.GetTimeLapseAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false)).Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.RetryTimeLapseAsync(Guid.NewGuid(), 3, Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.ListTimeLapseLibraryAsync(new(1), CancellationToken.None).ConfigureAwait(false)).Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await service.ListLibraryAsync(new(1), CancellationToken.None).ConfigureAwait(false)).Kind);
         catalog.VerifyNoOtherCalls();
         commands.VerifyNoOtherCalls();
     }

@@ -24,7 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// configured window while replay keeps consuming its own frozen pins.
 /// </summary>
 [TestClass]
-public sealed class RollingCombinationWindowLineageTests
+public sealed partial class RollingCombinationWindowLineageTests
 {
     private const int WindowSize = 5;
     private const int CaptureCount = WindowSize + 1;
@@ -597,7 +597,7 @@ public sealed class RollingCombinationWindowLineageTests
         CameraModuleConfig configuration)
     {
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             provider.GetRequiredService<ICelestialCatalog>(),
             provider.GetRequiredService<IProjectedSceneStore>(),
             provider.GetRequiredService<IConstellationTopology>(),

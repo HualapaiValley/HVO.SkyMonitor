@@ -79,10 +79,10 @@ public static class ProcessingNodeOptionsCodec
         }
 
         if (RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
-            !RollingCombinationOptionDescriptors.IsSameGain(options))
+            !RollingCombinationOptionDescriptors.MatchesRecipe(descriptor, options))
         {
             return new([], [new(ProcessingOptionReasonCodes.NotAllowed, path,
-                "This panel only edits the same-gain rolling mean; recipe and normalization bindings remain opaque.")]);
+                "The rolling-window panel must match the existing recipe. Recipe and normalization bindings cannot be changed here.")]);
         }
         var scopes = ReadScopes(descriptor, options, path, diagnostics);
         var decoded = ImmutableArray.CreateBuilder<ProcessingDecodedOption>(descriptor.Options.Length);
@@ -154,6 +154,8 @@ public static class ProcessingNodeOptionsCodec
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
                 $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
         }
+        if (diagnostics.Count == 0)
+            diagnostics.AddRange(AnnotationOptionDescriptors.ValidateSelections(descriptor, decoded, path));
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
         {

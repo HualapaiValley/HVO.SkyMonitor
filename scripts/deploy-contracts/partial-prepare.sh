@@ -8,5 +8,5 @@ fi
 env -u HVO_PRODUCTION_CATALOG_BUNDLE DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   MSBUILDDISABLENODEREUSE=1 dotnet test \
   "$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj" \
-  --configuration Release --filter 'FullyQualifiedName~PartialPrepareRecoveryTests' \
+  --configuration Release --no-build --no-restore --filter 'FullyQualifiedName~PartialPrepareRecoveryTests' \
   -nodeReuse:false -p:UseSharedCompilation=false

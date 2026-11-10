@@ -391,8 +391,10 @@ public sealed class VirtualSkyPipelineTests
             SerializerOptions)!;
         Assert.AreEqual(transientDefinition.ComputeCanonicalScenarioId(), transientProvenance.ScenarioId);
         Assert.AreEqual(transientDefinition.ComputeParametersSha256(), transientProvenance.ParametersSha256);
-        Assert.IsTrue(
-            (raw.TimestampUtc - transientProvenance.IntegrationStartUtc).Duration() <= TimeSpan.FromMilliseconds(1));
+        var virtualExposure = raw.Metadata.Scene.VirtualExposure;
+        Assert.IsNotNull(virtualExposure);
+        Assert.IsTrue(virtualExposure.IsValid(raw.Metadata.Exposure));
+        Assert.AreEqual(virtualExposure.ScenarioStartUtc, transientProvenance.IntegrationStartUtc);
         Assert.AreEqual(
             transientProvenance.IntegrationStartUtc + raw.Metadata.Exposure,
             transientProvenance.IntegrationEndUtc);
@@ -426,6 +428,12 @@ public sealed class VirtualSkyPipelineTests
                 File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))))
             .Where(static item => item.Parsed.IsValid && item.Parsed.Document!.Manifest is not null)
             .ToArray();
+        var retainedRaw = manifests.Select(static item => item.Parsed.Document!.Manifest!)
+            .FirstOrDefault(item => item.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
+                item.Descriptor.Timing.ExposureStartedUtc == raw.TimestampUtc);
+        Assert.IsNotNull(retainedRaw, "The coherent raw snapshot must retain its acquisition timestamp.");
+        Assert.AreEqual(virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds(),
+            retainedRaw.Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds());
         var defaultPreview = manifests
             .Where(item =>
                 item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview &&

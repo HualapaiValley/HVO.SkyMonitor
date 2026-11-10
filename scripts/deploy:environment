@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
+# The disposable qualification harness prepares this exact graph before dispatch.
+# Ordinary deployment invocations still build normally.
+deployment_build_args=()
+if [[ "${HVO_DEPLOYMENT_TEST_NO_BUILD:-}" == 1 ]]; then deployment_build_args+=(--no-build); fi
 # Typed preflight authority (#1593). Resolve relative inventory arguments before selecting the source checkout.
 if [[ "${1:-}" == preflight ]]; then
     preflight_forward=("$@")
@@ -20,14 +24,14 @@ if [[ "${1:-}" == preflight ]]; then
     cd "$REPO_ROOT"
     exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
       --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-      --configuration Release --no-launch-profile -- "${preflight_forward[@]}"
+      --configuration Release --no-launch-profile "${deployment_build_args[@]}" -- "${preflight_forward[@]}"
 fi
 
 # Compatibility entry point; the typed CLI is the sole recovery implementation (#1588).
 if [[ "${1:-}" == partial-prepare-cleanup ]]; then
     exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
       --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-      --configuration Release --no-launch-profile -- "$@"
+      --configuration Release --no-launch-profile "${deployment_build_args[@]}" -- "$@"
 fi
 
 # Existing-service teardown has one typed authority (#1589); deploy-owned deletion
@@ -45,7 +49,7 @@ if [[ "${1:-}" == down ]]; then
         cd "$REPO_ROOT"
         exec env MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false dotnet run \
           --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-          --configuration Release --no-launch-profile -- existing-down "${down_forward[@]:1}"
+          --configuration Release --no-launch-profile "${deployment_build_args[@]}" -- existing-down "${down_forward[@]:1}"
     fi
     unset down_forward down_inventory_argument down_argument_index
 fi

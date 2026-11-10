@@ -349,6 +349,10 @@ schema version. The members are those `--config` reads, under the same names:
   `--json` on the command line.
 - No secret is ever an answer. A password is given in its own owner-only file
   (`passwordFile`) or generated (`generatePassword`).
+- `illuminationMode` optionally selects `LegacyScalarSolar`, `SolarDriven` or
+  `ControlledNight` for the VirtualSky module. The direct CLI equivalent is
+  `--illumination-mode ControlledNight`. Put the member in the answers file when
+  using `--answers`; it is not a command-line override beside that file.
 - Only `--cpus`, `--memory`, `--release`, `--image-source`, `--catalog-bundle` and
   `--no-download` may accompany `--answers`. Each replaces the file's member: the
   limits, so a re-run with the same file changes the limits (see
@@ -426,6 +430,37 @@ terminal's own colours with bold, underline and reverse video, and a locale that
 Every page's screenshot, at both sizes and in each fallback, is in [`docs/images/terminal`](../images/terminal). The
 wizard's tests draw them on Terminal.Gui's in-memory driver, Development v1 CI draws them as SVG in Build and Unit and
 keeps them with its evidence, and `scripts/docs:terminal-screenshots` refreshes the folder.
+
+### VirtualSky illumination baseline and active rig
+
+For a fresh virtual-camera installation, add `"illuminationMode": "ControlledNight"`
+to the answers file, or pass `--illumination-mode ControlledNight` to a direct
+`cameraagent install` invocation. The generated `camera-module.json` then explicitly
+sets `module.options.illuminationMode`; its canonical hash is recorded in the
+installation manifest and result. The VirtualAsi174Mm rig, processing graph and
+sunset-to-sunrise schedule keep their existing semantics. `ControlledNight`
+selects simulated night lighting, while celestial time still advances normally.
+
+Omitting the setting preserves the historical `LegacyScalarSolar` default and the
+existing generated configuration and request identities. All three named modes
+can be explicit; values are case-sensitive and misspellings are usage errors.
+Omission and explicit `LegacyScalarSolar` select the same lighting but have
+different configuration and request identities. Keep the setting omitted when
+resuming or re-running an installation begun without it, including interrupted
+installations with a legacy request hash. An explicit lighting choice cannot
+resume a legacy journal that never bound that choice. Changing the
+baseline lighting of a completed installation through a re-run is refused, just
+as other camera configuration changes are.
+
+The installer baseline is separate from the active named-rig revision. The
+supported `camera.skyLighting` setting stages a rig revision for the next start;
+it does not rewrite the manifest-bound baseline. Installation verification
+continues to hash that baseline file. Upgrade and reinstall preserve it and its
+canonical identity. Editing `camera-module.json` by hand changes the bound
+identity and causes verification to refuse. A raw-byte file checksum is not the
+canonical JSON checksum: whitespace or property-order differences alone do not
+indicate drift. For existing installations, use the active-rig setting to change
+lighting without editing the baseline or manifest.
 
 ### Re-running an install
 
@@ -1166,9 +1201,35 @@ integrity failures still fail startup.
   This action does not reclaim disk space. A capture with a leased lane must
   settle that lease before either action can apply.
 
-Both actions keep the released capture's raw evidence protected from ordinary
-retention, including after lane holds are recomputed. Revalidation also does not
-reclaim disk space.
+A standard-lane quarantine whose raw capture is still `committed` is not in that list.
+It is the lane row, not missing or corrupt raw bytes. Open **Quarantine → Processing
+lane quarantine** (`/operations/quarantine?kind=ProcessingLane`) or:
+
+```bash
+curl -sS -b "$COOKIE" \
+  "https://<camera>/api/v1/operations/processing-lane-quarantine?pageSize=25"
+```
+
+The page returns one action token per quarantined standard-lane row whose failure
+is not `evidence-invalid` or `evidence-expired`. Acknowledge it with
+`POST /api/v1/operations/processing-lane-quarantine/acknowledge`, the owner
+session, antiforgery, an `Idempotency-Key`, and JSON
+`{"actionToken":"<token>","reasonCode":"processing-failure-acknowledged"}`.
+The same key returns the original receipt. A changed row, a leased lane, an
+evidence-invalid quarantine, or any other reason is refused.
+
+Acknowledgement sets that lane row to `abandoned` and appends a
+`processing-lane-ack.*` stage event naming the actor, reason and time. It keeps
+the original failure reason, the raw bytes, the raw checksum, and the failed
+execution history. It does not mark the capture successful and does not retry
+it. After the lane refresh, a required-lane quarantine no longer blocks
+admission or `/health`. Use archived replay when the corrected graph should run
+against that same raw capture. Evidence-invalid quarantines stay on the raw
+evidence release above and still block admission.
+
+Raw evidence revalidation and write-off keep that capture's raw evidence protected
+from ordinary retention, including after lane holds are recomputed. Revalidation
+also does not reclaim disk space.
 
 The owner-authenticated operations API exposes the same bounded history through
 `GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token
@@ -1797,10 +1858,23 @@ The `LABEL` instruction in `src/HVO.SkyMonitor.CameraAgent/Dockerfile` is the so
 this runbook does not restate them. Read the values an image actually carries with
 `docker image inspect --format '{{json .Config.Labels}}' <image>`.
 
+`minimum-compatible-revision` also identifies a state-boundary change for the installer's
+checkpoint comparison; its current value is not, by itself, a reset verdict for every earlier
+installation. Preflight evaluates the actual persisted formats and supported conversions.
+For example, nightly catalog schema 2 converts to schema 3 in place, preserving raw captures,
+archive products and identity. Advancing this label makes the installer checkpoint the databases
+before that conversion so rollback can restore the paired state. A compatible preflight report
+prints the candidate state-boundary revision without reset guidance. Only an incompatible report's
+blocking findings call for repair or an explicit state-disposition procedure; do not reset
+convertible state merely because its installed image has an earlier boundary revision.
+
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
-raw-ingress schema 11. The current image requires the catalog manifest version, Identity migration, and
-raw-ingress schema its labels declare, and migrates an earlier canonical raw journal only through the transition
+raw-ingress schema 11. The current image requires the Identity migration and
+raw-ingress schema its labels declare. Its `catalog-manifest-version` label is the
+highest catalog manifest it reads: preflight accepts a selected catalog from manifest
+version 2 through that label, and refuses manifest version 1 or anything newer.
+It migrates an earlier canonical raw journal only through the transition
 its `io.hvo.skymonitor.raw-ingress-migration` label names, as described in
 [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade). There is no supported automatic
 migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, snapshot,
@@ -1863,7 +1937,8 @@ rolling back to one, are not state migrations and therefore also accept the supe
 boundary label a candidate omits, whichever contract it declares, is skipped rather than assumed met, and the
 report records an advisory `candidate-boundaries-undeclared` finding naming exactly which labels were
 omitted; an image predating the correction declares none of them. The catalog manifest version is still
-compared against the version the runtime resolver enforces even when the image declares none. Rolling a state
+compared against manifest version 2 when the image declares none. A declared label accepts every manifest from
+version 2 through that label. Rolling a state
 boundary backwards is not supported: if an instance has run a newer state contract, restore it through the
 reset procedure below rather than by rolling back to a pre-`70ecdd3` image.
 
@@ -1976,6 +2051,14 @@ hvo-sky-install cameraagent backup --instance-id <uuid>
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
+`--allow-quarantined-readiness` on `backup`, `upgrade`, and `rollback` requires explicit per-cause health evidence
+that the only unhealthy lane is the required `standard` processing lane, with a quarantine and no required-lane
+pressure or operational failure. An unhealthy processing check must identify the same durable lane quarantine;
+aggregate quarantine counts or a bare `terminal` reason alone are insufficient. Catalog identity, installation
+identity, the container, and archive checksums are still verified. Older images without the new cause evidence are
+refused; this flag is not a legacy-payload override. It remains outside the operation's request hash, so adding it
+does not change immutable inputs, but readiness must still prove the narrow exception.
+
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
 migration, and the upgrade then snapshots the small databases before the candidate starts, when any of these holds:
 
@@ -2014,7 +2097,7 @@ rollback models are rejected before runtime mutation.
 never copies bulk data (install contract draft 4).
 
 ```bash
-hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume] [--abort] [--allow-quarantined-readiness]
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
 ```
 
@@ -2096,7 +2179,73 @@ This is a check of the archive the backup wrote, not a proof of the gzip format.
 A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). The instance is
 started and resumed whatever becomes of the discard. If the discard or the restart fails, both errors are reported and
 the operation stays resumable. After an interruption, `--resume` keeps nothing written before the archive was complete.
-From then on, it reads the archive back, commits it and finishes. A partial or unrecorded archive is never restorable.
+From then on, it reads the archive back, proves it whole, commits it and finishes. A partial or unrecorded archive is
+never restorable. If recovery already discarded that partial, `--resume` puts the instance back and settles the
+operation with no backup, so it no longer blocks a later command.
+
+A backup whose publication record exists beside its `.partial` archive has crossed the publication boundary,
+including a crash before the archive rename. `--abort` refuses without discarding it; use `--resume` to verify the
+recorded checksum and complete publication. A malformed publication record is not permission to discard the partial.
+
+**A processing-lane quarantine.** `/health` stays unavailable while a required lane is quarantined, which makes the
+restart after a backup or an upgrade fail and leaves the backup operation incomplete. That incomplete operation then
+refuses every later lifecycle command until it is resumed or aborted. Pass `--allow-quarantined-readiness` to treat
+that quarantine as backup-safe:
+
+- `capture-lanes` must publish `Reason=required-quarantine`, `RequiredQuarantinedLaneCount=1`, a positive
+  `RequiredProcessingQuarantineCount`, and zero `RequiredPressureLaneCount` and `OperationalFailureCount`.
+  Optional-lane quarantines cannot justify a required-lane failure. For this readiness decision, required pressure
+  means a hard count, byte or oldest-age limit reached by `pending`, `leased` or `retry_wait` work. Quarantined rows
+  are excluded from those three measurements: their age and the persisted admission `pressure_state=2` do not
+  constitute active-work pressure. Pending captures queued behind an ordered lane's quarantined head remain
+  active work, even though they cannot drain. They still count toward the count, byte and oldest-age limits, before
+  and after restart. With the default `RequiredMaximumOldestAgeMinutes=10080`, that queued backlog reaches the age
+  limit after seven days; `--allow-quarantined-readiness` then refuses required-lane backlog pressure. This is the
+  retained fail-closed policy, including pressure caused by work blocked behind the quarantine. Review the failed
+  capture and use the owner **Processing lane quarantine** acknowledgement in [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade)
+  when its raw evidence is still valid, let the ordered backlog drain, then retry. Unrelated required-lane pressure
+  must also recover; acknowledging one quarantine does not waive other pressure or admission safeguards.
+  Ordinary capture admission remains blocked by the quarantine and its retention holds are preserved.
+  Worker, claim and lane-state failures remain recorded across backlog refreshes until the matching worker/claim
+  operation or state refresh succeeds.
+- If `capture-processing` is Unhealthy, its `TerminalCount` and `LaneQuarantineTerminalCount` must both equal the
+  required processing lane's quarantine count. The latter comes from durable standard-lane work, not arbitrary
+  graph callbacks. Retry, missing-product, replay-terminal/retry, unavailable-state and reconciliation failures are
+  refused. The reason must exactly match `terminal`, or `terminal;processing-quarantine` when processing quarantine
+  evidence is present. Missing, malformed or inconsistent evidence fails closed, including older image payloads.
+- Every other unhealthy check is still refused. Degraded checks do not make `/health` unavailable and are unchanged.
+  This deliberately includes a standard-lane `evidence-invalid` quarantine alongside Degraded raw ingress, provided
+  all the per-cause conditions above hold. Backup, upgrade and rollback readiness do not acknowledge, revalidate or
+  repair that row. Invalid raw evidence cannot use processing-lane acknowledgement; inspect and follow Raw Evidence
+  Recovery instead. Unhealthy raw ingress remains refused even with the flag.
+- The catalog check must still be Healthy and must still name this instance's catalog. Installation identity, container
+  ownership, and the archive's SHA-256 are unchanged. A partial whose bytes differ from the hash recorded when it was
+  written is not committed.
+
+`--abort` discards the partial, puts the instance back the way a failed backup does, and settles the journal. It does
+not commit an archive and does not restore or overwrite instance data. A discard failure still attempts the required
+restart in `finally`, reports both failures with recovery guidance, and retains the journal until both succeed.
+It refuses a backup whose archive and record are already published, even if the journal has not reached `Committed`;
+finish that one with `--resume`. `--abort` is not a resume, and it cannot be combined with `--plan` or `--resume`. Run it
+as the same service account. When the quarantine is why the restart failed, pass `--allow-quarantined-readiness` with
+`--abort` or `--resume` as well, provided that image publishes the required cause evidence. A settled abort does not
+block the next backup or upgrade. Completing or aborting a backup that had stopped a running instance starts that
+instance and resumes capture.
+
+If abort's cleanup and restart succeed but its four-minute recovery budget expires while settling the journal,
+the command may exit with cancellation and leave the operation incomplete. Rerun the same backup with `--abort`
+(and the readiness flag when needed); it is safe to repeat the restart and finish settlement. Do not delete or edit
+the retained journal to unblock another command.
+
+**An incomplete backup on an older image.** The readiness flag cannot accept an image that lacks the cause evidence
+above. If that image supports the owner **Processing lane quarantine** acknowledgement described in
+[Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade),
+review the failed capture and explicitly acknowledge its standard-lane quarantine as the owner. That preserves raw
+bytes and failed execution history while abandoning that lane's work; it does not retry it or mark it successful.
+After health recovers, rerun the original backup with `--resume` to finish or `--abort` to discard its partial.
+Evidence-invalid quarantines require the raw-evidence recovery procedure in the same section instead. If the old
+image exposes neither recovery action, stop and arrange operator-assisted recovery for that image before retrying
+the installer. Keep the journal, partial and instance stores intact; this flag does not bypass old-image health.
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall
@@ -2753,9 +2902,12 @@ package version, lineage or hash that the embedded approved-catalog registry
 does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
-mount and reauthenticates the Compose model. It requires an image whose catalog
-contract label is `hvo-approved-catalogs-v1`, retires the retained image
-rollback, and pins the previous identity as a historical reference. `rollback`
+mount and reauthenticates the Compose model. A current image declares
+`hvo-approved-catalogs-v2` and can select HYG 4.2, HYG 4.4 and
+`hyg-v44-openngc-production`. An image declaring `hvo-approved-catalogs-v1` can
+select the two HYG lineages and refuses the composed catalog. An unknown
+catalog-contract label is refused. Cross-lineage selection retires the retained image
+rollback and pins the previous identity as a historical reference. `rollback`
 returns to the previous selection across lineages. The exact identities and
 selection behavior are documented in
 [HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).

@@ -16,6 +16,7 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
             ["PendingCount"] = snapshot.PendingCount,
             ["RetryCount"] = snapshot.RetryCount,
             ["TerminalCount"] = snapshot.TerminalCount,
+            ["LaneQuarantineTerminalCount"] = snapshot.LaneQuarantineTerminalCount,
             ["ProcessingQuarantineCount"] = snapshot.ProcessingQuarantineCount,
             ["MissingProductCount"] = snapshot.MissingProductCount,
             ["DurableStateUnavailable"] = snapshot.DurableStateUnavailable,
@@ -36,12 +37,18 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
         {
             data["SupersededActiveRevisionId"] = supersededRevision;
         }
+        if (snapshot.StoragePolicyMismatchActiveRevisionId is { } mismatchedRevision)
+        {
+            data["StoragePolicyMismatchActiveRevisionId"] = mismatchedRevision;
+        }
         var result = snapshot.Availability switch
         {
             CaptureProcessingAvailability.Healthy => HealthCheckResult.Healthy(
                 "Capture processing is completing durable graphs.", data),
             CaptureProcessingAvailability.Degraded => HealthCheckResult.Degraded(
-                snapshot.SupersededActiveRevisionId is null
+                snapshot.StoragePolicyMismatchActiveRevisionId is not null
+                    ? "The active processing graph Storage settings differ from the capture profile; reconcile and activate a matching graph. Raw is retained while other standard processing is skipped; inspect execution reasons for unavailable optional scene evidence."
+                    : snapshot.SupersededActiveRevisionId is null
                     ? "Capture processing has retryable graph work."
                     : "The active processing graph revision was compiled by an earlier version; activate a compatible revision or roll back to configured-basic.",
                 data: data),

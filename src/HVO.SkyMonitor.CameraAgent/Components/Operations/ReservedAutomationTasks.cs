@@ -66,6 +66,13 @@ internal static class ReservedAutomationTasks
     private const string SpaceWeatherBanner =
         "Space-weather refresh setup: create the reserved automation with a 120-second interval (60 to 120 seconds). If it already exists, use its existing card; setup never replaces it. Each run checks every enabled product, and the provider's own cadence decides what is fetched, so a shorter interval does not fetch more often. Creation does not immediately contact the provider. After saving, optionally <a href=\"/operations/space-weather\">open Space weather</a> to follow the first fetch.";
 
+    internal static readonly ReservedAutomationTask Restart = new(
+        LocalAutomationTaskKind.ScheduledCameraAgentRestart,
+        "cameraagent-restart", "installed-cameraagent", LocalAutomationTriggerKind.Periodic,
+        3600, 86400, 86400, "reboot", "Reserved for the installer-owned CameraAgent restart.",
+        "3,600 to 86,400 seconds; runs only outside capture windows", "restart", "Scheduled CameraAgent Restart",
+        "restart-setup-guide", new MarkupString("The independent installer worker drains accepted work, requests a supervised restart and verifies the new process. It records terminal failure if CameraAgent never returns. Capture windows are respected; no host power control is exposed."));
+
     internal static readonly ReservedAutomationTask Orbital = new(
         LocalAutomationTaskKind.OrbitalElementsRefresh,
         OrbitalElementsAutomationAdapter.DefinitionId,
@@ -114,7 +121,7 @@ internal static class ReservedAutomationTasks
         "time-data-setup-guide",
         new MarkupString(TimeDataBanner));
 
-    internal static IReadOnlyList<ReservedAutomationTask> All { get; } = [Orbital, SpaceWeather, TimeData];
+    internal static IReadOnlyList<ReservedAutomationTask> All { get; } = [Orbital, SpaceWeather, TimeData, Restart];
 
     /// <summary>The reserved task of <paramref name="kind"/>, or null for a task the generic editor configures.</summary>
     internal static ReservedAutomationTask? ForKind(LocalAutomationTaskKind kind)

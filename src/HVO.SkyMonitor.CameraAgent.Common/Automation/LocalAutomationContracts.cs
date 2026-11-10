@@ -180,7 +180,10 @@ public enum LocalAutomationTaskKind
     /// Refreshes the managed Earth-orientation and leap-second pair at most daily through an explicitly
     /// registered periodic task adapter. Appended only: the stored text spelling of every earlier value is unchanged.
     /// </summary>
-    TimeDataRefresh
+    TimeDataRefresh,
+
+    /// <summary>Delegates drain/restart/verification to the independent installer lifecycle worker.</summary>
+    ScheduledCameraAgentRestart
 }
 
 /// <summary>

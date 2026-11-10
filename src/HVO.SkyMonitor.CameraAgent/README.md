@@ -35,7 +35,7 @@ Blazor Server host for a self-contained SkyMonitor camera agent. It provides loc
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components using the local `hvo-dark` theme.
 - **Identity**: Local-only ASP.NET Core Identity with cookie auth and profile/email/password management pages. Local email delivery is not implemented.
 - **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
-- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, Prometheus scraping, and health checks.
+- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, authenticated Prometheus scraping, and anonymous health checks.
 - **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
 
 ## Run It
@@ -50,9 +50,12 @@ Blazor Server host for a self-contained SkyMonitor camera agent. It provides loc
 
 - UI: `http://localhost:5130/`
 - API: `http://localhost:5130/api/v1.0/frames/latest`
-- Health: `http://localhost:5130/health`
+- Health: `http://localhost:5130/health` (no sign-in)
+- Liveness: `http://localhost:5130/alive` (no sign-in)
 - Scalar UI: `http://localhost:5130/scalar/v1`
-- Prometheus: `http://localhost:5130/metrics`
+- Prometheus: `http://localhost:5130/metrics` (ready site-owner session, or an operations-read API key in the `Authorization` header)
+
+`dotnet run` uses the Development environment and still requires that credential for `/metrics`. Send the API key only in the `Authorization` header. A key placed in the URL is ignored; do not write the header value into logs, tickets, or command lines.
 
 ## Database & Migrations
 

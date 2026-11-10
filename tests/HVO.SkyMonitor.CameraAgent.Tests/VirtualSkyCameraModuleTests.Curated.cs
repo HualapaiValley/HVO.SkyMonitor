@@ -20,7 +20,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         foreach (var enabled in new[] { false, true })
         {
             var staging = new RecordingProjectedSceneStagingStore();
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(), stagingStore: staging);
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(), stagingStore: staging);
             await using var lifetime = module.ConfigureAwait(false);
             var config = CreateConfig(format, 64, 64) with
             {
@@ -51,6 +51,78 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.HasCount(1, scene.DeepSky!.Objects);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task ProjectedSceneStepCuratedAnnotationsApplyWhenTheModuleOmitsThem()
+    {
+        var staging = new RecordingProjectedSceneStagingStore();
+        var module = new VirtualSkyCameraModule(
+            ExposureTestTimeProvider.ForRendering(), new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+        await using var lifetime = module.ConfigureAwait(false);
+        var config = CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                seed = 1017,
+                fixedSequenceStartUtc = FixtureUtc
+            })),
+            Pipeline = new CapturePipelineConfig(
+            [
+                new CaptureProcessingStepConfig(
+                    "ProjectedScene",
+                    DependsOn: ["$raw"],
+                    Options: JsonSerializer.SerializeToElement(new
+                    {
+                        curatedAnnotations = new { enabled = true, maximumObjects = 128, maximumFootprints = 32, minimumGlyphPixels = 8 }
+                    }))
+            ])
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.IsNotNull(result.Frame);
+        Assert.AreEqual(
+            SceneProvenance.DeepSkyProjectedSceneSchemaVersion,
+            result.Frame.Metadata.Scene!.ProjectedSceneSchemaVersion);
+        Assert.HasCount(1, staging.Scenes.Single().DeepSky!.Objects);
+    }
+
+    [TestMethod]
+    public async Task ModuleCuratedAnnotationsStayAuthoritativeWhenTheStepDisagrees()
+    {
+        var staging = new RecordingProjectedSceneStagingStore();
+        var module = new VirtualSkyCameraModule(
+            ExposureTestTimeProvider.ForRendering(), new CuratedVirtualCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+        await using var lifetime = module.ConfigureAwait(false);
+        var config = CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                seed = 1017,
+                fixedSequenceStartUtc = FixtureUtc,
+                curatedAnnotations = new { enabled = false }
+            })),
+            Pipeline = new CapturePipelineConfig(
+            [
+                new CaptureProcessingStepConfig(
+                    "ProjectedScene",
+                    DependsOn: ["$raw"],
+                    Options: JsonSerializer.SerializeToElement(new { curatedAnnotations = new { enabled = true } }))
+            ])
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var result = await module.CaptureAsync(
+            new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.IsNotNull(result.Frame);
+        Assert.IsNull(staging.Scenes.Single().DeepSky);
+        Assert.AreNotEqual(
+            SceneProvenance.DeepSkyProjectedSceneSchemaVersion,
+            result.Frame.Metadata.Scene!.ProjectedSceneSchemaVersion);
     }
 
     private sealed class CuratedVirtualCatalog : ICelestialCatalog, IDeepSkyCatalogSource

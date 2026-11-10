@@ -150,18 +150,22 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public void RollingPanelMatchesRuntimeDefaultsAndLeavesMixedGainOpaque()
+    public void RollingPanelMatchesRuntimeDefaultsAndPreservesMixedGainBindings()
     {
-        var descriptor = RollingCombinationOptionDescriptors.Descriptor;
-        var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new { }));
-        var runtime = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new RollingCombinationProcessingStepOptions()));
-        Assert.IsTrue(runtime.IsValid);
-        foreach (var option in defaults.Options)
-            Assert.AreEqual(option.Value, runtime.Get(option.Descriptor.Key).Value);
+        foreach (var recipe in new[] { null, BuiltInProcessingRecipes.MixedGainNormalizedMean })
+        {
+            var descriptor = recipe is null ? RollingCombinationOptionDescriptors.Descriptor : RollingCombinationOptionDescriptors.MixedGain;
+            var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new { Recipe = recipe }));
+            var runtime = ProcessingNodeOptionsCodec.Decode(descriptor, JsonSerializer.SerializeToElement(new RollingCombinationProcessingStepOptions { Recipe = recipe }));
+            Assert.IsTrue(defaults.IsValid);
+            Assert.IsTrue(runtime.IsValid);
+            foreach (var option in defaults.Options)
+                Assert.AreEqual(option.Value, runtime.Get(option.Descriptor.Key).Value);
+        }
         var source = JsonSerializer.SerializeToElement(new { Recipe = BuiltInProcessingRecipes.MixedGainNormalizedMean, WindowSize = 7, normalizationPlan = new { keep = 17 } });
         var pipeline = new CapturePipelineConfig([new("RollingCombination", "mixed", 17, source, ["$raw"])]);
         var model = ProcessingGraphDraftModel.FromPipeline(pipeline, "source", "rolling", "2");
-        Assert.IsNull(model.Nodes.Single().OptionsForm);
+        Assert.IsNotNull(model.Nodes.Single().OptionsForm);
         Assert.IsTrue(model.TryBuild(out var unchanged, out _));
         Assert.IsFalse(model.HasGraphChanges(unchanged));
         Assert.AreEqual(source.GetRawText(), unchanged.Steps[0].Options!.Value.GetRawText());

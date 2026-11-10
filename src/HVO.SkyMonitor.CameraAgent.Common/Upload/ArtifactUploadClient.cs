@@ -254,7 +254,7 @@ public sealed class ArtifactUploadClient(
 
     private static bool IsRetryable(HttpStatusCode statusCode)
         => statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
-            || (int)statusCode == 425
+            || (int)statusCode is 425 or 499
             || (int)statusCode >= 500;
 
     private TimeSpan? ResolveRetryAfter(RetryConditionHeaderValue? retryAfter)

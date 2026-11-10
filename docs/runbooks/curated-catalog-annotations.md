@@ -45,6 +45,68 @@ The existing `Annotation` step must consume the retained projected-scene product
 without its retained scene staging route. Defaults omit this option; no catalog
 installation or automatic default replacement is performed.
 
+## Installed CameraAgent
+
+A current CameraAgent image declares `hvo-approved-catalogs-v2` and catalog
+manifest version 3. That label is a ceiling: manifest 2 HYG catalogs stay
+selected across the upgrade, and manifest 3 is accepted only for a bundle the
+embedded registry approves. Upgrade from an image labeled manifest 2 snapshots
+the small databases because the label changed. The catalog checksums do not.
+
+Import the verified composed bundle, then select it. The bundle directory is
+the output of `scripts/catalog/bundle-hyg-v44-openngc.sh` for package
+`hyg-v4.4-openngc-v20260501-p5-s4-r1`. `catalog install` refuses a bundle whose
+files, hashes, lengths or lineage differ from the registry. Do not edit the
+bundle to make the check pass.
+
+```bash
+hvo-sky-install catalog install \
+  --catalog-bundle /owner-private/hyg-v4.4-openngc-v20260501-p5-s4-r1
+hvo-sky-install catalog select \
+  --instance-id <uuid> \
+  --catalog-version hyg-v4.4-openngc-v20260501-p5-s4-r1
+```
+
+Select while `config/camera-module.json` still matches the configuration
+SHA-256 recorded in the instance manifest. Installation verification compares
+those bytes. Do this before editing that file.
+
+Curated positions stay off until `curatedAnnotations` is enabled. On the
+installer VirtualSky profile, add the object to the `ProjectedScene` step's
+`options` and leave `module` unchanged. The named rig stores the module, so a
+module-only edit cannot be applied as a capture-schedule draft. Module
+`curatedAnnotations`, when present, remains authoritative, including
+`"enabled": false`.
+
+```json
+"curatedAnnotations": {
+  "enabled": true,
+  "maximumObjects": 128,
+  "maximumFootprints": 32,
+  "minimumGlyphPixels": 8
+}
+```
+
+Restart the CameraAgent container so it reloads `config/camera-module.json`
+(mounted read-only as `/app/cameraagent.deploy.json`). On
+**Operations → Capture schedule** (`/operations/schedule`), review and apply
+the draft saved because the configuration file differs. Applying it keeps the
+named rig because the module did not change. The next captures then draw the
+`messier-bright-ngc-v1` expected positions, with the caption
+`CATALOG POSITIONS - NOT DETECTIONS`. They are catalog positions, not detections.
+
+The edited file no longer matches the installation manifest's configuration
+hash. A later upgrade, reinstall or catalog command that verifies installation
+identity refuses until that file matches the recorded hash again. Leave the
+edited file in place only when that later command is expected to be reconciled,
+or restore the previous file after the draft is active and do not apply the
+draft that would return the pipeline to the restored file.
+
+An image that still declares `hvo-approved-catalogs-v1` refuses this catalog.
+Roll the catalog back to the previous manifest 2 lineage before rolling the
+image back to that contract. The OpenNGC selection and the general NGC/M/IC
+layer controls remain #1388.
+
 Real-image staging uses acquisition midpoint, effective deployment location,
 actual layout and the capture rig. Curated geometry is then retained with its
 scene/catalog/time/calibration/source identities. Annotation and archived replay

@@ -22,6 +22,33 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
     private static readonly DateTimeOffset Now = new(2026, 9, 30, 4, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    [DataRow("LocalWeatherStation")]
+    [DataRow("InfraredSky")]
+    [DataRow("SkyQualityMeter")]
+    [DataRow("OnlineWeather")]
+    public async Task LatestAdapterReadingsExcludeFailedSourcesWithoutErasingHistory(string type)
+    {
+        var (principal, authorization) = ReadAuthorized();
+        var store = new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict);
+        store.Setup(value => value.ReadLocalLatestPrimaryAsync(Root, It.IsAny<EnvironmentalObservationKind>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .Returns<string, EnvironmentalObservationKind, IReadOnlyList<string>, IReadOnlyList<string>, CancellationToken>(
+                (_, kind, _, _, _) => ValueTask.FromResult<LocalEnvironmentalObservationRecord?>(
+                    kind == EnvironmentalObservationKind.WindSpeed ? Record(kind, EnvironmentalObservationUnit.MetersPerSecond,
+                        2.8, EnvironmentalObservationSourceKind.Measured) : null));
+        var states = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
+        states.Setup(value => value.ReadSourceStatesAsync(Root, It.IsAny<CancellationToken>())).ReturnsAsync(
+            [new EnvironmentalSourceRuntimeState("wind-1", EnvironmentalObservationKind.WindSpeed, false,
+                EnvironmentalAcquisitionDisposition.Failed, "device-disconnected", null, Now.AddSeconds(-20), Now.AddMinutes(1),
+                Now.AddSeconds(-1), Now, 1, null)]);
+        var configuration = new EnvironmentalSourceConfiguration { Id = "wind-1", Type = type, Kind = EnvironmentalObservationKind.WindSpeed };
+        var service = CreateService(principal, authorization, configuration, stateStore: states.Object, observationStore: store.Object);
+        var result = await service.GetLatestReadingsAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsEmpty(result.Value!);
+    }
+
+    [TestMethod]
     public async Task GetLatestReadingsAsync_ReadsOneNewestObservationPerKindAndSkipsEmptyKinds()
     {
         var (principal, authorization) = ReadAuthorized();
@@ -233,7 +260,7 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         return CreateService(principal, authorization.Object, source, enabled);
     }
 
-    private static CameraAgentEnvironmentalUiService CreateService(
+    internal static CameraAgentEnvironmentalUiService CreateService(
         ClaimsPrincipal principal,
         IAuthorizationService authorization,
         EnvironmentalSourceConfiguration source,
@@ -241,7 +268,10 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         IEnvironmentalAcquisitionStateStore? stateStore = null,
         ILocalEnvironmentalObservationStore? observationStore = null,
         EnvironmentalObservationDeliveryState? deliveryState = null,
-        CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled)
+        CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled,
+        string root = Root,
+        TimeProvider? timeProvider = null,
+        CameraAgentHostOptions? hostOptions = null)
     {
         return new CameraAgentEnvironmentalUiService(
             new FixedAuthenticationStateProvider(principal),
@@ -250,9 +280,9 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             observationStore ?? new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict).Object,
             null!,
             deliveryState ?? new EnvironmentalObservationDeliveryState(),
-            Options.Create(new CameraAgentHostOptions
+            Options.Create(hostOptions ?? new CameraAgentHostOptions
             {
-                RawIngressRoot = Root,
+                RawIngressRoot = root,
                 CentralIntegration = new CentralIntegrationOptions { Mode = centralMode },
                 EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
                 {
@@ -262,11 +292,11 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
                 }
             }),
             null!,
-            new FixedTimeProvider(Now),
+            timeProvider ?? new FixedTimeProvider(Now),
             NullLogger<CameraAgentEnvironmentalUiService>.Instance);
     }
 
-    private static (ClaimsPrincipal Principal, IAuthorizationService Authorization) ReadAuthorized(bool allowed = true)
+    internal static (ClaimsPrincipal Principal, IAuthorizationService Authorization) ReadAuthorized(bool allowed = true)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, "owner-1")], IdentityConstants.ApplicationScheme));

@@ -3749,12 +3749,32 @@ public sealed partial class LifecycleContractTests
 
     private sealed class FakeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
+        public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
 
+        /// <summary>When set, readiness fails unless the caller passed <c>--allow-quarantined-readiness</c>.</summary>
+        public bool RequireQuarantinedReadiness { get; set; }
+
+        public int QuarantinedReadinessCalls { get; private set; }
+
+        public bool QuarantinedReadinessSeen { get; private set; }
+
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null) => Task.CompletedTask;
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
+        {
+            QuarantinedReadinessCalls++;
+            QuarantinedReadinessSeen = allowQuarantinedReadiness;
+            if (RequireQuarantinedReadiness && !allowQuarantinedReadiness)
+            {
+                throw new InstallerException("CameraAgent health did not become ready: processing-lane quarantine");
+            }
+            return Task.CompletedTask;
+        }
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
@@ -3764,6 +3784,7 @@ public sealed partial class LifecycleContractTests
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
         {
+            InspectVerification?.Invoke(expectation);
             if (RejectNextVerification)
             {
                 RejectNextVerification = false;

@@ -54,7 +54,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         };
     }
 
-    private static readonly NightlyProductKind[] BadgeKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
+    private static readonly NightlyProductKind[] BadgeKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram, NightlyProductKind.DailySummary];
 
     private const string TimeLapseDescription = "Time-lapse not yet generated";
 
@@ -199,7 +199,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     {
         var label = NightlyProductLinks.KindLabel(kind);
         var noun = NightlyProductLinks.KindNoun(kind);
-        var letter = kind == NightlyProductKind.StarTrail ? "S" : "K";
+        var letter = kind switch { NightlyProductKind.StarTrail => "S", NightlyProductKind.DailySummary => "D", _ => "K" };
         var hourly = summary is { HourlyProduced: > 0 } produced
             ? FormattableString.Invariant($"{produced.HourlyProduced} hourly {noun}{(produced.HourlyProduced == 1 ? "" : "s")}")
             : null;
@@ -214,6 +214,8 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         {
             return new(letter, NightlyBadgeState.Unavailable, $"{label} status unavailable");
         }
+        if (summary?.DailyProductId is not null && summary.DailyReasonCode == NightlyProductContract.PartialSummaryReasonCode)
+            return new(letter, NightlyBadgeState.Partial, $"{label} produced with partial sampled coverage or excluded sources" + also);
         if (summary?.DailyProductId is not null)
         {
             return new(letter, NightlyBadgeState.Produced,

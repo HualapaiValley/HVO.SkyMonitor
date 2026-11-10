@@ -220,7 +220,10 @@ internal sealed class LogicalCameraArchiveReadService(
                 cancellationToken).ConfigureAwait(false)) return await FinishAsync(unavailable).ConfigureAwait(false);
         return await FinishAsync(selection with
         {
-            Status = "found", Capture = capture, ExaminedCaptures = 1, ExaminedArtifacts = 1,
+            Status = "found",
+            Capture = capture,
+            ExaminedCaptures = 1,
+            ExaminedArtifacts = 1,
             ContentPath = FormattableString.Invariant($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifactId:D}/content")
         }).ConfigureAwait(false);
     }

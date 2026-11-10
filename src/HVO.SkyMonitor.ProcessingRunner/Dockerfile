@@ -3,7 +3,7 @@
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS build
 ARG TARGETARCH
 WORKDIR /src
 
@@ -30,7 +30,7 @@ RUN case "$TARGETARCH" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; esac
        -c Release --no-restore --runtime "$rid" --self-contained true -o /app/publish
 
 # Stage 2: Runtime (self-contained publish; runtime-deps only)
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13@sha256:da5846024d0008b48259b53a8953d39381fe5b7ec99ef1449ba4ba927f201490
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.14@sha256:f87d6824cd56fa4ad117d06461e4eb0058f46a159872dbcc4a836a72efdd1bec
 WORKDIR /app
 COPY --from=build /app/publish .
 

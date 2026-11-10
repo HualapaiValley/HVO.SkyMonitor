@@ -432,9 +432,10 @@ printf 'phase,elapsed_seconds\n' > "$RESULTS/phase-durations.csv"
 phase_started=$SECONDS
 
 dotnet tool restore
+"$SCRIPT_DIR/test:linux-build-rids" --output "$RESULTS/build-rid-contract.json"
 for project in "$CAMERA_PROJECT" "$REPLAY_RUNNER_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS" "$CLI_TESTS"; do
-    dotnet restore "$project"
-    dotnet build "$project" --no-restore --configuration Release -warnaserror
+    dotnet restore "$project" --runtime linux-arm64
+    dotnet build "$project" --no-restore --configuration Release --runtime linux-arm64 -warnaserror
 done
 printf 'build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
@@ -453,7 +454,7 @@ for entry in \
     # lane refuses any result that is not Passed, so the bundle the script was given is passed through.
     HVO_PRODUCTION_CATALOG_BUNDLE="$BUNDLE" \
     DOCKER_HOST="unix://$TEMP_ROOT/unit-docker-must-not-exist.sock" \
-        dotnet test "$project" --no-build --configuration Release --filter "$UNIT_FILTER" \
+        dotnet test "$project" --no-build --configuration Release --runtime linux-arm64 --filter "$UNIT_FILTER" \
         --results-directory "$RESULTS/unit-$name" --logger "trx;LogFileName=unit-$name-arm64.trx"
     trx="$RESULTS/unit-$name/unit-$name-arm64.trx"
     # Shared with scripts/test:cameraagent-ui; anchored to the result element rather than to the
@@ -563,7 +564,7 @@ jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
     '.[0].Id | startswith("sha256:")' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
 jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
-    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "15" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "2" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v1" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "15" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "3" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v2" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
 # The advisory build passes no release version, so the published assemblies carry the product version's development
 # build (#1310) and the version label is empty.

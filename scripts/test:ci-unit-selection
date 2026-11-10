@@ -97,7 +97,7 @@ expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "
 # shellcheck disable=SC2016
 mutate githubpath '/^      - name: Run Docker-disabled supplemental Unit suites/ i\      - name: Shadow dotnet\n        run: echo "/tmp/shadow" >> "$GITHUB_PATH"'
 expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubpath.yml"
-mutate jobdefaults '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults:\n      run:\n        shell: bash --noprofile --norc -n {0}
+mutate jobdefaults '/^  unit:/,/^  integration:/ { /^    runs-on:/ a\    defaults:\n      run:\n        shell: bash --noprofile --norc -n {0}
 }'
 expect_fail 'workflow must not set defaults' --workflow "$scratch/jobdefaults.yml"
 mutate workflowdefaults '/^concurrency:/ i\defaults:\n  run:\n    shell: bash --noprofile --norc -n {0}'
@@ -108,12 +108,12 @@ expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER' --workflow "
 mutate workflowenv '/^  DOTNET_NOLOGO: true$/ a\  BASH_ENV: /tmp/narrow.sh'
 expect_fail 'workflow env may set only' --workflow "$scratch/workflowenv.yml"
 # R1255-6: alternate spellings and a folded continuation of the validated values.
-mutate defaultsflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults : {run: {shell: "bash --noprofile --norc -n {0}"}}
+mutate defaultsflow '/^  unit:/,/^  integration:/ { /^    runs-on:/ a\    defaults : {run: {shell: "bash --noprofile --norc -n {0}"}}
 }'
 expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsflow.yml"
 mutate defaultsquoted '/^concurrency:/ i\"defaults": {run: {shell: "bash --noprofile --norc -n {0}"}}'
 expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsquoted.yml"
-mutate shellflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    steps-shell: x\n    "shell" : bash -n
+mutate shellflow '/^  unit:/,/^  integration:/ { /^    runs-on:/ a\    steps-shell: x\n    "shell" : bash -n
 }'
 expect_fail 'Unit job must not set a shell' --workflow "$scratch/shellflow.yml"
 mutate filtercont '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\        \&FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone

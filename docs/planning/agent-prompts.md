@@ -14,8 +14,10 @@ concurrency, migration, architecture, CI-control, conflict-resolution, or
 material-correctness work. Reviews use at least medium effort; initial reviews
 normally use high effort. The PR lifecycle skill contains the full selection
 matrix and current harness mappings. Record requested profile and actual
-provider/model/effort in the PR review ledger; do not infer an alias or claim a
-provider-managed setting was enforced.
+provider/model/effort in the local evidence pack; Kepler maintains the formal
+PR review ledger. Apply the current LOW/HIGH named-reviewer requirements in
+`AGENTS.md`; a capability profile never replaces a required reviewer. Do not
+infer an alias or claim a provider-managed setting was enforced.
 
 ## 1. Capability Roles
 
@@ -38,8 +40,9 @@ through a global two-issue slot limit.
 The default owner is an authorized human or an operator-directed agent.
 
 Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
-`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
-git worktree off `development/v1`, so the main checkout is never modified.
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
 ```text
 Implement GitHub issue <NUMBER> in HVO.SkyMonitor.
@@ -104,32 +107,31 @@ protected CI on the final reviewed head. For `development/v1`, use Preflight
 and Build and Unit; a classifier `complete=true` result or broad base-sync
 delta does not request a manual full-matrix run. Additional qualification needs
 explicit issue/operator acceptance scope. Before changing PR state, read and
-follow `.agents/skills/pr-lifecycle/SKILL.md`. Open a draft PR, review the full
-initial diff, and limit rereviews to each correction delta plus verification of
-prior findings. Require each correction report to identify the exact range and
-mark every prior finding `verified corrected`, `verified deferred` with a linked
-issue, or `unresolved`; an omitted or otherwise undispositioned finding remains
-actionable. The PR owner requests independent human or one-shot agent review,
-binding the immutable base/head SHAs and recording reviewer identity, findings,
-and dispositions in the PR ledger. For agent reviews record requested capability
-and actual provider/model/effort; use the skill's acquisition timeouts and
-fallback rules for applicable agent routes. Human reviews record identity and
-use N/A for model/effort. A provider-side current-head audit alone does not
-replace exact-range review. Preserve the three-round correction cap,
-finalization lock, base-sync review or unchanged-base proof, validation, and
-final-CI rules. Do not repeat long suites when the validated boundary did not
+follow `.agents/skills/pr-lifecycle/SKILL.md`. Before independent local review,
+map every in-scope original-issue requirement to implemented behavior and local
+evidence at the candidate SHA. Missing scope or evidence returns to
+implementation. Obtain LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN on that
+candidate, with explicit completeness verdicts and verified finding
+dispositions. Human/bot reviews are supplemental. The legacy correction-round
+budget is a checkpoint, not a waiver of blockers or required review.
+
+Hand the candidate, original-source mapping, evidence, and local review reports
+to Kepler, then stop. Push only when instructed. Coding threads never create
+PRs, mark ready, publish hvo/reviewed-head, or enqueue. Kepler creates the draft,
+obtains formal review, and operates the merge queue under the lifecycle skill.
+Being behind the target tip alone does not trigger synchronization or new
+review; actual conflicts and changed candidates require applicable evidence
+and review. Do not repeat long suites when the validated boundary did not
 change. Sandbox and permission denials remain binding; never route a denied
 action through another session.
 
-Own this issue through implementation, review corrections, green required CI,
-authorized merge, issue closure verification, local synchronization, and branch/
-worktree cleanup without deleting unrelated work. If merge is reserved or not
-authorized, report that boundary and leave a handoff rather than bypassing it.
-Report milestones and blockers directly to the operator and on the issue until
-the draft PR exists, then in its append-only ledger, using UTC at least every
-thirty minutes during active work. Long gates and reviews get interim notes.
-On completion or a stop, record completed/current/next/blocker state and an
-explicit claim release or retention; update the owning epic for roadmap work.
+Report milestones and blockers directly to the operator and retain UTC local
+evidence at least every thirty minutes during active work. Keep the issue claim
+through review and CI; Kepler maintains the PR ledger. Long gates and reviews
+get interim notes. On completion or a stop, record completed/current/next/blocker
+state and explicit claim release or retention; update the owning epic for
+roadmap work.
+
 Do not select or start another issue unless the user authorized that scope.
 ```
 
@@ -301,11 +303,11 @@ every finding under the bounded review protocol.
 Research only; do not edit. Follow `.agents/skills/pr-lifecycle/SKILL.md`.
 Before substantive work, notify the requesting issue/PR owner with the requested
 capability profile, actual provider/model/effort, current step, next step, and
-blocker. For a review, include the exact immutable range and append the same
-acknowledgement to the PR ledger. For issue-only research, identify the issue
-and base commit or worktree fingerprint instead, and post on the issue. If the
-harness cannot post, ask the owner to add an attributed proxy entry. Use
-the model and effort pinned by the dispatch. If the actual values do not match,
+blocker. For a review, include the exact immutable range and retain the same
+acknowledgement in the local evidence pack; Kepler maintains the formal PR
+ledger. For issue-only research, identify the issue and base commit or worktree
+fingerprint instead, and report to the owner. Use the model and effort pinned by
+the dispatch. If the actual values do not match,
 or the selected capability cannot be verified, stop and report the mismatch
 rather than silently inheriting defaults. Report an intentionally fixed
 provider model as `provider-managed`, as required by the skill.
@@ -313,28 +315,30 @@ Task mode: <issue-research|initial|correction|base-sync>.
 
 In issue-research mode, identify the issue plus base commit or worktree
 fingerprint, investigate only the assigned question, and return conclusions,
-evidence, uncertainty, and the recommended next action. Acknowledge on the issue
-and report each milestone to the owner and issue ledger. A PR number,
+evidence, uncertainty, and the recommended next action. Acknowledge and report
+each milestone to the owner for the local evidence pack. A PR number,
 review range, and PR acknowledgement are not required.
 
-For every review mode, provide Base reviewed SHA: <resolved immutable SHA> and Head
-SHA: <SHA>. In initial mode, audit the complete PR diff against current code,
-tests, durable formats, architecture boundaries, performance paths,
+For every review mode, follow the skill's LOW/HIGH named-reviewer and explicit
+issue-completeness requirements. Provide Base reviewed SHA: <resolved immutable
+SHA> and Head SHA: <SHA>. In initial mode, audit the complete candidate diff
+against current code, tests, durable formats, architecture boundaries, performance paths,
 logs/telemetry, and dependent issues. In correction mode, review only Base
 reviewed SHA..Head SHA and verify disposition of the preceding findings. Begin
 the report with the exact range examined and an item-by-item table marking every
-prior finding `verified corrected`, `verified deferred` with a linked issue and
-rationale, or `unresolved`. An omitted finding remains unresolved. Do not
-substitute a generic whole-PR review or reopen unchanged portions of the earlier
+prior finding `verified corrected`, `verified deferred` for a Low with a linked
+follow-up issue and rationale, or `unresolved`. High/Medium findings cannot be
+deferred. An omitted finding remains unresolved. Do not substitute a generic
+whole-PR review or reopen unchanged portions of the earlier
 diff without concrete evidence that the correction created a new interaction.
 Return new findings ordered by severity with exact paths and minimal fixes.
 Identify missing acceptance tests, migration/compatibility risks,
 I/O/CPU/memory hot paths, and any plan/issue contradiction. In base-sync mode,
 inspect conflict resolutions and new interactions against the updated target
 base without rereviewing unchanged upstream code. For every review mode,
-acknowledge the start on the PR within fifteen minutes and report each milestone
-to the owner and PR ledger, with an interim report at least every thirty
-minutes.
+acknowledge the start to the owner within fifteen minutes and report each
+milestone with an interim report at least every thirty minutes. Retain local
+reports in the evidence pack; Kepler records formal PR activity.
 ```
 
 ## 13. Handoff Prompt

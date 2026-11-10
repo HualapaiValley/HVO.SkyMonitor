@@ -406,6 +406,8 @@ public sealed class IntegrationTestFixture : IDisposable
 
                 builder.ConfigureTestServices(services =>
                 {
+                    services.AddSingleton<RateLimiterLifetime>();
+                    services.AddSingleton<IStartupFilter, RateLimiterLifetimeStartupFilter>();
                     services.RemoveAll<IObjectStore>();
                     services.AddSingleton<IObjectStore>(_objectStore
                         ?? throw new InvalidOperationException("The filesystem object-store fixture is not initialized."));

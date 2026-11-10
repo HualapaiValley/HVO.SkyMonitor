@@ -74,6 +74,27 @@ public sealed partial class UpgradePreflightTests
             StringAssert.Contains(rendered, code, StringComparison.Ordinal);
         }
         StringAssert.Contains(rendered, MinimumCompatibleRevision, StringComparison.Ordinal);
+        StringAssert.Contains(rendered, "Earlier state requires an explicit reset", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(MinimumCompatibleRevision)]
+    [DataRow("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c")]
+    public void Render_CompatibleStateDoesNotRecommendResetWhenTheSnapshotBoundaryAdvances(string revision)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+        var report = Evaluate(fixture, CurrentRequirements with { MinimumCompatibleRevision = revision });
+        Assert.IsTrue(report.Compatible);
+        var text = CameraAgentStatePreflight.Render(report);
+        StringAssert.Contains(text, "compatible.", StringComparison.Ordinal);
+        StringAssert.Contains(text, revision, StringComparison.Ordinal);
+        Assert.DoesNotContain("reset", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("state-disposition", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [TestMethod]
@@ -125,6 +146,86 @@ public sealed partial class UpgradePreflightTests
         var unreadable = report.Findings.Single(finding => finding.Code == "identity-lineage-unreadable");
         Assert.IsTrue(unreadable.Blocking);
         StringAssert.Contains(unreadable.Observed, $"stored as {type}, not text", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(2, true, null)]
+    [DataRow(3, true, null)]
+    [DataRow(1, false, "2 through 3")]
+    [DataRow(4, false, "2 through 3")]
+    public void Evaluate_DeclaredManifestCeilingAcceptsInstalledHygAndRefusesOutsideIt(
+        int manifestVersion, bool compatible, string? expected)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture, CurrentRequirements with { CatalogManifestVersion = 3 });
+
+        Assert.AreEqual(compatible, report.Compatible, CameraAgentStatePreflight.Render(report));
+        if (!compatible)
+        {
+            var finding = report.Findings.Single(static item => item.Code == "catalog-manifest-version");
+            Assert.AreEqual(manifestVersion.ToString(System.Globalization.CultureInfo.InvariantCulture), finding.Observed);
+            Assert.AreEqual(expected, finding.Expected);
+            Assert.IsTrue(finding.Blocking);
+            StringAssert.Contains(finding.Remediation, "2 through 3", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_V1ImageCeilingStillRefusesAComposedManifest()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 3);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture, CurrentRequirements with { CatalogManifestVersion = 2 });
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single(static item => item.Code == "catalog-manifest-version");
+        Assert.AreEqual("3", finding.Observed);
+        Assert.AreEqual("2", finding.Expected);
+        Assert.IsTrue(finding.Blocking);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_ComposedCatalogIdentityIsCompatibleWithTheV2Ceiling()
+    {
+        using var fixture = new PreflightFixture();
+        const string catalogId = "hyg-v44-openngc-production";
+        var paths = fixture.Paths.WithCatalog(catalogId);
+        var versionRoot = Path.Combine(paths.CatalogRoot, "versions", "hyg-v4.4-openngc-v20260501-p5-s4-r1");
+        SafeFileSystem.CreateOwnerDirectory(versionRoot);
+        File.WriteAllText(
+            Path.Combine(versionRoot, "manifest.json"),
+            "{\"manifestVersion\":3,\"catalog\":{\"id\":\"" + catalogId + "\"}}");
+        Directory.CreateSymbolicLink(
+            Path.Combine(paths.CatalogRoot, "current"), "versions/hyg-v4.4-openngc-v20260501-p5-s4-r1");
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = CameraAgentStatePreflight.Evaluate(
+            paths,
+            fixture.InstanceId,
+            $"sha256:{new string('c', 64)}",
+            null,
+            CurrentRequirements with { CatalogManifestVersion = 3 },
+            CameraAgentStateContract.LegacyUnbounded,
+            RuntimeUid,
+            RuntimeGid,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        Assert.AreEqual(0, report.Findings.Count);
     }
 
     [TestMethod]

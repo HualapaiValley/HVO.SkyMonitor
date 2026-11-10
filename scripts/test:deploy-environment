@@ -71,6 +71,18 @@ is_deploy_contract_shard() {
     return 1
 }
 
+# Every real invocation builds the shared typed graph once before parallel work.
+# Fault-injection fixtures deliberately stop before the build boundary.
+prepare_deploy_contract_build() {
+    [[ "${HVO_DEPLOYMENT_TEST_NO_BUILD:-}" != 1 ]] || return 0
+    [[ -z "${DEPLOY_TEST_COORDINATOR_FAIL_SHARD:-}${DEPLOY_TEST_COORDINATOR_HANG_SHARD:-}${DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD:-}${DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD:-}" ]] || return 0
+    printf 'Building shared deployment contract graph before shard dispatch.\n'
+    timeout --signal=TERM --kill-after=30s 900s env MSBUILDDISABLENODEREUSE=1 \
+      dotnet build "$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj" \
+      --configuration Release -nodeReuse:false -p:UseSharedCompilation=false || return "$?"
+    export HVO_DEPLOYMENT_TEST_NO_BUILD=1
+}
+
 run_deploy_contract_shards() {
     local log_base="${DEPLOY_TEST_LOG_DIR:-$REPO_ROOT/TestResults/deployment-contracts}" log_root=''
     local started_at=$SECONDS shard pid status failed_shard='' failed_status=0 now sequence progress_file
@@ -232,6 +244,14 @@ run_deploy_contract_shards() {
     done
     [[ -n "$log_root" ]] || { printf 'Could not allocate a unique deployment contract log directory.\n' >&2; return 2; }
 
+    if prepare_deploy_contract_build > "$log_root/build.log" 2>&1; then
+        cat "$log_root/build.log"
+    else
+        status=$?
+        cat "$log_root/build.log" >&2
+        return "$status"
+    fi
+
     printf 'Running %s deployment contract shards with at most %s workers.\n' "${#DEPLOY_CONTRACT_SHARDS[@]}" "$max_parallel"
     trap 'coordinator_cleanup; exit 130' INT
     trap 'coordinator_cleanup; exit 143' TERM
@@ -387,6 +407,12 @@ fi
 shard_enabled() {
     [[ "$SELECTED_SHARD" == all || "$SELECTED_SHARD" == "$1" ]]
 }
+
+prepare_deploy_contract_build
+# Child testhosts and nested deploy:environment invocations inherit the prepared graph.
+if [[ -n "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" && "$SELECTED_SHARD" != all ]]; then
+    export DEPLOY_TEST_PROGRESS_FILE="$DEPLOY_TEST_PROCESS_RECORD_DIR/$SELECTED_SHARD.progress"
+fi
 
 # The migrated shard constructs its disposable typed hosts itself. Keep coordinator
 # and injected-fault behaviour above this boundary, without the unrelated shell fixture.

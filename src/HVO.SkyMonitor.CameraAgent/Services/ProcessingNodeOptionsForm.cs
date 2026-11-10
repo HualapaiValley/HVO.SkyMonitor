@@ -46,7 +46,8 @@ public sealed class ProcessingNodeOptionsForm
         ArgumentNullException.ThrowIfNull(alias);
         if (string.Equals(alias, "RollingCombination", StringComparison.OrdinalIgnoreCase))
             return options is null || RollingCombinationOptionDescriptors.IsSameGain(options.Value)
-                ? RollingCombinationOptionDescriptors.Descriptor : null;
+                ? RollingCombinationOptionDescriptors.Descriptor
+                : RollingCombinationOptionDescriptors.IsMixedGain(options.Value) ? RollingCombinationOptionDescriptors.MixedGain : null;
         if (PreviewOptionDescriptors.IsPreviewAlias(alias))
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
@@ -61,6 +62,11 @@ public sealed class ProcessingNodeOptionsForm
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
+            "MEASUREDSTELLARASSOCIATIONS" => CaptureAnalysisOptionDescriptors.StellarAssociations.StepVersion,
+            "MEASUREDASTROMETRY" => CaptureAnalysisOptionDescriptors.Astrometry.StepVersion,
+            "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,
+            "CAPTURESATELLITELAYER" => CaptureSatelliteOptionDescriptors.Layer.StepVersion,
+            "STORAGE" => StorageOptionDescriptors.Descriptor.StepVersion,
             "ANNOTATION" => "projected-annotation-v4",
             "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,

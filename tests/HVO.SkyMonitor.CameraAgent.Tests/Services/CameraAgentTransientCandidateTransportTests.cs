@@ -152,6 +152,38 @@ public sealed class CameraAgentTransientCandidateTransportTests
     }
 
     [TestMethod]
+    public async Task TimeoutResponseRetainsCandidateForRetry()
+    {
+        var transport = CreateTransport(new StubHttpClientFactory(new CancellationResponseHandler()), timeoutSeconds: 1);
+        var result = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(TransientCandidateTransportDisposition.Retry, result.Disposition);
+        Assert.AreEqual("request-timeout", result.Reason);
+    }
+
+    [TestMethod]
+    public async Task CallerCancellationResponsePropagatesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new CancellationResponseHandler();
+        var transport = CreateTransport(new StubHttpClientFactory(handler));
+        var pending = transport.SendAsync(TransientDeliveryTestData.Submission(), cancellation.Token).AsTask();
+        await handler.Started.Task.ConfigureAwait(false);
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ProxyClientClosedRequestRetainsCandidateForRetry()
+    {
+        var transport = CreateTransport(new StubHttpClientFactory(new CapturingHandler(_ => new((HttpStatusCode)499))));
+        var result = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(TransientCandidateTransportDisposition.Retry, result.Disposition);
+        Assert.AreEqual("http-499", result.Reason);
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.BadRequest, TransientCandidateTransportDisposition.AuthenticationBlocked)]
     [DataRow(HttpStatusCode.Unauthorized, TransientCandidateTransportDisposition.AuthenticationBlocked)]
     [DataRow(HttpStatusCode.Forbidden, TransientCandidateTransportDisposition.AuthenticationBlocked)]
@@ -240,6 +272,25 @@ public sealed class CameraAgentTransientCandidateTransportTests
                 LastHeaders[header.Key] = string.Join(",", header.Value);
             }
             return Task.FromResult(response(request));
+        }
+    }
+
+    private sealed class CancellationResponseHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Model TestServer: aborting a request can produce a response, not an exception.
+            }
+            return new((HttpStatusCode)499);
         }
     }
 

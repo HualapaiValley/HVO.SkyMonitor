@@ -43,6 +43,7 @@ internal static class CameraAgentOperationsEndpoints
             .Produces(StatusCodes.Status403Forbidden);
 
         endpoints.MapCameraAgentRawEvidenceOperationsEndpoints();
+        endpoints.MapCameraAgentProcessingLaneQuarantineEndpoints();
         return endpoints;
     }
 

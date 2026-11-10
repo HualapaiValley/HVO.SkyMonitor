@@ -416,7 +416,7 @@ public sealed class ProcessingEntitlementIntegrationTests
     {
         await Infrastructure.DerivativeResetDiagnostics.RunAsync(db, "entitlement", async () =>
         {
-            await Infrastructure.DerivativeFixtureJobs.ExcludingUnsealedGraphs(db).Where(job => job.Status != CentralDerivativeJobStatus.Completed)
+            await Infrastructure.DerivativeFixtureJobs.ActiveForReset(db)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                     .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)

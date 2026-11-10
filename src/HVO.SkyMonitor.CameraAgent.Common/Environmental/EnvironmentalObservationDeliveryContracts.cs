@@ -50,7 +50,8 @@ public enum EnvironmentalObservationProjectionDisposition
     NotRequested,
     Waiting,
     Staged,
-    Acknowledged
+    Acknowledged,
+    Abandoned
 }
 
 public sealed record LocalEnvironmentalObservationCommitResult(
@@ -103,6 +104,14 @@ public interface ILocalEnvironmentalObservationStore
     ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalDetailAsync(
         string root,
         long recordId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Filters primary-source eligibility before selecting the newest retained reading.</summary>
+    ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalLatestPrimaryAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        IReadOnlyList<string> configuredSourceIds,
+        IReadOnlyList<string> unavailableSourceIds,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<LocalEnvironmentalObservationRecord>> ReadLocalCandidatesAsync(

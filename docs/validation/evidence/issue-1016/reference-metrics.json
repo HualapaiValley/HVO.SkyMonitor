@@ -1,0 +1,168 @@
+{
+  "source_commit": "b9da049ed4e1d06f9c73c5652d4ff73e392f067e",
+  "source_path": "docs/prototypes/pipeline-operations/day.html",
+  "query": "date=2026-08-31",
+  "state": "illustrated prototype, not production; product IDs and facts are illustrative",
+  "method": "viewport PNGs and stitched full-page capture with 180px overlap; native device scale is normalized to CSS pixels using Lanczos; no production comparison supplied",
+  "captured_utc": "2026-11-08T12:49:00Z",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900,
+      "devicePixelRatio": 2,
+      "scrollHeight": 1673,
+      "scrollWidth": 1440,
+      "panels": [
+        {
+          "class": "",
+          "x": 88.6328125,
+          "y": 165.671875,
+          "width": 373.484375,
+          "height": 53.1953125
+        },
+        {
+          "class": "day-hero",
+          "x": 37.4375,
+          "y": 265.6328125,
+          "width": 1365.125,
+          "height": 585.75
+        },
+        {
+          "class": "day-cover",
+          "x": 38.4375,
+          "y": 266.6328125,
+          "width": 929.3984375,
+          "height": 583.75
+        },
+        {
+          "class": "day-health",
+          "x": 967.8359375,
+          "y": 266.6328125,
+          "width": 433.71875,
+          "height": 583.75
+        },
+        {
+          "class": "day-timeline-panel",
+          "x": 37.4375,
+          "y": 864.1796875,
+          "width": 1365.125,
+          "height": 163.8046875
+        },
+        {
+          "class": "daily-product-grid",
+          "x": 37.4375,
+          "y": 1085.0078125,
+          "width": 1365.125,
+          "height": 275.9453125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 37.4375,
+          "y": 1085.0078125,
+          "width": 448.109375,
+          "height": 275.9453125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 495.9453125,
+          "y": 1085.0078125,
+          "width": 448.109375,
+          "height": 275.9453125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 954.453125,
+          "y": 1085.0078125,
+          "width": 448.109375,
+          "height": 275.9453125
+        },
+        {
+          "class": "day-detail-grid",
+          "x": 37.4375,
+          "y": 1373.75,
+          "width": 1365.125,
+          "height": 235.9140625
+        }
+      ]
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "devicePixelRatio": 2,
+      "scrollHeight": 2663,
+      "scrollWidth": 390,
+      "panels": [
+        {
+          "class": "",
+          "x": 61.59375,
+          "y": 148.671875,
+          "width": 266.8125,
+          "height": 30.3984375
+        },
+        {
+          "class": "day-hero",
+          "x": 10.3984375,
+          "y": 301.3984375,
+          "width": 369.203125,
+          "height": 724.0078125
+        },
+        {
+          "class": "day-cover",
+          "x": 11.3984375,
+          "y": 302.3984375,
+          "width": 367.203125,
+          "height": 368
+        },
+        {
+          "class": "day-health",
+          "x": 11.3984375,
+          "y": 670.3984375,
+          "width": 367.203125,
+          "height": 354.0078125
+        },
+        {
+          "class": "day-timeline-panel",
+          "x": 10.3984375,
+          "y": 1038.203125,
+          "width": 369.203125,
+          "height": 174.3046875
+        },
+        {
+          "class": "daily-product-grid",
+          "x": 10.3984375,
+          "y": 1269.53125,
+          "width": 369.203125,
+          "height": 848.6328125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 10.3984375,
+          "y": 1269.53125,
+          "width": 369.203125,
+          "height": 275.9453125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 10.3984375,
+          "y": 1555.875,
+          "width": 369.203125,
+          "height": 275.9453125
+        },
+        {
+          "class": "daily-product-card",
+          "x": 10.3984375,
+          "y": 1842.21875,
+          "width": 369.203125,
+          "height": 275.9453125
+        },
+        {
+          "class": "day-detail-grid",
+          "x": 10.3984375,
+          "y": 2130.9609375,
+          "width": 369.203125,
+          "height": 484.03125
+        }
+      ]
+    }
+  ]
+}

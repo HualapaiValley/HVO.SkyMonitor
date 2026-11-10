@@ -31,6 +31,8 @@ command described in [Side-by-side selection](#side-by-side-selection).
 - Preprocessing version: `4`
 - SQLite schema/user version: `3`
 - SQLite serializer: `sqlite3 3.45.1`
+- Serializer connection setting: `PRAGMA secure_delete = ON` before writes,
+  including cleanup and `VACUUM`; do not inherit the CLI's compile-time default.
 - Canonical builder: Ubuntu 24.04 on `linux/amd64`. Build once and distribute the
   approved immutable bundle to every deployment architecture.
 - Generated SQLite file: `hyg_v44.sqlite`
@@ -59,6 +61,12 @@ refuse any catalog ID, package version, lineage, hash or row count the registry
 does not name. Changing the source, preprocessing SQL, SQLite serialization,
 builder architecture or schema requires a new reviewed package revision and a
 registry update. A published version directory is never modified in place.
+
+The [reproducibility investigation and offline regression](hyg-v44-reproducibility.md)
+document the exact source-build toolchain, the Ubuntu/upstream `secure_delete`
+default difference, and repeated clean-build evidence for both HYG and OpenNGC.
+Making that existing serializer setting explicit restores the approved bytes;
+it does not change the transformation, package revision, registry or hash pins.
 
 HIP 55203 is not present as a HYG 4.4 Hipparcos endpoint. Topology resolution
 records it in the specification's `unresolvedEndpoints` instead of failing, and
@@ -156,8 +164,10 @@ one root. A selection that crosses lineages does all of the following:
 - pins the previously selected identity as a historical reference, so garbage
   collection cannot delete it while a frame still names it.
 
-The running image must declare the `hvo-approved-catalogs-v1` catalog contract,
-so an older image that only knows HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
+A current image declares `hvo-approved-catalogs-v2`, which resolves HYG 4.2,
+HYG 4.4 and the composed OpenNGC lineage. An image that declares
+`hvo-approved-catalogs-v1` resolves the two HYG lineages and refuses the composed
+catalog. An older image that only knows HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
 selection retires the retained image rollback because that rollback environment
 mounts the old lineage's root. Catalog `rollback` returns to the previous catalog
 selection, including across lineages.

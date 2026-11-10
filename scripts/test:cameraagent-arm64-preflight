@@ -6,13 +6,35 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/lib/dotnet-runtime-home.sh"
 # Bind the tested helper to the real harness before its first dotnet invocation.
 python3 - "$script_dir" <<'PYTHON'
+import os
 import pathlib
+import subprocess
 import sys
+import textwrap
 harness = (pathlib.Path(sys.argv[1]) / "test:cameraagent-arm64-ci").read_text()
 source = 'source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"'
 call = 'dotnet_runtime_home_check || fail "runner runtime directory is unusable"'
 assert source in harness and call in harness, "ARM64 harness must enforce the runtime directory check"
 assert harness.index(source) < harness.index(call) < harness.index('--arg sdk "$(dotnet --version)"')
+
+# Exercise the actual hosted dispatch guard: a branch that moved since review must
+# fail before the dependent self-hosted job starts, including shell-shaped input.
+workflow = (pathlib.Path(sys.argv[1]).parent / ".github/workflows/cameraagent-arm64.yml").read_text()
+hosted = workflow.split("  catalog-contracts:\n", 1)[1].split("  cameraagent-arm64:\n", 1)[0]
+guard = hosted.split("      - name: Verify manually dispatched reviewed head\n", 1)[1].split("      - name: Checkout\n", 1)[0]
+assert "if: github.event_name == 'workflow_dispatch'" in guard
+assert "REVIEWED_HEAD: ${{ inputs.reviewed_head }}" in guard
+assert "    needs: catalog-contracts\n" in workflow.split("  cameraagent-arm64:\n", 1)[1]
+assert "${{" not in guard.split("        run: |\n", 1)[1], "dispatch input must pass through env, not shell source"
+command = textwrap.dedent(guard.split("        run: |\n", 1)[1])
+sha = "1234567890abcdef" * 2 + "12345678"
+for reviewed, expected in ((sha, 0), ("", 1), ("f" * 40, 1), (sha[:7], 1), (sha.upper(), 1),
+                           (sha + "\n", 1), ('$(printf injected)', 1), ('"; exit 0; #', 1)):
+    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command],
+                            env={**os.environ, "REVIEWED_HEAD": reviewed, "GITHUB_SHA": sha},
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == expected, f"dispatch guard returned {result.returncode}, expected {expected}"
+print("ARM64 reviewed-head dispatch guard: 8 cases passed.")
 PYTHON
 work="$(mktemp -d)"
 trap 'chmod -R u+rwx "$work"; rm -rf "$work"' EXIT

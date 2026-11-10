@@ -1,16 +1,16 @@
 ---
 name: "Implement Roadmap Issue"
-description: "Own an assigned roadmap issue through review, green CI, authorized merge, and cleanup."
+description: "Implement and validate an assigned roadmap issue, obtain local review, and hand the candidate to Kepler."
 argument-hint: "Required: GitHub issue number"
 agent: "agent"
 ---
 
 Implement GitHub issue `${input:scope:Required GitHub issue number}` in this
-repository. This command requests implementation, validation, review correction,
-and authorized merge and cleanup of one ready issue per branch and PR, not
-another plan and not an unbounded multi-issue change in one branch. The owner is
-an authorized human or operator-directed agent.
-Do not take another issue after merge unless the user authorized that scope.
+repository. This command requests implementation, validation, independent local
+review, and corrections for one ready issue, followed by a candidate handoff to
+Kepler. Coding threads push only when instructed and never create PRs, mark
+ready, set `hvo/reviewed-head`, or enqueue. Kepler owns formal review and the
+merge queue. Do not take another issue unless the user authorized that scope.
 
 Before editing, read:
 
@@ -40,12 +40,13 @@ implementation. Inspect the current worktree, branch, recent commits, tests,
 durable formats, and related PRs. Preserve unrelated changes.
 
 Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
-`home-dev-02`, `hvo-dev-02`, and `hvo-dev-03`. Each task runs in its own
-git worktree off `development/v1`, so the main checkout is never modified.
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
-Assess capacity per shared resource, not a
-global two-issue limit; isolate concurrent work in separate worktrees. Preserve
-sandbox and permission boundaries; never route a denied action to another session.
+Assess capacity per shared resource, not a global two-issue limit; isolate
+concurrent work in separate worktrees. Preserve sandbox and permission
+boundaries; never route a denied action to another session.
 
 Create one issue-focused branch. Implement the smallest coherent slice that
 satisfies the full issue gate. Preserve all architecture boundaries. For durable
@@ -62,32 +63,20 @@ Use the execution protocol's validation ladder: focused tests in the inner loop,
 one tier-selected local candidate gate before the first push, affected local
 gates for corrections, and classifier-selected protected CI on the final
 reviewed head. Do not repeat unchanged long suites or performance harnesses.
-Commit only intended files, push, and open a draft PR linked to the issue and its
-owning roadmap epic. As PR owner, request independent human or one-shot agent
-review against immutable base/head SHAs and record reviewer identity, findings,
-and dispositions. Record actual provider/model/effort for agent reviews, and
-N/A for human model/effort. Follow the PR lifecycle skill for the full initial
-review, applicable agent start timeouts and fallback, correction-delta rereviews, the
-three-rereview cap and follow-up issue, the finalization lock, target-branch
-synchronization and base-sync review or unchanged-base proof, protected CI,
-authorized merge, and cleanup. Mark the
-PR ready only after review convergence and final synchronization. Merge only
-when the reviewed current head has green required checks and no actionable
-thread remains. If merge is reserved or not authorized, report the boundary and
-leave a handoff rather than bypassing it.
+Commit only intended files. Before independent local review, map every in-scope
+original-issue requirement to implemented behavior and local evidence at the
+candidate SHA. Missing scope or evidence returns to implementation. Follow the
+PR lifecycle skill for LOW/HIGH review requirements, exact ranges, explicit
+completeness verdicts, and verified finding dispositions. Hand the candidate,
+requirement mapping, guard results, and required local CLEAN reports to Kepler.
+Push only when instructed; stop at that handoff.
 
-While working, post a short progress comment at every milestone and at least
-every thirty minutes: on the issue until the draft PR exists, then in the PR's
-append-only review ledger. Each comment states, with a UTC timestamp, what
-finished, what is running now, the next step, and any blocker. Long gate or
-review runs get an interim note rather than silence. This does not replace the
-final completion report. Relay milestones and blockers directly to the operator.
-
-After merge, confirm issue closure, synchronize local `main`, preserve unrelated
-worktree changes, clean up merged branches/worktrees safely, and update the
-owning roadmap epic with completed evidence and the exact next action. Explicitly
-release the issue claim with a completion handoff and remove its in-progress
-label. Do not select or claim another issue without user authorization.
+Report milestones and blockers directly to the operator and retain UTC local
+evidence at least every thirty minutes during active work. Keep the issue claim
+through review and CI; Kepler maintains the PR ledger and operates readiness,
+reviewed-head publication, and the queue. Target-tip movement alone does not
+require synchronization or new review; real conflicts and changed candidates
+follow the lifecycle skill. Long gates and reviews get interim notes.
 
 If execution must stop or blocks, complete every unaffected action and leave the
 exact resumable handoff required by `docs/planning/agent-execution.md`. A failing
