@@ -74,6 +74,27 @@ public sealed partial class UpgradePreflightTests
             StringAssert.Contains(rendered, code, StringComparison.Ordinal);
         }
         StringAssert.Contains(rendered, MinimumCompatibleRevision, StringComparison.Ordinal);
+        StringAssert.Contains(rendered, "Earlier state requires an explicit reset", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(MinimumCompatibleRevision)]
+    [DataRow("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c")]
+    public void Render_CompatibleStateDoesNotRecommendResetWhenTheSnapshotBoundaryAdvances(string revision)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+        var report = Evaluate(fixture, CurrentRequirements with { MinimumCompatibleRevision = revision });
+        Assert.IsTrue(report.Compatible);
+        var text = CameraAgentStatePreflight.Render(report);
+        StringAssert.Contains(text, "compatible.", StringComparison.Ordinal);
+        StringAssert.Contains(text, revision, StringComparison.Ordinal);
+        Assert.DoesNotContain("reset", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("state-disposition", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [TestMethod]
