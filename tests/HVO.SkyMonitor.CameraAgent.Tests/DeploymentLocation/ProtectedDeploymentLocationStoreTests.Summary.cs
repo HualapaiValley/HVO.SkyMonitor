@@ -203,6 +203,42 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.IsFalse(new RetainedManifestValidationSummary(new byte[32]).TryLoad(bytes.AsSpan(0, bytes.Length - 1)));
     }
 
+    [TestMethod]
+    [DataRow(".site/site-profile.v1.json", "{\"schemaVersion\":1,\"revision\":1}")]
+    [DataRow(".lifecycle-control/state.json", "{\"schemaVersion\":1,\"state\":\"Capturing\"}")]
+    [DataRow("journal/scene-retention-cursor.json", "{\"afterRelativePath\":\"fixture\"}")]
+    [DataRow("staging/projected-scenes/fixture.json", "{\"schemaVersion\":\"projected-scene-stage-v1\",\"objects\":[]}")]
+    [DataRow("journal/capture-satellites/fixture/input.json", "{\"schemaVersion\":\"capture-satellite-input-v1\",\"descriptor\":{}}")]
+    [DataRow("derived/fixture/Metadata/product.json", "{\"schemaVersion\":\"metadata-v1\",\"values\":[]}")]
+    [DataRow("derived/fixture/Metadata/product.manifest.json", "{\"schemaVersion\":\"hvo-cameraagent-processing-product-v1\",\"capture\":{},\"relativeArtifactPath\":\"fixture\"}")]
+    public async Task OtherOwnedJsonModelsAreInspectedWithoutBecomingArtifactProofs(string relativePath, string json)
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        var path = Path.Combine(_options.Value.RawIngressRoot, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, json).ConfigureAwait(false);
+        Assert.AreEqual((2L, 0L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false));
+        Assert.AreEqual(44 + 32, plaintext.Length, "Only the actual artifact is a reusable proof.");
+    }
+
+    [TestMethod]
+    public async Task ReplacingFrameManifestWithEmptyObjectCannotEraseItsContract()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (path, _) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        await File.WriteAllTextAsync(path, "{}").ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
     private async Task<(string Path, byte[] Json)> WriteSummaryCaptureAsync(DeploymentLocationSnapshot location, bool journal = false)
     {
         var original = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
@@ -218,7 +254,9 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var json = CaptureContractJson.Serialize(manifest);
         var parsed = CaptureContractJson.ParseManifest(json);
         Assert.IsTrue(parsed.IsValid, $"{parsed.Validation.ReasonCode}: {parsed.Validation.FieldPath}");
-        var path = Path.Combine(_options.Value.RawIngressRoot, "capture.json");
+        var directoryPath = Path.Combine(_options.Value.RawIngressRoot, "frames", "fixture", "Raw");
+        Directory.CreateDirectory(directoryPath);
+        var path = Path.Combine(directoryPath, "capture.json");
         await File.WriteAllBytesAsync(path, json).ConfigureAwait(false);
         if (journal)
         {

@@ -1,0 +1,93 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+var mode = args[0];
+var root = Path.GetFullPath(args[1]);
+if (!root.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.Ordinal))
+    throw new InvalidOperationException("A private disposable temporary root is required.");
+var marker = Path.Combine(root, "probe-fixture");
+if (mode == "crash")
+{
+    if (Directory.Exists(root)) throw new InvalidOperationException("Crash setup requires a fresh root.");
+    Directory.CreateDirectory(root);
+    File.WriteAllText(marker, "issue-1041-synthetic-fixture");
+}
+else if (!File.Exists(marker) || File.ReadAllText(marker) != "issue-1041-synthetic-fixture")
+    throw new InvalidOperationException("Refusing a root not created by this probe.");
+var ingress = Path.Combine(root, "ingress");
+var keyRoot = Path.Combine(ingress, ".location", "keys");
+Directory.CreateDirectory(keyRoot);
+var provider = DataProtectionProvider.Create(new DirectoryInfo(keyRoot));
+var protector = new ProbeProtector(provider.CreateProtector("issue-1041-disposable-proof"));
+using var store = new ProtectedDeploymentLocationStore(
+    Options.Create(new CameraAgentHostOptions
+    {
+        RawIngressRoot = ingress,
+        CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+    }), protector, TimeProvider.System, NullLogger<ProtectedDeploymentLocationStore>.Instance);
+var seed = new DeploymentLocationSeed("probe", "synthetic", null,
+    new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null,
+    new ObservatoryLocation(35, -113, 0, "America/Phoenix"), DeploymentLocationSourceKind.Manual);
+var summaryPath = Path.Combine(ingress, ".location", "retained-validation.v1.protected");
+var manifestPath = Path.Combine(ingress, "capture.json");
+long parses = 0, hits = 0;
+using var listener = new ActivityListener
+{
+    ShouldListenTo = source => source.Name.EndsWith(".Attribution", StringComparison.Ordinal),
+    Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+    ActivityStopped = activity =>
+    {
+        parses += activity.GetTagItem("attribution.parse.count") as long? ?? 0;
+        hits += activity.GetTagItem("attribution.cache_hits") as long? ?? 0;
+    }
+};
+ActivitySource.AddActivityListener(listener);
+if (mode == "crash")
+{
+    var active = await store.InitializeAsync(seed, CancellationToken.None);
+    var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+    var manifest = original with { Descriptor = original.Descriptor with { Location = active.ToProvenance() } };
+    var bytes = CaptureContractJson.Serialize(manifest);
+    if (!CaptureContractJson.ParseManifest(bytes).IsValid) throw new InvalidOperationException("Invalid synthetic manifest.");
+    await File.WriteAllBytesAsync(manifestPath, bytes);
+    typeof(ProtectedDeploymentLocationStore).GetProperty("BeforeRetainedSummaryPublishForTest",
+        BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(store, (Action<string>)(_ =>
+        {
+            // The temporary file has been flushed; kill before atomic publication and all finally handlers.
+            Process.GetCurrentProcess().Kill();
+            Thread.Sleep(Timeout.Infinite);
+        }));
+    _ = await store.InitializeAsync(seed, CancellationToken.None);
+    throw new InvalidOperationException("The writer did not terminate at the crash boundary.");
+}
+if (mode == "corrupt") await File.WriteAllTextAsync(manifestPath, "{");
+var orphans = Directory.EnumerateFiles(Path.Combine(ingress, ".location"), ".retained-validation.v1.protected.*.tmp").Count();
+try
+{
+    var active = await store.InitializeAsync(seed, CancellationToken.None);
+    if (mode == "corrupt" || active.Version != 1 || !File.Exists(summaryPath))
+        throw new InvalidOperationException("Unexpected probe acceptance.");
+    if (mode == "recover" && (parses != 1 || hits != 0 || orphans != 1))
+        throw new InvalidOperationException("Incomplete summary was not rebuilt.");
+    if (mode == "read" && (parses != 0 || hits != 1))
+        throw new InvalidOperationException("Completed durable summary was not reused across process restart.");
+    Console.WriteLine(JsonSerializer.Serialize(new { mode, parses, hits, orphans, activeVersion = active.Version }));
+}
+catch (InvalidDataException) when (mode == "corrupt")
+{
+    Console.WriteLine(JsonSerializer.Serialize(new { mode, rejected = true, parses, hits, orphans }));
+}
+
+sealed class ProbeProtector(IDataProtector protector) : IDeploymentLocationProtector
+{
+    public byte[] Protect(byte[] plaintext) => protector.Protect(plaintext);
+    public byte[] Unprotect(byte[] payload) => protector.Unprotect(payload);
+}

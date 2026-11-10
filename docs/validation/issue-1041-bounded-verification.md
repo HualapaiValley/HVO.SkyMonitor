@@ -56,8 +56,14 @@ existing statement snapshot. External writes after a file is read or after a
 SQLite snapshot starts retain the existing read-boundary semantics; this is not
 a cross-file atomic snapshot. Exact bytes at that boundary remain the authority.
 The optional summary is advisory: deletion/corruption/version mismatch rebuilds,
-never accepts current corrupt evidence. Existing unknown/non-manifest JSON
-handling needs explicit review before deciding whether to tighten rejection.
+never accepts current corrupt artifact evidence. Frame sidecars and raw journal
+blobs require the artifact contract. Other JSON models sharing this root retain
+their existing owners: site/control records, staging, structured metadata and
+structured-product sidecars must not be mistaken for artifacts or cached as
+artifact proofs. A root claiming `v2`, or both `descriptor` and
+`relativeArtifactPath`, is also an artifact claim and must validate. Malformed
+JSON is rejected; valid JSON for other contracts remains outside this store's
+artifact validation scope.
 
 This keeps the current filesystem/recovery primitives selected by #1607 and
 [#1615](upgrade-recovery-cost-1615.md), with no DB migration, backend conversion,
@@ -103,11 +109,13 @@ Two original-source integrity gaps need explicit treatment rather than claims
 that the old code rejected every invalid state:
 
 - `ParseManifest(...).Document?.Manifest` silently ignores parse/schema failures.
-  Tighten this scan to reject invalid retained manifest JSON, including unsupported
-  schema. This can refuse an installation containing retained corrupt/quarantined
-  JSON that the old location scan ignored; it is stricter admission, not weaker
-  validation. Scan all journal manifests rather than a text LIKE filter that a
-  malformed/re-encoded location property can evade. Keep valid manifests without
+  Reject invalid frame sidecars/raw journal manifests and JSON claiming the
+  artifact contract, including unsupported schema. Other owned JSON models in
+  the root retain their original policy; they never produce parse proofs. This
+  can refuse retained corrupt/quarantined JSON that the old scan ignored, while
+  avoiding a false artifact requirement for site/control/structured models.
+  Scan all journal manifests rather than a text LIKE filter that a
+  malformed/re-encoded location property can evade. Keep valid artifacts without
   location under their existing no-provenance-comparison rule.
 - Upgrade/rollback pre-mutation reads inspect owner state but compare the complete
   identity only after mutation; running backup has no pre-mutation protected read.
@@ -119,3 +127,40 @@ that the old code rejected every invalid state:
 These changes are required by the assignment's explicit integrity/pre-mutation
 acceptance. They are called out for Kepler's HIGH reviews. No existing durable
 format is replaced, and no configuration snapshot/cache is introduced.
+
+
+### Interaction correction before broad execution
+
+The initial Debug gate passed on `978dedfc`; its Release gate was deliberately
+terminated before Unit/Integration/scale execution after source inspection found
+that requiring every JSON file to be an artifact would reject legitimate site,
+lifecycle-control, staging, satellite and structured-product state. The correction
+retains strict frame/journal/artifact-claim validation and the original ownership
+of other JSON models. Eight additional Unit cases cover these interactions and
+replacement of a real frame sidecar with `{}`. The stopped gate is retained and
+is not claimed as a completed candidate gate. No unmodified long test suite was
+repeated. The corrected candidate runs the full gate below.
+
+
+### Actual process-crash evidence
+
+The [standalone probe source](issue-1041-summary-crash-probe.cs.txt) and
+[driver](issue-1041-summary-crash-probe.py.txt) compile against the candidate's
+actual Release DLLs with the pinned SDK, in private TMPDIR state. The driver
+requires a new disposable root marker and uses a separate synthetic Data
+Protection purpose with keys under that fixture's `.location/keys`. It never
+loads an installed application, token, configuration or data root.
+
+The first process receives SIGKILL after the cache temporary file has been
+flushed but before rename. A second process ignores that orphan and rebuilds
+from current evidence (one full parse). A third process reuses the completed
+protected summary (zero parses, one proof hit). A fourth corrupts the current
+manifest and must reject it. The first local probe passed with expected exit
+`-9`, then `0/0/0`; one orphan survived the kill and never became authority.
+The stable-candidate gate runs this probe again, recording its candidate SHA,
+compiled Common DLL hash and exact source hash in ignored results.
+
+Reproduce after building Release from the candidate, with the host heavy lock:
+`flock -o /tmp/hvo-heavy-gate.lock python3 docs/validation/issue-1041-summary-crash-probe.py.txt`.
+Set a short private `TMPDIR` first. The `.txt` sources are explicit validation
+artifacts, not new solution projects or production entry points.

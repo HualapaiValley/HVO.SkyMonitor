@@ -1155,7 +1155,8 @@ public sealed class ProtectedDeploymentLocationStore(
                     }
                     BeforeRetainedManifestValidationForTest?.Invoke();
                     cancellationToken.ThrowIfCancellationRequested();
-                    ValidateRetainedManifest(history, manifestJson, summary, attribution);
+                    ValidateRetainedManifest(history, manifestJson, summary, attribution,
+                        requireManifest: Path.GetRelativePath(root, path!).StartsWith("frames/", StringComparison.Ordinal));
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -1169,7 +1170,7 @@ public sealed class ProtectedDeploymentLocationStore(
     }
 
     private static void ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
-        RetainedManifestValidationSummary summary, DeploymentLocationReadAttribution? attribution)
+        RetainedManifestValidationSummary summary, DeploymentLocationReadAttribution? attribution, bool requireManifest)
     {
         attribution?.AddManifest(manifestJson.LongLength);
         RetainedManifestValidationSummary.Digest digest;
@@ -1181,11 +1182,12 @@ public sealed class ProtectedDeploymentLocationStore(
             summary.Record(digest);
             return;
         }
-        ArtifactManifestV2 manifest;
+        ArtifactManifestV2? manifest;
         attribution?.AddBytes(ReadStage.Parse, manifestJson.LongLength);
         using (attribution?.Measure(ReadStage.Parse))
-            manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest
-                ?? throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
+            manifest = ParseRetainedManifest(manifestJson, requireManifest);
+        // Other JSON models share this root; they must never become artifact validation proofs.
+        if (manifest is null) return;
         using var provenanceStage = attribution?.Measure(ReadStage.Provenance);
         var provenance = manifest.Descriptor.Location;
         if (provenance is null)
@@ -1203,6 +1205,31 @@ public sealed class ProtectedDeploymentLocationStore(
                 "Retained capture location provenance does not match protected deployment-location history.");
         }
         summary.Record(digest);
+    }
+
+    private static ArtifactManifestV2? ParseRetainedManifest(byte[] bytes, bool requireManifest)
+    {
+        var manifest = CaptureContractJson.ParseManifest(bytes).Document?.Manifest;
+        if (manifest is not null) return manifest;
+        // Frame sidecars and raw journal blobs are always ArtifactManifestV2. Elsewhere the
+        // root also contains site/control records, staged scenes and structured products.
+        // Reject malformed JSON and anything claiming the artifact contract, while preserving
+        // those other models' existing ownership and validation policy.
+        try
+        {
+            using var document = JsonDocument.Parse(bytes);
+            var root = document.RootElement;
+            var claimsManifest = root.ValueKind == JsonValueKind.Object &&
+                (root.TryGetProperty("schemaVersion", out var schema) && schema.ValueKind == JsonValueKind.String &&
+                    schema.ValueEquals(ArtifactManifestV2.CurrentSchemaVersion) ||
+                 root.TryGetProperty("descriptor", out _) && root.TryGetProperty("relativeArtifactPath", out _));
+            if (!requireManifest && !claimsManifest) return null;
+        }
+        catch (JsonException)
+        {
+            // No parser diagnostic or input bytes escape the retained-data boundary.
+        }
+        throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
     }
 
     private void ValidateJournalEvidence(string root, DeploymentLocationHistory history,
@@ -1255,7 +1282,7 @@ public sealed class ProtectedDeploymentLocationStore(
             if (!hasNext) break;
             BeforeRetainedManifestValidationForTest?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
-            ValidateRetainedManifest(history, manifestJson!, summary, attribution);
+            ValidateRetainedManifest(history, manifestJson!, summary, attribution, requireManifest: true);
         }
     }
 
