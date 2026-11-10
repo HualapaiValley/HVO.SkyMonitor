@@ -48,7 +48,10 @@ paths. Overflow still validates each manifest and simply cannot cache it.
 Load a summary under the existing gate; scan current bytes under the same gate;
 collect new proofs only for fully valid manifests with valid provenance. Publish
 only after both scans, reconciliation and original durable state writes succeed.
-No failed/canceled scan publishes additions. One SQLite reader maintains its
+No failed/canceled scan publishes additions. A summary publication I/O failure
+refuses the request, preserving the existing durable publication barriers; the
+next request/restart revalidates rather than treating an incomplete write as
+proof. This is a stated availability cost of summary publication. One SQLite reader maintains its
 existing statement snapshot. External writes after a file is read or after a
 SQLite snapshot starts retain the existing read-boundary semantics; this is not
 a cross-file atomic snapshot. Exact bytes at that boundary remain the authority.
@@ -62,8 +65,32 @@ checkpoint protocol, restore ordering, or new adoption requirement.
 
 ## Results
 
-Pending current-tip baseline and implementation. This is a design/work record,
-not a completeness or review verdict.
+The current-tip baseline completed using the test-only harness at `c31afe4b`;
+product sources are byte-identical to `d122742c`. The initial 100k attempt failed
+in the fixture checksum helper, not endpoint validation; the bounded streaming
+correction is retained in the harness history. The successful baseline uses
+one affined CPU, a 384 MiB managed heap, native Linux x64 Release / .NET 10.0.14,
+SDK 10.0.402, an invalid Docker endpoint and synthetic catalog/evidence only.
+
+Each count has that many distinct captures, each represented by one file and
+one journal manifest (therefore 200,002 manifest reads at 100,001 captures).
+Construction uses current contract serialization, the real v15 journal schema,
+foreign-key assignments and one bulk disposable transaction, with no image
+payload I/O. This is a scan workload, not acquisition/durable-ingress throughput.
+Each fixed/solar fixture has a first populated read, five settling reads and five
+measured sequential reads; retain phase/JIT differences rather than pool them
+or infer percentiles. Whole-process allocation includes the in-process host/client.
+
+| Captures | Fixed baseline median, ms | Solar baseline median, ms |
+| ---: | ---: | ---: |
+| 1,000 | 242.64 | 89.30 |
+| 10,000 | 856.59 | 398.35 |
+| 100,001 | 3,393.07 | 4,249.77 |
+
+At 100,001, median process allocations are 2,420.99 MiB fixed / 2,427.04 MiB
+solar. These are this host's current software measurements; neither the historic
+35,049 ms incident nor the earlier small-fixture ~180 ms medians are substituted.
+Candidate comparative results and final completeness evidence follow below.
 
 ### Source findings and scope decisions before product changes
 

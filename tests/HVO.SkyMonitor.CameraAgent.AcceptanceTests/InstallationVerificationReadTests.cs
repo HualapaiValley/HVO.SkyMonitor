@@ -266,32 +266,32 @@ public sealed class InstallationVerificationReadTests
             ?? throw new InvalidOperationException(InstallationReadAttributionFixture.EvidenceRootGuidance);
         var results = new List<object>();
         foreach (var solar in new[] { false, true })
-        foreach (var count in new[] { 1_000, 10_000, 100_001 })
-        {
-            await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar).ConfigureAwait(false);
-            var corpus = await fixture.SeedScaleAsync(count).ConfigureAwait(false);
-            using var client = fixture.CreateClient();
-            var first = await MeasureAsync("first-populated", fixture, client, null).ConfigureAwait(false);
-            for (var warmup = 0; warmup < 5; warmup++)
-                _ = await fixture.ReadAsync(client).ConfigureAwait(false);
-            var before = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
-            var reads = new List<ReadMeasurement>();
-            for (var sample = 0; sample < 5; sample++)
-                reads.Add(await MeasureAsync("scale-repeat", fixture, client, null).ConfigureAwait(false));
-            Assert.IsTrue(reads.All(read => read.Identity.GetRawText() == first.Identity.GetRawText()));
-            Assert.AreEqual(before, await fixture.HashRetainedInputsAsync().ConfigureAwait(false));
-            results.Add(new { Solar = solar, Captures = count, Corpus = corpus, First = first, Reads = reads });
-            var report = Path.Combine(output, "installation-read-scale.json");
-            await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new
+            foreach (var count in new[] { 1_000, 10_000, 100_001 })
             {
-                Revision = Environment.GetEnvironmentVariable("HVO_ATTRIBUTION_REVISION"),
-                Runtime = RuntimeInformation.FrameworkDescription,
-                ProcessorCount = Environment.ProcessorCount,
-                HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
-                Results = results
-            }, InstallationReadAttributionFixture.EvidenceJson)).ConfigureAwait(false);
-            TestContext.AddResultFile(report);
-        }
+                await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar).ConfigureAwait(false);
+                var corpus = await fixture.SeedScaleAsync(count).ConfigureAwait(false);
+                using var client = fixture.CreateClient();
+                var first = await MeasureAsync("first-populated", fixture, client, null).ConfigureAwait(false);
+                for (var warmup = 0; warmup < 5; warmup++)
+                    _ = await fixture.ReadAsync(client).ConfigureAwait(false);
+                var before = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
+                var reads = new List<ReadMeasurement>();
+                for (var sample = 0; sample < 5; sample++)
+                    reads.Add(await MeasureAsync("scale-repeat", fixture, client, null).ConfigureAwait(false));
+                Assert.IsTrue(reads.All(read => read.Identity.GetRawText() == first.Identity.GetRawText()));
+                Assert.AreEqual(before, await fixture.HashRetainedInputsAsync().ConfigureAwait(false));
+                results.Add(new { Solar = solar, Captures = count, Corpus = corpus, First = first, Reads = reads });
+                var report = Path.Combine(output, "installation-read-scale.json");
+                await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new
+                {
+                    Revision = Environment.GetEnvironmentVariable("HVO_ATTRIBUTION_REVISION"),
+                    Runtime = RuntimeInformation.FrameworkDescription,
+                    ProcessorCount = Environment.ProcessorCount,
+                    HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
+                    Results = results
+                }, InstallationReadAttributionFixture.EvidenceJson)).ConfigureAwait(false);
+                TestContext.AddResultFile(report);
+            }
     }
 
     private static Activity? StartTrace(string name) => ReadSource.StartActivity(name, ActivityKind.Internal,
@@ -350,10 +350,10 @@ public sealed class InstallationVerificationReadTests
             (long)files.NumericTags["attribution.manifest.bytes"] + (long)journal.NumericTags["attribution.manifest.bytes"]);
         foreach (var stage in new[] { files, journal })
         {
-            AssertTag(stage, "parse.count", 2);
-            AssertTag(stage, "provenance.count", 2);
+            AssertTag(stage, "hash.count", 2);
+            Assert.AreEqual(2L, stage.NumericTags["attribution.cache_hits"]);
+            Assert.IsFalse(stage.NumericTags.ContainsKey("attribution.parse.count"));
             Assert.AreEqual(stage.NumericTags["attribution.manifest.bytes"], stage.NumericTags["attribution.read.bytes"]);
-            Assert.AreEqual(stage.NumericTags["attribution.manifest.bytes"], stage.NumericTags["attribution.parse.bytes"]);
             foreach (var leaf in stage.NumericTags.Keys.Where(key => key.EndsWith(".count", StringComparison.Ordinal) && key != "attribution.manifest.count"))
             {
                 var prefix = leaf[..^".count".Length];

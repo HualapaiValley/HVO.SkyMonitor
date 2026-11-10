@@ -20,6 +20,10 @@ internal interface IOwnerBootstrapClient
         bool allowQuarantinedReadiness = false);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
+    // Pre-mutation callers must compare the current running installation, not only read its owner state.
+    Task<string> ReadInstallationStateAsync(
+        string verificationToken, InstallationVerificationExpectation expectation, CancellationToken cancellationToken)
+        => VerifyInstallationAsync(verificationToken, expectation, cancellationToken);
     Task<string> VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,

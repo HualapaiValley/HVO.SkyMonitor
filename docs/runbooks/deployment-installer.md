@@ -2769,6 +2769,28 @@ an old-image response of about 35 seconds, beyond the former 15-second client
 limit; this CLI compatibility allowance does not fix or attribute the endpoint's
 underlying repeated work.
 
+Current agents reduce repeated full manifest parsing with an authenticated,
+bounded validation summary under the protected location-state directory. Every
+verification still reads and hashes current retained file and journal bytes and
+validates current configuration, protected history and owner readiness. A changed
+history or validator build, missing/corrupt summary, or new content requires full
+validation; incomplete writes and canceled scans cannot publish new proofs. The
+summary is disposable acceleration, not installation identity or a replacement
+for retained evidence. Retained I/O still grows with history; the measured 100k
+software envelope is recorded in [the validation report](../validation/issue-1041-bounded-verification.md).
+Invalid retained manifest JSON/schema now refuses verification, including corrupt
+JSON retained in quarantine that the earlier location scan ignored. Do not reset
+or delete evidence to bypass that refusal; preserve it for diagnosis.
+
+Upgrade and rollback compare the current installation's complete identity before
+image mutation; running backup compares it before pause/stop. Stopped backup stays
+offline, and plans perform no protected read. Old installers receive the faster
+endpoint from a new agent without a wire change. New installers retain the finite
+deadline against an old agent and cannot make that agent faster. Pre-mutation
+verification always runs on the currently running agent: a server-only change
+cannot unblock an already-slow old runtime's pre-upgrade verification. A fixed
+image must reach the installation while its running verifier can still finish.
+
 Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture
 workers; it does not depend on the camera capture worker reaching its loop. The

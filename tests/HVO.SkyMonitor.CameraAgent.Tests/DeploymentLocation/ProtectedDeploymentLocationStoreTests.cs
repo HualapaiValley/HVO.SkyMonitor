@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class ProtectedDeploymentLocationStoreTests
+public sealed partial class ProtectedDeploymentLocationStoreTests
 {
     private string _root = null!;
     private DataProtectionDeploymentLocationProtector _protector = null!;
@@ -570,7 +570,8 @@ public sealed class ProtectedDeploymentLocationStoreTests
         {
             Descriptor = manifest.Descriptor with
             {
-                Timing = manifest.Descriptor.Timing with { ExposureStartedUtc = captureTime },
+                Timing = new CaptureTimingDescriptor(captureTime.AddSeconds(-1), captureTime,
+                    captureTime.AddSeconds(1), captureTime.AddSeconds(2), captureTime.AddSeconds(3)),
                 Location = active.ToProvenance()
             }
         };

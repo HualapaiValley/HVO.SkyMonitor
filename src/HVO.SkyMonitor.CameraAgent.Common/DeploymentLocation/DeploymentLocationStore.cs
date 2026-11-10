@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -98,6 +99,8 @@ public sealed class ProtectedDeploymentLocationStore(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<ProtectedDeploymentLocationStore> _logger = logger;
     internal Action<string>? BeforeStateDirectorySyncForTest { get; set; }
+    internal Action? BeforeRetainedManifestValidationForTest { get; set; }
+    internal Action<string>? BeforeRetainedSummaryPublishForTest { get; set; }
     private DeploymentLocationHistory? _history;
     private ManualDeploymentLocationRecord? _manual;
     private DeploymentLocationSeed? _configurationSeed;
@@ -164,7 +167,7 @@ public sealed class ProtectedDeploymentLocationStore(
                 }
             }
             var historyExists = File.Exists(path);
-            if (!historyExists && (File.Exists(markerPath) || HasLocationBearingEvidence()))
+            if (!historyExists && (File.Exists(markerPath) || HasLocationBearingEvidence(cancellationToken)))
             {
                 throw new InvalidDataException(
                     "Protected deployment-location history is missing for existing capture evidence.");
@@ -178,9 +181,11 @@ public sealed class ProtectedDeploymentLocationStore(
                 ? await ReadMarkerAsync(markerPath, cancellationToken).ConfigureAwait(false)
                 : null;
             ValidateMarker(marker, history);
+            RetainedManifestValidationSummary? summary = null;
             if (history is not null)
             {
-                ValidateRetainedEvidence(history);
+                summary = await ReadRetainedSummaryAsync(path, history, cancellationToken).ConfigureAwait(false);
+                ValidateRetainedEvidence(history, summary, cancellationToken);
             }
             ReconciledLocation snapshot;
             var startupUtc = ToMilliseconds(_timeProvider.GetUtcNow());
@@ -215,7 +220,8 @@ public sealed class ProtectedDeploymentLocationStore(
             }
             if (history is null || !ReferenceEquals(snapshot.History, history))
             {
-                ValidateRetainedEvidence(snapshot.History);
+                summary = CreateRetainedSummary(snapshot.History);
+                ValidateRetainedEvidence(snapshot.History, summary, cancellationToken);
             }
             operation = history is null ? "initialize" : snapshot.Appended ? "change" : "load";
             if (history is null || !ReferenceEquals(snapshot.History, history))
@@ -231,6 +237,14 @@ public sealed class ProtectedDeploymentLocationStore(
                 manual = manual! with { SupersededAtUtc = ToMilliseconds(_timeProvider.GetUtcNow()) };
                 await WriteManualAsync(manualPath, manual, cancellationToken).ConfigureAwait(false);
                 DeploymentLocationLog.ManualOverrideSuperseded(_logger, configurationSeed.LocationId);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (summary!.Changed)
+            {
+                var summaryPath = Path.Combine(Path.GetDirectoryName(path)!, RetainedManifestValidationSummary.FileName);
+                var payload = _protector.Protect(summary.Serialize());
+                EnsureProtectionKeysDurable(summaryPath);
+                await WriteDurableAsync(summaryPath, payload, cancellationToken, retainedSummary: true).ConfigureAwait(false);
             }
             // Written before the history so any reader that observes the new history also observes the
             // manual state it was reconciled against.
@@ -813,7 +827,7 @@ public sealed class ProtectedDeploymentLocationStore(
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken)
+    private async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken, bool retainedSummary = false)
     {
         var directory = Path.GetDirectoryName(path)!;
         RawIngressFileStore.EnsureNoSymbolicLinks(directory, path);
@@ -834,6 +848,8 @@ public sealed class ProtectedDeploymentLocationStore(
                 CameraAgentFileSystem.FlushFile(stream);
             }
             RestrictFile(temporaryPath);
+            if (retainedSummary) BeforeRetainedSummaryPublishForTest?.Invoke(temporaryPath);
+            cancellationToken.ThrowIfCancellationRequested();
             CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, path, overwrite: true);
             RestrictFile(path);
             BeforeStateDirectorySyncForTest?.Invoke(directory);
@@ -1060,7 +1076,42 @@ public sealed class ProtectedDeploymentLocationStore(
         }
     }
 
-    private void ValidateRetainedEvidence(DeploymentLocationHistory history)
+    private static RetainedManifestValidationSummary CreateRetainedSummary(DeploymentLocationHistory history)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(history, SerializerOptions));
+        // Exact validator/runtime builds invalidate old proofs automatically, including contract changes.
+        hash.AppendData(typeof(ProtectedDeploymentLocationStore).Module.ModuleVersionId.ToByteArray());
+        hash.AppendData(typeof(CaptureContractJson).Module.ModuleVersionId.ToByteArray());
+        hash.AppendData(typeof(object).Module.ModuleVersionId.ToByteArray());
+        return new(hash.GetHashAndReset());
+    }
+
+    private async ValueTask<RetainedManifestValidationSummary> ReadRetainedSummaryAsync(
+        string historyPath, DeploymentLocationHistory history, CancellationToken cancellationToken)
+    {
+        var summary = CreateRetainedSummary(history);
+        var path = Path.Combine(Path.GetDirectoryName(historyPath)!, RetainedManifestValidationSummary.FileName);
+        if (!File.Exists(path)) return summary;
+        // A cache miss must not relax confinement, even for advisory state.
+        EnsurePhysicalStatePath(path);
+        try
+        {
+            using var stream = File.OpenRead(path);
+            if (stream.Length > RetainedManifestValidationSummary.MaximumPlaintextBytes + 4096) return summary;
+            var protectedBytes = new byte[checked((int)stream.Length)];
+            await stream.ReadExactlyAsync(protectedBytes, cancellationToken).ConfigureAwait(false);
+            _ = summary.TryLoad(_protector.Unprotect(protectedBytes));
+        }
+        catch (Exception exception) when (exception is CryptographicException or IOException or UnauthorizedAccessException)
+        {
+            // This is optional acceleration, never authority. Revalidate current evidence on any cache failure.
+        }
+        return summary;
+    }
+
+    private void ValidateRetainedEvidence(DeploymentLocationHistory history,
+        RetainedManifestValidationSummary summary, CancellationToken cancellationToken)
     {
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained");
         var root = Path.GetFullPath(_options.RawIngressRoot);
@@ -1083,6 +1134,7 @@ public sealed class ProtectedDeploymentLocationStore(
             using var retainedPaths = paths;
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 bool hasNext;
                 string? path;
                 using (attribution?.Measure(ReadStage.Enumeration))
@@ -1101,7 +1153,9 @@ public sealed class ProtectedDeploymentLocationStore(
                         manifestJson = File.ReadAllBytes(path!);
                         attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
                     }
-                    ValidateRetainedManifest(history, manifestJson, attribution);
+                    BeforeRetainedManifestValidationForTest?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ValidateRetainedManifest(history, manifestJson, summary, attribution);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -1110,20 +1164,33 @@ public sealed class ProtectedDeploymentLocationStore(
                 }
             }
         }
-        ValidateJournalEvidence(root, history);
+        ValidateJournalEvidence(root, history, summary, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static void ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
-        DeploymentLocationReadAttribution? attribution)
+        RetainedManifestValidationSummary summary, DeploymentLocationReadAttribution? attribution)
     {
         attribution?.AddManifest(manifestJson.LongLength);
-        ArtifactManifestV2? manifest;
-        using (attribution?.Measure(ReadStage.Parse))
-            manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest;
-        using var provenanceStage = attribution?.Measure(ReadStage.Provenance);
-        var provenance = manifest?.Descriptor.Location;
-        if (manifest is null || provenance is null)
+        RetainedManifestValidationSummary.Digest digest;
+        using (attribution?.Measure(ReadStage.Hash))
+            digest = RetainedManifestValidationSummary.Hash(manifestJson);
+        if (summary.Contains(digest))
         {
+            attribution?.AddCacheHit();
+            summary.Record(digest);
+            return;
+        }
+        ArtifactManifestV2 manifest;
+        attribution?.AddBytes(ReadStage.Parse, manifestJson.LongLength);
+        using (attribution?.Measure(ReadStage.Parse))
+            manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest
+                ?? throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
+        using var provenanceStage = attribution?.Measure(ReadStage.Provenance);
+        var provenance = manifest.Descriptor.Location;
+        if (provenance is null)
+        {
+            summary.Record(digest);
             return;
         }
         var snapshot = history.Snapshots.SingleOrDefault(item =>
@@ -1135,9 +1202,11 @@ public sealed class ProtectedDeploymentLocationStore(
             throw new InvalidDataException(
                 "Retained capture location provenance does not match protected deployment-location history.");
         }
+        summary.Record(digest);
     }
 
-    private static void ValidateJournalEvidence(string root, DeploymentLocationHistory history)
+    private void ValidateJournalEvidence(string root, DeploymentLocationHistory history,
+        RetainedManifestValidationSummary summary, CancellationToken cancellationToken)
     {
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-journal");
         using var attribution = DeploymentLocationReadAttribution.Create(activity);
@@ -1167,13 +1236,14 @@ public sealed class ProtectedDeploymentLocationStore(
             return;
         }
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT manifest_json FROM raw_captures WHERE CAST(manifest_json AS TEXT) LIKE '%\"location\"%';";
+        command.CommandText = "SELECT manifest_json FROM raw_captures;";
         Microsoft.Data.Sqlite.SqliteDataReader reader;
         using (attribution?.Measure(ReadStage.Query))
             reader = command.ExecuteReader();
         using var retainedReader = reader;
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool hasNext;
             byte[]? manifestJson;
             using (attribution?.Measure(ReadStage.Read))
@@ -1183,11 +1253,13 @@ public sealed class ProtectedDeploymentLocationStore(
                 if (manifestJson is not null) attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
             }
             if (!hasNext) break;
-            ValidateRetainedManifest(history, manifestJson!, attribution);
+            BeforeRetainedManifestValidationForTest?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            ValidateRetainedManifest(history, manifestJson!, summary, attribution);
         }
     }
 
-    private bool HasLocationBearingEvidence()
+    private bool HasLocationBearingEvidence(CancellationToken cancellationToken)
     {
         var root = Path.GetFullPath(_options.RawIngressRoot);
         if (!Directory.Exists(root))
@@ -1202,6 +1274,7 @@ public sealed class ProtectedDeploymentLocationStore(
         };
         foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
