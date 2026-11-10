@@ -64,3 +64,31 @@ checkpoint protocol, restore ordering, or new adoption requirement.
 
 Pending current-tip baseline and implementation. This is a design/work record,
 not a completeness or review verdict.
+
+### Source findings and scope decisions before product changes
+
+The current-tip 1k/10k baseline is running on disposable state. At 100,001,
+the fixture checksum helper (not the endpoint) exhausted the 384 MiB heap by
+materializing the whole SQLite file. Replace that helper with a 64 KiB streaming
+hash, preserving its exact checksum input; retain the failed run and rerun.
+
+Two original-source integrity gaps need explicit treatment rather than claims
+that the old code rejected every invalid state:
+
+- `ParseManifest(...).Document?.Manifest` silently ignores parse/schema failures.
+  Tighten this scan to reject invalid retained manifest JSON, including unsupported
+  schema. This can refuse an installation containing retained corrupt/quarantined
+  JSON that the old location scan ignored; it is stricter admission, not weaker
+  validation. Scan all journal manifests rather than a text LIKE filter that a
+  malformed/re-encoded location property can evade. Keep valid manifests without
+  location under their existing no-provenance-comparison rule.
+- Upgrade/rollback pre-mutation reads inspect owner state but compare the complete
+  identity only after mutation; running backup has no pre-mutation protected read.
+  Use the existing complete field comparator before image mutation, and before
+  running backup's pause/stop. Keep stopped backups offline and plans dry-run.
+  Add real scripted-transport mismatch/timeout/failure/cancellation tests for all
+  three paths. Preserve the existing budget and transport implementation.
+
+These changes are required by the assignment's explicit integrity/pre-mutation
+acceptance. They are called out for Kepler's HIGH reviews. No existing durable
+format is replaced, and no configuration snapshot/cache is introduced.

@@ -254,11 +254,15 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     internal async Task<string> HashRetainedInputsAsync()
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
         foreach (var path in Directory.EnumerateFiles(IngressRoot, "*", SearchOption.AllDirectories)
                      .Where(path => !path.EndsWith("-shm", StringComparison.Ordinal)).Order(StringComparer.Ordinal))
         {
             hash.AppendData(System.Text.Encoding.UTF8.GetBytes(Path.GetRelativePath(IngressRoot, path) + "\0"));
-            hash.AppendData(await File.ReadAllBytesAsync(path).ConfigureAwait(false));
+            using var stream = File.OpenRead(path);
+            int read;
+            while ((read = await stream.ReadAsync(buffer).ConfigureAwait(false)) != 0)
+                hash.AppendData(buffer.AsSpan(0, read));
         }
         return Convert.ToHexString(hash.GetHashAndReset());
     }
