@@ -17,6 +17,7 @@ internal static class UnitCoverageInputs
             throw new InvalidDataException("Development v1 inventory supports active src/ floor owners only; extend the DLL/PDB inventory before enforcing a tools/ floor.");
         }
 
+        var lineInventory = CoverageLineInventory.Load(repositoryRoot);
         var owners = floors.Select(static path => path.Split('/')[0]).ToHashSet(StringComparer.Ordinal);
         var reportsByHash = reports.GroupBy(Hash).ToDictionary(static group => group.Key, static group => new Queue<string>(group));
         var inventories = new Dictionary<string, Dictionary<string, SourceInventory>>(StringComparer.Ordinal);
@@ -90,7 +91,7 @@ internal static class UnitCoverageInputs
                 }
             }
 
-            ValidateReportSources(report, expected, repositoryRoot, floors);
+            ValidateReportSources(report, expected, repositoryRoot, floors, lineInventory);
         }
 
         var expectedProjects = Directory.GetDirectories(Path.Combine(repositoryRoot, "tests"))
@@ -111,7 +112,7 @@ internal static class UnitCoverageInputs
             .GroupBy(static entry => entry.Key).OrderBy(static group => group.Key, StringComparer.Ordinal))
         {
             var lines = source.SelectMany(static entry => entry.Value.SharedGeneratedLines).Distinct().Order();
-            Console.WriteLine($"PDB inventory bound for '{source.Key}': state-machine lines shared with other generated methods [{string.Join(", ", lines)}] rely on the declared emitted-line inventory; Coverlet can legitimately omit those overlapping points.");
+            Console.WriteLine($"PDB inventory bound for '{source.Key}': state-machine lines shared with other generated methods [{string.Join(", ", lines)}] use the pinned class/method line inventory; PDB-only overlapping points can be legitimately absent.");
         }
 
         Console.WriteLine($"Verified {seenProjects.Count} Unit report identities and complete assembly/source/class inventories and statement lines (ordinary and state-machine methods) of floored files against Release portable PDBs.");
@@ -226,9 +227,9 @@ internal static class UnitCoverageInputs
 
         // Coverlet can omit a source line shared by a state machine and a
         // separate generated lambda/local function (the two PDB records have
-        // ambiguous ownership). Keep those lines under the emitted-count check
-        // instead of falsely requiring every generated point. Derive the bound
-        // from this build's metadata, never from a file/line exception list.
+        // ambiguous ownership). Use the independent pinned emitted-line set
+        // there instead of falsely requiring every generated PDB point. The
+        // metadata boundary never exempts measured class/method records.
         var sharedGeneratedLines = new Dictionary<DocumentHandle, HashSet<int>>();
         foreach (var handle in reader.MethodDebugInformation)
         {
@@ -363,7 +364,7 @@ internal static class UnitCoverageInputs
         return sources;
     }
 
-    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, SourceInventory>> expected, string repositoryRoot, HashSet<string> floors)
+    private static void ValidateReportSources(string report, Dictionary<string, Dictionary<string, SourceInventory>> expected, string repositoryRoot, HashSet<string> floors, CoverageLineInventory lineInventory)
     {
         var document = XDocument.Load(report);
         // Coverlet declares an exact emitted line count even for generated
@@ -389,6 +390,7 @@ internal static class UnitCoverageInputs
         {
             var name = (string)package.Attribute("name")!;
             var observed = new Dictionary<string, SourceInventory>(StringComparer.Ordinal);
+            var observedMethods = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
             foreach (var entry in package.Descendants("class"))
             {
                 var filename = (string?)entry.Attribute("filename") ?? string.Empty;
@@ -398,6 +400,17 @@ internal static class UnitCoverageInputs
                 {
                     // A project-root source in Coverlet is sometimes just a basename.
                     relative = name + "/" + filename.Replace('\\', '/');
+                }
+
+                if (!observedMethods.TryGetValue(relative, out var methodLines))
+                {
+                    methodLines = [];
+                    observedMethods.Add(relative, methodLines);
+                }
+
+                foreach (var line in entry.Elements("methods").Elements("method").Elements("lines").Elements("line"))
+                {
+                    methodLines.Add((int)line.Attribute("number")!);
                 }
 
                 foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
@@ -435,6 +448,13 @@ internal static class UnitCoverageInputs
                         throw new InvalidDataException($"Report '{report}' is materially incomplete for floored file '{source}': missing {missingLines.Length} ordinary/state-machine statement lines from its Release DLL/PDB, including {string.Join(", ", missingLines.Take(12))}. Restore complete XPlat collection; omitted lines cannot be counted as covered.");
                     }
                 }
+            }
+
+            // Pin every canonical floor owned by this included package even if
+            // the PDB source inventory failed to discover that particular file.
+            foreach (var source in lineInventory.PathsForOwner(name))
+            {
+                lineInventory.Validate(report, source, observed.GetValueOrDefault(source)?.StatementLines ?? [], observedMethods.GetValueOrDefault(source) ?? []);
             }
         }
     }

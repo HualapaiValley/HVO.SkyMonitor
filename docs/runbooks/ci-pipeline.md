@@ -14,7 +14,9 @@ remains in Build. Both are intentionally absent from the short workflow.
 **Development v1 / Build and Unit** enforces the canonical risk-file line and
 branch floors from `scripts/coverage/baseline.json`, using the same pinned
 ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
-canonical gate. No threshold is copied into the workflow. Preflight also runs
+canonical gate. The inputs differ: v1 includes ProcessingRunner.Tests and four
+supplemental Unit projects, with no Integration slots; it does not reproduce the
+canonical slot set. No threshold is copied into the workflow. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
@@ -34,40 +36,48 @@ a malformed input, omit it and still exit zero. Legitimate classless reports fro
 projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
-PDBs, plus every ordinary compiled class in each executable source. A portable
-PDB must match its DLL's debug identifier before its inventory is trusted;
-inventories are cached by the associated DLL/PDB pair. Excluded methods' source
-sections also exclude synthesized lambdas/local functions within those sections.
-For floored files, each report must contain the full line span of each nonhidden
-sequence point in ordinary methods and in async/iterator state-machine methods
-linked to their kickoff method by the PDB (including iterator cleanup helpers).
-For state machines, lines also mapped to a separate generated lambda/local
-function are excluded from the independent PDB line set: Coverlet can omit those
-overlapping points even on current tip. This metadata-derived bound is printed
-with source paths and line numbers; it is not a file/line exception list. Removing
-unambiguous measured lines or
-multiline statement continuations fails before merging, even if their class
-survives and other reports cover the file. Method-level Cobertura records are
-redundant; the canonical measurement and inventory both use class-level lines.
-The report's declared `lines-valid` count must also equal its unique emitted
-source-line count, including generated methods and legitimate classless reports.
+PDBs, plus every ordinary compiled class in each executable source. Portable
+PDBs must match their DLL debug identifiers, and excluded method source sections
+also exclude nested generated code. PDB checks independently require ordinary
+and unambiguous async/iterator statement spans, including continuation lines.
 
-This remains a bounded completeness check: other generated methods (for example,
-lambdas/local functions without a state-machine kickoff link and generated
-accessors) are not required to contribute individual lines. Coverlet legitimately
-omits some generated points; this check does not infer their inventory from other
-reports. A removed line belonging only to those methods, or shared with a state machine,
-can escape independent PDB line-inventory detection only if the report's declared
-line count is also rewritten to conceal that deletion. Branch denominators are structurally
-validated rather than reconstructed from IL. Non-floored sources receive file
-and ordinary-class completeness checks only. TRX attachment checksums bind inputs
-to their copied attachments, not to authenticated collector output. These limits
-do not waive floors for observed data. Collector exclusions and other
-options are guarded against the inventory's supported canonical configuration;
-an unsupported setting change fails with an inventory-update remedy. A future
-active `tools/` floor also fails explicitly until its inventory is supported
-(the existing catalog-dependent ReleaseTool skip is unchanged). These checks run
-in Build and Unit's coverage stage and add no Preflight work.
+All 27 floored files additionally have a reviewed emitted-line inventory in
+`scripts/coverage/development-v1-lines.json`. It binds each source SHA-256, the
+pinned SDK/collector versions and canonical settings hash to the exact line set
+emitted by genuine complete Unit collection. Both class-level **and method-level**
+line sets must match that inventory in every contributing report. Deletion fails
+even when both representations, TRX copies and declared counts are changed
+consistently. This covers generated/overlapping lines that PDB checks cannot
+require universally: genuine `ProcessingRecipeExecutor.cs:44` is absent from the
+pinned emitted set, while measured line52 is required. No runtime report decides
+its own expected denominator, and no file floor or percentage changes.
+
+Method records contribute to the pinned ReportGenerator merge: it can restore a
+class-level line from a surviving method record. They are structurally validated
+before merging, and both representations must be complete independently. The
+shared evaluator measures the resulting merged class-level lines. Report-level
+`lines-valid` is also checked for consistency; it is not the independent source
+of completeness. Non-floored sources retain PDB source/ordinary-class checks.
+Declared hit and branch values are trusted collector assertions, not authenticated
+or reconstructed from IL; copied TRX attachment hashes bind identity only.
+
+A source, active floor, SDK, collector or settings change that invalidates the
+pinned inventory fails with a regeneration remedy. After reviewing a fresh,
+complete genuine Unit collection, explicitly regenerate and review the artifact:
+
+```bash
+./scripts/coverage:line-inventory "$evidence_root/unit" scripts/coverage/development-v1-lines.json
+git diff -- scripts/coverage/development-v1-lines.json
+```
+
+This is a maintenance command, never a CI step. CI must not regenerate its
+expected inventory from inputs it is about to validate. The generator rejects
+missing contributors and differing class/method or per-contributor line sets;
+review must establish genuine collection provenance and preserve all thresholds.
+Keep generated settings and original reports with that evidence. Unsupported
+collector exclusions/options and active `tools/` floors fail explicitly until the
+inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
+All new checks remain in Build and Unit's coverage stage, with no Preflight work.
 
 An enforced file missing from
 the reports, present without executable line data, or declaring branches without

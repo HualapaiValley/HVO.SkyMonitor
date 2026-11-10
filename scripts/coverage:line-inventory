@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$#" -ne 2 ]]; then
+  echo 'Usage: scripts/coverage:line-inventory <fresh-complete-unit-results> <output.json>' >&2
+  exit 2
+fi
+# Maintenance only: CI must never derive its expected inventory from the inputs
+# it is about to gate. Commit/review this artifact after genuine collection.
+python3 - "$repo_root" "$1" "$2" <<'PY'
+import hashlib
+import json
+from collections import defaultdict, deque
+import pathlib
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+root, results, output = map(pathlib.Path, sys.argv[1:])
+baseline = json.loads((root / "scripts/coverage/baseline.json").read_text())
+retired = set(json.loads((root / "scripts/coverage/policy.json").read_text())["retiredSourcePaths"])
+active = {}
+for path, floor in baseline["files"].items():
+    source = root / path if path.startswith("tools/") else root / "src" / path
+    if not source.is_file():
+        if path not in retired:
+            raise SystemExit(f"Missing non-retired source: {path}")
+        continue
+    if floor.get("developmentV1LocalOnlyReason"):
+        continue
+    if path.startswith("tools/"):
+        raise SystemExit(f"Extend the Unit inventory before adding tools floor {path}")
+    active[path] = source
+reports = sorted(results.glob("*/coverage.cobertura.xml"))
+projects = sum(json.loads(p.read_text())["Unit"] > 0 for p in (root / "tests").glob("*/test-categories.json"))
+if not reports or len(reports) != projects:
+    raise SystemExit(f"Expected {projects} fresh Unit reports, found {len(reports)}")
+# Bind originals to distinct Unit projects/attachments and their runtime deps;
+# a report that drops an entire contributing owner cannot seed a partial pin.
+ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+expected_projects = {p.parent.name for p in (root / "tests").glob("*/test-categories.json")
+                     if json.loads(p.read_text())["Unit"] > 0}
+by_hash = defaultdict(deque)
+for report in reports:
+    by_hash[hashlib.sha256(report.read_bytes()).hexdigest()].append(report)
+contributors = {}
+seen = set()
+for trx in results.glob("*.trx"):
+    document = ET.parse(trx)
+    codebases = {entry.get("codeBase") for entry in document.findall(".//t:TestMethod", ns)}
+    if len(codebases) != 1:
+        raise SystemExit(f"Ambiguous Unit identity in {trx}")
+    assembly = pathlib.Path(next(iter(codebases)))
+    project = assembly.stem
+    expected_assembly = root / "tests" / project / "bin/Release/net10.0" / (project + ".dll")
+    if project not in expected_projects or project in seen or assembly.resolve() != expected_assembly.resolve():
+        raise SystemExit(f"Unexpected/repeated Unit project in {trx}")
+    seen.add(project)
+    deployment = document.find(".//t:Deployment", ns).get("runDeploymentRoot")
+    attachments = document.findall(".//t:Collector[@collectorDisplayName='XPlat code coverage']//t:A", ns)
+    if len(attachments) != 1:
+        raise SystemExit(f"Expected one XPlat attachment in {trx}")
+    attachment = (results / deployment / "In" / attachments[0].get("href")).resolve()
+    if not attachment.is_relative_to(results.resolve()):
+        raise SystemExit(f"Attachment escapes result root in {trx}")
+    matches = by_hash[hashlib.sha256(attachment.read_bytes()).hexdigest()]
+    if not matches:
+        raise SystemExit(f"No matching original coverage report in {trx}")
+    report = matches.popleft()
+    deps = json.loads(assembly.with_suffix(".deps.json").read_text())
+    target = deps["targets"][deps["runtimeTarget"]["name"]]
+    owners = {pathlib.Path(asset).stem for library in target.values() for asset in library.get("runtime", {})}
+    contributors[report] = {path for path in active if path.split("/")[0] in owners}
+if seen != expected_projects or any(by_hash.values()):
+    raise SystemExit("Incomplete Unit/TRX/original-report identities; recollect the complete Unit selection")
+observations = {path: [] for path in active}
+for report in reports:
+    document = ET.parse(report)
+    if document.getroot().tag != "coverage" or document.find("packages") is None:
+        raise SystemExit(f"Not a Cobertura report: {report}")
+    sources = {}
+    package_owners = {id(entry): package.get("name", "") for package in document.findall(".//package")
+                      for entry in package.findall(".//class")}
+    for entry in document.findall(".//class"):
+        filename = entry.get("filename", "").replace("\\", "/")
+        matches = [path for path in active if filename.endswith(path)]
+        if not matches:
+            # Coverlet can use a basename for a project-root source.
+            candidate = package_owners[id(entry)] + "/" + filename
+            matches = [candidate] if candidate in active else []
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise SystemExit(f"Ambiguous floor source {filename} in {report}")
+        classes, methods = sources.setdefault(matches[0], (set(), set()))
+        classes.update(int(line.get("number")) for line in entry.findall("lines/line"))
+        methods.update(int(line.get("number")) for line in entry.findall("methods/method/lines/line"))
+    if set(sources) != contributors[report]:
+        raise SystemExit(f"Missing/unexpected contributing floor sources in {report}: expected {sorted(contributors[report])}, found {sorted(sources)}")
+    for path, (classes, methods) in sources.items():
+        if not classes or classes != methods:
+            raise SystemExit(f"Incomplete/different class and method line inventories for {path} in {report}")
+        observations[path].append(classes)
+files = {}
+for path, source in sorted(active.items()):
+    rows = observations[path]
+    if not rows or any(lines != rows[0] for lines in rows):
+        raise SystemExit(f"Missing or inconsistent contributing reports for {path}")
+    files[path] = {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(), "lines": sorted(rows[0])}
+collector = ET.parse(root / "Directory.Packages.props").find(".//PackageVersion[@Include='coverlet.collector']").get("Version")
+manifest = {"schemaVersion": 1, "sdkVersion": json.loads((root / "global.json").read_text())["sdk"]["version"],
+            "collectorVersion": collector, "settingsSha256": hashlib.sha256((root / "tests/coverage.runsettings").read_bytes()).hexdigest(), "files": files}
+text = json.dumps(manifest, indent=2)
+# Keep the reviewed machine inventory compact, with up to16 sorted lines/row.
+def compact(match):
+    numbers = re.findall(r"\d+", match.group(2))
+    rows = ["      " + ", ".join(numbers[i:i+16]) for i in range(0, len(numbers), 16)]
+    return match.group(1) + "\n" + ",\n".join(rows) + "\n    ]"
+text = re.sub(r'("lines": \[)\n((?:\s+\d+,?\n)+)\s*\]', compact, text)
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(text + "\n")
+print(f"Wrote {len(files)} source-bound line inventories from {len(reports)} reports. Review the artifact diff before committing; CI never regenerates it.")
+PY

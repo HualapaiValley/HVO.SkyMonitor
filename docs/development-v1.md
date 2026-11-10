@@ -208,6 +208,6 @@ It can be run on demand with `gh workflow run promote-main.yml`.
 
 ## Deployment
 
-Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, coverage aggregation, or production mutation.
+Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, full-suite aggregate coverage qualification, or production mutation.
 
 An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit publishes an integration pre-release for smoke testing; see [Integration Pre-releases](runbooks/prereleases.md).

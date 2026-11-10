@@ -194,7 +194,9 @@ with (source_dir / "CameraGeometry.cs").open("a") as source:
 (source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
 async_source = source_dir / "InventoryAsync.cs"
 async_source.write_text("namespace CoverageFixture; public static class InventoryAsync\n{\n    public static async System.Threading.Tasks.Task<int> ExecuteAsync(int value)\n    {\n        await System.Threading.Tasks.Task.CompletedTask;\n" +
-                        "".join("        value++;\n" for _ in range(175)) + "        return value;\n    }\n}\n")
+                        "".join("        value++;\n" for _ in range(46)) +
+                        "        System.Func<int> check = () => value;\n" +
+                        "".join("        value++;\n" for _ in range(128)) + "        return check();\n    }\n}\n")
 # Iterator source spans are also state-machine source, not an exempt generated
 # implementation. A multiline ordinary expression checks continuation lines.
 (source_dir / "InventoryIterator.cs").write_text("namespace CoverageFixture; public static class InventoryIterator\n{\n    public static System.Collections.Generic.IEnumerable<int> Values()\n    {\n        yield return 1;\n        yield return 2;\n    }\n    public static int Sum() =>\n        1 +\n        int.Parse(\"2\");\n}\n")
@@ -217,8 +219,10 @@ shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/covera
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
 shutil.copytree(root / "scripts/coverage", fixture_scripts / "coverage", ignore=shutil.ignore_patterns("bin", "obj"))
-for name in ("coverage:development-v1", "coverage:enforce"):
+for name in ("coverage:development-v1", "coverage:enforce", "coverage:line-inventory"):
     shutil.copy2(root / "scripts" / name, fixture_scripts / name)
+for name in ("global.json", "Directory.Packages.props"):
+    shutil.copy2(root / name, inventory_repo / name)
 fixture_baseline = copy.deepcopy(canonical)
 fixture_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
 for filename in ("InventoryAsync.cs", "InventoryIterator.cs"):
@@ -260,7 +264,15 @@ for name, filename, numbers in (("InventoryAsync/<ExecuteAsync>d__0", "Inventory
         ET.SubElement(lines, "line", number=str(number), hits="1", branch="false")
 
 
-def write_fixture(document):
+def write_fixture(document, sync_methods=True):
+    if sync_methods:
+        for entry in document.findall(".//class"):
+            old = entry.find("methods")
+            if old is not None:
+                entry.remove(old)
+            method = ET.SubElement(ET.SubElement(entry, "methods"), "method", name="Fixture", signature="()",
+                                   **{"line-rate": "1", "branch-rate": "1"})
+            method.append(copy.deepcopy(entry.find("lines")))
     document.set("lines-valid", str(len({(entry.get("filename"), line.get("number"))
                                        for entry in document.findall(".//class") for line in entry.findall("lines/line")})))
     ET.ElementTree(document).write(valid)
@@ -279,6 +291,15 @@ def wrapper_case(name, expected, *needles):
 
 
 write_fixture(composite)
+subprocess.run([str(fixture_scripts / "coverage:line-inventory"), str(results),
+                str(fixture_scripts / "coverage/development-v1-lines.json")], check=True)
+# The producer is a maintenance command, never part of the gate's CI child.
+assert "coverage:line-inventory" not in (root / ".github/workflows/development-v1.yml").read_text()
+real_lines = json.loads((root / "scripts/coverage/development-v1-lines.json").read_text())["files"]
+real_executor = real_lines["HVO.SkyMonitor.Processing/ProcessingRecipeExecutor.cs"]["lines"]
+assert 44 not in real_executor and 52 in real_executor
+cases += 1
+print("PASS reviewed inventory preserves genuine line44 omission and measured line52; CI cannot regenerate it")
 wrapper_case("complete wrapper accepts excluded-only lambda source and omitted generated points", 0, "Coverage gate passed.")
 # A declared collector inventory cannot survive deleted emitted records,
 # including records from otherwise exempt generated methods.
@@ -358,14 +379,67 @@ entry.find("lines").remove(entry.findall("lines/line")[-1])
 write_fixture(span_pruned)
 wrapper_case("ordinary multiline expression continuation cannot silently disappear", 1,
              "InventoryIterator.cs", "statement lines", "10")
+# ecf705af Sol repro: this async method's line52 is shared with a generated
+# captured lambda, so PDB-only inventory intentionally cannot require it.
+# The pinned denominator must reject its removal even with declared counts fixed.
+overlap_low = copy.deepcopy(composite)
+entry = next(entry for entry in overlap_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in entry.find("lines"):
+    if int(line.get("number")) in {11, 16, 18, 19, 20, 21, 28, 29, 52, 183}:
+        line.set("hits", "0")
+write_fixture(overlap_low)
+wrapper_case("overlap repro complete input really fails at94.54 percent", 1,
+             "InventoryAsync.cs", "line 94.54", "min 95.00")
+overlap_pruned = copy.deepcopy(overlap_low)
+entry = next(entry for entry in overlap_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "52"))
+write_fixture(overlap_pruned)
+wrapper_case("overlap pruning cannot turn94.54 into95.05 with a recomputed declared count", 1,
+             "InventoryAsync.cs", "class-level", "pinned emitted-line inventory", "52")
+method_pruned = copy.deepcopy(composite)
+write_fixture(method_pruned)
+entry = next(entry for entry in method_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+lines = entry.find("methods/method/lines")
+lines.remove(next(line for line in lines if line.get("number") == "52"))
+write_fixture(method_pruned, sync_methods=False)
+wrapper_case("method-only measured line omission also fails the pinned inventory", 1,
+             "InventoryAsync.cs", "method-level", "52")
+class_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in class_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "52"))
+write_fixture(class_pruned, sync_methods=False)
+wrapper_case("surviving method records cannot mask incomplete class records", 1,
+             "InventoryAsync.cs", "class-level", "52")
+malformed_method = copy.deepcopy(composite)
+malformed_method.find(".//methods/method/lines/line").set("hits", "invalid")
+write_fixture(malformed_method, sync_methods=False)
+wrapper_case("malformed method record fails structural validation before merge", 1,
+             "Coverage input validation failed")
+pinned_path = fixture_scripts / "coverage/development-v1-lines.json"
+pinned_bytes = pinned_path.read_bytes()
+pinned_missing = json.loads(pinned_bytes)
+del pinned_missing["files"][f"{assembly_name}/InventoryAsync.cs"]
+pinned_path.write_text(json.dumps(pinned_missing))
+write_fixture(composite)
+wrapper_case("removing an active floor from the pinned inventory cannot drop enforcement", 1,
+             "does not cover every active canonical floor", "InventoryAsync.cs")
+pinned_path.write_bytes(pinned_bytes)
+source_bytes = async_source.read_bytes()
+async_source.write_bytes(source_bytes + b"\n")
+write_fixture(composite)
+wrapper_case("a source edit makes the independent expected inventory stale", 1,
+             "InventoryAsync.cs", "source SHA-256 changed", "regenerate")
+async_source.write_bytes(source_bytes)
 # A valid unrelated PDB must never shrink the trusted inventory of this DLL.
 pdb_path = assembly_output / f"{assembly_name}.pdb"
 pdb_bytes = pdb_path.read_bytes()
 stale_output = scratch / "stale-pdb"
+source_before_stale_build = async_source.read_bytes()
 async_source.write_text(async_source.read_text().replace("        value++;\n", "", 1))
 result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(stale_output),
                          "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
 assert result.returncode == 0, result.stdout + result.stderr
+async_source.write_bytes(source_before_stale_build)
 pdb_path.write_bytes((stale_output / f"{assembly_name}.pdb").read_bytes())
 write_fixture(composite)
 wrapper_case("valid stale PDB is rejected before trusting its smaller inventory", 1,

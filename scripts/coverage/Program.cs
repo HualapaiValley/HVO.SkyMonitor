@@ -290,7 +290,15 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
     {
         _ = RequiredAttribute(entry, "name");
         var sourcePath = NormalizeSourcePath(RequiredAttribute(entry, "filename"));
-        foreach (var line in entry.Element("lines")?.Elements("line") ?? [])
+        // The pinned merger can recover class lines from method records, so
+        // raw-input validation must inspect both representations.
+        var lines = entry.Element("lines")?.Elements("line") ?? [];
+        if (allowEmpty)
+        {
+            lines = lines.Concat(entry.Elements("methods").Elements("method").Elements("lines").Elements("line"));
+        }
+
+        foreach (var line in lines)
         {
             var number = int.Parse(RequiredAttribute(line, "number"), CultureInfo.InvariantCulture);
             _ = ReadHits(line, developmentV1);
