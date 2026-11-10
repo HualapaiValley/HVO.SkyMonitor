@@ -1043,6 +1043,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             // Manifest reads still validate it and fail closed with the corrupt-evidence reason.
             var committedOutputCounts = manifestOnly ? ReadCommittedOutputCounts(frozenPlanJson) : [];
             var frozenInputCounts = manifestOnly ? ReadFrozenOutputInputCounts(frozenPlanJson) : [];
+            var legacyWindows = manifestOnly && rows.Any(row => !frozenInputCounts.ContainsKey(row.NodeId))
+                ? ReadLegacyManifestWindows(frozenPlanJson) : [];
             var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)
                 .ToDictionary(static plan => plan.NodeId, StringComparer.Ordinal);
             foreach (var row in rows)
@@ -1113,12 +1115,15 @@ internal sealed partial class SqliteCaptureProcessingStore
                     if (frozenInputCounts.TryGetValue(row.NodeId, out var originalInputs))
                         bindingsRetained = pinnedCount == originalInputs;
                     else
-                        // Older outputless windows have no surviving output lineage to prove
-                        // whether a cascading retention delete erased an original pin.
+                        // A full immutable window can prove legacy pins complete even without
+                        // output lineage. A shorter surviving set cannot distinguish a valid
+                        // short window from a cascading retention delete.
                         inputEvidenceIncomplete = outputs.Length == 0 &&
                             (pinnedCount > 0 || (row.HasWindow &&
                                 dependencies.Any(static dependency => dependency.Kind == ProcessingGraphDependencyKind.Artifact &&
-                                    !string.Equals(dependency.ProducerId, "$raw", StringComparison.OrdinalIgnoreCase)) && attempts.Count > 0));
+                                    !string.Equals(dependency.ProducerId, "$raw", StringComparison.OrdinalIgnoreCase)) && attempts.Count > 0)) &&
+                            !HasCompleteLegacyManifestWindow(legacyWindows.GetValueOrDefault(row.NodeId), inputs,
+                                execution.ExecutionClass, attempts.Count);
                     var completedInputs = await CompleteRunManifestInputsAsync(
                         connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
                     inputs = completedInputs.Inputs;

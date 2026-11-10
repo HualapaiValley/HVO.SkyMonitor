@@ -68,7 +68,11 @@ and updated atomically when window pins are frozen. This evidence lives in the e
 frozen execution JSON independently of cascading input-pin deletion. Even a node that produces
 no outputs must retain every frozen input; a missing historical row refuses the download with
 the missing-artifact reason before and after restart. An older outputless window without this
-proof refuses with the original frozen-input evidence incomplete reason. Current dependency
+proof remains downloadable when the retained pins fill its frozen maximum historical window with
+unique artifact identities and contiguous valid positions. A Live node must have at most one
+attempt; Replay uses the single window frozen at admission across attempts. A shorter surviving
+window or an ambiguous Live retry history refuses with the original frozen-input evidence
+incomplete reason. Current dependency
 inputs still use immutable output lineage; no schema or revision identity changes.
 
 Each optional count ledger is read and updated independently. Corruption in one
