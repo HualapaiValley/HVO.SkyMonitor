@@ -28,6 +28,19 @@ public sealed partial class InstallationVerificationReadTests
         {
             await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar: true).ConfigureAwait(false);
             var corpus = await fixture.SeedScaleAsync(sidecars, fanout).ConfigureAwait(false);
+            // Seed's schema initializer may leave a pooled writer with a mapped SHM.
+            // Close fixture pools and checkpoint data before comparing main-file pages.
+            SqliteConnection.ClearAllPools();
+            using (var checkpoint = new SqliteConnection($"Data Source={fixture.JournalPath};Mode=ReadWrite;Pooling=False"))
+            {
+                await checkpoint.OpenAsync().ConfigureAwait(false);
+                using var command = checkpoint.CreateCommand();
+                command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+                using var row = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                Assert.IsTrue(await row.ReadAsync().ConfigureAwait(false));
+                Assert.AreEqual(0L, row.GetInt64(0), "Only an idle disposable fixture may be checkpointed.");
+            }
+            corpus = corpus with { JournalBytes = new FileInfo(fixture.JournalPath).Length };
             var qualificationStart = Stopwatch.GetTimestamp();
 #if !HVO_BASELINE
             await fixture.QualifyLegacyScaleAsync().ConfigureAwait(false);
@@ -47,10 +60,12 @@ public sealed partial class InstallationVerificationReadTests
                 var residentPages = 0;
                 var evictedFiles = 0;
                 var evictionRetries = 0;
+                var coordinationFiles = 0;
                 // Only this marked, disposable fixture's metadata. No global drop_caches or live daemon/data.
                 Assert.IsTrue(Path.GetFileName(fixture.Host.Root).StartsWith("iv-", StringComparison.Ordinal));
                 foreach (var file in Directory.EnumerateFiles(fixture.IngressRoot, "*", SearchOption.AllDirectories))
                 {
+                    if (file.EndsWith("-shm", StringComparison.Ordinal)) { coordinationFiles++; continue; }
                     if (new FileInfo(file).Length == 0) continue;
                     var pages = CameraAgentArtifactColdReadTests.EvictAndCount(file);
                     for (var retry = 0; pages > 0 && retry < 5; retry++)
@@ -65,7 +80,7 @@ public sealed partial class InstallationVerificationReadTests
                 }
                 Assert.AreEqual(0, residentPages, "Eviction must prove zero resident file pages before the timed read.");
                 var read = await MeasureAsync("file-page-evicted", fixture, client, stages).ConfigureAwait(false);
-                evicted.Add(new { EvictedFiles = evictedFiles, EvictionRetries = evictionRetries, PreReadResidentPages = residentPages, Read = SafeMeasurement(read) });
+                evicted.Add(new { EvictedFiles = evictedFiles, EvictionRetries = evictionRetries, CoordinationFilesExcluded = coordinationFiles, PreReadResidentPages = residentPages, Read = SafeMeasurement(read) });
             }
             if (expectsIndex)
             {
@@ -123,7 +138,7 @@ public sealed partial class InstallationVerificationReadTests
                 Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 ProcessorCount = Environment.ProcessorCount,
                 HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
-                CacheDefinition = "File-scoped fsync + POSIX_FADV_DONTNEED and mincore=0 for every fixture ingress file before each evicted sample; metadata/controller caches and full host cold start uncontrolled",
+                CacheDefinition = "Idle disposable journal WAL checkpointed/truncated after construction; fsync + POSIX_FADV_DONTNEED and mincore=0 for retained data/main DB/checkpoint files before each evicted sample; transient SQLite SHM coordination files excluded; metadata/controller caches and full host cold start uncontrolled",
                 Cases = cases
             }, InstallationReadAttributionFixture.EvidenceJson)).ConfigureAwait(false);
             TestContext.AddResultFile(path);

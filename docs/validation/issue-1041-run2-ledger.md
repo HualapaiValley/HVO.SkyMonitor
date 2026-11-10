@@ -198,6 +198,20 @@ than silently trusting old-writer changes.
 
 ## Measurements and candidate gates
 
+Cache-evicted means file-scoped `fsync` + `POSIX_FADV_DONTNEED`, followed by
+`mincore == 0` for each retained data/main-journal/checkpoint file. Construction
+closes fixture SQLite pools and checkpoints/truncates the idle raw journal WAL;
+transient SQLite SHM coordination pages are excluded. Residual data pages get
+at most five short file-scoped retries, then fail the experiment. No global
+`drop_caches`, live service, image payload or production storage is involved.
+Directory/controller caches and full-machine cold start are not controlled.
+Three preliminary baseline attempts failed this precondition: one repeated an
+older harness after a concurrent formatter writeback; the diagnostic attempt
+identified 240 pinned `.db-shm` coordination pages. These attempts contribute no
+baseline performance result. The corrected fixture boundary is applied to both
+baseline and candidate. Full qualification and five prepared/durable auxiliary
+publications are recorded separately from endpoint timing.
+
 Pending final measurements and immutable candidate. Historical run-1/reviewer
 numbers are not represented as results for this implementation. Raw local logs
 and disposable fixtures stay ignored under `TestResults/issue-1041-run2`.
