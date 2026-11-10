@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Hosting;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,7 +10,6 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,7 +20,8 @@ public sealed class FileCameraAgentConfigurationLoader(
     IOptions<CameraAgentHostOptions> options,
     ILogger<FileCameraAgentConfigurationLoader> logger,
     IDeploymentLocationStore? deploymentLocationStore = null,
-    ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null) : ICameraAgentConfigurationLoader
+    ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null,
+    IHostApplicationLifetime? hostLifetime = null) : ICameraAgentConfigurationLoader
 {
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
@@ -46,7 +48,43 @@ public sealed class FileCameraAgentConfigurationLoader(
     private readonly ILogger<FileCameraAgentConfigurationLoader> _logger = logger;
     private readonly IDeploymentLocationStore? _deploymentLocationStore = deploymentLocationStore;
 
+    private readonly object _refreshSync = new();
+    private Task? _refresh;
+    private DateTimeOffset _nextRefreshUtc;
+
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
+        => (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken).ConfigureAwait(false)).Configuration;
+
+    public async Task<CameraModuleConfig> LoadForInstallationVerificationAsync(CancellationToken cancellationToken)
+        => (await LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false)).Configuration;
+
+    public async Task<InstallationConfigurationSnapshot> LoadInstallationSnapshotAsync(CancellationToken cancellationToken)
+    {
+        try { return await LoadCoreAsync(strictRetainedValidation: true, cancellationToken).ConfigureAwait(false); }
+        catch (InstallationVerificationPendingException exception)
+        {
+            if (exception.RequiresScrub && hostLifetime is not null) QueueFullScrub(hostLifetime.ApplicationStopping);
+            throw;
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Independent revalidation observes all failures; the protected read remains refused and no exception/input details are logged.")]
+    private void QueueFullScrub(CancellationToken stoppingToken)
+    {
+        lock (_refreshSync)
+        {
+            if (_refresh is { IsCompleted: false } || DateTimeOffset.UtcNow < _nextRefreshUtc) return;
+            _nextRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(30);
+            _refresh = Task.Run(async () =>
+            {
+                try { _ = await LoadAsync(stoppingToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+                catch (Exception) { DeploymentLocationLog.RetainedIntegrityUnqualified(_logger); }
+            }, CancellationToken.None);
+        }
+    }
+
+    private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken)
     {
         using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
@@ -56,12 +94,15 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new FileNotFoundException("Camera agent configuration file was not found.", path);
         }
 
-        using var stream = File.OpenRead(path);
+        var snapshotBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        var snapshotDigest = System.Security.Cryptography.SHA256.HashData(snapshotBytes);
         CameraModuleDocument? document;
+        string configurationSha256;
         using (ActivitySource.StartActivity("configuration.deserialize"))
         {
-            document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
-                .ConfigureAwait(false);
+            using var snapshot = JsonDocument.Parse(snapshotBytes);
+            configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(snapshot.RootElement);
+            document = snapshot.RootElement.Deserialize<CameraModuleDocument>(SerializerOptions);
         }
 
         if (document is null)
@@ -132,7 +173,9 @@ public sealed class FileCameraAgentConfigurationLoader(
         var validatedSchedule = ValidateConfigCore(config);
         if (_deploymentLocationStore is not null)
         {
-            location = await _deploymentLocationStore.InitializeAsync(locationSeed, cancellationToken).ConfigureAwait(false);
+            location = await _deploymentLocationStore.LoadCurrentAsync(locationSeed, strictRetainedValidation,
+                () => File.Exists(path) && System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(snapshotDigest),
+                cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };
             if (config.Schedule is not null)
             {
@@ -140,7 +183,7 @@ public sealed class FileCameraAgentConfigurationLoader(
             }
         }
         _logger.ConfigurationLoaded(path);
-        return config;
+        return new InstallationConfigurationSnapshot(config, configurationSha256);
     }
 
     internal static void ValidateConfig(CameraModuleConfig config)

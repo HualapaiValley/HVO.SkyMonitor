@@ -406,6 +406,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             repeatedRestart.ResolveSourceKind(repeatedRestart.Active!));
         await repeatedRestart.StageAsync(repeatedRestart.Candidate, CancellationToken.None).ConfigureAwait(false);
         _timeProvider.UtcNow = Now.AddSeconds(12);
+        repeatedRestart.Dispose();
         using var classificationRestart = CreateStore();
         var classificationActive = await classificationRestart.InitializeAsync(
             sourceKindCorrection, CancellationToken.None).ConfigureAwait(false);

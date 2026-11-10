@@ -2769,18 +2769,58 @@ an old-image response of about 35 seconds, beyond the former 15-second client
 limit; this CLI compatibility allowance does not fix or attribute the endpoint's
 underlying repeated work.
 
-Current agents reduce repeated full manifest parsing with an authenticated,
-bounded validation summary under the protected location-state directory. Every
-verification still reads and hashes current retained file and journal bytes and
-validates current configuration, protected history and owner readiness. A changed
-history or validator build, missing/corrupt summary, or new content requires full
-validation; incomplete writes and canceled scans cannot publish new proofs. The
-summary is disposable acceleration, not installation identity or a replacement
-for retained evidence. Retained I/O still grows with history; the measured 100k
-software envelope is recorded in [the validation report](../validation/issue-1041-bounded-verification.md).
-Invalid retained manifest JSON/schema now refuses verification, including corrupt
-JSON retained in quarantine that the earlier location scan ignored. Do not reset
-or delete evidence to bypass that refusal; preserve it for diagnosis.
+Current agents maintain an authenticated retained-integrity ledger during managed
+publication, retention, reconciliation/quarantine and raw-journal changes. A
+qualified protected read validates fresh current configuration, schedule,
+protected location/history/manual state and owner readiness, plus a small
+protected checkpoint. It does not traverse retained capture history. The
+checkpoint binds the current process, validator/runtime/history and ledger
+generation; it is never immutable installer identity.
+
+**Out-of-band tampering is detected at the next full scrub**, an explicit policy
+approved by Roy for #1041. Full scrubs authenticate the expected ledger and
+validate all current retained JSON/journal metadata at startup, after dirty state,
+and every 24 hours. Protected reads independently expire qualification after
+24 hours. Changes to managed evidence are checked at publication; arbitrary
+external edits can precede a successful protected read until the scrub detects
+them. Schema, corruption and location-provenance checks remain in the full scrub.
+The [implementation report](../validation/issue-1041-run2-ledger.md) describes
+this boundary, writer inventory and local scale/recovery evidence.
+
+Unqualified, expired or busy verification returns sanitized HTTP 503 and
+`Retry-After: 1`, with no successful installation identity. It coalesces a
+host-owned full revalidation; a canceled caller does not cancel that work. The
+installer's protected read still makes one finite request and refuses mutation
+on failure. Retry the lifecycle command after revalidation completes; do not
+increase the timeout or bypass identity comparisons. Full scrubs remain linear
+background/startup work and may temporarily refuse verification.
+
+Every restart, crash, restore or rollback requires a full scrub before a new
+process can trust the checkpoint. Pending declared writes are validated against
+their intended result. Incomplete restores, unexplained file/ledger drift and
+damaged authoritative state refuse verification. Restore paired retained state
+and ledger from a known-good backup or repair through an explicitly authorized
+procedure; never delete the ledger/evidence to force adoption. An older agent
+cannot maintain this ledger when it writes after rollback, so a later new agent
+will detect those unexplained changes and refuse qualification.
+
+The separate optional parse index has bounded batches/memory and no fixed
+proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary
+JSON cannot become a frame-manifest proof. Missing/corrupt proofs are cache
+misses. Optional index I/O failures log a sanitized warning and continue without
+acceleration; they do not prevent startup or leave in-memory location behind
+successfully durable authority. An incomplete index never certifies the corpus.
+
+Startup tolerates malformed/schema-invalid sidecars as the baseline did, so raw
+reconciliation and the authenticated quarantine/retry UI can run. It continues
+to reject contradictory valid location provenance and invalid protected authority.
+Strict installation verification still refuses invalid current retained JSON,
+including quarantine contents. Preserve evidence: use the recovery UI to inspect
+audited state and existing authorized repair/restore workflows; never reset,
+delete retained evidence, or edit protected history to force verification through.
+If the bytes cannot be repaired through an authorized workflow, retain the
+refusal and seek an explicit disposition decision from Kepler/Roy. Starting the
+host/recovery UI is not proof that protected lifecycle verification will pass.
 
 Upgrade and rollback compare the current installation's complete identity before
 image mutation; running backup compares it before pause/stop. Stopped backup stays

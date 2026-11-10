@@ -252,7 +252,7 @@ internal sealed class ProjectedSceneStagingStore :
                 }
                 try
                 {
-                    File.Move(temporary, path);
+                    RetainedFileMutations.Move(temporary, path);
                     published = true;
                 }
                 catch (IOException) when (File.Exists(path))
@@ -264,7 +264,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException(
                             "Projected-scene stage conflicts with existing capture geometry.");
                     }
-                    File.Delete(temporary);
+                    RetainedFileMutations.Delete(temporary);
                 }
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }
@@ -350,7 +350,7 @@ internal sealed class ProjectedSceneStagingStore :
                         // Non-Linux platforms retain strict reparse-point checks, but cannot make check/open atomic.
                         EnsureAncestorChainHasNoLinks(Path.GetDirectoryName(path)!);
                         EnsurePhysicalFile(path);
-                        File.Delete(path);
+                        RetainedFileMutations.Delete(path);
                         RawIngressFileStore.SyncDirectory(_root);
                     }
                 }
@@ -413,7 +413,7 @@ internal sealed class ProjectedSceneStagingStore :
             EnsurePhysicalFile(activePath);
             try
             {
-                File.Move(activePath, completedPath);
+                RetainedFileMutations.Move(activePath, completedPath);
             }
             catch (IOException) when (File.Exists(completedPath))
             {
@@ -422,7 +422,7 @@ internal sealed class ProjectedSceneStagingStore :
                 var completedBytes = await ReadBoundedFileAsync(completedPath, cancellationToken).ConfigureAwait(false);
                 if (activeBytes is null || completedBytes is null || !activeBytes.AsSpan().SequenceEqual(completedBytes))
                     throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
-                File.Delete(activePath);
+                RetainedFileMutations.Delete(activePath);
             }
             RawIngressFileStore.SyncDirectory(_root);
         }
@@ -453,7 +453,7 @@ internal sealed class ProjectedSceneStagingStore :
             EnsureAncestorChainHasNoLinks(_root);
             if (!File.Exists(path)) return;
             EnsurePhysicalFile(path);
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             RawIngressFileStore.SyncDirectory(_root);
         }
         finally
@@ -597,7 +597,7 @@ internal sealed class ProjectedSceneStagingStore :
         {
             File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(value, SerializerOptions));
             RawIngressFileStore.SyncFile(_durableRoot, temporary);
-            File.Move(temporary, _cursorPath, overwrite: true);
+            RetainedFileMutations.Move(temporary, _cursorPath, overwrite: true);
             RawIngressFileStore.SyncDirectory(directory);
         }
         finally
@@ -612,7 +612,7 @@ internal sealed class ProjectedSceneStagingStore :
     {
         try
         {
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -760,7 +760,7 @@ internal sealed class ProjectedSceneStagingStore :
         var path = Path.Combine(_root, name);
         EnsureAncestorChainHasNoLinks(Path.GetDirectoryName(path)!);
         EnsurePhysicalFile(path);
-        File.Delete(path);
+        RetainedFileMutations.Delete(path);
         RawIngressFileStore.SyncDirectory(_root);
     }
 

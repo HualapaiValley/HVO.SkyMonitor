@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Protected installation verification reuses authenticated validation proofs while checking current retained bytes, reducing repeated manifest parsing as capture history grows. Invalid retained manifest schemas fail closed, and upgrade, rollback and running backup compare installation identity before mutation. #1041
+- Protected installation verification uses a writer-maintained integrity checkpoint instead of rescanning retained history. Full scrubs run at startup/recovery and daily; out-of-band tampering is detected by the next scrub. Dirty state refuses lifecycle verification. Torn/quarantined sidecars remain available to recovery tools, and optional parse-cache failures do not prevent startup. #1041
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 

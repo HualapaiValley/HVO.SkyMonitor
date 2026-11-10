@@ -1,4 +1,13 @@
-# #1041 correction design — decision required
+# #1041 correction design — Option A approved
+
+Roy approved Option A at 2:04 PM PST / 22:04 UTC on Nov 10, 2026, widget
+t356s2122, relayed by Kepler in this coding thread. Only out-of-band retained-file
+tamper detection moves to the next full scrub. The writer-maintained ledger,
+including all writer/recovery coverage, is now required implementation work.
+The initial decision note below is retained as the record Roy approved. Its
+pre-approval/pending wording is historical and superseded by this paragraph and
+the implementation refinement. Current behavior/evidence is recorded in
+[the run-2 ledger report](issue-1041-run2-ledger.md).
 
 2026-11-10, correction to reviewed head `c4069b8c`. Sol and Opus returned
 INCOMPLETE/FINDINGS. Their supplied results supersede the earlier owner
@@ -80,3 +89,46 @@ classifier-selected affected gates, canonical coverage and all four CI guards.
 Handoff will retain HIGH-1 as unresolved pending Roy's integrity-policy decision;
 these safe corrections do not claim capture-count-independent verification.
 Kepler owns further HIGH reviews and PR lifecycle. Refs #1041.
+
+
+## Approved implementation refinement (before ledger code)
+
+Use an authenticated expected-entry ledger and a small protected checkpoint.
+The checkpoint binds a fresh process epoch, exact validator/runtime and current
+protected-history identity, mutation generation, count and authenticated set commitment.
+**A new process never trusts a persisted checkpoint without a full scrub.** This
+conservatively covers crash, rollback and offline restore, even if a backup copied
+an interrupted ledger. The independent parse index remains optional acceleration.
+
+Managed file operations use root-scoped mutation guards before publication,
+replacement, deletion, tree move/quarantine and retention; raw journal insertion/
+recovery and schema migration have matching guards. Persist authenticated pending
+keys/prefixes before changing evidence. On completion, validate affected current
+bytes and atomically update expected entries and the checkpoint. Unknown/failed
+updates leave verification unqualified. Only changed files/rows are processed;
+no capture-count scan is hidden in a publication or protected-read fast path.
+
+Full scrubs validate current file/journal bytes, schema/provenance and the
+expected-entry ledger; unauthorized drift is detected. Authenticated incomplete
+writer intents are recovered by full validation. A scrub records observed update
+generations and merges/revalidates concurrent managed changes before committing,
+with only short per-entry/finalization mutation barriers. No half-scrub is a
+checkpoint. Cancellation retains individually completed parse proofs but cannot
+qualify integrity state. Protected reads refuse unqualified state promptly and
+coalesce independent revalidation work, so caller timeouts do not restart it.
+
+Scrubs run at startup before trusting the new process, after dirty/unknown state,
+crash/rollback/restore, and every 24 hours while running. The periodic job and
+recovery job are cancelable on host shutdown. A periodic scrub's failure keeps
+verification unqualified; the recovery UI/startup tolerance is preserved. A
+fresh process may adopt a missing/incompatible ledger only by complete original
+contract/history verification, never by trusting cached metadata. Authenticated
+expected digests distinguish drift from registered managed updates.
+
+Current configuration, owner readiness, rig/schedule/catalog comparisons and
+protected history remain fresh on every protected read. Background revalidation
+requires a config-publication freshness check, and the protected response uses
+the same JSON snapshot as the loader. This deliberately addresses the previously
+excluded config-file reopen race, because asynchronous requalification must not
+freeze a stale configuration as installer identity. No other integrity or
+lifecycle guarantee is relaxed.

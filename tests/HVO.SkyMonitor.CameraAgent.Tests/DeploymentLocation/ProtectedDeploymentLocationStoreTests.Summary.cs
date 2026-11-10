@@ -5,33 +5,30 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Data.Sqlite;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 
 public sealed partial class ProtectedDeploymentLocationStoreTests
 {
-    private string SummaryPath => Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedManifestValidationSummary.FileName);
+    private string SummaryPath => Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedManifestValidationIndex.FileName);
 
     [TestMethod]
-    public async Task SummaryReusesOnlyCurrentContentAcrossRestartAndRetiresDeletedProofs()
+    public async Task IndexReusesOnlyCurrentContentAcrossRestartAndInspectsReplacementBytes()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         var (path, json) = await WriteSummaryCaptureAsync(active, journal: true).ConfigureAwait(false);
         Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
-        var summary = await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false);
         Assert.AreEqual((0L, 2L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        store.Dispose();
         using var restarted = CreateStore();
         Assert.AreEqual((0L, 2L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
-        CollectionAssert.AreEqual(summary, await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false));
-        // Whitespace changes length/content without changing semantics: current bytes require a new proof.
-        await File.WriteAllBytesAsync(path, [.. json, (byte)' ']).ConfigureAwait(false);
+        await RetainedFileMutations.WriteAllBytesAsync(path, [.. json, (byte)' ']).ConfigureAwait(false);
         Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
-        File.Delete(path);
+        RetainedFileMutations.Delete(path);
         Assert.AreEqual((0L, 1L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
-        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false));
-        Assert.AreEqual(44 + 32, plaintext.Length, "Only the remaining journal proof is retained.");
     }
 
     [TestMethod]
@@ -40,34 +37,44 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow("tampered")]
     [DataRow("schema")]
     [DataRow("identity")]
+    [DataRow("kind")]
     [DataRow("oversized")]
-    public async Task AdvisorySummaryDamageRebuildsAndCannotHideFreshCorruption(string fault)
+    public async Task AdvisoryIndexDamageCannotHideFreshCorruption(string fault)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         var (path, json) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var protectedBytes = await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false);
-        var plaintext = _protector.Unprotect(protectedBytes);
-        switch (fault)
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        if (fault == "missing") File.Delete(SummaryPath);
+        else if (fault == "truncated") await File.WriteAllBytesAsync(SummaryPath, [1, 2, 3]).ConfigureAwait(false);
+        else
         {
-            case "missing": File.Delete(SummaryPath); break;
-            case "truncated": await File.WriteAllBytesAsync(SummaryPath, protectedBytes[..10]).ConfigureAwait(false); break;
-            case "tampered": protectedBytes[^1] ^= 1; await File.WriteAllBytesAsync(SummaryPath, protectedBytes).ConfigureAwait(false); break;
-            case "schema": plaintext[0] ^= 1; await File.WriteAllBytesAsync(SummaryPath, _protector.Protect(plaintext)).ConfigureAwait(false); break;
-            case "identity": plaintext[8] ^= 1; await File.WriteAllBytesAsync(SummaryPath, _protector.Protect(plaintext)).ConfigureAwait(false); break;
-            case "oversized":
-                using (var stream = File.OpenWrite(SummaryPath)) stream.SetLength(RetainedManifestValidationSummary.MaximumPlaintextBytes + 4097);
-                break;
+            using var connection = new SqliteConnection($"Data Source={SummaryPath};Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT proof FROM proofs LIMIT 1;";
+            var protectedBytes = (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+            if (fault == "tampered") protectedBytes[^1] ^= 1;
+            else if (fault == "oversized") protectedBytes = new byte[65_536];
+            else
+            {
+                var plaintext = _protector.Unprotect(protectedBytes);
+                plaintext[fault == "schema" ? 0 : fault == "identity" ? 8 : 72] ^= 0x40;
+                protectedBytes = _protector.Protect(plaintext);
+            }
+            command.CommandText = "UPDATE proofs SET proof=$bytes;";
+            command.Parameters.AddWithValue("$bytes", protectedBytes);
+            _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
+        store.Dispose();
         using var restarted = CreateStore();
         Assert.AreEqual((1L, 0L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
         var corrupted = JsonNode.Parse(json)!;
         corrupted["descriptor"]!["location"]!["version"] = 999;
         await File.WriteAllTextAsync(path, corrupted.ToJsonString()).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-            await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -77,14 +84,13 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow(true, "schema")]
     [DataRow(true, "json")]
     [DataRow(true, "contract")]
-    public async Task WarmSummaryRejectsInvalidCurrentManifestInEitherSource(bool journal, string fault)
+    public async Task WarmIndexRejectsInvalidCurrentManifestInEitherSource(bool journal, string fault)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         var (path, json) = await WriteSummaryCaptureAsync(active, journal).ConfigureAwait(false);
-        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var before = await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false);
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         var node = JsonNode.Parse(json)!;
         if (fault == "schema") node["schemaVersion"] = "unsupported";
         if (fault == "contract") node["descriptor"]!["capture"]!["captureSequence"] = -1;
@@ -100,71 +106,107 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         }
         else await File.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-            await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false));
+            await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task MidScanCancellationPublishesNoProofAndRestartRevalidates(bool journal)
+    public async Task MidScanCancellationPersistsOnlyCompletedProofsAndStillReadsCurrentBytes(bool journal)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var (path, _) = await WriteSummaryCaptureAsync(active, journal).ConfigureAwait(false);
+        var (path, json) = await WriteSummaryCaptureAsync(active, journal).ConfigureAwait(false);
         if (journal)
         {
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
+            using var journalMutation = RetainedIntegrityLedger.BeginJournal(Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), "2", json);
             using var connection = new SqliteConnection($"Data Source={Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db")};Pooling=False");
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = "INSERT INTO raw_captures SELECT manifest_json FROM raw_captures;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        else File.Copy(path, path + ".second.json");
+        else RetainedFileMutations.Copy(path, path + ".second.json");
         using var cancellation = new CancellationTokenSource();
         var inspected = 0;
-        store.BeforeRetainedManifestValidationForTest = () =>
-        {
-            if (++inspected == 2) cancellation.Cancel();
-        };
+        store.BeforeRetainedManifestValidationForTest = () => { if (++inspected == 2) cancellation.Cancel(); };
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await store.InitializeAsync(seed, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.IsFalse(File.Exists(SummaryPath));
+            await store.FullVerifyAsync(seed, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+        store.Dispose();
         using var restarted = CreateStore();
-        Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
+        Assert.AreEqual((0L, 2L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
+        // Preserved length and timestamp must not make the saved prefix authoritative.
+        if (!journal)
+        {
+            var timestamp = File.GetLastWriteTimeUtc(path);
+            var text = Encoding.UTF8.GetString(json);
+            var corrupt = text.Replace("\"version\":1", "\"version\":9", StringComparison.Ordinal);
+            Assert.AreNotEqual(text, corrupt);
+            Assert.AreEqual(text.Length, corrupt.Length);
+            await File.WriteAllTextAsync(path, corrupt).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(path, timestamp);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task SummaryPublicationFailureAndAbandonedTemporaryFileRecoverWithoutAuthorityChange(bool cancel)
+    public async Task OptionalIndexWriteFailureKeepsDurableAndInMemoryLocationConsistent(bool change)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-        using var cancellation = new CancellationTokenSource();
-        store.BeforeRetainedSummaryPublishForTest = _ =>
-        {
-            if (cancel) cancellation.Cancel();
-            else throw new IOException("Injected pre-publication failure.");
-        };
-        if (cancel)
-            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-                await store.InitializeAsync(seed, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
-        else
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
-                await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.IsFalse(File.Exists(SummaryPath));
-        Assert.AreEqual(active, store.Active);
-        // A process killed before rename can leave a partial temporary file; it is never loaded as a proof.
-        var abandoned = SummaryPath + ".interrupted.tmp";
-        await File.WriteAllBytesAsync(abandoned, [1, 2, 3]).ConfigureAwait(false);
+        store.BeforeRetainedProofCommitForTest = _ => throw new IOException("Injected cache ENOSPC.", 28);
+        _timeProvider.UtcNow = Now.AddMinutes(1);
+        var next = change ? seed with { Coordinates = seed.Coordinates with { LatitudeDegrees = 36 } } : seed;
+        var loaded = await store.InitializeAsync(next, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(change ? 2L : 1L, loaded.Version);
+        Assert.AreEqual(loaded, store.Active);
+        store.Dispose();
         using var restarted = CreateStore();
-        Assert.AreEqual((1L, 0L), await ReadWithParseCountsAsync(restarted, seed).ConfigureAwait(false));
-        Assert.AreEqual(active, restarted.Active);
+        Assert.AreEqual(loaded, await restarted.InitializeAsync(next, CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual((0L, 1L), await ReadWithParseCountsAsync(restarted, next).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("quarantine/torn.json", "{")]
+    [DataRow("quarantine/invalid-v2.json", "{\"schemaVersion\":\"v2\"}")]
+    [DataRow("frames/2026/11/10/Raw/torn.json", "{")]
+    public async Task StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem(string relative, string json)
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var path = Path.Combine(_options.Value.RawIngressRoot, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, json).ConfigureAwait(false);
+        store.Dispose();
+        using var restarted = CreateStore();
+        Assert.AreEqual(active, await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(json, await File.ReadAllTextAsync(path).ConfigureAwait(false), "Recovery must not delete evidence.");
+    }
+
+    [TestMethod]
+    public async Task OrphanCleanupIsBoundedAndNeverDeletesEvidence()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (path, _) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        var directory = Path.GetDirectoryName(SummaryPath)!;
+        for (var i = 0; i < 12; i++) await File.WriteAllTextAsync(Path.Combine(directory, $".retained-validation.v1.protected.{i}.tmp"), "orphan").ConfigureAwait(false);
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(4, Directory.EnumerateFiles(directory, ".retained-validation.v1.protected.*.tmp").Count());
+        Assert.IsTrue(File.Exists(path));
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0, Directory.EnumerateFiles(directory, ".retained-validation.v1.protected.*.tmp").Count());
     }
 
     [TestMethod]
@@ -173,34 +215,16 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        _ = await WriteSummaryCaptureAsync(active, journal: true).ConfigureAwait(false);
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         _timeProvider.UtcNow = Now.AddMinutes(1);
         var changedSeed = seed with { Coordinates = seed.Coordinates with { LatitudeDegrees = 36 } };
-        Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(store, changedSeed).ConfigureAwait(false));
+        Assert.AreEqual((1L, 3L), await ReadWithParseCountsAsync(store, changedSeed).ConfigureAwait(false));
         var changed = store.Active;
         Assert.AreEqual(2L, changed!.Version);
         var reads = await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
-            await store.InitializeAsync(changedSeed, CancellationToken.None).ConfigureAwait(false))).ConfigureAwait(false);
+            await store.FullVerifyAsync(changedSeed, CancellationToken.None).ConfigureAwait(false))).ConfigureAwait(false);
         Assert.IsTrue(reads.All(value => value == changed));
-    }
-
-    [TestMethod]
-    public void SummaryCapacityAndFormatAreBoundedAndWrongIdentityNeverLoads()
-    {
-        var summary = new RetainedManifestValidationSummary(new byte[32]);
-        for (var index = 0; index <= RetainedManifestValidationSummary.MaximumEntries; index++)
-            summary.Record(new((ulong)index, 0, 0, 0));
-        var bytes = summary.Serialize();
-        Assert.AreEqual(RetainedManifestValidationSummary.MaximumPlaintextBytes, bytes.Length);
-        Assert.IsFalse(summary.Contains(new((ulong)RetainedManifestValidationSummary.MaximumEntries, 0, 0, 0)));
-        var restored = new RetainedManifestValidationSummary(new byte[32]);
-        Assert.IsTrue(restored.TryLoad(bytes));
-        Assert.IsTrue(restored.Contains(new(1, 0, 0, 0)));
-        var wrongIdentity = new byte[32];
-        wrongIdentity[0] = 1;
-        Assert.IsFalse(new RetainedManifestValidationSummary(wrongIdentity).TryLoad(bytes));
-        Assert.IsFalse(new RetainedManifestValidationSummary(new byte[32]).TryLoad(bytes.AsSpan(0, bytes.Length - 1)));
     }
 
     [TestMethod]
@@ -211,32 +235,81 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow("journal/capture-satellites/fixture/input.json", "{\"schemaVersion\":\"capture-satellite-input-v1\",\"descriptor\":{}}")]
     [DataRow("derived/fixture/Metadata/product.json", "{\"schemaVersion\":\"metadata-v1\",\"values\":[]}")]
     [DataRow("derived/fixture/Metadata/product.manifest.json", "{\"schemaVersion\":\"hvo-cameraagent-processing-product-v1\",\"capture\":{},\"relativeArtifactPath\":\"fixture\"}")]
-    public async Task OtherOwnedJsonModelsAreInspectedWithoutBecomingArtifactProofs(string relativePath, string json)
+    public async Task OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract(string relative, string json)
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (framePath, _) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        var path = Path.Combine(_options.Value.RawIngressRoot, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await RetainedFileMutations.WriteAllTextAsync(path, json).ConfigureAwait(false);
+        Assert.AreEqual((2L, 0L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        Assert.AreEqual((0L, 2L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        await File.WriteAllTextAsync(framePath, json).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task TornProductionSidecarCanReachTheRealReconcilerWithoutDeletingEvidence()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var path = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "11", "10", "Raw", "torn.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await RetainedFileMutations.WriteAllTextAsync(path, "{").ConfigureAwait(false);
+        Assert.AreEqual(active, await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var journal = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.SqliteRawCaptureJournal(
+            Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), 1);
+        await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var reconciler = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressReconciler(_options.Value.RawIngressRoot, journal);
+        var result = await reconciler.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, result.Quarantined);
+        Assert.IsFalse(File.Exists(path));
+        var retained = Directory.GetFiles(Path.Combine(_options.Value.RawIngressRoot, "quarantine"), "*.json", SearchOption.AllDirectories);
+        Assert.HasCount(1, retained);
+        Assert.AreEqual("{", await File.ReadAllTextAsync(retained[0]).ConfigureAwait(false));
+        Assert.AreEqual(active, await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task AdvisoryIndexWrongLayoutRebuildsWithoutChangingRetainedEvidence()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (path, json) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        using (var connection = new SqliteConnection($"Data Source={SummaryPath};Pooling=False"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE proofs; CREATE TABLE foreign_state(value TEXT); INSERT INTO foreign_state VALUES('fixture');";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        Assert.AreEqual((1L, 0L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        Assert.AreEqual((0L, 1L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        CollectionAssert.AreEqual(json, await File.ReadAllBytesAsync(path).ConfigureAwait(false));
+        Assert.AreEqual(active, store.Active);
+    }
+
+    [TestMethod]
+    public async Task AdvisoryIndexSymlinkIsIgnoredWithoutWritingOutsideTheStateRoot()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-        var path = Path.Combine(_options.Value.RawIngressRoot, relativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, json).ConfigureAwait(false);
-        Assert.AreEqual((2L, 0L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
-        Assert.AreEqual((1L, 1L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
-        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(SummaryPath).ConfigureAwait(false));
-        Assert.AreEqual(44 + 32, plaintext.Length, "Only the actual artifact is a reusable proof.");
-    }
-
-    [TestMethod]
-    public async Task ReplacingFrameManifestWithEmptyObjectCannotEraseItsContract()
-    {
-        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
-        using var store = CreateStore();
-        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var (path, _) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        await File.WriteAllTextAsync(path, "{}").ConfigureAwait(false);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-            await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        File.Delete(SummaryPath);
+        var outside = Path.Combine(_root, "outside-cache-target");
+        await File.WriteAllTextAsync(outside, "must stay unchanged").ConfigureAwait(false);
+        File.CreateSymbolicLink(SummaryPath, outside);
+        Assert.AreEqual((1L, 0L), await ReadWithParseCountsAsync(store, seed).ConfigureAwait(false));
+        Assert.AreEqual("must stay unchanged", await File.ReadAllTextAsync(outside).ConfigureAwait(false));
+        Assert.AreEqual(active, store.Active);
     }
 
     private async Task<(string Path, byte[] Json)> WriteSummaryCaptureAsync(DeploymentLocationSnapshot location, bool journal = false)
@@ -254,10 +327,10 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var json = CaptureContractJson.Serialize(manifest);
         var parsed = CaptureContractJson.ParseManifest(json);
         Assert.IsTrue(parsed.IsValid, $"{parsed.Validation.ReasonCode}: {parsed.Validation.FieldPath}");
-        var directoryPath = Path.Combine(_options.Value.RawIngressRoot, "frames", "fixture", "Raw");
+        var directoryPath = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "11", "10", "Raw");
         Directory.CreateDirectory(directoryPath);
         var path = Path.Combine(directoryPath, "capture.json");
-        await File.WriteAllBytesAsync(path, json).ConfigureAwait(false);
+        await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(path, json).ConfigureAwait(false);
         if (journal)
         {
             var directory = Path.Combine(_options.Value.RawIngressRoot, "journal");
@@ -265,6 +338,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             using var connection = new SqliteConnection($"Data Source={Path.Combine(directory, "raw-ingress.db")};Pooling=False");
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
+            using var integrity = RetainedIntegrityLedger.BeginJournal(Path.Combine(directory, "raw-ingress.db"), "1", json);
             command.CommandText = "CREATE TABLE raw_captures(manifest_json BLOB NOT NULL); INSERT INTO raw_captures VALUES($bytes);";
             command.Parameters.AddWithValue("$bytes", json);
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -287,7 +361,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             }
         };
         ActivitySource.AddActivityListener(listener);
-        _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         return (parses, hits);
     }
 }

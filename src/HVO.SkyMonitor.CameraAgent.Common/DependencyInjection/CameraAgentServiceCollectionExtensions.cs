@@ -357,6 +357,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
         services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
         services.AddHostedService<CameraAgentConfigurationInitializer>();
+        services.AddHostedService(provider => new RetainedIntegrityScrubService(
+            provider.GetRequiredService<ICameraAgentConfigurationLoader>(), provider.GetRequiredService<ILogger<RetainedIntegrityScrubService>>(),
+            provider.GetRequiredService<TimeProvider>()));
         services.AddHostedService<CaptureAdmissionInitializationService>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddHostedService<DerivedProductReconciliationService>();
