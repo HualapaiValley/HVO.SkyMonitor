@@ -77,7 +77,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
     }
 
     [TestMethod]
-    public void RollingInvalidEditsPreventSavingAndMixedGainHasNoPanel()
+    public void RollingInvalidEditsPreventSaving()
     {
         using var context = new BunitContext();
         var service = Configure(context, "RollingCombination", null);
@@ -93,7 +93,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
             Assert.IsNotEmpty(cut.FindAll(".option-errors[role='alert'] li"));
         }
         Assert.IsEmpty(service.Created);
-        Assert.IsNull(HVO.SkyMonitor.CameraAgent.Services.ProcessingNodeOptionsForm.DescriptorFor("RollingCombination",
+        Assert.IsNotNull(HVO.SkyMonitor.CameraAgent.Services.ProcessingNodeOptionsForm.DescriptorFor("RollingCombination",
             System.Text.Json.JsonSerializer.SerializeToElement(new { Recipe = "mixed-gain-normalized-mean", normalizationPlan = new { keep = true } })));
 
         using var centeredContext = new BunitContext();

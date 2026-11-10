@@ -46,7 +46,8 @@ public sealed class ProcessingNodeOptionsForm
         ArgumentNullException.ThrowIfNull(alias);
         if (string.Equals(alias, "RollingCombination", StringComparison.OrdinalIgnoreCase))
             return options is null || RollingCombinationOptionDescriptors.IsSameGain(options.Value)
-                ? RollingCombinationOptionDescriptors.Descriptor : null;
+                ? RollingCombinationOptionDescriptors.Descriptor
+                : RollingCombinationOptionDescriptors.IsMixedGain(options.Value) ? RollingCombinationOptionDescriptors.MixedGain : null;
         if (PreviewOptionDescriptors.IsPreviewAlias(alias))
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
