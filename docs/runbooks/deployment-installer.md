@@ -1858,6 +1858,16 @@ The `LABEL` instruction in `src/HVO.SkyMonitor.CameraAgent/Dockerfile` is the so
 this runbook does not restate them. Read the values an image actually carries with
 `docker image inspect --format '{{json .Config.Labels}}' <image>`.
 
+`minimum-compatible-revision` also identifies a state-boundary change for the installer's
+checkpoint comparison; its current value is not, by itself, a reset verdict for every earlier
+installation. Preflight evaluates the actual persisted formats and supported conversions.
+For example, nightly catalog schema 2 converts to schema 3 in place, preserving raw captures,
+archive products and identity. Advancing this label makes the installer checkpoint the databases
+before that conversion so rollback can restore the paired state. A compatible preflight report
+prints the candidate state-boundary revision without reset guidance. Only an incompatible report's
+blocking findings call for repair or an explicit state-disposition procedure; do not reset
+convertible state merely because its installed image has an earlier boundary revision.
+
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
 raw-ingress schema 11. The current image requires the Identity migration and

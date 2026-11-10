@@ -10,6 +10,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Tests/NightlyProducts/NightlyProductTestSupport.cs" Link="Infrastructure/NightlyProductTestSupport.cs" />
+    <None Include="../fixtures/nightly-products/schema-v2.sql" Link="Fixtures/nightly-products-schema-v2.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 

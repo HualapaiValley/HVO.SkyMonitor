@@ -197,6 +197,7 @@ internal static class NightlyProductLinks
     {
         NightlyProductKind.StarTrail => "Star trail",
         NightlyProductKind.Keogram => "Keogram",
+        NightlyProductKind.DailySummary => "Daily summary",
         _ => kind.ToString()
     };
 
@@ -204,6 +205,7 @@ internal static class NightlyProductLinks
     {
         NightlyProductKind.StarTrail => "star trail",
         NightlyProductKind.Keogram => "keogram",
+        NightlyProductKind.DailySummary => "daily summary",
         _ => kind.ToString()
     };
 }
