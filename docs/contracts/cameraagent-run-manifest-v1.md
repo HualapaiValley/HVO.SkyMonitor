@@ -71,6 +71,13 @@ the missing-artifact reason before and after restart. An older outputless window
 proof refuses with the original frozen-input evidence incomplete reason. Current dependency
 inputs still use immutable output lineage; no schema or revision identity changes.
 
+Each optional count ledger is read and updated independently. Corruption in one
+ledger, including deep nesting, does not prevent the other from recording actual
+committed outputs or frozen historical inputs. The corrupt member still disables
+export with the corrupt-evidence reason; removing it recovers the download when
+the remaining retained evidence proves completeness. Genuine input/output deletion
+still refuses export after recovery and restart.
+
 Optional count metadata is excluded before primary plan parsing, including when it
 is deeply nested. Primary normalization-plan depth, shape and identity validation
 remain unchanged. Corrupt optional counts, including malformed Unicode keys, do not
