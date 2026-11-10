@@ -257,6 +257,43 @@ public sealed class InstallationVerificationReadTests
         TestContext.AddResultFile(path);
     }
 
+    [TestMethod]
+    [TestCategory("Manual")]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Each async fixture is disposed by await using within its loop iteration.")]
+    public async Task LargeRetainedCorpusRecordsCurrentEndpointCost()
+    {
+        var output = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR")
+            ?? throw new InvalidOperationException(InstallationReadAttributionFixture.EvidenceRootGuidance);
+        var results = new List<object>();
+        foreach (var solar in new[] { false, true })
+        foreach (var count in new[] { 1_000, 10_000, 100_001 })
+        {
+            await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar).ConfigureAwait(false);
+            var corpus = await fixture.SeedScaleAsync(count).ConfigureAwait(false);
+            using var client = fixture.CreateClient();
+            var first = await MeasureAsync("first-populated", fixture, client, null).ConfigureAwait(false);
+            for (var warmup = 0; warmup < 5; warmup++)
+                _ = await fixture.ReadAsync(client).ConfigureAwait(false);
+            var before = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
+            var reads = new List<ReadMeasurement>();
+            for (var sample = 0; sample < 5; sample++)
+                reads.Add(await MeasureAsync("scale-repeat", fixture, client, null).ConfigureAwait(false));
+            Assert.IsTrue(reads.All(read => read.Identity.GetRawText() == first.Identity.GetRawText()));
+            Assert.AreEqual(before, await fixture.HashRetainedInputsAsync().ConfigureAwait(false));
+            results.Add(new { Solar = solar, Captures = count, Corpus = corpus, First = first, Reads = reads });
+            var report = Path.Combine(output, "installation-read-scale.json");
+            await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new
+            {
+                Revision = Environment.GetEnvironmentVariable("HVO_ATTRIBUTION_REVISION"),
+                Runtime = RuntimeInformation.FrameworkDescription,
+                ProcessorCount = Environment.ProcessorCount,
+                HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
+                Results = results
+            }, InstallationReadAttributionFixture.EvidenceJson)).ConfigureAwait(false);
+            TestContext.AddResultFile(report);
+        }
+    }
+
     private static Activity? StartTrace(string name) => ReadSource.StartActivity(name, ActivityKind.Internal,
         new ActivityContext(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded));
 

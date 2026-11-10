@@ -156,6 +156,71 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
             location.CanonicalSha256);
     }
 
+    // Bulk disposable metadata construction: real v15 schema and contract bytes, one transaction.
+    // No payload files, acquisition, production data, or durability-throughput claim.
+    internal async Task<FixtureIdentity> SeedScaleAsync(int count)
+    {
+        var config = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        var location = config.DeploymentLocation!;
+        var journal = new SqliteRawCaptureJournal(JournalPath, 10);
+        await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={JournalPath};Pooling=False;Foreign Keys=True");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO raw_capture_assignments(capture_id,raw_artifact_id,agent_id,capture_sequence)
+            VALUES($capture,$artifact,$agent,$sequence);
+            INSERT INTO raw_captures(capture_id,raw_artifact_id,agent_id,capture_sequence,
+                descriptor_sha256,manifest_sha256,payload_sha256,payload_length,
+                payload_relative_path,sidecar_relative_path,manifest_json,
+                exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,evidence_origin)
+            VALUES($capture,$artifact,$agent,$sequence,$hash,$hash,$payload,8,
+                $path||'.bin',$path||'.json',$json,0,0,0,'committed','DeveloperFixture');
+            """;
+        foreach (var name in new[] { "$capture", "$artifact", "$agent", "$sequence", "$hash", "$payload", "$path", "$json" })
+            command.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(name, null));
+        var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long bytes = 0;
+        for (var index = 1; index <= count; index++)
+        {
+            var captureId = new Guid(index, 1041, 1, new byte[8]);
+            var artifactId = new Guid(index, 1041, 2, new byte[8]);
+            var relative = $"fixtures/{index / 1000:D4}/{index:D6}";
+            var manifest = original with
+            {
+                Descriptor = original.Descriptor with
+                {
+                    Capture = original.Descriptor.Capture with { AgentId = config.AgentId!, CaptureSequence = index, CaptureId = captureId },
+                    Artifact = original.Descriptor.Artifact with { ArtifactId = artifactId },
+                    Location = location.ToProvenance()
+                },
+                RelativeArtifactPath = relative + ".bin"
+            };
+            var json = CaptureContractJson.Serialize(manifest);
+            Assert.IsTrue(CaptureContractJson.ParseManifest(json).IsValid);
+            hash.AppendData(json);
+            bytes += json.Length * 2L;
+            var path = Path.Combine(IngressRoot, relative + ".json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(path, json).ConfigureAwait(false);
+            command.Parameters["$capture"].Value = captureId.ToString();
+            command.Parameters["$artifact"].Value = artifactId.ToString();
+            command.Parameters["$agent"].Value = config.AgentId!;
+            command.Parameters["$sequence"].Value = index;
+            command.Parameters["$hash"].Value = CaptureContractJson.ComputeManifestSha256(json);
+            command.Parameters["$payload"].Value = manifest.Descriptor.Artifact.ChecksumSha256;
+            command.Parameters["$path"].Value = relative;
+            command.Parameters["$json"].Value = json;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        await transaction.CommitAsync().ConfigureAwait(false);
+        return new FixtureIdentity(count, count, bytes, Convert.ToHexString(hash.GetHashAndReset()),
+            new FileInfo(JournalPath).Length, await HashAsync(ConfigPath).ConfigureAwait(false), location.CanonicalSha256);
+    }
+
     internal async Task<JsonElement> ReadAsync(HttpClient client, CancellationToken cancellationToken = default)
     {
         Assert.AreEqual(Host.BaseAddress, client.BaseAddress, "Only this disposable host may be read.");
