@@ -137,6 +137,13 @@ internal sealed class CoverageLineInventory
         {
             throw new InvalidDataException($"Report '{report}' has invalid {level} branch data for '{source}:{number}': measured branch denominator {actualTotal}, pinned denominator {expected?.Total ?? 0}; measured condition IDs [{string.Join(", ", actualConditions)}], pinned [{string.Join(", ", (expected?.Conditions ?? []).Order(StringComparer.Ordinal))}]. {Remedy}");
         }
+
+        // The pinned merger ignores condition counts when this marker is
+        // absent. Require it independently of the preserved denominator.
+        if (!bool.TryParse((string?)line.Attribute("branch"), out var hasBranches) || hasBranches != (expected is not null))
+        {
+            throw new InvalidDataException($"Report '{report}' has invalid {level} branch marker for '{source}:{number}': measured '{(string?)line.Attribute("branch") ?? "MISSING"}', expected '{(expected is not null ? "true" : "false")}'; pinned denominator {expected?.Total ?? 0}. {Remedy}");
+        }
     }
 
     // The structural parser has already checked markers, covered counts and

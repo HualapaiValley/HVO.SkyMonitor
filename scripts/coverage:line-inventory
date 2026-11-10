@@ -80,7 +80,8 @@ def branch_shape(line):
         raise SystemExit(f"Invalid condition-coverage: {coverage}")
     total = int(counts.group(2)) if counts else 0
     conditions = [entry.get("number") for entry in line.findall("conditions/condition")]
-    if (line.get("branch", "").lower() == "true" and total == 0 or
+    if (line.get("branch", "").lower() not in ("true", "false") or
+            line.get("branch", "").lower() == "true" and total == 0 or
             line.get("branch", "").lower() == "false" and total > 0 or
             any(not value for value in conditions) or len(conditions) != len(set(conditions)) or
             (conditions and total == 0)):

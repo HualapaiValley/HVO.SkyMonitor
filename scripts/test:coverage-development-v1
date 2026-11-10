@@ -454,6 +454,13 @@ for condition in line.findall("conditions/condition"):
 write_fixture(branch_low)
 wrapper_case("complete 32-branch failure is measured without changing its denominator", 1,
              "InventoryAsync.cs", "branch 0.00", "min 90.00")
+missing_marker = copy.deepcopy(branch_low)
+entry = next(entry for entry in missing_marker.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.attrib.pop("branch")
+write_fixture(missing_marker)
+wrapper_case("missing branch marker cannot make the merger discard retained counts", 1,
+             "InventoryAsync.cs:75", "branch marker", "MISSING", "pinned denominator 32")
 branchless = copy.deepcopy(branch_low)
 entry = next(entry for entry in branchless.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
 line = next(line for line in entry.find("lines") if line.get("number") == "75")

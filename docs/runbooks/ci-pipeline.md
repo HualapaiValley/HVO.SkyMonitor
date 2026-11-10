@@ -48,11 +48,11 @@ emitted by genuine complete Unit collection, plus each emitted line's branch
 denominator and condition IDs. Both class-level **and method-level** line sets
 and per-line branch structure must match in every contributing report. Removing
 a line, rewriting a measured branch line as `branch=false`, shrinking its branch
-total or deleting a condition fails even when both representations, TRX copies
-and declared counts are changed consistently. Genuinely branchless lines and
+total, deleting a condition or omitting its branch marker fails even when both
+representations, TRX copies and declared counts are changed consistently. Genuinely branchless lines and
 collector-omitted points remain valid according to the reviewed inventory. This
-covers generated/overlapping lines that PDB checks cannot require universally: genuine `ProcessingRecipeExecutor.cs:44` is absent from the
-pinned emitted set, while measured line52 is required. No runtime report decides
+covers generated/overlapping lines that PDB checks cannot require universally:
+genuine `ProcessingRecipeExecutor.cs:44` is absent from the pinned emitted set, while measured line52 is required. No runtime report decides
 its own expected denominator, and no file floor or percentage changes.
 
 Method records contribute to the pinned ReportGenerator merge: it can restore a
@@ -79,8 +79,8 @@ git diff -- scripts/coverage/development-v1-lines.json
 This is a maintenance command, never a CI step. CI must not regenerate its
 expected inventory from inputs it is about to validate. The generator rejects
 missing contributors and differing class/method or per-contributor line sets
-or branch structure; review must establish genuine collection provenance and
-preserve all thresholds.
+or branch structure, including explicit branch markers; review must establish
+genuine collection provenance and preserve all thresholds.
 Keep generated settings and original reports with that evidence. Unsupported
 collector exclusions/options and active `tools/` floors fail explicitly until the
 inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
