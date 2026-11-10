@@ -262,8 +262,15 @@ internal static class CameraAgentStatePreflight
             $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
         if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
         {
-            builder.AppendLine(CultureInfo.InvariantCulture,
-                $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+            if (report.Compatible)
+            {
+                builder.AppendLine(CultureInfo.InvariantCulture, $"Candidate state-boundary revision: {minimum}.");
+            }
+            else
+            {
+                builder.AppendLine(CultureInfo.InvariantCulture,
+                    $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+            }
         }
         foreach (var finding in report.Findings)
         {

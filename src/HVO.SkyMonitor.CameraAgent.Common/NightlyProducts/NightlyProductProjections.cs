@@ -86,7 +86,8 @@ public sealed record NightlyProductLibraryEntry(
     public NightlyProductSummary? Product => Generation is null ? Daily?.FinalProduct : null;
 
     internal static NightlyProductLibraryState Classify(NightlyProductDateSummary summary) =>
-        summary.DailyProductId is not null ? NightlyProductLibraryState.Produced
+        summary.DailyProductId is not null ? summary.DailyReasonCode == NightlyProductContract.PartialSummaryReasonCode
+            ? NightlyProductLibraryState.Partial : NightlyProductLibraryState.Produced
         : summary.HourlyProduced > 0 ? NightlyProductLibraryState.Partial
         : NightlyProductLibraryState.NotProduced;
 }
@@ -211,4 +212,7 @@ public sealed record NightlyProductPresentation(
     IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
     int LineageFrameCount,
     NightlyProductTimeAxis? TimeAxis,
-    IReadOnlyList<NightlyProductSummary> OtherOutputs);
+    IReadOnlyList<NightlyProductSummary> OtherOutputs)
+{
+    public DailySummaryV1? DailySummary { get; init; }
+}

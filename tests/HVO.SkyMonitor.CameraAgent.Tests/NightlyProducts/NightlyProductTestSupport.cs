@@ -132,7 +132,7 @@ internal static class NightlyProductFixture
         DeploymentLocationSnapshot? site = null, DateOnly? observingDate = null)
     {
         var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion, windowKind,
-            kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
+            kind != NightlyProductKind.StarTrail ? LocalAutomationSourceSelection.AllActualSources
                 : LocalAutomationSourceSelection.DarkNightActualSources, TimeSpan.FromMinutes(5));
         var calendar = site is null ? Calendar : ObservingDayCalendar.ForDeployment(site);
         var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));

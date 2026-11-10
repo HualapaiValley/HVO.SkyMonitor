@@ -90,11 +90,21 @@ internal sealed partial class SqliteNightlyProductStore
             }
             var (recipeJson, algorithmsJson) = await ReadRecipeAsync(connection, productId, cancellationToken)
                 .ConfigureAwait(false);
-            var frames = await ReadLineageFramesAsync(connection, productId, cancellationToken).ConfigureAwait(false);
+            var dailySummary = detail.Summary.Kind == NightlyProductKind.DailySummary
+                ? Deserialize<RecipeIdentityDescriptor>(recipeJson).Options.GetProperty("parameters").Deserialize<DailySummaryV1>(SerializerOptions)
+                : null;
+            // Linked products have their own transitive lineage; they must not inflate the summary's admitted-frame
+            // count or force restoration of an unrelated product tree just to present a facts snapshot.
+            var frames = dailySummary is null
+                ? await ReadLineageFramesAsync(connection, productId, cancellationToken).ConfigureAwait(false)
+                : [];
             var axis = detail.Summary.Kind == NightlyProductKind.Keogram ? CreateTimeAxis(detail, recipeJson, frames) : null;
             var others = await ReadOtherOutputsAsync(connection, detail, cancellationToken).ConfigureAwait(false);
             return new NightlyProductPresentation(
-                detail, Deserialize<List<ProcessingAlgorithmIdentity>>(algorithmsJson), frames.Count, axis, others);
+                detail, Deserialize<List<ProcessingAlgorithmIdentity>>(algorithmsJson), dailySummary?.Captures.Count ?? frames.Count, axis, others)
+            {
+                DailySummary = dailySummary
+            };
         }
         finally
         {

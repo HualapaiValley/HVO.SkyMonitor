@@ -28,7 +28,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         new("time-lapse", "Timelapses", true),
         new(NightlyProductContract.StarTrailTarget, "Star trails", true),
         new(NightlyProductContract.KeogramTarget, "Keograms", true),
-        new("daily-summary", "Daily summaries", false)
+        new(NightlyProductContract.DailySummaryTarget, "Daily summaries", true)
     ];
 
     internal static readonly FilterOption[] StatusOptions =
@@ -285,7 +285,9 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     {
         if (entry.Generation is not null) return "Not yet evaluated";
         var admitted = entry.Daily?.Status.AdmittedCount ?? 0;
-        return FormattableString.Invariant($"{admitted:N0} segment product{(admitted == 1 ? "" : "s")}");
+        return entry.Summary.Kind == NightlyProductKind.DailySummary
+            ? FormattableString.Invariant($"{admitted:N0} admitted preview{(admitted == 1 ? "" : "s")}")
+            : FormattableString.Invariant($"{admitted:N0} segment product{(admitted == 1 ? "" : "s")}");
     }
 
     internal static (string Label, string Value) Span(NightlyProductLibraryEntry entry) => entry.Product is { } product
