@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Playwright;
 
@@ -13,7 +14,19 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
     [DataRow("deep")]
     [DataRow("unicode-high")]
     [DataRow("unicode-low")]
-    public async Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(string scenario)
+    public Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(string scenario)
+        => AssertOptionalManifestEvidenceRecoveryAsync(scenario);
+
+    [TestMethod]
+    public Task AuxiliaryManifestDescriptorCorruptionKeepsBrowserJournalReadableAndRecoversAsync()
+        => AssertOptionalManifestEvidenceRecoveryAsync("auxiliary-descriptor");
+
+    private sealed class NoAuxiliaryEvidence : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private async Task AssertOptionalManifestEvidenceRecoveryAsync(string scenario)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
@@ -33,6 +46,19 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var id = Guid.Parse(new Uri(page.Url).Segments[^1]);
         var api = $"/api/v1/operations/processing-graphs/executions/{id:D}";
+        AuxiliaryRunManifestEvidenceFixture? auxiliaryEvidence = null;
+        if (scenario == "auxiliary-descriptor")
+        {
+            var baseline = await context.APIRequest.GetAsync(api + "/manifest").ConfigureAwait(false);
+            Assert.AreEqual(200, baseline.Status);
+            using var manifest = JsonDocument.Parse(await baseline.BodyAsync().ConfigureAwait(false));
+            var output = manifest.RootElement.GetProperty("nodes").EnumerateArray()
+                .SelectMany(static node => node.GetProperty("outputs").EnumerateArray()).First();
+            auxiliaryEvidence = await AuxiliaryRunManifestEvidenceFixture.CreateAsync(host.Root,
+                output.GetProperty("artifactId").GetGuid()).ConfigureAwait(false);
+        }
+        var auxiliary = auxiliaryEvidence;
+        await using var auxiliaryLifetime = (auxiliary is null ? new NoAuxiliaryEvidence() : (IAsyncDisposable)auxiliary).ConfigureAwait(false);
         var downloadLink = page.GetByRole(AriaRole.Link, new() { Name = "Download manifest", Exact = true });
         await VisibleAsync(downloadLink).ConfigureAwait(false);
         var download = await page.RunAndWaitForDownloadAsync(() => downloadLink.ClickAsync()).ConfigureAwait(false);
@@ -58,7 +84,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             "unicode-low" => "{\"\\uDC00\":1}",
             _ => "{\"preview\":-1}"
         });
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        if (auxiliary is not null) await auxiliary.CorruptAsync().ConfigureAwait(false);
+        else Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         var ordinary = await context.APIRequest.GetAsync(api).ConfigureAwait(false);
         Assert.AreEqual(200, ordinary.Status);
         var refused = await context.APIRequest.GetAsync(api + "/manifest").ConfigureAwait(false);
@@ -76,7 +103,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                 CAST(json_remove(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts') AS BLOB)
             WHERE execution_id = $execution;
             """;
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        if (auxiliary is not null) await auxiliary.RestoreReferenceAsync().ConfigureAwait(false);
+        else Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         await page.ReloadAsync().ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(downloadLink).ConfigureAwait(false);

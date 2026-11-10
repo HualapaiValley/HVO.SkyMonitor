@@ -71,13 +71,14 @@ internal sealed partial class SqliteCaptureProcessingStore
             // from earlier captures. A lookup never substitutes the current capture or active cache.
             command.CommandText = """
                 SELECT 'ProcessingOutput', capture_id, artifact_id, NULL,
-                       COALESCE(json_extract(CAST(descriptor_json AS TEXT), '$.descriptor.artifact.checksumSha256'),
-                                json_extract(CAST(descriptor_json AS TEXT), '$.artifact.checksumSha256')),
-                       output_identity_sha256
+                       CASE WHEN json_valid(CAST(descriptor_json AS TEXT)) THEN
+                           COALESCE(json_extract(CAST(descriptor_json AS TEXT), '$.descriptor.artifact.checksumSha256'),
+                                    json_extract(CAST(descriptor_json AS TEXT), '$.artifact.checksumSha256')) END,
+                       output_identity_sha256, json_valid(CAST(descriptor_json AS TEXT))
                 FROM processing_outputs
                 WHERE artifact_id IN (SELECT value FROM json_each($ids))
                 UNION ALL
-                SELECT 'RawCapture', capture_id, raw_artifact_id, descriptor_sha256, payload_sha256, NULL
+                SELECT 'RawCapture', capture_id, raw_artifact_id, descriptor_sha256, payload_sha256, NULL, 1
                 FROM raw_captures
                 WHERE raw_artifact_id IN (SELECT value FROM json_each($ids))
                 ORDER BY 3 LIMIT 4097;
@@ -87,6 +88,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             var ordinal = inputs.Count == 0 ? 0 : inputs.Max(static input => input.Ordinal) + 1;
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (!reader.GetBoolean(6)) throw new InvalidDataException("A retained manifest input descriptor is corrupt.");
                 var artifactId = Guid.ParseExact(reader.GetString(2), "N");
                 if (!retained.Add(artifactId)) continue;
                 if (inputs.Count + references.Count >= ProcessingRunManifestBounds.MaximumRows)

@@ -31,7 +31,8 @@ internal static class CameraAgentRunManifest
         if (detail.Nodes.Any(static node => !HasRetainedArtifactBindings(node)))
             return (null, ArtifactEvidenceUnavailableReason);
         if (detail.Nodes.Any(static node => node.CommittedOutputCount is null &&
-            (node.Status is "Completed" or "Skipped" || node.Attempts.Any(static attempt =>
+            (node.Status is "Completed" or "Skipped" or "RetryableFailure" or "TerminalFailure" || node.Attempts.Any(static attempt =>
+                attempt.Status is "Completed" or "Skipped" or "RetryableFailure" or "TerminalFailure" ||
                 attempt.Outcome == HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced))))
             return (null, UnrecordedOutputReason);
         if (detail.Nodes.Any(static node => node.NodeId.Length is 0 or > 128 ||

@@ -1113,15 +1113,15 @@ internal sealed partial class SqliteCaptureProcessingStore
                 var contracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(row.OutputsJson, ExecutionSerializerOptions)
                     ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.");
                 int? committedCount = committedOutputCounts.TryGetValue(row.NodeId, out var recordedCount) ? recordedCount : null;
-                // Legacy rows have no committed cardinality. Only complete declared sets or
-                // histories consisting only of skipped attempts prove the count. A later
-                // skip cannot prove that earlier retry output was never committed/pruned.
-                if (committedCount is null && row.Status is "Completed" or "Skipped" &&
-                    ((row.Status == "Skipped" && outputs.Length == 0 && attempts.Count > 0 &&
+                // A full declared set proves cardinality regardless of the final outcome.
+                // Otherwise only an entirely skipped history proves legacy zero: a later
+                // skip or failure cannot erase earlier committed/pruned retry evidence.
+                if (committedCount is null &&
+                    ((outputs.Length == contracts.Length && contracts.All(contract =>
+                         outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant))) ||
+                     (row.Status == "Skipped" && outputs.Length == 0 && attempts.Count > 0 &&
                       attempts.All(static attempt => attempt.Status == "Skipped" &&
-                          attempt.Outcome is null or ProcessingOutcomeStatus.Skipped)) ||
-                     (outputs.Length == contracts.Length && contracts.All(contract =>
-                         outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant)))))
+                          attempt.Outcome is null or ProcessingOutcomeStatus.Skipped))))
                     committedCount = outputs.Length;
                 var diagnostics = manifestOnly ? (Value: (MixedGainDiagnosticsV1?)null, Reason: (string?)null)
                     : await ReadMixedGainDiagnosticsAsync(durableOutputs, normalization, cancellationToken).ConfigureAwait(false);

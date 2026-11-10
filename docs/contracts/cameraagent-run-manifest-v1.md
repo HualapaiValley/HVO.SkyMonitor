@@ -45,9 +45,9 @@ execution evidence JSON, atomically with its output associations. Original plan
 members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
 There is no SQLite schema, installer or image-boundary change. Older runs without
-recorded counts remain available when a full declared output set or an outputless
+recorded counts remain available when a full declared output set (including a run ending in failure) or an outputless
 node with a recorded history consisting only of skipped attempts proves completeness. A latest Skipped
-state alone cannot prove zero outputs after earlier retries; unprovable retry/skip
+or failed state alone cannot prove zero outputs after earlier retries; unprovable retry/skip/failure
 history is refused rather than exporting a partial manifest. An older ambiguous run
 receives the fixed reason that its original produced-output evidence was not recorded completely, rather
 than claiming that it was deleted. If the existing frozen-plan byte limit leaves
@@ -74,7 +74,9 @@ Removing the corrupt member restores the legacy completeness rules above.
 Historical pinned-output descriptors are inspected for checksums only in the bounded
 manifest snapshot. Ordinary detail and central evidence preserve the pre-existing
 null payload hash for those pins; corruption in a historical descriptor disables
-only the consuming run's manifest, without hiding its journal. Manifest-only
+only the consuming run's manifest, without hiding its journal. Auxiliary processing-output
+descriptors use the same JSON-validity guard and corrupt-evidence refusal before
+checksum extraction; restoring the descriptor recovers the download. Manifest-only
 completeness fields are omitted from ordinary detail JSON.
 
 The database read holds one SQLite WAL snapshot. It allows at most 64 nodes and
