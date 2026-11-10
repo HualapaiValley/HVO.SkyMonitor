@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 /// <summary>A reviewed denominator, independent of the reports being gated.</summary>
@@ -128,7 +129,7 @@ internal sealed class CoverageLineInventory
         }
 
         var number = (int)line.Attribute("number")!;
-        var actualTotal = ReadBranchTotal(line);
+        var actualTotal = ReadBranchTotal(line, source);
         var expected = branchLines.GetValueOrDefault(number);
         var actualConditions = line.Element("conditions")?.Elements("condition").Select(static condition => (string?)condition.Attribute("number") ?? string.Empty).ToArray() ?? [];
         if (actualTotal != (expected?.Total ?? 0) ||
@@ -140,7 +141,7 @@ internal sealed class CoverageLineInventory
 
         // The pinned merger ignores condition counts when this marker is
         // absent. Require it independently of the preserved denominator.
-        if (!bool.TryParse((string?)line.Attribute("branch"), out var hasBranches) || hasBranches != (expected is not null))
+        if (!string.Equals((string?)line.Attribute("branch"), expected is not null ? "true" : "false", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException($"Report '{report}' has invalid {level} branch marker for '{source}:{number}': measured '{(string?)line.Attribute("branch") ?? "MISSING"}', expected '{(expected is not null ? "true" : "false")}'; pinned denominator {expected?.Total ?? 0}. {Remedy}");
         }
@@ -149,7 +150,7 @@ internal sealed class CoverageLineInventory
     // The structural parser has already checked markers, covered counts and
     // percentages. Preserve the denominator and emitted condition identities,
     // independently of hit coverage or report-level summary counters.
-    private static int ReadBranchTotal(XElement line)
+    private static int ReadBranchTotal(XElement line, string source)
     {
         var coverage = (string?)line.Attribute("condition-coverage");
         if (coverage is null)
@@ -157,11 +158,12 @@ internal sealed class CoverageLineInventory
             return 0;
         }
 
-        var slash = coverage.LastIndexOf('/');
-        var close = coverage.LastIndexOf(')');
-        if (slash < 0 || close <= slash || !int.TryParse(coverage.AsSpan(slash + 1, close - slash - 1), CultureInfo.InvariantCulture, out var total))
+        // Match the pinned merger's end-anchored ASCII count syntax. A
+        // permissive integer parse accepts whitespace/+ signs it ignores.
+        var match = Regex.Match(coverage, @"\([0-9]+/([0-9]+)\)$", RegexOptions.CultureInvariant);
+        if (!match.Success || !int.TryParse(match.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var total))
         {
-            throw new InvalidDataException($"Invalid branch denominator '{coverage}'.");
+            throw new InvalidDataException($"Invalid branch denominator '{coverage}' for '{source}:{(string?)line.Attribute("number")}'. Use intact Coverlet counts the pinned merger can parse. {Remedy}");
         }
 
         return total;

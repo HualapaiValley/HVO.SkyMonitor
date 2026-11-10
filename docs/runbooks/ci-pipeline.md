@@ -45,7 +45,9 @@ All 27 floored files additionally have a reviewed line and branch inventory in
 `scripts/coverage/development-v1-lines.json`. It binds each source SHA-256, the
 pinned SDK/collector versions and canonical settings hash to the exact line set
 emitted by genuine complete Unit collection, plus each emitted line's branch
-denominator and condition IDs. Both class-level **and method-level** line sets
+denominator and condition IDs. Branch markers and count syntax must also be
+accepted by the pinned merger; whitespace markers or unparseable count suffixes
+fail before merging. Both class-level **and method-level** line sets
 and per-line branch structure must match in every contributing report. Removing
 a line, rewriting a measured branch line as `branch=false`, shrinking its branch
 total, deleting a condition or omitting its branch marker fails even when both

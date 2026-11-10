@@ -75,7 +75,7 @@ if seen != expected_projects or any(by_hash.values()):
     raise SystemExit("Incomplete Unit/TRX/original-report identities; recollect the complete Unit selection")
 def branch_shape(line):
     coverage = line.get("condition-coverage")
-    counts = re.search(r"\((\d+)/(\d+)\)", coverage) if coverage is not None else None
+    counts = re.search(r"\(([0-9]+)/([0-9]+)\)$", coverage) if coverage is not None else None
     if coverage is not None and counts is None:
         raise SystemExit(f"Invalid condition-coverage: {coverage}")
     total = int(counts.group(2)) if counts else 0
