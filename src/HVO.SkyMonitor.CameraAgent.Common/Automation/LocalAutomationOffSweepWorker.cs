@@ -42,7 +42,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         }
     }
 
-    /// <summary>Cancels only the matching script occurrence and waits for its real journal/tree drain.</summary>
+    /// <summary>Cancels only the matching script attempt and waits for its real journal/tree drain.</summary>
     public async ValueTask<bool> StopScriptRunAsync(string runKey, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
@@ -117,8 +117,8 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         private int _dispatched;
         private int _released;
 
-        internal void Dispatch(Func<CancellationToken, Task> execute, CancellationToken cancellationToken,
-            LocalAutomationOccurrence? occurrence = null)
+        internal void Dispatch(Func<CancellationToken, Task> execute, LocalAutomationOccurrence occurrence,
+            string journalRunKey, CancellationToken cancellationToken)
         {
             if (Interlocked.Exchange(ref _dispatched, 1) != 0)
             {
@@ -128,10 +128,12 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             // enter the delegate so its authority and reservation are released.
             lock (owner._sync)
             {
-                var scriptStop = occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript
+                var scriptStop = occurrence.Definition.TaskKind == LocalAutomationTaskKind.CustomScript
                     ? new CancellationTokenSource() : null;
                 owner._scriptStop = scriptStop;
-                owner._scriptRunKey = scriptStop is null ? null : occurrence!.RunKey;
+                // The adapter retains the original occurrence identity across retries, but stop
+                // must name this saved attempt, just like status and terminal result persistence.
+                owner._scriptRunKey = scriptStop is null ? null : journalRunKey;
                 owner._execution = Task.Run(async () =>
                 {
                     try

@@ -483,6 +483,63 @@ public sealed partial class CustomScriptSandboxIntegrationTests
     }
 
     [TestMethod]
+    public async Task RetriedScriptCanBeStoppedWithoutTouchingTheFailedAttemptAndSurvivesRestart()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 10, 12, 0, 0, TimeSpan.Zero));
+        var script = CustomScriptTaskAdapterTests.Script("printf abc; sleep 200 & wait");
+        script.TimeoutSeconds = 10;
+        var adapter = new CustomScriptTaskAdapter(Options.Create(new CustomScriptOptions
+        { Enabled = true, OwnerAuthorized = true, Scripts = [script] }), clock);
+        using var registry = new PeriodicRegistryHarness(clock, [adapter]);
+        using var fixture = new ScriptControlsFixture(registry.Registry, clock);
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        Assert.IsTrue((await fixture.Service.SaveAsync(ScriptControlsFixture.Save(script.Target), default).ConfigureAwait(false)).IsSuccess);
+        Assert.IsTrue((await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).IsSuccess);
+        var firstScope = new OwnedSandboxScope();
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        await firstScope.WaitForSleepAsync(fixture.Worker.WhenIdleAsync()).ConfigureAwait(false);
+        await fixture.Worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        firstScope.AssertDrained();
+        var failed = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, failed.Outcome);
+        StringAssert.StartsWith(failed.Detail, "script.timeout;", StringComparison.Ordinal);
+        var queued = await fixture.Store.RetryAsync(new("script", failed.RunKey, 1, "retry-script", "script-owner",
+            "Retry the timed out script"), default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, queued.Status);
+        var retryScope = new OwnedSandboxScope();
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        await retryScope.WaitForSleepAsync(fixture.Worker.WhenIdleAsync()).ConfigureAwait(false);
+        var running = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).ActiveRuns.Single();
+        Assert.AreEqual(failed.RunKey + ":retry2", running.RunKey);
+        Assert.AreEqual(failed.Occurrence, running.Occurrence);
+        Assert.AreEqual(LocalAutomationCommandStatus.Unchanged,
+            (await fixture.Commands.StopAsync(new("script", failed.RunKey, 1, "owner"), default).ConfigureAwait(false)).Status);
+        clock.Advance(TimeSpan.FromSeconds(7));
+        var stopped = await fixture.Service.StopScriptAsync(new("script", running.RunKey, 1, "spoof"), default).ConfigureAwait(false);
+        Assert.IsTrue(stopped.IsSuccess, stopped.Message);
+        var terminal = stopped.Value!.State.Runs.Single(run => run.RunKey == running.RunKey);
+        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, terminal.Outcome);
+        Assert.AreEqual(clock.GetUtcNow(), terminal.CompletedAtUtc);
+        Assert.AreEqual(running.StartedAtUtc, terminal.StartedAtUtc);
+        Assert.AreEqual(running.Occurrence, terminal.Occurrence);
+        Assert.AreEqual(running.Preparation, terminal.Preparation);
+        Assert.AreEqual(2, terminal.Attempt);
+        StringAssert.Contains(terminal.Detail, "script.cancelled; exit=", StringComparison.Ordinal);
+        StringAssert.Contains(terminal.Detail, "stdoutBytes=3; stderrBytes=0", StringComparison.Ordinal);
+        Assert.IsFalse(terminal.Detail.Contains("exit=;", StringComparison.Ordinal));
+        Assert.AreEqual(failed, stopped.Value.State.Runs.Single(run => run.RunKey == failed.RunKey));
+        Assert.IsEmpty(stopped.Value.State.ActiveRuns);
+        retryScope.AssertDrained();
+        fixture.Runner.Dispose();
+        fixture.Store.Dispose();
+        clock.Advance(TimeSpan.FromDays(1));
+        using var reopened = fixture.NewStore();
+        await reopened.InitializeAsync(default).ConfigureAwait(false);
+        CollectionAssert.AreEqual(stopped.Value.State.Runs.ToArray(),
+            (await reopened.GetStateAsync(default).ConfigureAwait(false)).Runs.ToArray());
+    }
+
+    [TestMethod]
     public async Task ContinuouslyDueTimeoutsCannotStarveAReservedRefreshTask()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-script-fairness-" + Guid.NewGuid().ToString("N"));

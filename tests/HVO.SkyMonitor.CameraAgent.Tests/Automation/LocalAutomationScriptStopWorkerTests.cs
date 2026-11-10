@@ -22,7 +22,7 @@ public sealed class LocalAutomationScriptStopWorkerTests
             try { await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { cancelled.SetResult(); }
             await release.Task.ConfigureAwait(false);
-        }, default, occurrence);
+        }, occurrence, occurrence.RunKey, default);
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -39,8 +39,8 @@ public sealed class LocalAutomationScriptStopWorkerTests
         var secondEntered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var second = worker.TryReserve();
         Assert.IsNotNull(second);
-        second.Dispatch(async token => { secondEntered.SetResult(token); await secondRelease.Task.ConfigureAwait(false); }, default,
-            occurrence with { RunKey = "new-run" });
+        second.Dispatch(async token => { secondEntered.SetResult(token); await secondRelease.Task.ConfigureAwait(false); },
+            occurrence with { RunKey = "new-run" }, "new-run", default);
         try
         {
             var token = await secondEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -52,8 +52,8 @@ public sealed class LocalAutomationScriptStopWorkerTests
         using var builtin = worker.TryReserve();
         Assert.IsNotNull(builtin);
         var builtinRelease = ScriptControlsFixture.Signal();
-        builtin.Dispatch(_ => builtinRelease.Task, default, occurrence with
-        { Definition = occurrence.Definition with { TaskKind = LocalAutomationTaskKind.OrbitalElementsRefresh } });
+        builtin.Dispatch(_ => builtinRelease.Task, occurrence with
+        { Definition = occurrence.Definition with { TaskKind = LocalAutomationTaskKind.OrbitalElementsRefresh } }, occurrence.RunKey, default);
         try { Assert.IsFalse(await worker.StopScriptRunAsync(occurrence.RunKey, default).ConfigureAwait(false)); }
         finally { builtinRelease.TrySetResult(); }
         await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);

@@ -2197,35 +2197,33 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             "Environmental acquisition is disabled", StringComparison.Ordinal);
 
         var create = page.Locator("#automation-create");
-        if (await create.IsDisabledAsync().ConfigureAwait(false))
-        {
-            // With no available task, the current UI refuses before it offers an editor at all.
-            Assert.AreEqual(0, await page.Locator("dialog.automation-dialog").CountAsync().ConfigureAwait(false));
-            Assert.IsFalse(string.IsNullOrWhiteSpace(await create.GetAttributeAsync("title").ConfigureAwait(false)));
-        }
-        else
-        {
-            await create.ClickAsync().ConfigureAwait(false);
-            await VisibleAsync(page.Locator("#automation-id")).ConfigureAwait(false);
-            var task = page.Locator("#automation-task");
-            var environmentalOption = task.Locator("option[value='EnvironmentalOnDemandAcquisition']");
-            // A client can tamper with a disabled option; server validation must still reject it.
-            await environmentalOption.EvaluateAsync("option => option.disabled = false").ConfigureAwait(false);
-            await task.SelectOptionAsync(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition)).ConfigureAwait(false);
-            await page.WaitForFunctionAsync("() => !document.querySelector('#automation-id').readOnly && document.querySelector('#automation-target option')?.value === ''").ConfigureAwait(false);
-            Assert.AreEqual("SELECT", await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
-            Assert.AreEqual("SELECT", await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
-            Assert.AreEqual(1, await page.Locator("#automation-target option").CountAsync().ConfigureAwait(false),
-                "An unavailable task must offer no target to choose.");
-            await page.Locator("#automation-id").FillAsync("browser-acceptance").ConfigureAwait(false);
-            await page.Locator("#automation-name").FillAsync("Browser acceptance").ConfigureAwait(false);
-            await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
-            var error = page.Locator(".automation-dialog-message[role='alert']");
-            await VisibleAsync(error).ConfigureAwait(false);
-            var message = await error.InnerTextAsync().ConfigureAwait(false);
-            Assert.IsTrue(message.Contains("Select a registered task target", StringComparison.Ordinal) ||
-                message.Contains(unavailable.UnavailableReason!, StringComparison.Ordinal), message);
-        }
+        Assert.IsFalse(await create.IsDisabledAsync().ConfigureAwait(false),
+            "This fixture has other available tasks, so Create must stay enabled.");
+        await create.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-id")).ConfigureAwait(false);
+        var task = page.Locator("#automation-task");
+        var environmentalOption = task.Locator("option[value='EnvironmentalOnDemandAcquisition']");
+        Assert.IsTrue(await environmentalOption.IsDisabledAsync().ConfigureAwait(false));
+        // A client can tamper with a disabled option; server validation must still reject it.
+        await environmentalOption.EvaluateAsync("option => option.disabled = false").ConfigureAwait(false);
+        await task.SelectOptionAsync(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition)).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => !document.querySelector('#automation-id').readOnly && document.querySelector('#automation-target option')?.value === ''").ConfigureAwait(false);
+        Assert.AreEqual("SELECT", await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
+        Assert.AreEqual("SELECT", await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
+        Assert.AreEqual(1, await page.Locator("#automation-target option").CountAsync().ConfigureAwait(false),
+            "An unavailable task must offer no target to choose.");
+        await page.Locator("#automation-id").FillAsync("browser-acceptance").ConfigureAwait(false);
+        await page.Locator("#automation-name").FillAsync("Browser acceptance").ConfigureAwait(false);
+        await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
+        var error = page.Locator(".automation-dialog-message[role='alert']");
+        await VisibleAsync(error).ConfigureAwait(false);
+        var message = await error.InnerTextAsync().ConfigureAwait(false);
+        StringAssert.Contains(message, "Select a registered task target", StringComparison.Ordinal);
+        // A forged nonempty target must reach and show the specific unavailable-task reason too.
+        await page.Locator("#automation-target").EvaluateAsync("select => select.add(new Option('forged', 'forged'))").ConfigureAwait(false);
+        await page.Locator("#automation-target").SelectOptionAsync("forged").ConfigureAwait(false);
+        await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
+        await Assertions.Expect(error).ToContainTextAsync(unavailable.UnavailableReason!).ConfigureAwait(false);
         Assert.AreEqual(0, await page.Locator("#automation-confirm").CountAsync().ConfigureAwait(false),
             "No confirmation may be raised for an unavailable/unregistered target.");
         var rejected = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);

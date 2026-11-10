@@ -278,7 +278,7 @@ public sealed partial class LocalAutomationRunnerService(
             {
                 await ExecuteTrackedAsync(occurrence, journalRunKey, token).ConfigureAwait(false);
             }
-        }, cancellationToken, occurrence);
+        }, occurrence, journalRunKey, cancellationToken);
         return Task.CompletedTask;
     }
 
