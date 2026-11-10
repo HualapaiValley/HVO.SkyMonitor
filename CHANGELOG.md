@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
+
 - Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
 
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
@@ -43,6 +45,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Added
 
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
+- Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
+- CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713
+- Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386
 - CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
 - Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation and curated deep-sky overlays, and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. Capture-time location history, full footprint edges and reviewed editor state are preserved; rig changes and invalid drafts show per-revision revalidation status without hiding the catalog, central validation requires review for horizon evidence, and identical transient windows reuse bounded detector masks. #1394
 
@@ -56,6 +61,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
 
 - CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
+- Download bounded, versioned pipeline run manifests with retained plan identities, node attempts, artifact checksums and lineage; retained cloud references, conditional outputs and new failed runs remain downloadable. Older runs show a disabled download when their original output history cannot be proven complete; real metadata deletion and corrupt optional evidence have specific reasons while the journal stays readable. Malformed manifest bookkeeping does not roll back completed work; provably complete older failed runs remain downloadable, while ambiguous retry/skip/failure history is refused. Corrupt auxiliary source descriptors disable only the download with the corrupt-evidence reason. Unstarted or interrupted nodes keep failed, expired and cancelled runs downloadable; outputless nodes refuse downloads if retention removed their frozen historical inputs. Corruption in one optional count ledger no longer prevents the other from recording retained evidence; removing the corrupt member recovers downloads when the history is complete. Provably complete older outputless windows remain downloadable; ambiguous or partially retained historical windows are refused. The empty run-actions menu is removed. #1715
 
 - Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
 - Edit legacy Annotation constellation selections, corner fact lines and environmental kinds in graph drafts, with bounded validation and explicit activation. #1386
@@ -80,6 +86,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Explicitly enabled capture graphs can retain satellite predictions for the recorded exposure, including their exact orbital/time inputs, restart-safe products and source limitations, and expose an independently selectable Current Sky/archive overlay and export. Shipped profiles remain opt-in; bounded work admission and resumable interrupted-input cleanup preserve retention progress as captures accumulate. (#1641)
 
 ### Changed
+
+- Skip Storage-incompatible standard processing while retaining raw and committed capture-time scene evidence for explicit replay; optional scene failures leave capture admission open, configured-basic refreshes without a false health alarm, and divergent Named graph commands return HTTP 409 policy guidance. #1386
 
 - The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
 

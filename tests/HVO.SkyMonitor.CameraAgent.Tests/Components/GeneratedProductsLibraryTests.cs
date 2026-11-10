@@ -41,12 +41,13 @@ public sealed class GeneratedProductsLibraryTests
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Queued, "Queued for generation", "Not started")]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Running, "Running generation", "2026-10-02 19:10:00 UTC")]
     [DataRow(Common.Automation.LocalAutomationRunOutcome.Interrupted, "Stalled: generation was interrupted", "2026-10-02 19:10:00 UTC")]
+    [DataRow(Common.Automation.LocalAutomationRunOutcome.Running, "Running generation", "2026-10-02 19:10:00 UTC", NightlyProductKind.DailySummary)]
     public void Library_ProgressCardsShowStateStartAndSourceWindowWithoutPublishedMedia(
-        Common.Automation.LocalAutomationRunOutcome outcome, string description, string started)
+        Common.Automation.LocalAutomationRunOutcome outcome, string description, string started, NightlyProductKind kind = NightlyProductKind.Keogram)
     {
         using var context = new BunitContext();
         var (_, nightly) = Configure(context);
-        var previous = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced);
+        var previous = Entry(Newest, kind, NightlyProductWindowDisposition.Produced);
         var occurrence = previous.Occurrence;
         var run = new Common.Automation.LocalAutomationRun(1, occurrence.Definition.DefinitionId,
             occurrence.RunKey, occurrence.RevisionSha256, occurrence.Definition.TriggerKind, occurrence.ScheduledForUtc,
@@ -243,15 +244,12 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual(NightlyProductContract.KeogramTarget, cut.Find("#library-type").GetAttribute("value"));
         Assert.AreEqual("partial", cut.Find("#library-status").GetAttribute("value"));
         Assert.AreEqual("2026-10-01", cut.Find("#library-day").GetAttribute("value"));
-        // Choices CameraAgent cannot answer truthfully stay visible but disabled, with the reason beside them.
-        foreach (var unrecorded in new[] { "#library-type option[value='daily-summary']" })
-        {
-            Assert.IsTrue(cut.Find(unrecorded).HasAttribute("disabled"), unrecorded);
-        }
+        Assert.IsFalse(cut.Find("#library-status option[value='running']").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#library-type option[value='daily-summary']").HasAttribute("disabled"));
         Assert.IsFalse(cut.Find("#library-status option[value='partial']").HasAttribute("disabled"));
         Assert.IsFalse(cut.Find("#library-type option[value='time-lapse']").HasAttribute("disabled"));
         Assert.AreEqual("library-filter-note", cut.Find("#library-type").GetAttribute("aria-describedby"));
-        StringAssert.Contains(cut.Find("#library-filter-note").TextContent, "not yet generated", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("#library-filter-note").TextContent, "summaries include actual captures", StringComparison.Ordinal);
 
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         cut.Find("#library-type").Change(NightlyProductContract.StarTrailTarget);
@@ -267,7 +265,6 @@ public sealed class GeneratedProductsLibraryTests
     }
 
     [TestMethod]
-    [DataRow("type=daily-summary", "Daily summaries are not yet generated")]
     [DataRow("type=fireball", "not a product type CameraAgent generates")]
     [DataRow("status=available", "not a recorded product state")]
     [DataRow("day=yesterday", "observing day filter is not a date")]
@@ -479,6 +476,22 @@ public sealed class GeneratedProductsLibraryTests
         cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll(".video-library li")));
         StringAssert.Contains(cut.Find(".page-state").TextContent, "No still products", StringComparison.Ordinal);
         Assert.IsFalse(cut.Find(".page-state").TextContent.Contains("No generated products", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void DailySummaryFilterListsRealPartialProducts()
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var entry = Entry(Newest, NightlyProductKind.DailySummary, NightlyProductWindowDisposition.Produced,
+            reason: NightlyProductContract.PartialSummaryReasonCode);
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([entry], null, null));
+        var cut = Render(context, "/archive/products?type=daily-summary&status=partial");
+        cut.WaitForAssertion(() => Assert.HasCount(1, nightly.LibraryQueries));
+        Assert.AreEqual(NightlyProductKind.DailySummary, nightly.LibraryQueries[0].Kind);
+        Assert.IsFalse(cut.Find("#library-type option[value='daily-summary']").HasAttribute("disabled"));
+        Assert.AreEqual("Partial", cut.Find(".library-card__facts .hvo-chip").TextContent);
+        Assert.AreEqual(NightlyProductLinks.Detail(entry.Product!.ProductId), cut.Find("a.library-card__media").GetAttribute("href"));
     }
 
     private static (TestOperatorUiService Operations, TestNightlyProductUiService Nightly) Configure(BunitContext context, bool previewFailed = false)

@@ -283,7 +283,18 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
         services.AddSingleton<ProcessingReplayWakeup>();
-        services.AddSingleton<ProcessingGraphOperationsCoordinator>();
+        services.AddSingleton(provider => new ProcessingGraphOperationsCoordinator(
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+            provider.GetRequiredService<SqliteCaptureProcessingStore>(),
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ProcessingReplayWakeup>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            // Defer lookup: schedule storage/admission depend on raw ingress, which depends on this coordinator.
+            // Hostless graph tools have no initialized accessor; do not construct capture admission for them.
+            () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
+                ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
+                : null));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>

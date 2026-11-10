@@ -102,7 +102,7 @@ jobs:
           ./scripts/test:ci-secret-scan
       - name: Setup .NET from global.json
         if: needs.changes.outputs.mode == 'full'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore dependencies and tools
@@ -213,7 +213,7 @@ jobs:
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
           printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Verify deployment contract tools
@@ -272,7 +272,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore
@@ -318,7 +318,7 @@ jobs:
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
           printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build Release
@@ -383,7 +383,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build Release
@@ -451,7 +451,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build Release
@@ -572,7 +572,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore tools and build the CameraAgent project root
@@ -597,7 +597,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore tools and build the LogicHost project root
@@ -645,7 +645,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build shared project roots
@@ -706,7 +706,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build CameraAgent project roots
@@ -763,7 +763,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build LogicHost project roots
@@ -815,7 +815,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build combined project roots
@@ -882,7 +882,7 @@ jobs:
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
           printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build delivery project roots
@@ -927,7 +927,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore coverage tool

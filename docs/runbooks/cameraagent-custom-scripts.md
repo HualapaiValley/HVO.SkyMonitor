@@ -5,9 +5,13 @@ Owner-registered scripts integrate with the predefined automation wizard from
 slice is available; #1133 itself remains open with blocked follow-up work, so this
 is not a claim that the whole prerequisite issue is closed. The custom step, explicit
 run-now and per-running-script stop controls are implemented here. #1137 remains
-open: installer/runtime prerequisite provisioning, supported production adoption,
-independent review convergence and selected protected CI/finalization are not
-complete. Roy has not approved a partial issue delivery. No hardware is required.
+open. Roy approved this Linux x64 adapter slice on November 10, 2026; remaining
+installer/runtime provisioning, production qualification, first full-CI prerequisite
+execution, non-x64 support, #1133 follow-ups and parent closure gates are tracked
+in #1767. Review Lows are tracked in #1768. Those issues are outside this slice.
+Independent review convergence and selected protected CI/finalization still gate
+this PR. Local qualification uses virtual devices and makes no hardware or
+production qualification claim.
 
 ## Authorization and registration
 
