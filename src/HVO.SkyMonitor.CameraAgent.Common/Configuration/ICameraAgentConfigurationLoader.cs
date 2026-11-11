@@ -7,6 +7,12 @@ public sealed record InstallationConfigurationSnapshot(CameraModuleConfig Config
 public interface ICameraAgentConfigurationLoader
 {
     Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken);
+    bool RetainedIntegrityRecoveryRequired => false;
+
+    async Task RequestRetainedIntegrityScrubAsync(bool force, CancellationToken cancellationToken)
+        => _ = await LoadForRetainedIntegrityScrubAsync(cancellationToken).ConfigureAwait(false);
+
+    Task DrainRetainedIntegrityScrubAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
         => LoadAsync(cancellationToken);

@@ -155,11 +155,12 @@ public sealed partial class InstallationVerificationReadTests
                 var started = Stopwatch.GetTimestamp();
                 await fixture.Host.RestartAsync().ConfigureAwait(false);
                 _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
                 var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 var observed = stages.ForTrace(restartTrace.TraceId);
                 var reparsed = observed.Sum(stage => stage.NumericTags.TryGetValue("attribution.parse.count", out var count)
                     ? Convert.ToInt64(count, System.Globalization.CultureInfo.InvariantCulture) : 0L);
-                Assert.AreEqual(1L, reparsed, "Only the newly published auxiliary state may miss persisted proofs, including beyond the former cap.");
+                Assert.AreEqual(0L, reparsed, "Authenticated current typed ledger proofs avoid reparsing unchanged bytes, including beyond the former cap.");
                 using var restartedClient = fixture.CreateClient();
                 Assert.AreEqual(first.Identity.GetRawText(), (await fixture.ReadAsync(restartedClient).ConfigureAwait(false)).GetRawText());
                 restartQualification = new { ElapsedMs = elapsed, Parses = reparsed, Requalified = true };

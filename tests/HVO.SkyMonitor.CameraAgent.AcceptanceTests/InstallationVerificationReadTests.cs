@@ -89,6 +89,7 @@ public sealed partial class InstallationVerificationReadTests
         Assert.AreEqual(ManualDeploymentLocationStatus.Applied, locationChange.Status);
         _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
         _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         using var relocatedTrace = StartTrace("manual-location-change")!;
         var relocated = await fixture.ReadAsync(client).ConfigureAwait(false);
         Assert.AreEqual(2, stages.ForTrace(relocatedTrace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));

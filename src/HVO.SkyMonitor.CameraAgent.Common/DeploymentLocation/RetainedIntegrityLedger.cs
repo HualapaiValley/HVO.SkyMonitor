@@ -33,17 +33,23 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private readonly List<Intent> _pending = [];
     private string _nonce = Guid.NewGuid().ToString("N");
     private byte[] _binding = [];
+    private byte[]? _entryKey;
     private byte[] _chain = new byte[64];
     private byte[] _pendingCommitment = new byte[64];
     private long _generation;
     private long _count;
     private bool _established;
     private bool _qualified;
+    private bool _warned;
+    private bool _pendingLoaded;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Non-owning reference; the serialized full-verification caller disposes its scrub, and host shutdown drains it before disposing the ledger.")]
+    private Scrub? _scrubbing;
     private bool _disposed;
 
     internal sealed record Entry(string Key, byte[] Digest, int Kind, long Generation = 0);
     private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false);
-    private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified);
+    private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified,
+        DateTimeOffset VerifiedUntilUtc = default);
 
     internal RetainedIntegrityLedger(string root, IDeploymentLocationProtector protector,
         Func<string, Entry?> readCurrent, Action unqualifiedWarning, TimeProvider timeProvider, string? requiredNonce = null)
@@ -85,9 +91,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             var metadataExists = ReadMetadata();
             if (requiredNonce is not null && (!metadataExists || !string.Equals(requiredNonce, _nonce, StringComparison.Ordinal)))
                 throw new InvalidDataException("Protected history requires its original retained integrity ledger.");
-            ReadIntents();
+            _pendingLoaded = _pendingCommitment.All(static value => value == 0);
             if (!metadataExists)
             {
+                _entryKey = RandomNumberGenerator.GetBytes(32);
                 // Bind fresh authority only after its nonce is durable. A crash during
                 // adoption can then resume a full scrub, never manufacture another ledger.
                 using var transaction = _database.BeginTransaction();
@@ -116,6 +123,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             if (!_qualified) return false;
             if (_timeProvider.GetUtcNow() >= _scrubDue) return Invalidate();
             if (!_binding.AsSpan().SequenceEqual(binding)) return Invalidate();
+            ValidatePathMetadata();
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, _checkpoint);
             using var stream = File.OpenRead(_checkpoint);
             if (stream.Length > 16_384) return Invalidate();
@@ -131,7 +139,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private bool Invalidate()
     {
         _qualified = false;
-        _unqualifiedWarning();
+        if (!_warned) { _warned = true; _unqualifiedWarning(); }
         return false;
     }
 
@@ -140,19 +148,27 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         _barrier.Wait(cancellationToken);
         try
         {
-            _qualified = false;
             ValidateLiveMetadata();
             ValidatePathMetadata();
-            if (_established && !ComputeEntriesRoot("entries", cancellationToken: cancellationToken).AsSpan().SequenceEqual(_chain))
-                throw new InvalidDataException("Retained integrity ledger authentication failed.");
+            ReadIntents();
+            var expected = ReadExpectedEntries(cancellationToken);
+            if (_entryKey is null)
+            {
+                _entryKey = RandomNumberGenerator.GetBytes(32);
+                using var transaction = _database.BeginTransaction();
+                WriteMetadata(transaction);
+                transaction.Commit();
+            }
             Execute("DELETE FROM scan_entries;");
-            return new Scrub(this, binding, readForScrub, _generation, strict);
+            return _scrubbing = new Scrub(this, binding, readForScrub, _generation, strict, expected);
         }
+        catch (Exception exception) when (exception is not OperationCanceledException) { Invalidate(); throw; }
         finally { _barrier.Release(); }
     }
 
     internal sealed class Scrub(RetainedIntegrityLedger owner, byte[] binding,
-        Func<string, Entry?> readCurrent, long startGeneration, bool strict) : IDisposable
+        Func<string, Entry?> readCurrent, long startGeneration, bool strict,
+        Dictionary<string, Entry> expectedEntries) : IDisposable
     {
         private bool _finished;
         private bool _locked;
@@ -160,11 +176,22 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         private bool _drift;
         private bool _disposed;
         private readonly List<Entry> _batch = [];
+        private readonly HashSet<string> _changed = new(StringComparer.Ordinal);
+        private readonly byte[] _scanChain = new byte[64];
+        private readonly bool _priorQualified = owner._qualified && owner._timeProvider.GetUtcNow() < owner._scrubDue;
+        internal void Fail() => owner.Invalidate();
+        internal void Changed(string key) => _changed.Add(key);
+        internal int? ParsedKind(string key, byte[] digest)
+        {
+            if (!binding.AsSpan().SequenceEqual(owner._binding)) return null;
+            var expected = _changed.Contains(key) ? owner.ReadEntry(key) : expectedEntries.GetValueOrDefault(key);
+            return expected is { Kind: 1 or 2 } && expected.Digest.AsSpan().SequenceEqual(digest) ? expected.Kind : null;
+        }
         private void Flush()
         {
             if (_batch.Count == 0) return;
             using var transaction = owner._database.BeginTransaction();
-            foreach (var entry in _batch) owner.Upsert("scan_entries", entry, transaction);
+            owner.UpsertBatch(_batch, transaction);
             transaction.Commit();
             _batch.Clear();
         }
@@ -175,19 +202,25 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
 
         // Called while Observe holds the short per-entry mutation barrier.
-        internal void Record(Entry entry)
+        internal void Record(Entry entry, bool replace = false)
         {
-            var expected = owner.ReadEntry(entry.Key);
+            var expected = _changed.Contains(entry.Key) ? owner.ReadEntry(entry.Key) : expectedEntries.GetValueOrDefault(entry.Key);
             if (owner._established && !owner.AllowedPending(entry.Key, entry.Digest) &&
                 (expected is null || expected.Kind == 0 || !expected.Digest.AsSpan().SequenceEqual(entry.Digest)))
                 Drift();
             _invalid |= entry.Kind == 3;
-            _batch.Add(entry with { Generation = expected?.Generation ?? startGeneration });
-            if (_batch.Count >= 128) Flush();
+            if (entry.Kind == 3) owner.Invalidate();
+            entry = entry with { Generation = expected?.Generation ?? startGeneration };
+            if (replace && owner.ReadStageEntry(entry.Key) is { } previous)
+                Accumulate(_scanChain, owner.EntryHash(previous), remove: true);
+            Accumulate(_scanChain, owner.EntryHash(entry));
+            _batch.Add(entry);
+            if (_batch.Count >= 8192) Flush();
         }
 
         private void Drift()
         {
+            owner.Invalidate();
             if (strict) throw new InvalidDataException("Retained integrity drift requires recovery before verification.");
             if (!_drift) owner._unqualifiedWarning();
             _drift = true;
@@ -200,11 +233,16 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             Flush();
             // Re-read only keys changed during the scrub or left by an interrupted managed write.
             // A read after an in-band write already compared against that write's authenticated digest.
-            using var query = owner._database.CreateCommand();
-            query.CommandText = "SELECT key FROM entries WHERE generation>$start UNION SELECT key FROM entries WHERE kind<>0 AND key NOT IN (SELECT key FROM scan_entries);";
-            query.Parameters.AddWithValue("$start", startGeneration);
             var changed = new List<string>();
-            using (var reader = query.ExecuteReader()) while (reader.Read()) changed.Add(reader.GetString(0));
+            if (!(_changed.Count == 0 && owner._pending.Count == 0 && expectedEntries.Count == owner._count &&
+                _scanChain.AsSpan().SequenceEqual(owner._chain)))
+            {
+                using var query = owner._database.CreateCommand();
+                query.CommandText = "SELECT key FROM entries WHERE generation>$start UNION SELECT key FROM entries WHERE kind<>0 AND key NOT IN (SELECT key FROM scan_entries);";
+                query.Parameters.AddWithValue("$start", startGeneration);
+                using var reader = query.ExecuteReader();
+                while (reader.Read()) changed.Add(reader.GetString(0));
+            }
             foreach (var key in changed)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -214,11 +252,13 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                 {
                     if (expected is { Kind: not 0 } && !owner.AllowedPending(key, null))
                         Drift();
+                    if (owner.ReadStageEntry(key) is { } previous)
+                        Accumulate(_scanChain, owner.EntryHash(previous), remove: true);
                     owner.DeleteStage(key);
                 }
                 else
                 {
-                    Record(actual);
+                    Record(actual, replace: true);
                 }
             }
             Flush();
@@ -231,17 +271,21 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             if (!_locked) throw new InvalidOperationException("A scrub must finish before publication.");
             if (_drift) return; // Startup/recovery stays available, but unexplained changes never replace expected evidence.
             using var transaction = owner._database.BeginTransaction();
+            var verified = owner.ComputeEntriesRoot("scan_entries", transaction);
+            if (!verified.AsSpan().SequenceEqual(_scanChain))
+                throw new InvalidDataException("Retained verification staging authentication failed.");
             owner.Execute("DELETE FROM entries; INSERT INTO entries SELECT * FROM scan_entries; DELETE FROM scan_entries; DELETE FROM pending;", transaction);
             owner._pending.Clear();
             owner._generation++;
             owner._binding = binding;
             owner._count = owner.Scalar("SELECT COUNT(*) FROM entries WHERE kind<>0;", transaction);
-            owner._chain = owner.ComputeEntriesRoot("entries", transaction);
+            owner._chain = verified;
             owner._established = true;
             owner.WriteMetadata(transaction);
             transaction.Commit();
             owner.ValidatePathMetadata();
             owner._qualified = !_invalid;
+            if (owner._qualified) owner._warned = false;
             owner._scrubDue = owner._timeProvider.GetUtcNow().AddHours(24);
             owner.WriteCheckpoint();
             _finished = true;
@@ -251,7 +295,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         {
             if (_disposed) return;
             _disposed = true;
-            if (!_finished) owner._qualified = false;
+            if (!_finished && (!_priorQualified || _invalid || _drift)) owner._qualified = false;
+            if (owner._scrubbing == this) owner._scrubbing = null;
             if (_locked) { _locked = false; owner._barrier.Release(); }
         }
     }
@@ -348,6 +393,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         var mutation = new Mutation(this, current);
         try
         {
+            if (!_pendingLoaded) ReadIntents();
             ValidateLiveMetadata();
             mutation.Add(intents);
             Current.Value = mutation;
@@ -489,6 +535,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         entry = entry with { Generation = _generation, Digest = entry.Kind == 0 ? previous?.Digest ?? [] : entry.Digest };
         if (previous is not null) Accumulate(_chain, EntryHash(previous), remove: true);
         Upsert("entries", entry, transaction);
+        _scrubbing?.Changed(entry.Key);
         Accumulate(_chain, EntryHash(entry));
     }
 
@@ -530,6 +577,9 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
         var current = _readCurrent(intent.Key);
         var expected = ReadEntry(intent.Key);
+        // A nested prune may delete the file just published by its still-open
+        // outer write. Its declared, authenticated intent is the expected state.
+        if (current is not null && AllowedPending(intent.Key, current.Digest)) return false;
         var changed = current is null ? expected is { Kind: not 0 }
             : expected is null or { Kind: 0 } || !expected.Digest.AsSpan().SequenceEqual(current.Digest);
         if (changed && expected is not null && intent.Planned == Convert.ToHexString(expected.Digest)) return false;
@@ -538,7 +588,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     }
     private static string PrefixEnd(string prefix) => prefix[..^1] + (char)(prefix[^1] + 1);
     private Checkpoint Snapshot(bool qualified) => new(_epoch, _nonce, Convert.ToHexString(_binding),
-        _generation, Convert.ToHexString(_chain), _count, qualified);
+        _generation, Convert.ToHexString(_chain), _count, qualified, _scrubDue);
 
     private void WriteCheckpoint(bool? qualified = null)
     {

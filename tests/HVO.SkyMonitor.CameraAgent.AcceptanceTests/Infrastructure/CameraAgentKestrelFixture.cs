@@ -45,6 +45,9 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private bool _preserveRoot;
     private BrowserWebApplicationFactory? _factory;
     private HttpClient? _lifetimeClient;
+    private int _restartPort;
+
+    internal void PreservePortOnRestart() => _restartPort = BaseAddress.Port;
 
     private CameraAgentKestrelFixture(
         string root,
@@ -234,7 +237,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices);
         factory.UseKestrel(options =>
         {
-            options.Listen(IPAddress.Loopback, 0);
+            options.Listen(IPAddress.Loopback, _restartPort);
             options.ListenUnixSocket(RecoverySocketPath, listen => listen.Protocols = HttpProtocols.Http1);
         });
         _factory = factory;

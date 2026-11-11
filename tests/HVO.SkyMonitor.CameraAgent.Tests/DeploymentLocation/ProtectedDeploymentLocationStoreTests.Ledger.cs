@@ -275,7 +275,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         File.Move(replacement, path, overwrite: true);
         var refused = false;
         try { _ = await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false); }
-        catch (Exception exception) when (exception is CryptographicException or IOException or SqliteException) { refused = true; }
+        catch (Exception exception) when (exception is InvalidDataException or CryptographicException or IOException or SqliteException) { refused = true; }
         Assert.IsTrue(refused, "A full scrub must inspect the durable path, not trust an old open inode.");
         Assert.AreEqual(active, await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
         await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>

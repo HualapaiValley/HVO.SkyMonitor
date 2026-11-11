@@ -38,6 +38,8 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow("pending-both")]
     [DataRow("pending-corrupt")]
     [DataRow("pending-torn")]
+    [DataRow("legacy-target")]
+    [DataRow("rotated-current-key")]
     public async Task DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs(string fault)
     {
         var id = Guid.NewGuid();
@@ -55,6 +57,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var active = await first.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         var (_, captureJson) = await WriteSummaryCaptureAsync(active, journal: true).ConfigureAwait(false);
         first.Dispose();
+        if (fault == "legacy-target") await RewriteLedgerAuthenticationAsync(legacy: true).ConfigureAwait(false);
         if (fault is "pending-target" or "pending-both")
             await AddInterruptedIntentAsync("J|1", captureJson).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
@@ -67,6 +70,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         await RetainedFileMutations.WriteAllBytesAsync(added, "{\"sequence\":1}"u8.ToArray()).ConfigureAwait(false);
         Assert.AreEqual(active, await current.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false));
         current.Dispose();
+        if (fault == "rotated-current-key") await RewriteLedgerAuthenticationAsync(legacy: false).ConfigureAwait(false);
         var ledger = Path.Combine(_options.Value.RawIngressRoot, ".location", "retained-integrity.v1.db");
         if (fault is "pending-current" or "pending-both" or "pending-corrupt" or "pending-torn")
         {
@@ -281,6 +285,46 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.AreEqual(active, await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
         Assert.IsGreaterThan(0, observed);
         Assert.AreEqual(active, await restarted.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    private async Task RewriteLedgerAuthenticationAsync(bool legacy)
+    {
+        var ledger = Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName);
+        using var connection = new SqliteConnection($"Data Source={ledger};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var read = connection.CreateCommand();
+        read.CommandText = "SELECT payload FROM metadata WHERE id=1;";
+        var metadata = JsonSerializer.Deserialize<Metadata>(_protector.Unprotect((byte[])(await read.ExecuteScalarAsync().ConfigureAwait(false))!))!;
+        var newKey = legacy ? null : RandomNumberGenerator.GetBytes(32);
+        var updated = metadata with { EntryKey = newKey is null ? null : Convert.ToBase64String(newKey) };
+        var proofs = new List<EntryProof>();
+        read.CommandText = "SELECT key,digest,kind,generation,auth FROM entries;";
+        using (var rows = await read.ExecuteReaderAsync().ConfigureAwait(false))
+        {
+            while (await rows.ReadAsync().ConfigureAwait(false))
+            {
+                var proof = new EntryProof(metadata.Nonce, rows.GetString(0), Convert.ToHexString((byte[])rows.GetValue(1)), rows.GetInt32(2), rows.GetInt64(3));
+                Assert.IsTrue(AuthenticateEntry(proof, (byte[])rows.GetValue(4), EntryKey(metadata), _protector.Unprotect));
+                proofs.Add(proof);
+            }
+        }
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = "UPDATE entries SET auth=$auth WHERE key=$key;";
+        update.Parameters.Add("$auth", SqliteType.Blob);
+        update.Parameters.Add("$key", SqliteType.Text);
+        foreach (var proof in proofs)
+        {
+            update.Parameters[0].Value = ProtectEntry(proof, newKey, _protector.Protect);
+            update.Parameters[1].Value = proof.Key;
+            _ = await update.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        update.Parameters.Clear();
+        update.CommandText = "UPDATE metadata SET payload=$payload WHERE id=1;";
+        update.Parameters.AddWithValue("$payload", _protector.Protect(JsonSerializer.SerializeToUtf8Bytes(updated)));
+        _ = await update.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await transaction.CommitAsync().ConfigureAwait(false);
     }
 
     private async Task AddInterruptedIntentAsync(string key, byte[] plannedBytes)

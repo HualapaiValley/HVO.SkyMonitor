@@ -58,6 +58,7 @@ internal sealed partial class RetainedIntegrityLedger
         _count = metadata.Count;
         _established = metadata.Established;
         _pendingCommitment = Convert.FromHexString(metadata.Pending);
+        _entryKey = EntryKey(metadata);
         return true;
     }
 
@@ -90,10 +91,11 @@ internal sealed partial class RetainedIntegrityLedger
         }
         if (!ComputePendingRoot().AsSpan().SequenceEqual(_pendingCommitment))
             throw new InvalidDataException("Retained mutation intents failed authentication.");
+        _pendingLoaded = true;
     }
 
     private Metadata CurrentMetadata() => new(_nonce, _generation, Convert.ToHexString(_chain), _count, _established,
-        Convert.ToHexString(_pendingCommitment));
+        Convert.ToHexString(_pendingCommitment), _entryKey is null ? null : Convert.ToBase64String(_entryKey));
 
     private void ValidateLiveMetadata(SqliteTransaction? transaction = null, long? generation = null)
     {
@@ -187,10 +189,102 @@ internal sealed partial class RetainedIntegrityLedger
         using var row = command.ExecuteReader();
         if (!row.Read()) return null;
         var entry = new Entry(key, (byte[])row.GetValue(0), row.GetInt32(1), row.GetInt64(2));
-        var proof = JsonSerializer.Deserialize<EntryProof>(_protector.Unprotect((byte[])row.GetValue(3)));
-        if (proof != new EntryProof(_nonce, key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation))
+        if (!AuthenticateEntry(new EntryProof(_nonce, key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation),
+            (byte[])row.GetValue(3), _entryKey, _protector.Unprotect))
             throw new InvalidDataException("Retained integrity entry authentication failed.");
         return entry;
+    }
+
+    private Dictionary<string, Entry> ReadExpectedEntries(CancellationToken cancellationToken)
+    {
+        var entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
+        var root = new byte[64];
+        long count = 0;
+        using var command = _database.CreateCommand();
+        command.CommandText = "SELECT key,digest,kind,generation,auth FROM entries;";
+        using var rows = command.ExecuteReader();
+        while (rows.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var entry = new Entry(rows.GetString(0), (byte[])rows.GetValue(1), rows.GetInt32(2), rows.GetInt64(3));
+            if (!AuthenticateEntry(new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation),
+                (byte[])rows.GetValue(4), _entryKey, _protector.Unprotect))
+                throw new InvalidDataException("Retained integrity entry authentication failed.");
+            entries.Add(entry.Key, entry);
+            Accumulate(root, EntryHash(entry));
+            if (entry.Kind != 0) count++;
+        }
+        if (!root.AsSpan().SequenceEqual(_chain) || count != _count)
+            throw new InvalidDataException("Retained integrity ledger authentication failed.");
+        return entries;
+    }
+
+    private Entry? ReadStageEntry(string key)
+    {
+        using var command = _database.CreateCommand();
+        command.CommandText = "SELECT digest,kind,generation FROM scan_entries WHERE key=$key;";
+        command.Parameters.AddWithValue("$key", key);
+        using var row = command.ExecuteReader();
+        return row.Read() ? new Entry(key, (byte[])row.GetValue(0), row.GetInt32(1), row.GetInt64(2)) : null;
+    }
+
+    internal bool HasExpectedEvidence => _established;
+
+    internal Dictionary<string, Entry> ReadRecentExpected(string prefix, int limit, CancellationToken cancellationToken)
+    {
+        _barrier.Wait(cancellationToken);
+        try
+        {
+            using var command = _database.CreateCommand();
+            command.CommandText = "SELECT key,digest,kind,generation,auth FROM entries WHERE key >= $prefix AND key < $end LIMIT $limit;";
+            command.Parameters.AddWithValue("$prefix", prefix);
+            command.Parameters.AddWithValue("$end", PrefixEnd(prefix));
+            command.Parameters.AddWithValue("$limit", limit + 1);
+            using var rows = command.ExecuteReader();
+            var result = new Dictionary<string, Entry>(StringComparer.Ordinal);
+            while (rows.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (result.Count >= limit) throw new InvalidDataException("The recent retained evidence budget was exceeded.");
+                var entry = new Entry(rows.GetString(0), (byte[])rows.GetValue(1), rows.GetInt32(2), rows.GetInt64(3));
+                if (!AuthenticateEntry(new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation),
+                    (byte[])rows.GetValue(4), _entryKey, _protector.Unprotect))
+                    throw new InvalidDataException("Recent retained evidence authentication failed.");
+                result.Add(entry.Key, entry);
+            }
+            return result;
+        }
+        finally { _barrier.Release(); }
+    }
+
+    internal bool MatchesRecent(string key, byte[] digest, CancellationToken cancellationToken)
+    {
+        _barrier.Wait(cancellationToken);
+        try { return ReadEntry(key) is { Kind: not 0 } entry && entry.Digest.AsSpan().SequenceEqual(digest); }
+        finally { _barrier.Release(); }
+    }
+
+    private void UpsertBatch(List<Entry> entries, SqliteTransaction transaction)
+    {
+        using var command = _database.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT OR REPLACE INTO scan_entries(key,digest,kind,generation,auth) VALUES($key,$digest,$kind,$gen,$auth);";
+        command.Parameters.Add("$key", SqliteType.Text);
+        command.Parameters.Add("$digest", SqliteType.Blob);
+        command.Parameters.Add("$kind", SqliteType.Integer);
+        command.Parameters.Add("$gen", SqliteType.Integer);
+        command.Parameters.Add("$auth", SqliteType.Blob);
+        command.Prepare();
+        foreach (var entry in entries)
+        {
+            command.Parameters[0].Value = entry.Key;
+            command.Parameters[1].Value = entry.Digest;
+            command.Parameters[2].Value = entry.Kind;
+            command.Parameters[3].Value = entry.Generation;
+            command.Parameters[4].Value = ProtectEntry(new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest),
+                entry.Kind, entry.Generation), _entryKey, _protector.Protect);
+            command.ExecuteNonQuery();
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Both possible statements are fixed internal SQL; keys and values are parameters.")]
@@ -206,8 +300,8 @@ internal sealed partial class RetainedIntegrityLedger
         command.Parameters.AddWithValue("$digest", entry.Digest);
         command.Parameters.AddWithValue("$kind", entry.Kind);
         command.Parameters.AddWithValue("$gen", entry.Generation);
-        command.Parameters.AddWithValue("$auth", _protector.Protect(JsonSerializer.SerializeToUtf8Bytes(
-            new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation))));
+        command.Parameters.AddWithValue("$auth", ProtectEntry(new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation),
+            _entryKey, _protector.Protect));
         command.ExecuteNonQuery();
     }
 
@@ -233,8 +327,8 @@ internal sealed partial class RetainedIntegrityLedger
         {
             cancellationToken.ThrowIfCancellationRequested();
             var entry = new Entry(rows.GetString(0), (byte[])rows.GetValue(1), rows.GetInt32(2), rows.GetInt64(3));
-            var proof = JsonSerializer.Deserialize<EntryProof>(_protector.Unprotect((byte[])rows.GetValue(4)));
-            if (proof != new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation))
+            if (!AuthenticateEntry(new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation),
+                (byte[])rows.GetValue(4), _entryKey, _protector.Unprotect))
                 throw new InvalidDataException("Retained integrity entry authentication failed.");
             Accumulate(root, EntryHash(entry));
         }

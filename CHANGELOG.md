@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Protected installation verification uses writer-maintained integrity checkpoints; full scrubs run at startup, on relevant configuration/dirty-state changes and daily. Out-of-band tampering is detected by the next scrub. Ordinary configuration/continuity loads wait safely during scrubs and coalesce retries for persistent invalid evidence. Installer identity checks retain their 120-second budget; malformed/quarantined evidence keeps recovery available but refuses lifecycle verification. Nested publication/pruning no longer deadlocks concurrent writers. Failed first upgrades and failed rollback across the ledger boundary restore their paired saved authority; generic missing-ledger restore still refuses. #1041
+- Protected installation verification uses writer-maintained integrity checkpoints. Startup checks a bounded recent capture window before serving health and recovery; full history qualification and capture recovery run in the background. Lifecycle operations refuse pending or invalid history within the existing 120-second budget. Full scrubs detect out-of-band tampering and refresh daily; ordinary polls coalesce work. Managed pruning, missing-ledger refusal and paired upgrade/rollback recovery preserve retained evidence. Refs #1041
 
 - The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
 

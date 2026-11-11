@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 internal sealed class RetainedManifestValidationIndex : IDisposable
 {
     internal const string FileName = "retained-validation.v2.db";
-    internal const int BatchSize = 128;
+    internal const int BatchSize = 8192;
     private const int ProofLength = 73;
     private readonly byte[] _identity;
     private readonly IDeploymentLocationProtector _protector;

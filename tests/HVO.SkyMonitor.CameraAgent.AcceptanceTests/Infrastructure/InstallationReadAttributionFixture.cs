@@ -22,8 +22,11 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 // Real endpoint, loader, protected location history and v15 journal; only autonomous workers are removed.
-internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixture host) : IAsyncDisposable
+internal sealed partial class InstallationReadAttributionFixture(CameraAgentKestrelFixture host,
+    Func<StartupProtectionCounter?>? startupProtection = null, Action? stopStartup = null) : IAsyncDisposable
 {
+    internal StartupProtectionCounter? StartupProtection => startupProtection?.Invoke();
+    internal void StopStartupForBudgetProbe() => stopStartup?.Invoke();
     internal CameraAgentKestrelFixture Host { get; } = host;
     internal DelayedInstallationLoader Loader => (DelayedInstallationLoader)Host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
     internal string ConfigPath => Path.Combine(Host.Root, "cameraagent.browser.json");
@@ -51,14 +54,42 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Successful construction transfers host ownership to the wrapper; failures dispose it in catch.")]
-    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar, bool completeOwner = false)
+    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar, bool completeOwner = false,
+        bool startupServices = false, TimeProvider? clock = null)
     {
         if (scratchRoot is not null) ValidateEvidenceRoot(scratchRoot);
         string? ingressRoot = null;
+        StartupProtectionCounter? counter = null;
+        IHostApplicationLifetime? startupLifetime = null;
         var host = await CameraAgentKestrelFixture.CreateAsync(services =>
         {
             // No acquisition, retention, reconciliation, or worker writes during the measured reads.
             services.RemoveAll<IHostedService>();
+            if (clock is not null) services.AddSingleton(clock);
+            if (startupServices)
+            {
+                if (Environment.GetEnvironmentVariable("HVO_STARTUP_MODE") == "reviewed-baseline")
+                    services.Configure<HostOptions>(host => host.StartupTimeout = TimeSpan.FromMinutes(3));
+                var protection = services.Last(item => item.ServiceType == typeof(IDeploymentLocationProtector));
+                services.Remove(protection);
+                services.AddSingleton<IDeploymentLocationProtector>(provider =>
+                {
+                    startupLifetime = provider.GetRequiredService<IHostApplicationLifetime>();
+                    return counter = new StartupProtectionCounter(
+                        (IDeploymentLocationProtector)(protection.ImplementationInstance ?? protection.ImplementationFactory?.Invoke(provider)
+                            ?? ActivatorUtilities.CreateInstance(provider, protection.ImplementationType!)));
+                });
+                services.AddHostedService<CameraAgentConfigurationInitializer>();
+#if !HVO_BASELINE
+                services.AddHostedService<RetainedIntegrityScrubService>();
+#endif
+                services.Configure<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckServiceOptions>(checks =>
+                {
+                    foreach (var registration in checks.Registrations.Where(item =>
+                        item.Name is not ("catalog" or "deployment-location" or "camera-configuration" or "owner-bootstrap")).ToArray())
+                        checks.Registrations.Remove(registration);
+                });
+            }
             services.Configure<CameraAgentHostOptions>(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
@@ -98,7 +129,7 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
         try
         {
             _ = (DelayedInstallationLoader)host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
-            return new InstallationReadAttributionFixture(host);
+            return new InstallationReadAttributionFixture(host, () => counter, () => startupLifetime?.StopApplication());
         }
         catch
         {
@@ -264,6 +295,7 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
             File.Delete(Path.Combine(state, name));
         await Host.RestartAsync().ConfigureAwait(false);
         _ = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
     }
 #endif
 
@@ -326,11 +358,28 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     public ValueTask DisposeAsync() => Host.DisposeAsync();
 }
 
+internal sealed class StartupProtectionCounter(IDeploymentLocationProtector inner) : IDeploymentLocationProtector
+{
+    private long _protects;
+    private long _unprotects;
+    internal long Protects => Interlocked.Read(ref _protects);
+    internal long Unprotects => Interlocked.Read(ref _unprotects);
+    public byte[] Protect(byte[] plaintext) { Interlocked.Increment(ref _protects); return inner.Protect(plaintext); }
+    public byte[] Unprotect(byte[] payload) { Interlocked.Increment(ref _unprotects); return inner.Unprotect(payload); }
+}
+
 internal sealed record FixtureIdentity(int FileCount, int JournalCount, long ManifestBytes, string OrderedManifestSha256,
     long JournalBytes, string ConfigurationFileSha256, string LocationSha256);
 
 internal sealed class DelayedInstallationLoader(FileCameraAgentConfigurationLoader inner) : ICameraAgentConfigurationLoader
 {
+#if !HVO_BASELINE
+    public bool RetainedIntegrityRecoveryRequired => inner.RetainedIntegrityRecoveryRequired;
+    public Task RequestRetainedIntegrityScrubAsync(bool force, CancellationToken cancellationToken)
+        => inner.RequestRetainedIntegrityScrubAsync(force, cancellationToken);
+    public Task DrainRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => inner.DrainRetainedIntegrityScrubAsync(cancellationToken);
+#endif
     private TaskCompletionSource? _entered;
     private TaskCompletionSource? _release;
     internal Task Entered => _entered!.Task;

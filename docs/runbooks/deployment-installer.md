@@ -2793,17 +2793,34 @@ The [implementation report](../validation/issue-1041-run2-ledger.md) describes
 this boundary, writer inventory and local scale/recovery evidence.
 
 Unqualified, expired or busy verification returns sanitized HTTP 503 and
-`Retry-After: 1`, with no successful installation identity. It coalesces a
-host-owned full revalidation; a canceled caller does not cancel that work. The
-installer's protected read retries only the explicit pending marker within one
-finite 120-second budget and refuses mutation on failure. Older installers fail
-on pending state; retry their lifecycle command after revalidation completes. Do not
-increase the timeout or bypass identity comparisons. Full scrubs remain linear
-background/startup work and may temporarily refuse verification.
-On larger histories or slower storage, startup qualification can also exhaust
-the separate three-minute lifecycle health budget. The bounded protected-read
-path does not establish a universal successful startup time; preserve the
-failure evidence and let Kepler plan adoption/recovery without bypassing checks.
+`Retry-After: 1`, with no successful installation identity. Pending work uses
+`X-HVO-Installation-Verification: scrub-pending`; a failed, unchanged qualification
+uses `recovery-required`. Only pending is retryable by the installer, inside the
+same finite 120-second budget. A request timeout or caller cancellation does not
+cancel the host-owned scrub. Older installers fail on pending state; retry their
+lifecycle command after qualification completes. No identity comparison is bypassed.
+
+Startup checks fresh configuration/protected authority plus the newest 48 hours
+in the production `frames/YYYY/MM/DD` and `derived/YYYY/MM/DD` partitions and an
+indexed recent raw-journal query. It never recurses through older partitions or
+unknown layouts before Kestrel starts. Limits are 400,000 filesystem entries,
+20,000 recent journal rows, 4 GiB total JSON and 8 MiB per JSON file; exceeding a
+limit refuses recent readiness. Recent schema/provenance/tamper failures leave
+the host and recovery UI available, report unhealthy location readiness, and do
+not admit capture. Unknown/older/quarantined evidence remains subject to the full
+background scrub. Date partitions are limited to at most three UTC dates.
+
+After host startup, one coordinator performs full background qualification;
+new processes never inherit lifecycle readiness from a saved checkpoint. Capture
+configuration publication also waits for safe recovery: schedule initialization
+can invoke raw-ingress reconciliation, so that work runs after host startup too.
+Health reports these pending capture dependencies as degraded. The installer's
+normal health wait can reach the recent-ready host while qualification continues.
+An upgrade, rollback or backup attempted before full qualification still refuses
+within its original verification budget. If background work exceeds 120 seconds,
+wait for it to finish before retrying; repeated HTTP timeouts do not restart it.
+Full qualification and raw recovery remain linear background work; host startup
+and qualified protected reads do not walk the full corpus.
 
 Every restart, crash, restore or rollback requires a full scrub before a new
 process can trust the checkpoint. Pending declared writes are validated against
@@ -2850,15 +2867,20 @@ refuses a deleted established ledger. Archive restore leaves the instance
 uninstalled; reinstall/startup must finish a full scrub before protected
 verification succeeds. Missing keys or drift never qualify restored state.
 
-Ordinary configuration/continuity loads wait cancellably for an active scrub or
-managed write; the protected endpoint alone uses the finite one-second local gate
+Ordinary configuration/continuity loads wait cancellably for short authority commits or
+managed writes; full corpus walks release the configuration gate; the protected endpoint alone uses the finite one-second local gate
 wait. An unchanged protected location can remain available to ordinary callers
 while retained integrity is unqualified. This does not qualify an installer
-identity: ordinary reads request the same host-owned, coalesced scrub, with a
-30-second cooldown measured from completion. Persistent bad evidence does not
-cause every poll/rig sync to scan the retained corpus. Startup and real identity
-reconciliation still perform full verification; changed configuration snapshots
-are re-read, with a bounded retry, rather than accepted as immutable identity.
+identity: ordinary reads request the same host-owned, coalesced scrub. A failed
+unchanged state latches recovery-required; time or another continuity/rig poll
+cannot launch a replacement scan. Authorized repair followed by a normal agent
+restart, a real managed generation/configuration change, or the scheduled
+maintenance pass can retry qualification. There is no reset/delete recovery or
+new operator scrub endpoint. After repairing evidence, wait for successful full
+qualification before lifecycle commands. Missing authoritative state requires a
+complete paired backup or an explicitly authorized recovery procedure.
+Identity reconciliation runs in the background and checks the current config
+snapshot before commit; concurrent edits receive bounded re-reads.
 
 Paired database rollback also rewinds protected location history/manual state
 and the identity marker to its selected snapshot; it does not merely rewind the

@@ -248,7 +248,9 @@ internal static partial class CameraAgentStateSnapshot
                     insert.Parameters.AddWithValue("$digest", row.Digest);
                     insert.Parameters.AddWithValue("$kind", row.Kind);
                     insert.Parameters.AddWithValue("$generation", row.Generation);
-                    insert.Parameters.AddWithValue("$auth", row.Auth);
+                    insert.Parameters.AddWithValue("$auth", ProtectEntry(
+                        new EntryProof(targetFacts.Metadata.Nonce, row.Key, Convert.ToHexString(row.Digest), row.Kind, row.Generation),
+                        EntryKey(targetFacts.Metadata), protector.Protect));
                     _ = insert.ExecuteNonQuery();
                 });
                 var pendingCarried = WalkPending(current.Connection, protector, currentFacts.Metadata, cancellationToken, row =>
@@ -396,6 +398,7 @@ internal static partial class CameraAgentStateSnapshot
     {
         var root = new byte[64];
         var files = new byte[64];
+        var entryKey = EntryKey(metadata);
         long count = 0;
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT length(key),length(digest),length(auth),key,digest,kind,generation,auth FROM entries;";
@@ -410,7 +413,7 @@ internal static partial class CameraAgentStateSnapshot
                 row.Kind is < 0 or > 3 || row.Generation < 0 || row.Generation > metadata.Generation)
                 throw new InvalidDataException("Retained integrity entry is invalid.");
             var expected = new EntryProof(metadata.Nonce, row.Key, Convert.ToHexString(row.Digest), row.Kind, row.Generation);
-            if (JsonSerializer.Deserialize<EntryProof>(protector.Unprotect(row.Auth)) != expected)
+            if (!AuthenticateEntry(expected, row.Auth, entryKey, protector.Unprotect))
                 throw new InvalidDataException("Retained integrity entry authentication failed.");
             var leaf = Hash(expected);
             Accumulate(root, leaf);

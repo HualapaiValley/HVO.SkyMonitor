@@ -99,7 +99,10 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.IsGreaterThan(0, observed);
         _timeProvider.UtcNow = Now.AddMinutes(1);
         var changed = seed with { Coordinates = seed.Coordinates with { LatitudeDegrees = 36 } };
-        Assert.AreEqual(2L, (await store.LoadCurrentAsync(changed, verification: false, () => true, CancellationToken.None).ConfigureAwait(false)).Version);
+        Assert.AreEqual(1L, (await store.LoadCurrentAsync(changed, verification: false, () => true, CancellationToken.None).ConfigureAwait(false)).Version,
+            "Ordinary loading defers a new immutable identity to background reconciliation.");
+        Assert.IsTrue(store.RequiresDeploymentLocationReconciliation);
+        Assert.AreEqual(2L, (await store.ScrubCurrentAsync(changed, () => true, CancellationToken.None).ConfigureAwait(false)).Version);
     }
 
     [TestMethod]

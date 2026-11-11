@@ -484,10 +484,12 @@ public class Program
                 try { verified = await configurationLoader.LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false); }
                 catch (HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.InstallationVerificationPendingException)
                 {
-                    context.Response.Headers.RetryAfter = "1";
-                    context.Response.Headers["X-HVO-Installation-Verification"] = "scrub-pending";
+                    var recoveryRequired = configurationLoader.RetainedIntegrityRecoveryRequired;
+                    if (!recoveryRequired) context.Response.Headers.RetryAfter = "1";
+                    context.Response.Headers["X-HVO-Installation-Verification"] = recoveryRequired ? "recovery-required" : "scrub-pending";
                     return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
-                        title: "Installation integrity verification is awaiting a complete scrub.");
+                        title: recoveryRequired ? "Installation integrity requires recovery before verification."
+                            : "Installation integrity verification is awaiting a complete scrub.");
                 }
                 var configuration = verified.Configuration;
                 var ownerBootstrapState = await ownerBootstrapStateReader.GetStateAsync(cancellationToken).ConfigureAwait(false);
