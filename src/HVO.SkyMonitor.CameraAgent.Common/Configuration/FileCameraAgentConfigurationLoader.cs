@@ -55,7 +55,30 @@ public sealed class FileCameraAgentConfigurationLoader(
     private DateTimeOffset _nextRefreshUtc;
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
-        => (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken).ConfigureAwait(false)).Configuration;
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var wasInitialized = _deploymentLocationStore?.Active is not null;
+            try
+            {
+                var configuration = (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken).ConfigureAwait(false)).Configuration;
+                if (_deploymentLocationStore?.RequiresRetainedIntegrityScrub == true && hostLifetime is not null)
+                {
+                    // A cold load has just performed its required initial full scrub.
+                    // Do not immediately repeat a failed qualification after startup.
+                    if (!wasInitialized) DelayNextScrub();
+                    else QueueFullScrub(hostLifetime.ApplicationStopping);
+                }
+                return configuration;
+            }
+            catch (InstallationVerificationPendingException exception) when (exception.ConfigurationChanged)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (attempt >= 2) throw new InvalidOperationException("Camera agent configuration kept changing during loading.");
+                // Read and validate a new byte snapshot; never reconcile the stale one.
+            }
+        }
+    }
 
     public async Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
         => (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken, fullScrub: true).ConfigureAwait(false)).Configuration;
@@ -85,8 +108,14 @@ public sealed class FileCameraAgentConfigurationLoader(
                 try { _ = await LoadForRetainedIntegrityScrubAsync(stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
                 catch (Exception) { DeploymentLocationLog.RetainedIntegrityUnqualified(_logger); }
+                finally { DelayNextScrub(); }
             }, CancellationToken.None);
         }
+    }
+
+    private void DelayNextScrub()
+    {
+        lock (_refreshSync) _nextRefreshUtc = _timeProvider.GetUtcNow().AddSeconds(30);
     }
 
     private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken,

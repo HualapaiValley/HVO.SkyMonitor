@@ -73,6 +73,8 @@ public interface IDeploymentLocationStore
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
         => verification ? VerifyInstallationAsync(seed, cancellationToken) : InitializeAsync(seed, cancellationToken);
 
+    bool RequiresRetainedIntegrityScrub => false;
+
     ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
         => InitializeAsync(seed, cancellationToken);
@@ -121,6 +123,8 @@ public sealed class ProtectedDeploymentLocationStore(
 
     public DeploymentLocationSnapshot? Active => Volatile.Read(ref _history)?.Snapshots[^1];
 
+    public bool RequiresRetainedIntegrityScrub => Volatile.Read(ref _integrity)?.RequiresScrub ?? true;
+
     public DeploymentLocationSnapshot? Candidate => Volatile.Read(ref _history)?.Candidate;
 
     public DeploymentLocationSnapshot? Staged => Volatile.Read(ref _history)?.Staged;
@@ -165,7 +169,7 @@ public sealed class ProtectedDeploymentLocationStore(
             return await InitializeCoreAsync(seed, strictRetainedValidation: verification, fullScrub: false,
                 configurationStillCurrent, cancellationToken).ConfigureAwait(false);
         }
-        catch (InstallationVerificationPendingException exception) when (!verification && exception.RequiresScrub)
+        catch (InstallationVerificationPendingException exception) when (!verification && exception.RequiresScrub && !exception.ConfigurationChanged)
         {
             return await ScrubCurrentAsync(seed, configurationStillCurrent, cancellationToken).ConfigureAwait(false);
         }
@@ -182,7 +186,7 @@ public sealed class ProtectedDeploymentLocationStore(
         var started = Stopwatch.GetTimestamp();
         var operation = "load";
         using var activity = DeploymentLocationTelemetry.ActivitySource.StartActivity("deployment-location.initialize");
-        if (fullScrub) await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (fullScrub || !strictRetainedValidation) await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         else if (!await _gate.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false))
             throw new InstallationVerificationPendingException(requiresScrub: false);
         RetainedIntegrityLedger.Scrub? integrityScrub = null;
@@ -277,10 +281,16 @@ public sealed class ProtectedDeploymentLocationStore(
                 // A request never opens/rebuilds the corpus ledger. The host-owned full
                 // scrub creates a fresh epoch; request cancellation cannot restart it.
                 var ledger = _integrity;
-                if (history is null || !ReferenceEquals(snapshot.History, history) || ledger is null)
+                if (history is null || !ReferenceEquals(snapshot.History, history) ||
+                    (!strictRetainedValidation && _history is null))
                     throw new InstallationVerificationPendingException(requiresScrub: true);
-                if (!await ledger.VerifyAsync(RetainedIdentity(history), cancellationToken).ConfigureAwait(false))
-                    throw new InstallationVerificationPendingException(ledger.RequiresScrub);
+                // Ordinary configuration availability is not retained-integrity qualification.
+                // Keep validating fresh protected authority, but let the host coalesce a
+                // dirty ledger's scrub instead of repeating its corpus scan on every poll.
+                var qualified = ledger is not null && await ledger.VerifyAsync(RetainedIdentity(history),
+                    cancellationToken, waitForMutation: !strictRetainedValidation).ConfigureAwait(false);
+                if (!qualified && strictRetainedValidation)
+                    throw new InstallationVerificationPendingException(ledger?.RequiresScrub ?? true);
             }
             else if (history is null || !ReferenceEquals(snapshot.History, history))
             {
@@ -301,7 +311,7 @@ public sealed class ProtectedDeploymentLocationStore(
             }
             integrityScrub?.Finish(cancellationToken);
             if (configurationStillCurrent is not null && !configurationStillCurrent())
-                throw new InstallationVerificationPendingException(requiresScrub: true);
+                throw new InstallationVerificationPendingException(requiresScrub: true, configurationChanged: true);
             operation = history is null ? "initialize" : snapshot.Appended ? "change" : "load";
             if (ledgerRequirementAdded || history is null || !ReferenceEquals(snapshot.History, history))
             {

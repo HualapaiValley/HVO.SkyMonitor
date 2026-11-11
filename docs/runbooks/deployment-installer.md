@@ -2850,6 +2850,26 @@ refuses a deleted established ledger. Archive restore leaves the instance
 uninstalled; reinstall/startup must finish a full scrub before protected
 verification succeeds. Missing keys or drift never qualify restored state.
 
+Ordinary configuration/continuity loads wait cancellably for an active scrub or
+managed write; the protected endpoint alone uses the finite one-second local gate
+wait. An unchanged protected location can remain available to ordinary callers
+while retained integrity is unqualified. This does not qualify an installer
+identity: ordinary reads request the same host-owned, coalesced scrub, with a
+30-second cooldown measured from completion. Persistent bad evidence does not
+cause every poll/rig sync to scan the retained corpus. Startup and real identity
+reconciliation still perform full verification; changed configuration snapshots
+are re-read, with a bounded retry, rather than accepted as immutable identity.
+
+Paired database rollback also rewinds protected location history/manual state
+and the identity marker to its selected snapshot; it does not merely rewind the
+journal. When rollback crosses to pre-ledger state, that operation has already
+saved its stopped current state (S1) before applying the old paired state (S0).
+If the old image fails, only that active rollback can recover S1's authenticated
+ledger expectations after proving that current protected files belong to the
+recorded S1/S0 transition. Unknown edits refuse; generic deleted-ledger restore
+still refuses. Recovery does not generate proofs from current files, and the
+restarted agent must fully scrub before protected verification can succeed.
+
 The separate optional parse index has bounded batches/memory and no fixed
 proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary
 JSON cannot become a frame-manifest proof. Missing/corrupt proofs are cache

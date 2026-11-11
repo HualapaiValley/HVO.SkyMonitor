@@ -36,6 +36,43 @@ public sealed partial class InstallationVerificationReadTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    [SuppressMessage("Reliability", "CA2025:Do not pass IDisposable instances into unawaited tasks", Justification = "Both requests and the scrub are drained before fixture/event disposal.")]
+    public async Task ContinuityDuringRunningScrubWaitsAndReturnsSuccess()
+    {
+        await using var fixture = await InstallationReadAttributionFixture.CreateAsync(null, solar: false, completeOwner: true).ConfigureAwait(false);
+        _ = await fixture.SeedAsync(1, 1).ConfigureAwait(false);
+        using var owner = await fixture.Host.CreateOwnerClientAsync().ConfigureAwait(false);
+        var store = (ProtectedDeploymentLocationStore)fixture.Locations;
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.BeforeRetainedManifestValidationForTest = () =>
+        {
+            entered.TrySetResult();
+            Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(15)));
+        };
+        var scrub = Task.Run(async () => await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false));
+        Task<HttpResponseMessage>? continuity = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            continuity = owner.GetAsync(new Uri("/api/internal/deployment/continuity", UriKind.Relative));
+            await Task.Delay(TimeSpan.FromMilliseconds(1250)).ConfigureAwait(false);
+            Assert.IsFalse(continuity.IsCompleted, "Busy ordinary loading must wait, rather than become HTTP 500.");
+        }
+        finally
+        {
+            release.Set();
+            _ = await scrub.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            if (continuity is not null)
+            {
+                using var response = await continuity.ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     [SuppressMessage("Reliability", "CA2025:Do not pass IDisposable instances into unawaited tasks", Justification = "Every task is awaited and the blocked scrub is released in finally before fixture disposal.")]
     public async Task DirtyEndpointRefusesPromptlyAndCoalescedScrubSurvivesCallerCancellation()
     {

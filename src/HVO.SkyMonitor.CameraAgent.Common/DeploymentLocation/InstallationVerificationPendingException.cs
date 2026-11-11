@@ -7,5 +7,8 @@ public sealed class InstallationVerificationPendingException : InvalidOperationE
     public InstallationVerificationPendingException(string message, Exception innerException) : base(message, innerException) { }
     public InstallationVerificationPendingException(bool requiresScrub)
         : base("Installation verification requires a completed current integrity checkpoint.") => RequiresScrub = requiresScrub;
+    internal InstallationVerificationPendingException(bool requiresScrub, bool configurationChanged) : this(requiresScrub)
+        => ConfigurationChanged = configurationChanged;
+    internal bool ConfigurationChanged { get; }
     public bool RequiresScrub { get; } = true;
 }

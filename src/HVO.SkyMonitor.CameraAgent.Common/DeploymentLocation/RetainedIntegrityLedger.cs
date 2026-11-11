@@ -107,9 +107,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     internal static string FileKey(string root, string path) => "F|" + Path.GetRelativePath(root, path);
     internal static string JournalKey(string capture) => "J|" + capture;
 
-    internal async ValueTask<bool> VerifyAsync(byte[] binding, CancellationToken cancellationToken)
+    internal async ValueTask<bool> VerifyAsync(byte[] binding, CancellationToken cancellationToken, bool waitForMutation = false)
     {
-        if (!await _barrier.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false)) return false;
+        if (waitForMutation) await _barrier.WaitAsync(cancellationToken).ConfigureAwait(false);
+        else if (!await _barrier.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false)) return false;
         try
         {
             if (!_qualified) return false;

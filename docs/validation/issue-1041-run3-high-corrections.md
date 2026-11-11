@@ -1,5 +1,12 @@
 # #1041 HIGH correction after da8fbbf7
 
+> Historical evidence at the named run-3 heads remains valid as observations.
+> Kepler's re-review found three blocking Medium interactions (ordinary load
+> contention, repeated unqualified scrubs, and failed rollback recovery across the
+> ledger boundary). The [run-4 correction report](issue-1041-run4-medium-corrections.md)
+> supersedes the implementation-blocker disposition below. Sol and Opus both
+> assessed original scope completeness; neither result waives those findings.
+
 Refs #1041. Status: blocking corrections implemented and locally evidenced at `12e73a7a804e2d423d739919748e78dfcc57ced7`. New HIGH re-reviews remain with Kepler. Kepler's
 Opus HIGH review returned CHANGES REQUESTED. Sol reported the deleted-ledger
 finding before provider disconnects; there is no Sol final verdict. The prior

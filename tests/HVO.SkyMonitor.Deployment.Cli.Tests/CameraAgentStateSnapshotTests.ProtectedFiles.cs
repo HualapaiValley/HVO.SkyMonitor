@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -45,6 +46,36 @@ public sealed partial class CameraAgentStateSnapshotTests
         Assert.IsFalse(File.Exists(ledger));
         Assert.IsFalse(PairedPaths.Any(relative => File.Exists(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, relative))));
         Assert.AreEqual("retained", await File.ReadAllTextAsync(retained));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("sealed-history")]
+    [DataRow("non-object-history")]
+    [DataRow("unauthenticated-history")]
+    [DataRow("missing-keys")]
+    public async Task LegacyAbsenceRefusesInvalidOrSealedHistoryBeforeRemovingCurrentAuthority(string fault)
+    {
+        using var root = new SnapshotRoot();
+        var keys = Path.Combine(root.Paths.StateRoot, "raw", ".location", "keys");
+        Directory.CreateDirectory(keys);
+        var provider = DataProtectionProvider.Create(new DirectoryInfo(keys),
+            builder => builder.SetApplicationName("HVO.SkyMonitor.CameraAgent.DeploymentLocation"));
+        var protector = provider.CreateProtector("CameraAgent", "DeploymentLocation", "v1");
+        var history = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, PairedPaths[0]);
+        var bytes = fault == "sealed-history" ? "{\"retainedIntegrityNonce\":\"sealed\"}"u8.ToArray()
+            : fault == "non-object-history" ? "[]"u8.ToArray() : "{}"u8.ToArray();
+        await File.WriteAllBytesAsync(history, fault == "unauthenticated-history" ? bytes : protector.Protect(bytes));
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image,
+            CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+        var ledger = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
+        CreateDatabase(ledger, 1);
+        await File.WriteAllTextAsync(history, "unchanged-current-authority");
+        var before = await File.ReadAllBytesAsync(ledger);
+        if (fault == "missing-keys") Directory.Delete(keys, recursive: true);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => RestorePairedAsync(root, snapshot, CancellationToken.None));
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(ledger));
+        Assert.AreEqual("unchanged-current-authority", await File.ReadAllTextAsync(history));
     }
 
     [TestMethod]
