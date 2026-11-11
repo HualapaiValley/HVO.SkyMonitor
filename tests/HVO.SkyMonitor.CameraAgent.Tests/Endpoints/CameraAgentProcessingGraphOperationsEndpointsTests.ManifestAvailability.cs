@@ -7,7 +7,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 /// <summary>
 /// The run page decides whether the manifest can be downloaded without building it. These tests hold that decision
-/// against the download's own, and hold the size bound that lets the page skip the encoding against the encoder.
+/// against the download's own, hold the size bound that lets the page skip all serialization against the encoder,
+/// and hold the counted length that decides the byte limit against the payload it never builds.
 /// </summary>
 public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 {
@@ -17,8 +18,55 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
     private static readonly DateTimeOffset WidestInstant =
         new DateTimeOffset(2026, 12, 31, 23, 59, 59, 999, TimeSpan.FromHours(14)).AddTicks(9999);
 
-    private static string? NeverMeasured(ProcessingGraphExecutionDetail detail)
-        => throw new AssertFailedException("The payload was encoded to decide availability.");
+    private static long NeverCounted(ProcessingGraphExecutionDetail detail)
+        => throw new AssertFailedException("The manifest was serialized to decide availability.");
+
+    /// <summary>
+    /// The least the action allocates on this thread once its caches are warm. A payload is an array of its own
+    /// length, so building one allocates at least that much and an action that allocates less built none.
+    /// </summary>
+    private static long AllocatedBy(Action action)
+    {
+        action();
+        var least = long.MaxValue;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            action();
+            least = Math.Min(least, GC.GetAllocatedBytesForCurrentThread() - before);
+        }
+        return least;
+    }
+
+    /// <summary>
+    /// A valid manifest of exactly the given encoded length: one node at its row limit, with the remainder spread
+    /// over its inputs' descriptor checksums as letters, which are never escaped.
+    /// </summary>
+    private static ProcessingGraphExecutionDetail ManifestOfEncodedLength(int length)
+    {
+        var detail = ManifestDetail();
+        var node = detail.Nodes[0];
+        ProcessingGraphExecutionDetail Padded(Func<int, int> padding) => detail with
+        {
+            Nodes =
+            [
+                node with
+                {
+                    Inputs = Enumerable.Range(0, ProcessingRunManifestBounds.MaximumRows).Select(index => node.Inputs[0] with
+                    {
+                        Ordinal = index,
+                        DescriptorSha256 = new string('d', 64 + padding(index))
+                    }).ToArray()
+                }
+            ]
+        };
+        var missing = length - CameraAgentRunManifest.Encode(Padded(static _ => 0)).Length;
+        Assert.IsTrue(missing >= 0, $"The unpadded manifest is already {-missing} bytes over {length}.");
+        var (each, extra) = Math.DivRem(missing, ProcessingRunManifestBounds.MaximumRows);
+        var manifest = Padded(index => each + (index < extra ? 1 : 0));
+        Assert.AreEqual(length, CameraAgentRunManifest.Encode(manifest).Length);
+        return manifest;
+    }
 
     [TestMethod]
     public void ManifestAvailabilityIsTheDownloadsVerdictWithoutBuildingThePayload()
@@ -56,50 +104,60 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
             var download = CameraAgentRunManifest.Create(candidate);
             Assert.AreEqual(reason, download.Reason, name);
             Assert.AreEqual(reason is null, download.Payload is not null, name);
-            // The page reaches the same verdict, and an encoding would fail the test.
-            Assert.AreEqual(reason, CameraAgentRunManifest.UnavailableReason(candidate, NeverMeasured), name);
+            // The page reaches the same verdict, and any serialization would fail the test.
+            Assert.AreEqual(reason, CameraAgentRunManifest.UnavailableReason(candidate, NeverCounted), name);
             Assert.AreEqual(reason, CameraAgentRunManifest.UnavailableReason(candidate), name);
         }
     }
 
     [TestMethod]
-    public void ManifestIsEncodedToMeasureItOnlyWhenItCouldExceedTheByteLimit()
+    public void ManifestsWithinTheSizeBoundAreOfferedWithoutAnySerialization()
     {
         var detail = ManifestDetail();
         var node = detail.Nodes[0];
-        var measured = 0;
-        string? Measure(ProcessingGraphExecutionDetail value)
-        {
-            measured++;
-            return CameraAgentRunManifest.Create(value).Reason;
-        }
 
         // An ordinary run is far below the limit by its upper bound alone.
         Assert.IsTrue(CameraAgentRunManifest.MaximumEncodedBytes(detail) < ProcessingRunManifestBounds.MaximumBytes / 100);
-        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(detail, Measure));
-        Assert.AreEqual(0, measured);
+        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(detail, NeverCounted));
 
-        // Half a node's row limit is still decided from the bound alone.
-        ProcessingGraphExecutionDetail WithInputs(int count) => detail with
+        // So is half a node's row limit.
+        var half = detail with
         {
-            Nodes = [node with { Inputs = Enumerable.Range(0, count).Select(index => node.Inputs[0] with { Ordinal = index }).ToArray() }]
+            Nodes =
+            [
+                node with
+                {
+                    Inputs = Enumerable.Range(0, ProcessingRunManifestBounds.MaximumRows / 2)
+                        .Select(index => node.Inputs[0] with { Ordinal = index }).ToArray()
+                }
+            ]
         };
-        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(WithInputs(ProcessingRunManifestBounds.MaximumRows / 2), Measure));
-        Assert.AreEqual(0, measured);
+        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(half, NeverCounted));
+    }
 
-        // A node at its row limit puts the upper bound over the byte limit while the payload still fits: it is
-        // measured, and offered.
-        var fits = WithInputs(ProcessingRunManifestBounds.MaximumRows);
-        Assert.IsTrue(CameraAgentRunManifest.MaximumEncodedBytes(fits) > ProcessingRunManifestBounds.MaximumBytes);
-        Assert.IsTrue(CameraAgentRunManifest.Encode(fits).Length <= ProcessingRunManifestBounds.MaximumBytes);
-        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(fits, Measure));
-        Assert.AreEqual(1, measured);
-        Assert.IsNull(CameraAgentRunManifest.UnavailableReason(fits));
-        Assert.IsNotNull(CameraAgentRunManifest.Create(fits).Payload);
-
-        // A payload over the limit is refused by the page exactly as the download refuses it.
+    [TestMethod]
+    public void ByteLimitIsDecidedOnBothSidesOfTheLimitWithoutBuildingThePayload()
+    {
+        var detail = ManifestDetail();
+        var node = detail.Nodes[0];
+        // A node at its row limit: the upper bound is over the byte limit and the payload is well inside it.
+        var inside = detail with
+        {
+            Nodes =
+            [
+                node with
+                {
+                    Inputs = Enumerable.Range(0, ProcessingRunManifestBounds.MaximumRows)
+                        .Select(index => node.Inputs[0] with { Ordinal = index }).ToArray()
+                }
+            ]
+        };
+        // The last manifest the download serves, and the first it refuses.
+        var atLimit = ManifestOfEncodedLength(ProcessingRunManifestBounds.MaximumBytes);
+        var overLimit = ManifestOfEncodedLength(ProcessingRunManifestBounds.MaximumBytes + 1);
+        // Far over the limit through output lineage rather than rows.
         var sources = Enumerable.Range(0, 512).Select(static _ => Guid.NewGuid()).ToArray();
-        var oversized = detail with
+        var farOver = detail with
         {
             Nodes =
             [
@@ -111,11 +169,37 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
                 }
             ]
         };
-        Assert.IsTrue(CameraAgentRunManifest.Encode(oversized).Length > ProcessingRunManifestBounds.MaximumBytes);
-        Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason, CameraAgentRunManifest.UnavailableReason(oversized, Measure));
-        Assert.AreEqual(2, measured);
-        Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason, CameraAgentRunManifest.UnavailableReason(oversized));
-        Assert.AreEqual(ProcessingRunManifestBounds.UnavailableReason, CameraAgentRunManifest.Create(oversized).Reason);
+        var cases = new (string Name, ProcessingGraphExecutionDetail Detail, string? Reason)[]
+        {
+            ("inside the limit", inside, null),
+            ("exactly at the limit", atLimit, null),
+            ("one byte over the limit", overLimit, ProcessingRunManifestBounds.UnavailableReason),
+            ("far over the limit", farOver, ProcessingRunManifestBounds.UnavailableReason)
+        };
+
+        foreach (var (name, candidate, reason) in cases)
+        {
+            // Only the test builds the payload, to know what the download does with this manifest.
+            var download = CameraAgentRunManifest.Create(candidate);
+            var payloadLength = CameraAgentRunManifest.Encode(candidate).LongLength;
+            Assert.AreEqual(reason, download.Reason, name);
+            Assert.AreEqual(reason is null, download.Payload is not null, name);
+            Assert.AreEqual(reason is null, payloadLength <= ProcessingRunManifestBounds.MaximumBytes, name);
+            // None of these is decided by the upper bound, so each is decided by its length.
+            Assert.IsTrue(CameraAgentRunManifest.MaximumEncodedBytes(candidate) > ProcessingRunManifestBounds.MaximumBytes, name);
+
+            string? verdict = "not decided";
+            var allocated = AllocatedBy(() => verdict = CameraAgentRunManifest.UnavailableReason(candidate));
+
+            Assert.AreEqual(reason, verdict, name);
+            // The length that decided it is the payload's, to the byte, and no payload was built to learn it.
+            Assert.AreEqual(payloadLength, CameraAgentRunManifest.EncodedLength(candidate), name);
+            Assert.IsTrue(allocated < payloadLength,
+                $"{name}: deciding availability allocated {allocated} bytes, which is room for its payload of {payloadLength} bytes.");
+        }
+
+        Assert.AreEqual(ProcessingRunManifestBounds.MaximumBytes, CameraAgentRunManifest.EncodedLength(atLimit));
+        Assert.AreEqual(ProcessingRunManifestBounds.MaximumBytes + 1L, CameraAgentRunManifest.EncodedLength(overLimit));
     }
 
     [TestMethod]
@@ -155,10 +239,12 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         }).ToArray();
         var detail = new ProcessingGraphExecutionDetail(execution, nodes);
 
-        var encoded = CameraAgentRunManifest.Encode(detail).Length;
+        var encoded = CameraAgentRunManifest.Encode(detail).LongLength;
         var bound = CameraAgentRunManifest.MaximumEncodedBytes(detail);
 
         Assert.IsTrue(bound >= encoded, $"The bound {bound} understates the encoded manifest of {encoded} bytes.");
+        // Escapes and widest scalars included, the counted length is the payload's.
+        Assert.AreEqual(encoded, CameraAgentRunManifest.EncodedLength(detail));
     }
 
     [TestMethod]

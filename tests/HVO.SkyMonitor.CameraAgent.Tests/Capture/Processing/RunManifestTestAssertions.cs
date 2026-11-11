@@ -68,7 +68,10 @@ internal static class RunManifestTestAssertions
                 // What the verdict is decided from but the payload does not carry.
                 CollectionAssert.AreEqual(Verdict(manifest), Verdict(read.RunManifest));
                 // Everything the payload carries.
-                CollectionAssert.AreEqual(CameraAgentRunManifest.Encode(manifest), CameraAgentRunManifest.Encode(read.RunManifest));
+                var payload = CameraAgentRunManifest.Encode(manifest);
+                CollectionAssert.AreEqual(payload, CameraAgentRunManifest.Encode(read.RunManifest));
+                // The length the page decides the byte limit from is this payload's, without building it.
+                Assert.AreEqual(payload.LongLength, CameraAgentRunManifest.EncodedLength(read.RunManifest));
                 break;
             case ProcessingRunManifestEvidenceFailure.ExceedsBounds:
                 Assert.IsNull(read.RunManifest);

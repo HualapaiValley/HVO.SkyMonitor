@@ -52,9 +52,9 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreSame(journal.Dependencies, evidence.Dependencies);
             Assert.AreSame(journal.OutputContracts, evidence.OutputContracts);
             Assert.AreNotSame(journal.Inputs, evidence.Inputs);
-            // The retained manifest is known to fit without being encoded.
+            // The retained manifest is known to fit without being serialized at all.
             Assert.IsNull(CameraAgentRunManifest.UnavailableReason(read.RunManifest,
-                static _ => throw new AssertFailedException("The payload was encoded to decide availability.")));
+                static _ => throw new AssertFailedException("The manifest was serialized to decide availability.")));
 
             // Expired: retention deletes the node's output, and with it the evidence of what the node produced.
             var target = (await store.ReadOutputByArtifactIdAsync(journal.Outputs.Single().ArtifactId, CancellationToken.None).ConfigureAwait(false))!;

@@ -54,17 +54,18 @@ internal static class CameraAgentRunManifest
     };
 
     /// <summary>
-    /// The reason <see cref="Create"/> gives for the same detail, without building the payload. The checks are
-    /// <see cref="Create"/>'s own. The payload is encoded only to measure it, and only when its upper bound says it
-    /// could exceed the byte limit; every smaller manifest is known to fit from its counts and strings. The byte
-    /// limit decides the download, so a manifest that close to it is measured rather than guessed.
+    /// The reason <see cref="Create"/> gives for the same detail, without building the payload at any size. The
+    /// checks are <see cref="Create"/>'s own. A manifest whose upper bound is within the byte limit is known to fit
+    /// from its counts and strings. Any other is decided by its exact encoded length, which is counted and never
+    /// held.
     /// </summary>
     internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail)
-        => UnavailableReason(detail, static measured => Create(measured).Reason);
+        => UnavailableReason(detail, EncodedLength);
 
     /// <inheritdoc cref="UnavailableReason(ProcessingGraphExecutionDetail)"/>
-    internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail, Func<ProcessingGraphExecutionDetail, string?> measure)
-        => Validate(detail) ?? (MaximumEncodedBytes(detail) <= ProcessingRunManifestBounds.MaximumBytes ? null : measure(detail));
+    internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail, Func<ProcessingGraphExecutionDetail, long> encodedLength)
+        => Validate(detail) ?? (MaximumEncodedBytes(detail) <= ProcessingRunManifestBounds.MaximumBytes ||
+            encodedLength(detail) <= ProcessingRunManifestBounds.MaximumBytes ? null : ProcessingRunManifestBounds.UnavailableReason);
 
     /// <summary>
     /// An upper bound on the encoded manifest's length, from element counts and the characters of its strings. It
@@ -137,11 +138,26 @@ internal static class CameraAgentRunManifest
 
     /// <summary>The manifest's bytes for a detail that passed <see cref="Validate"/>, whatever their length.</summary>
     internal static byte[] Encode(ProcessingGraphExecutionDetail detail)
+        => JsonSerializer.SerializeToUtf8Bytes(Manifest(detail), Json);
+
+    /// <summary>
+    /// The length of <see cref="Encode"/>'s result, without building it. The same manifest goes through the same
+    /// serializer, which writes it in pieces to a sink that keeps only their total.
+    /// </summary>
+    internal static long EncodedLength(ProcessingGraphExecutionDetail detail)
+    {
+        using var counted = new LengthStream();
+        JsonSerializer.Serialize(counted, Manifest(detail), Json);
+        return counted.Length;
+    }
+
+    // Serialized by its runtime type, so the payload and its counted length come from one definition.
+    private static object Manifest(ProcessingGraphExecutionDetail detail)
     {
         var execution = detail.Execution;
         // Free-text reasons, trigger references, lease owners, configurations and diagnostic objects
         // are deliberately excluded. Status strings originate in checked durable enum columns.
-        var manifest = new
+        return new
         {
             schemaVersion = SchemaVersion,
             execution.ExecutionId,
@@ -191,7 +207,6 @@ internal static class CameraAgentRunManifest
                 })
             })
         };
-        return JsonSerializer.SerializeToUtf8Bytes(manifest, Json);
     }
 
     private static IEnumerable<ManifestInput> CreateInputs(ProcessingGraphExecutionNodeState node)
@@ -222,4 +237,21 @@ internal static class CameraAgentRunManifest
     }
 
     private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
+
+    /// <summary>A write-only sink that keeps the number of bytes written and none of the bytes.</summary>
+    private sealed class LengthStream : Stream
+    {
+        private long length;
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => length;
+        public override long Position { get => length; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override void Write(byte[] buffer, int offset, int count) => length += count;
+        public override void Write(ReadOnlySpan<byte> buffer) => length += buffer.Length;
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
 }
