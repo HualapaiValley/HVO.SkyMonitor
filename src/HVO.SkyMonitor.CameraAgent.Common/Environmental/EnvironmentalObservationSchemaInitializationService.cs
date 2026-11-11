@@ -9,7 +9,10 @@ internal sealed class EnvironmentalObservationSchemaInitializationService(
     SqliteEnvironmentalObservationOutbox store) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
-        => await store.InitializeAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+    {
+        await store.InitializeAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+        await store.RecoverCaptureAcquisitionsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

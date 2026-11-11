@@ -101,6 +101,7 @@ keep separate source identities. The bridge owns heater control and must assert
 `drying` throughout heater-driven drying/warm-up until a valid dry reading is
 qualified; the adapter never commands a heater or assumes it has finished. Active
 `rain: true` takes precedence over `drying: true` and reports RainState true.
+A drying payload without a rain field retains the unavailable drying outcome.
 When rain is false and drying is true, the adapter reports unavailable
 `wet-sensor-drying`; it never reports dry during drying.
 
@@ -250,16 +251,27 @@ budget, distinct from host cancellation, and records timeout before association.
 Physical device freshness uses actual receipt time, while deterministic simulated
 readings retain the scheduled clock.
 
-Failed, missing or timed-out before-capture attempts fence that source for the
-capture's exposure even after a periodic poll recovers. Association uses durable
-attempt history: an explicit capture identity when available, otherwise the
-last settled before-capture attempt at exposure start (the bridge runs before
-raw ingress assigns the capture identity). Later attempts do not change that
-historical view. Retention preserves those attempts and their successful
-successors while retained older evidence could still be selected as fresh.
-Completed associations remain immutable. This does not change the SQM
-interval/gap policy or make SQLite settlement part of a strict total deadline;
-those decisions remain in Refs #1735.
+Each before-capture request reserves its own durable leased acquisition operations
+under the internal `__capture-before:` namespace in the existing command store.
+The optional `cycleEvidence.acquisitionAttemptId` correlates that request with the
+raw capture. It is omitted for legacy captures, preserving their serialized form.
+No attempt is attributed to a capture by its timestamp or by the latest source row.
+
+A busy request follows the exact in-flight read: success leaves that capture
+available, while failure/missing/timeout fences its older readings. With a zero
+before-capture budget, work remains on the bounded hosted queue and may finish
+after exposure starts. Pending work retries the association lane without storing
+a final Missing association. Queue refusal records an explicit unavailable result.
+Host cancellation leaves durable pending work; startup marks interrupted capture
+operations unavailable. Independent on-demand operations retain their own leases.
+
+Completed receipts remain attached to their capture across later polls and restart.
+Association binds the retained token to the immutable raw capture ID; attempts and
+operations needed by retained raw captures survive cleanup. Ordinary unattributed
+attempt diagnostics expire without scanning environmental fact JSON. Legacy
+explicit capture IDs remain readable; unattributed legacy history is never guessed
+into a new capture. Completed associations remain immutable. The SQM interval/gap
+policy and a strict total deadline under SQLite contention remain in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a
 bounded deferred queue drained by the same hosted acquisition service. Queue

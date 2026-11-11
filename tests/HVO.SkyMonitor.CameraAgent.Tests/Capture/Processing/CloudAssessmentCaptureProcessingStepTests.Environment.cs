@@ -191,8 +191,8 @@ public sealed partial class CloudAssessmentCaptureProcessingStepTests
         internal int AssociationLookups { get; private set; }
         internal int ObservationReads { get; private set; }
 
-        public ValueTask<IReadOnlyList<string>> ReadCaptureUnavailableSourcesAsync(
-            string root, Guid captureId, DateTimeOffset exposureFromUtc, CancellationToken cancellationToken)
+        public ValueTask<EnvironmentalCaptureAvailability> ReadCaptureAvailabilityAsync(
+            string root, Guid captureId, Guid? acquisitionAttemptId, CancellationToken cancellationToken)
             => throw UnexpectedRead();
 
         public ValueTask<IReadOnlyList<LocalEnvironmentalCaptureAssociation>> ReadAssociationsAsync(

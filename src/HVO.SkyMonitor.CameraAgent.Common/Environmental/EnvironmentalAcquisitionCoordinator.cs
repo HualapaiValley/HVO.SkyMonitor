@@ -44,6 +44,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     private readonly IReadOnlyDictionary<string, SemaphoreSlim> _sourceGates;
     private readonly Dictionary<string, PendingAcquisition?> _pending;
     private readonly object _pendingGate = new();
+    private readonly Dictionary<string, TaskCompletionSource<EnvironmentalAcquisitionReceipt>> _active = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _globalGate;
     private readonly Channel<DeferredEnvironmentalSourceRequest> _deferred;
 
@@ -89,6 +90,11 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     public IReadOnlyList<EnvironmentalSourceDescriptor> Sources
         => _sources.Values.Select(static source => source.Descriptor).OrderBy(static source => source.Id, StringComparer.Ordinal).ToArray();
 
+    internal IReadOnlyDictionary<string, Task<EnvironmentalAcquisitionReceipt>> CaptureDependencies()
+    {
+        lock (_pendingGate) return _active.ToDictionary(pair => pair.Key, pair => pair.Value.Task, StringComparer.Ordinal);
+    }
+
     public ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceAsync(
         string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
         long? captureSequence = null, Guid? captureId = null, CancellationToken cancellationToken = default)
@@ -96,7 +102,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
 
     private async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceWithBudgetAsync(
         string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
-        int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
+        int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken,
+        bool joinBusy = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var acquisitionBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -122,20 +129,26 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         _telemetry?.RecordTrigger(trigger);
         var sourceGate = _sourceGates[sourceId];
         var coalesced = false;
+        Task<EnvironmentalAcquisitionReceipt>? joined = null;
+        var active = new TaskCompletionSource<EnvironmentalAcquisitionReceipt>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_pendingGate)
         {
             if (!sourceGate.Wait(0, CancellationToken.None))
             {
-                if (trigger != EnvironmentalAcquisitionTrigger.OnDemand && !acquisitionBudgetMilliseconds.HasValue)
+                if (joinBusy) joined = _active[sourceId].Task;
+                else if (trigger != EnvironmentalAcquisitionTrigger.OnDemand && !acquisitionBudgetMilliseconds.HasValue)
                 {
                     _pending[sourceId] ??= new PendingAcquisition(
                         trigger, observedAtUtc, captureSequence, captureId);
                 }
                 coalesced = true;
             }
+            else _active[sourceId] = active;
         }
         if (coalesced)
         {
+            if (joined is not null)
+                return (await joined.WaitAsync(cancellationToken).ConfigureAwait(false)) with { Trigger = trigger };
             var receipt = Receipt(
                 sourceId, trigger, acquisitionBudgetMilliseconds.HasValue ? EnvironmentalAcquisitionDisposition.TimedOut : EnvironmentalAcquisitionDisposition.Coalesced,
                 acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started);
@@ -165,8 +178,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 PendingAcquisition? deferred;
                 lock (_pendingGate)
                 {
+                    active.TrySetResult(first);
                     deferred = _pending[sourceId];
                     _pending[sourceId] = null;
+                    _active.Remove(sourceId);
                     sourceGate.Release();
                     ownsSourceGate = false;
                 }
@@ -180,17 +195,25 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 }
                 return first;
             }
+            var completedReceipt = first;
             while (true)
             {
                 PendingAcquisition? pending;
                 lock (_pendingGate)
                 {
+                    active.TrySetResult(completedReceipt);
                     pending = _pending[sourceId];
                     _pending[sourceId] = null;
                     if (pending is null)
                     {
+                        _active.Remove(sourceId);
                         sourceGate.Release();
                         ownsSourceGate = false;
+                    }
+                    else
+                    {
+                        active = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                        _active[sourceId] = active;
                     }
                 }
                 if (pending is null)
@@ -212,6 +235,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                     pending.CaptureSequence,
                     pending.CaptureId,
                     cancellationToken).ConfigureAwait(false);
+                completedReceipt = pendingReceipt;
             }
         }
         finally
@@ -220,10 +244,42 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             {
                 lock (_pendingGate)
                 {
+                    active.TrySetCanceled();
+                    _active.Remove(sourceId);
                     sourceGate.Release();
                 }
             }
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A captured read has an explicit durable unavailable outcome when its dependency fails.")]
+    internal async Task AcquireCaptureAsync(EnvironmentalCaptureAcquisition acquisition, DateTimeOffset observedAtUtc,
+        int? budgetMilliseconds, CancellationToken cancellationToken)
+    {
+        var commands = _stateStore as IEnvironmentalOnDemandCommandStore
+            ?? throw new InvalidOperationException("Capture acquisition requires durable command storage.");
+        await Task.WhenAll(acquisition.Claims.Select(async claim =>
+        {
+            EnvironmentalAcquisitionReceipt receipt;
+            try
+            {
+                if (claim.InFlight is { } dependency)
+                {
+                    _telemetry?.RecordTrigger(EnvironmentalAcquisitionTrigger.BeforeCapture);
+                    receipt = (await dependency.WaitAsync(cancellationToken).ConfigureAwait(false)) with { Trigger = EnvironmentalAcquisitionTrigger.BeforeCapture };
+                }
+                else receipt = await AcquireSourceWithBudgetAsync(claim.Source.Id, EnvironmentalAcquisitionTrigger.BeforeCapture,
+                    observedAtUtc, budgetMilliseconds, null, null, cancellationToken, joinBusy: true).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception)
+            {
+                var now = _timeProvider.GetUtcNow();
+                receipt = new(claim.Source.Id, EnvironmentalAcquisitionTrigger.BeforeCapture,
+                    EnvironmentalAcquisitionDisposition.Missing, "capture-dependency-unavailable", null, now, now);
+            }
+            await commands.CompleteOnDemandAsync(_root, claim.Key, claim.LeaseToken, receipt, cancellationToken).ConfigureAwait(false);
+        })).ConfigureAwait(false);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

@@ -131,6 +131,17 @@ public sealed class EnvironmentalHardwareAdapterTests
     }
 
     [TestMethod]
+    [DataRow("{\"drying\":true}", "wet-sensor-drying")]
+    [DataRow("{\"drying\":false}", "device-malformed")]
+    public async Task InfraredMissingRainPreservesTheDryingOutcome(string payload, string expected)
+    {
+        var source = new InfraredSkySource(Descriptor("InfraredSky", EnvironmentalObservationKind.RainState), Options(payload));
+        var result = await source.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(result.Fact);
+        Assert.AreEqual(expected, result.Reason);
+    }
+
+    [TestMethod]
     public async Task SqmPreservesIntegrationAndSensorTemperature()
     {
         var result = await Source("SkyQualityMeter").AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false);

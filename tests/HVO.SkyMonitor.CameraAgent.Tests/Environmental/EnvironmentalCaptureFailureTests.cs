@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
-public sealed class EnvironmentalCaptureFailureTests
+public sealed partial class EnvironmentalCaptureFailureTests
 {
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -50,6 +50,7 @@ public sealed class EnvironmentalCaptureFailureTests
                     Type = "SkyQualityMeter",
                     Kind = EnvironmentalObservationKind.SkyQuality,
                     Required = false,
+                    ScheduleEpochUtc = Epoch.AddDays(1),
                     Triggers = [EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionTrigger.Periodic],
                     ValidForSeconds = 900,
                     StaleAfterSeconds = 300,
@@ -63,6 +64,7 @@ public sealed class EnvironmentalCaptureFailureTests
                 });
                 using var provider = new ServiceCollection().AddSingleton<IEnvironmentalDevice>(new Device(failure)).BuildServiceProvider();
                 var factory = new EnvironmentalSourceFactory(provider, EnvironmentalAdapterPipelineTests.Registrations());
+                Guid? acquisitionId = null;
                 using (var coordinator = new EnvironmentalAcquisitionCoordinator(factory, new Publisher(initialStore, root), new LocationStore(), options, clock, initialStore))
                 {
                     Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await coordinator.AcquireSourceAsync("sqm",
@@ -80,7 +82,13 @@ public sealed class EnvironmentalCaptureFailureTests
                         using var acquisition = new EnvironmentalAcquisitionService(coordinator, initialStore, initialStore, telemetry,
                             clock, options, NullLogger<EnvironmentalAcquisitionService>.Instance);
                         var bridge = new EnvironmentalCaptureTriggerBridge(coordinator, acquisition, initialStore, options);
-                        await bridge.BeforeCaptureAsync(clock.Now, CancellationToken.None).ConfigureAwait(false);
+                        await initialStore.UpdateSourceScheduleAsync(root, configuration.ToDescriptor(), Epoch.AddDays(1), CancellationToken.None).ConfigureAwait(false);
+                        await acquisition.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                        var scope = await bridge.BeforeCaptureAsync(clock.Now, CancellationToken.None).ConfigureAwait(false);
+                        Assert.IsNotNull(scope);
+                        await scope.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        acquisitionId = scope.Id;
+                        await acquisition.StopAsync(CancellationToken.None).ConfigureAwait(false);
                         Assert.AreEqual(failure, (await initialStore.ReadAttemptsAsync(root, 10, CancellationToken.None).ConfigureAwait(false))[0].Disposition);
                     }
                 }
@@ -90,7 +98,7 @@ public sealed class EnvironmentalCaptureFailureTests
                 var association = new EnvironmentalAssociationService(store, store, options, clock, acquisitionStates: store);
                 LocalEnvironmentalCaptureAssociation? early = null;
                 if (!associateAfterPoll) early = (await association.AssociateAsync(captureId, 1, Epoch, Epoch.AddSeconds(20),
-                    null, [configuration.Kind], CancellationToken.None).ConfigureAwait(false)).Single();
+                    null, [configuration.Kind], CancellationToken.None, acquisitionId).ConfigureAwait(false)).Single();
 
                 clock.Now = Epoch.AddSeconds(10);
                 // A new source instance models a recovered device after restart.
@@ -105,7 +113,7 @@ public sealed class EnvironmentalCaptureFailureTests
                     Assert.AreEqual(2L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
                 }
                 var late = (await association.AssociateAsync(captureId, 1, Epoch, Epoch.AddSeconds(20), null,
-                    [configuration.Kind], CancellationToken.None).ConfigureAwait(false)).Single();
+                    [configuration.Kind], CancellationToken.None, acquisitionId).ConfigureAwait(false)).Single();
                 Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing, late.Status);
                 Assert.IsNull(late.SelectedRecordId);
                 if (early is not null) Assert.AreEqual(early.AssociationIdentitySha256, late.AssociationIdentitySha256);
@@ -134,7 +142,7 @@ public sealed class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
-    public async Task RetentionProtectsOnlyRelevantAttemptsAndReleasesThemWithTheirEvidence()
+    public async Task UnattributedAttemptRetentionDoesNotPinObservationHistory()
     {
         var root = Path.Combine(Path.GetTempPath(), "capture-fence-retention-" + Guid.NewGuid().ToString("N"));
         try
@@ -162,7 +170,7 @@ public sealed class EnvironmentalCaptureFailureTests
                 next.ObservationId, clock.Now, clock.Now, next.ObservedAtUtc, next.StaleAfterUtc), null, null, CancellationToken.None).ConfigureAwait(false);
             await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
             var retained = await store.ReadAttemptsAsync(root, 10, CancellationToken.None).ConfigureAwait(false);
-            CollectionAssert.AreEquivalent(new[] { Epoch, Epoch.AddSeconds(1000) }, retained.Select(a => a.CompletedUtc).ToArray());
+            Assert.HasCount(0, retained);
             Assert.AreEqual(2L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
             for (var i = 0; i < 2; i++)
             {

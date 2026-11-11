@@ -403,7 +403,7 @@ public sealed class EnvironmentalAssociationServiceTests
             await rawJournal.OpenAsync().ConfigureAwait(false);
             using var command = rawJournal.CreateCommand();
             command.CommandText = """
-                CREATE TABLE raw_captures(capture_id TEXT NOT NULL PRIMARY KEY);
+                CREATE TABLE raw_captures(capture_id TEXT NOT NULL PRIMARY KEY, manifest_json BLOB NULL);
                 INSERT INTO raw_captures(capture_id) VALUES('80000000000000000000000000000001');
                 """;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);

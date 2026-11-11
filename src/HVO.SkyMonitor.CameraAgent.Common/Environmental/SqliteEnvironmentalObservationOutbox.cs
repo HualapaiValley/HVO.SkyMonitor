@@ -994,47 +994,143 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return results;
     }
 
-    public async ValueTask<IReadOnlyList<string>> ReadCaptureUnavailableSourcesAsync(
-        string root,
-        Guid captureId,
-        DateTimeOffset exposureFromUtc,
-        CancellationToken cancellationToken)
+    public async ValueTask<EnvironmentalCaptureAvailability> ReadCaptureAvailabilityAsync(
+        string root, Guid captureId, Guid? acquisitionAttemptId, CancellationToken cancellationToken)
     {
-        if (captureId == Guid.Empty || exposureFromUtc == default || exposureFromUtc.Offset != TimeSpan.Zero)
-            throw new ArgumentException("The environmental capture failure request is invalid.");
+        if (captureId == Guid.Empty || acquisitionAttemptId == Guid.Empty)
+            throw new ArgumentException("The environmental capture identity is invalid.");
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        if (acquisitionAttemptId is { } acquisitionId)
+            await BindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        var sources = new List<string>();
+        var unavailable = new List<string>();
+        var pending = false;
+        if (acquisitionAttemptId is { } id)
+        {
+            command.CommandText = """
+                SELECT source_id, status, lease_expires_unix_ms, receipt_json
+                FROM environmental_on_demand_commands
+                WHERE idempotency_key >= $prefix AND idempotency_key < $upper;
+                """;
+            AddCaptureRange(command, id);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var source = reader.GetString(0);
+                sources.Add(source);
+                if (reader.GetString(1) == "running")
+                {
+                    if (reader.GetInt64(2) <= _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()) unavailable.Add(source);
+                    else pending = true;
+                }
+                else
+                {
+                    var receipt = JsonSerializer.Deserialize<EnvironmentalAcquisitionReceipt>((byte[])reader.GetValue(3))
+                        ?? throw new InvalidDataException("Capture acquisition receipt is invalid.");
+                    if (receipt.SourceId != source || receipt.Trigger != EnvironmentalAcquisitionTrigger.BeforeCapture)
+                        throw new InvalidDataException("Capture acquisition receipt belongs to another source or trigger.");
+                    if (receipt.Disposition is not (EnvironmentalAcquisitionDisposition.Produced or EnvironmentalAcquisitionDisposition.Duplicate))
+                        unavailable.Add(source);
+                }
+            }
+            if (sources.Count == 0) throw new InvalidDataException("Capture acquisition evidence is missing.");
+        }
+        else
+        {
+            // Legacy explicit capture identities remain readable. Unassigned history is never attributed by time.
+            command.CommandText = """
+                SELECT source_id, outcome FROM environmental_acquisition_attempts
+                WHERE capture_id = $capture AND trigger = 'BeforeCapture';
+                """;
+            command.Parameters.AddWithValue("$capture", captureId.ToString("D"));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                sources.Add(reader.GetString(0));
+                if (reader.GetString(1) is "Failed" or "Missing" or "TimedOut") unavailable.Add(reader.GetString(0));
+            }
+        }
+        return new(sources.Distinct(StringComparer.Ordinal).ToArray(), unavailable.Distinct(StringComparer.Ordinal).ToArray(), pending);
+    }
+
+    public async ValueTask BindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)
+    {
+        if (acquisitionId == Guid.Empty || captureId == Guid.Empty) throw new ArgumentException("Capture acquisition identities are invalid.");
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        // The real before-capture bridge runs before raw ingress allocates a capture identity.
-        // Reconstruct that capture's fence from immutable attempts at exposure start; periodic
-        // recovery and later captures must not change the failed capture's evidence.
-        command.CommandText = """
-            SELECT DISTINCT source_id FROM environmental_acquisition_attempts
-            WHERE capture_id = $capture AND trigger = 'BeforeCapture'
-                AND outcome IN ('Failed','Missing','TimedOut')
-                AND reason != 'before-capture-source-busy'
-            UNION
-            SELECT runtime.source_id FROM environmental_source_runtime AS runtime
-            WHERE NOT EXISTS (
-                SELECT 1 FROM environmental_acquisition_attempts AS identified
-                WHERE identified.capture_id = $capture AND identified.source_id = runtime.source_id
-                    AND identified.trigger = 'BeforeCapture' AND identified.outcome != 'Coalesced'
-                    AND identified.reason != 'before-capture-source-busy')
-                AND (SELECT attempt.outcome FROM environmental_acquisition_attempts AS attempt
-                    WHERE attempt.source_id = runtime.source_id AND attempt.capture_id IS NULL
-                        AND attempt.trigger = 'BeforeCapture' AND attempt.outcome != 'Coalesced'
-                        AND attempt.reason != 'before-capture-source-busy'
-                        AND attempt.completed_unix_ms <= $from
-                    ORDER BY attempt.completed_unix_ms DESC, attempt.attempt_id DESC LIMIT 1)
-                    IN ('Failed','Missing','TimedOut');
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var check = connection.CreateCommand();
+        check.Transaction = transaction;
+        check.CommandText = """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN actor_id NOT IN ('capture-before', $capture) THEN 1 ELSE 0 END), 0)
+            FROM environmental_on_demand_commands WHERE idempotency_key >= $prefix AND idempotency_key < $upper;
             """;
-        command.Parameters.AddWithValue("$capture", captureId.ToString("D"));
-        command.Parameters.AddWithValue("$from", exposureFromUtc.ToUnixTimeMilliseconds());
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        var results = new List<string>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) results.Add(reader.GetString(0));
-        return results;
+        AddCaptureRange(check, acquisitionId);
+        check.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        using (var reader = await check.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (reader.GetInt64(0) == 0) throw new InvalidDataException("Capture acquisition evidence is missing.");
+            if (reader.GetInt64(1) != 0) throw new EnvironmentalObservationIdentityConflictException("Capture acquisition is already bound to another capture.");
+        }
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE environmental_on_demand_commands SET actor_id = $capture
+            WHERE idempotency_key >= $prefix AND idempotency_key < $upper AND actor_id = 'capture-before';
+            """;
+        AddCaptureRange(update, acquisitionId);
+        update.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Settles interrupted capture operations during hosted initialization, before acquisition workers start.</summary>
+    public async ValueTask RecoverCaptureAcquisitionsAsync(string root, CancellationToken cancellationToken)
+    {
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var select = connection.CreateCommand();
+        select.Transaction = transaction;
+        select.CommandText = """
+            SELECT idempotency_key, source_id, observed_unix_ms FROM environmental_on_demand_commands
+            WHERE idempotency_key >= '__capture-before:' AND idempotency_key < '__capture-before;' AND status = 'running';
+            """;
+        var interrupted = new List<(string Key, string Source, long Observed)>();
+        using (var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) interrupted.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2)));
+        foreach (var item in interrupted)
+        {
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE environmental_on_demand_commands SET status = 'completed', lease_token = NULL,
+                    lease_expires_unix_ms = NULL, receipt_json = $receipt, updated_unix_ms = $now
+                WHERE idempotency_key = $key AND status = 'running';
+                """;
+            var now = _timeProvider.GetUtcNow();
+            var started = DateTimeOffset.FromUnixTimeMilliseconds(item.Observed);
+            var receipt = new EnvironmentalAcquisitionReceipt(item.Source, EnvironmentalAcquisitionTrigger.BeforeCapture,
+                EnvironmentalAcquisitionDisposition.Missing, "capture-acquisition-interrupted", null, started, now < started ? started : now);
+            update.Parameters.AddWithValue("$receipt", JsonSerializer.SerializeToUtf8Bytes(receipt));
+            update.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+            update.Parameters.AddWithValue("$key", item.Key);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddCaptureRange(SqliteCommand command, Guid id)
+    {
+        var prefix = EnvironmentalCaptureAcquisition.Prefix(id);
+        command.Parameters.AddWithValue("$prefix", prefix);
+        command.Parameters.AddWithValue("$upper", prefix[..^1] + ";");
     }
 
     public async ValueTask<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>> ReadAttemptsAsync(
@@ -2420,23 +2516,22 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using (var attempts = connection.CreateCommand())
         {
             attempts.Transaction = transaction;
-            // Preserve the capture-time fence and its successful successors while older evidence
-            // could still be selected as fresh. This also covers evidence pinned by delivery or captures.
-            attempts.CommandText = """
-                DELETE FROM environmental_acquisition_attempts
-                WHERE attempt_id IN (
-                    SELECT attempt.attempt_id FROM environmental_acquisition_attempts AS attempt
-                    WHERE attempt.completed_unix_ms < $cutoff
-                        AND NOT (attempt.trigger = 'BeforeCapture' AND EXISTS (
-                            SELECT 1 FROM environmental_observation_journal AS retained
-                            WHERE retained.recorded_unix_ms <= attempt.completed_unix_ms
-                                AND retained.stale_after_unix_ms >= attempt.completed_unix_ms
-                                AND COALESCE(
-                                    json_extract(CAST(retained.payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId'),
-                                    json_extract(CAST(retained.payload AS TEXT), '$.source.sourceId')) = attempt.source_id))
-                    ORDER BY attempt.completed_unix_ms, attempt.attempt_id
-                    LIMIT $limit);
-                """;
+            // Bound capture history follows raw-capture retention. Unattributed attempts are ordinary diagnostics.
+            attempts.CommandText = rawIngressAttached
+                ? """
+                    DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
+                        SELECT attempt_id FROM environmental_acquisition_attempts AS attempt
+                        WHERE completed_unix_ms < $cutoff AND NOT EXISTS (
+                            SELECT 1 FROM raw_ingress.raw_captures AS capture
+                            WHERE capture.capture_id = replace(attempt.capture_id, '-', ''))
+                        ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
+                    """
+                : """
+                    DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
+                        SELECT attempt_id FROM environmental_acquisition_attempts
+                        WHERE completed_unix_ms < $cutoff AND capture_id IS NULL
+                        ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
+                    """;
             attempts.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             attempts.Parameters.AddWithValue("$limit", maximumResults);
             await attempts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -2445,14 +2540,23 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         {
             commands.Transaction = transaction;
             commands.CommandText = """
-                DELETE FROM environmental_on_demand_commands
-                WHERE idempotency_key IN (
-                    SELECT idempotency_key FROM environmental_on_demand_commands
+                DELETE FROM environmental_on_demand_commands WHERE idempotency_key IN (
+                    SELECT idempotency_key FROM environmental_on_demand_commands AS command
                     WHERE (status = 'completed' OR (status = 'running' AND lease_expires_unix_ms < $now))
                         AND updated_unix_ms < $cutoff
-                    ORDER BY updated_unix_ms, idempotency_key
-                    LIMIT $limit);
-                """;
+                """ + (rawIngressAttached
+                ? """
+                        AND (idempotency_key < '__capture-before:' OR idempotency_key >= '__capture-before;' OR
+                            (actor_id != 'capture-before' AND NOT EXISTS (
+                                SELECT 1 FROM raw_ingress.raw_captures AS capture WHERE capture.capture_id = command.actor_id)) OR
+                            (actor_id = 'capture-before' AND NOT EXISTS (
+                                SELECT 1 FROM raw_ingress.raw_captures AS capture WHERE
+                                    replace(json_extract(CAST(capture.manifest_json AS TEXT), '$.descriptor.cycleEvidence.acquisitionAttemptId'), '-', '')
+                                        = substr(command.idempotency_key, 18, 32))))
+                """
+                : """
+                        AND (idempotency_key < '__capture-before:' OR idempotency_key >= '__capture-before;')
+                """) + "ORDER BY updated_unix_ms, idempotency_key LIMIT $limit);";
             commands.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             commands.Parameters.AddWithValue("$now", nowUtc.ToUnixTimeMilliseconds());
             commands.Parameters.AddWithValue("$limit", maximumResults);

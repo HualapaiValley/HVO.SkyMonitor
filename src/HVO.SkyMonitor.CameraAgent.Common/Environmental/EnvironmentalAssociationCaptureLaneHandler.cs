@@ -47,14 +47,22 @@ internal sealed class EnvironmentalAssociationCaptureLaneHandler(IServiceProvide
         }
         var policyKinds = ResolvePolicyKinds(acquisition);
         if (policyKinds.Length == 0) return CaptureLaneHandlerResult.Success;
-        _ = await associations.AssociateAsync(
+        try
+        {
+            _ = await associations.AssociateAsync(
             capture.CaptureId,
             capture.CaptureSequence,
             exposureFromUtc,
             exposureThroughUtc,
             capture.RigId,
             policyKinds,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            descriptor.CycleEvidence?.AcquisitionAttemptId).ConfigureAwait(false);
+        }
+        catch (EnvironmentalCaptureAcquisitionPendingException)
+        {
+            return CaptureLaneHandlerResult.Retry("environment-capture-pending");
+        }
         return CaptureLaneHandlerResult.Success;
     }
 

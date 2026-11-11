@@ -24,7 +24,8 @@ public sealed class EnvironmentalAssociationService(
         DateTimeOffset exposureThroughUtc,
         string? rigId,
         IReadOnlyList<EnvironmentalObservationKind> kinds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? acquisitionAttemptId = null)
     {
         using var activity = EnvironmentalAcquisitionTelemetry.ActivitySource.StartActivity("environment.associate");
         ValidateRequest(captureId, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, kinds);
@@ -51,8 +52,10 @@ public sealed class EnvironmentalAssociationService(
             return persisted.OrderBy(static association => association.Kind).ToArray();
         }
         var existingKinds = persisted.Select(static association => association.Kind).ToHashSet();
-        var captureUnavailable = await associations.ReadCaptureUnavailableSourcesAsync(
-            root, captureId, exposureFromUtc, cancellationToken).ConfigureAwait(false);
+        var captureAvailability = await associations.ReadCaptureAvailabilityAsync(
+            root, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        if (captureAvailability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
+        var captureUnavailable = captureAvailability.UnavailableSources;
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))
         {
@@ -61,6 +64,7 @@ public sealed class EnvironmentalAssociationService(
             if (captureUnavailable.Count > 0 || options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
             {
                 var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
+                states = states.Where(state => !captureAvailability.Sources.Contains(state.SourceId, StringComparer.Ordinal)).ToArray();
                 candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind,
                     exposureFromUtc, exposureThroughUtc, captureUnavailable);
             }

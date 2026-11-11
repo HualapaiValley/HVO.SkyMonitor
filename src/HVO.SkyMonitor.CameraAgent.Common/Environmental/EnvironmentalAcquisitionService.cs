@@ -81,25 +81,41 @@ public sealed partial class EnvironmentalAcquisitionService(
         Justification = "One queued trigger failure must not stop independent environmental acquisition.")]
     private async Task DrainRequestsAsync(CancellationToken cancellationToken)
     {
-        await foreach (var request in _requests.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        try
         {
-            telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
-            try
+            await foreach (var request in _requests.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                _ = await coordinator.AcquireTriggerAsync(
-                    request.Trigger,
-                    request.ObservedAtUtc,
-                    request.CaptureSequence,
-                    request.CaptureId,
-                    cancellationToken).ConfigureAwait(false);
+                telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
+                try
+                {
+                    if (request.CaptureAcquisition is { } acquisition)
+                        await coordinator.AcquireCaptureAsync(acquisition, request.ObservedAtUtc, request.CaptureBudgetMilliseconds,
+                            cancellationToken).ConfigureAwait(false);
+                    else _ = await coordinator.AcquireTriggerAsync(
+                        request.Trigger,
+                        request.ObservedAtUtc,
+                        request.CaptureSequence,
+                        request.CaptureId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+                }
+                finally { request.CaptureAcquisition?.Completion.TrySetResult(); }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        }
+        finally
+        {
+            _requests.Writer.TryComplete();
+            while (_requests.Reader.TryRead(out var abandoned))
             {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+                telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
+                abandoned.CaptureAcquisition?.Completion.TrySetResult();
             }
         }
     }
@@ -294,4 +310,8 @@ public sealed record EnvironmentalTriggerRequest(
     EnvironmentalAcquisitionTrigger Trigger,
     DateTimeOffset ObservedAtUtc,
     long? CaptureSequence = null,
-    Guid? CaptureId = null);
+    Guid? CaptureId = null)
+{
+    internal EnvironmentalCaptureAcquisition? CaptureAcquisition { get; init; }
+    internal int? CaptureBudgetMilliseconds { get; init; }
+}
